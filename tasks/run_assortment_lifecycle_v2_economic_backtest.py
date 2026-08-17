@@ -514,6 +514,11 @@ def _simulate(
     spike_keys: set[tuple[date, str]] | None = None,
     spike_rates: Mapping[tuple[date, str], Decimal] | None = None,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
+    keep_decision_detail: bool = False,
+    keep_loss_detail: bool = False,
+    ordinary_order_overrides: Mapping[tuple[date, str], Decimal] | None = None,
+    ordinary_order_topup_qty_overrides: Mapping[tuple[date, str], Decimal] | None = None,
+    ordinary_order_topup_arrival_date_overrides: Mapping[tuple[date, str], date] | None = None,
 ) -> SimulationResult:
     active_codes = {code for _business_date, code in inputs.fact_by_key}
     return simulate_scenario(
@@ -531,13 +536,16 @@ def _simulate(
         date_from=date_from,
         date_to=date_to,
         keep_detail=True,
-        keep_decision_detail=False,
-        keep_loss_detail=False,
+        keep_decision_detail=keep_decision_detail,
+        keep_loss_detail=keep_loss_detail,
         demand_sample_cache=demand_sample_cache,
         acceleration_allowed_statuses=("sale", "working"),
         acceleration_eligible_sku_dates=spike_keys,
         preclassified_acceleration_rate_by_sku_date=spike_rates,
         representation_minimums=representation_minimums,
+        ordinary_order_overrides=ordinary_order_overrides,
+        ordinary_order_topup_qty_overrides=ordinary_order_topup_qty_overrides,
+        ordinary_order_topup_arrival_date_overrides=(ordinary_order_topup_arrival_date_overrides),
     )
 
 

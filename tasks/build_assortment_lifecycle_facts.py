@@ -36,11 +36,17 @@ from app.services.assortment_lifecycle_facts import (
     fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
+    validate_minimum_representation_policy,
     validate_warehouse_policy,
 )
 from app.services.assortment_lifecycle_v2_policy import (
     DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
     load_assortment_lifecycle_v2_policy,
+)
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+    merge_display_scope_audits,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file
 from app.services.onec_stock_availability import (
@@ -60,7 +66,11 @@ def main() -> int:
     load_ut103_env_file()
     args = _parse_args()
     settings = get_settings()
-    warehouse_policy = validate_warehouse_policy(_load_json_object(args.warehouse_policy_json))
+    warehouse_policy_payload = _load_json_object(args.warehouse_policy_json)
+    warehouse_policy = validate_warehouse_policy(warehouse_policy_payload)
+    minimum_representation_policy = validate_minimum_representation_policy(
+        warehouse_policy_payload
+    )
     manual_overrides = normalize_manual_overrides(_load_optional_json(args.manual_overrides_json))
     manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
     history_start = default_history_start(args.today, history_months=args.history_months)
@@ -81,6 +91,7 @@ def main() -> int:
     observation_from: date | None = None
     observation_to: date | None = None
     first_observed_stock_dates: dict[str, date] = {}
+    source_scope_audit = empty_display_scope_audit()
     # Витрина наличия закрыта по вчерашний день — спрос меряем на ту же дату,
     # иначе последнее окно у продаж и у дней на полке разъедется.
     demand_date_to = (args.today or date.today()) - timedelta(days=1)
@@ -92,6 +103,9 @@ def main() -> int:
             nomenclature_rows, supplier_order_rows, receipt_rows = _source_rows_from_payload(
                 raw_payload
             )
+            scope_result = filter_display_scope_records(nomenclature_rows)
+            nomenclature_rows = list(scope_result.included)
+            source_scope_audit = scope_result.audit
         else:
             onec_database_url = (
                 args.onec_database_url
@@ -125,6 +139,9 @@ def main() -> int:
                         limit=args.limit,
                     )
                 )
+                scope_result = filter_display_scope_records(nomenclature_rows)
+                nomenclature_rows = list(scope_result.included)
+                source_scope_audit = scope_result.audit
                 # Первая продажа определяет вход в СП / Старт продаж
                 # (решение 2026-08-02). Собирается тем же соединением, что и
                 # остальные факты, отдельным агрегатным запросом без окна.
@@ -246,6 +263,11 @@ def main() -> int:
         first_observed_stock_dates=first_observed_stock_dates,
         inventory_costs=inventory_costs,
         comparable_group_min_size=v2_policy.comparable_group_min_size,
+        minimum_representation_policy=minimum_representation_policy,
+    )
+    summary["scope_policy"] = merge_display_scope_audits(
+        source_scope_audit,
+        summary["scope_policy"],
     )
     if not args.input_json:
         product_engine = build_engine(settings.database_url, pool_pre_ping=True)
@@ -265,6 +287,7 @@ def main() -> int:
             "history_months": args.history_months,
             "history_start": history_start.isoformat(),
             "source": "input_json" if args.input_json else "onec_read_only",
+            "scope_policy": summary["scope_policy"],
         },
         "items": facts,
     }

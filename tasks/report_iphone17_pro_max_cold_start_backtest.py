@@ -13,8 +13,10 @@ created by the backtest.
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import hashlib
+import html
 import json
 import math
 import os
@@ -25,6 +27,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import bindparam, text
@@ -35,6 +38,12 @@ from app.services.assortment_lifecycle_facts import (
     RECEIPT_MAPPING_UNRESOLVED,
     SUPPLIER_ORDER_MAPPING_UNRESOLVED,
 )
+from app.services.display_family_demand import display_construction_segment
+from app.services.display_scope_policy import (
+    DISPLAY_SCOPE_POLICY_VERSION,
+    filter_display_scope_records,
+)
+from app.services.market_research.wordstat import build_wordstat_client_from_settings
 from tasks.report_display_supplier_lead_time_history import (
     DEFAULT_RECEIPT_MAPPING_JSON,
     DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
@@ -45,13 +54,23 @@ from tasks.report_display_supplier_lead_time_history import (
 
 DATASET_HASH = "582e10da08e6968f5e1aa450cd88df5dfb5af6c2b9ba84ad05799ec6ec17a6d1"
 SNAPSHOT_SCHEMA = "iphone17_pro_max_cold_start_snapshot.v1"
-RESULT_SCHEMA = "iphone17_pro_max_cold_start_backtest.v1"
+RESULT_SCHEMA = "iphone17_pro_max_cold_start_backtest.v3"
 SOURCE_FROM = date(2025, 1, 1)
 SOURCE_TO = date(2026, 7, 31)
 HOLDOUT_FROM = date(2026, 1, 1)
 HOLDOUT_TO = SOURCE_TO
 REVIEW_WEEKDAY = 0  # Monday
 REVIEW_INTERVAL_DAYS = 7
+LEAD_TIME_MATURITY_FLOOR_DAYS = 60
+WORDSTAT_REGION = "225"
+WORDSTAT_HISTORY_FROM = date(2024, 9, 1)
+WORDSTAT_HISTORY_TO = HOLDOUT_TO
+WORDSTAT_CACHE_SCHEMA = "iphone17_pro_max_wordstat_history.v1"
+WORDSTAT_PHRASE_TEMPLATES = {
+    "display": "дисплей iphone {generation} pro max",
+    "screen": "экран iphone {generation} pro max",
+    "repair": "замена дисплея iphone {generation} pro max",
+}
 
 RELEASE_DATES = {
     14: date(2022, 9, 16),
@@ -72,7 +91,7 @@ TARGET_CODES = {
 }
 
 DEFAULT_OUTPUT_DIR = (
-    Path("reports/assortment_lifecycle") / "iphone-17-pro-max-cold-start-backtest-2026-08-15"
+    Path("reports/assortment_lifecycle") / "iphone-17-pro-max-cold-start-backtest-v3-2026-08-15"
 )
 DEFAULT_PREFLIGHT_DIR = (
     Path("reports/assortment_lifecycle") / "backtest-2026-01-01_2026-07-31" / "preflight"
@@ -114,6 +133,20 @@ class Candidate:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+@dataclass(frozen=True)
+class WordstatPolicy:
+    availability_lag_days: int
+    lookback_months: int
+    min_confirming_phrases: int
+    min_growth_ratio: float
+    max_uplift_ratio: float
+
+    @property
+    def policy_id(self) -> str:
+        payload = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass
 class SimulationResult:
     candidate_id: str
@@ -140,6 +173,9 @@ class SimulationResult:
     cold_start_days: int
     hybrid_days: int
     own_history_days: int
+    wordstat_confirmed_review_count: int
+    wordstat_adjusted_review_count: int
+    wordstat_max_modifier: float
     adjustment_shortfall_qty: float
     decisions: list[dict[str, Any]]
 
@@ -152,10 +188,22 @@ class SimulationResult:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--snapshot-dir",
+        type=Path,
+        help="Reuse an existing checksummed snapshot without refreshing external sources.",
+    )
+    parser.add_argument(
+        "--wordstat-cache-dir",
+        type=Path,
+        help="Reuse an existing content-addressed Wordstat cache without an API call.",
+    )
     parser.add_argument("--preflight-dir", type=Path, default=DEFAULT_PREFLIGHT_DIR)
     parser.add_argument("--replay-store", type=Path, default=DEFAULT_REPLAY_STORE)
     parser.add_argument("--dataset-hash", default=DATASET_HASH)
     parser.add_argument("--refresh-snapshot", action="store_true")
+    parser.add_argument("--refresh-wordstat", action="store_true")
+    parser.add_argument("--without-wordstat", action="store_true")
     parser.add_argument("--skip-grid", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()
@@ -224,6 +272,27 @@ def quality_segment(name: str, quality_raw: str = "") -> str:
     if any(marker in value for marker in ("orig", "переклей", "снятый", "fog")):
         return "Original"
     return "Other"
+
+
+def display_segment_id(name: str, quality_raw: str = "") -> str:
+    """Return the substitution/allocation grain approved for display families."""
+
+    return f"{quality_segment(name, quality_raw)}|{display_construction_segment(name)}"
+
+
+def planned_arrival_date(decision_date: date, lead: Mapping[str, Any]) -> date:
+    """Use the same conservative lead-time percentile as the coverage calculation."""
+
+    return decision_date + timedelta(days=int(lead["p75"]))
+
+
+def segment_evidence_days(segments: Iterable[str], history: Mapping[str, set[date]]) -> int:
+    """Require availability evidence for every already launched segment."""
+
+    normalized = sorted(set(segments))
+    if not normalized:
+        return 0
+    return min(len(history.get(segment, set())) for segment in normalized)
 
 
 def _quantile(values: Sequence[float], probability: float, default: int) -> int:
@@ -363,11 +432,11 @@ def _create_snapshot_schema(connection: sqlite3.Connection) -> None:
 
 def _load_item_rows(
     replay_store: Path, dataset_hash: str
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     connection = sqlite3.connect(f"file:{replay_store}?mode=ro", uri=True)
     try:
-        rows: list[dict[str, Any]] = []
-        raw_refs: dict[str, str] = {}
+        candidate_rows: list[dict[str, Any]] = []
+        raw_refs_by_code: dict[str, str] = {}
         query = """
             SELECT nomenclature_code, payload_json
             FROM replay_dataset_fact
@@ -381,7 +450,7 @@ def _load_item_rows(
             if generation not in RELEASE_DATES:
                 continue
             raw_ref = _clean(payload.get("product_ref"))
-            rows.append(
+            candidate_rows.append(
                 {
                     "nomenclature_code": code,
                     "generation": generation,
@@ -392,8 +461,13 @@ def _load_item_rows(
                     "item_cost_rub": _number(payload.get("expensive_item_value")),
                 }
             )
-            raw_refs[code] = raw_ref
-        return rows, raw_refs
+            raw_refs_by_code[code] = raw_ref
+        scope_result = filter_display_scope_records(candidate_rows)
+        rows = list(scope_result.included)
+        raw_refs = {
+            row["nomenclature_code"]: raw_refs_by_code[row["nomenclature_code"]] for row in rows
+        }
+        return rows, raw_refs, scope_result.audit
     finally:
         connection.close()
 
@@ -656,7 +730,7 @@ def build_snapshot(
     dataset_hash: str,
     preflight_dir: Path,
 ) -> dict[str, Any]:
-    item_rows, raw_refs = _load_item_rows(replay_store, dataset_hash)
+    item_rows, raw_refs, scope_policy_audit = _load_item_rows(replay_store, dataset_hash)
     selected_codes = [row["nomenclature_code"] for row in item_rows]
     if not TARGET_CODES.issubset(set(selected_codes)):
         missing = sorted(TARGET_CODES - set(selected_codes))
@@ -792,6 +866,7 @@ def build_snapshot(
             "receipt_quantity_column": "_Fld4514",
             "receipt_supplier_order_column": "_Fld4525RRef",
             "production_action": "none_read_only",
+            "scope_policy": scope_policy_audit,
         }
         connection.executemany(
             "INSERT INTO metadata VALUES (?, ?)",
@@ -832,6 +907,7 @@ def build_snapshot(
         },
         "row_counts": _snapshot_row_counts(snapshot_path),
         "production_action": "none_read_only",
+        "scope_policy": scope_policy_audit,
     }
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
@@ -875,6 +951,9 @@ def _snapshot_row_counts(snapshot_path: Path) -> dict[str, int]:
 
 def validate_snapshot(snapshot_path: Path, manifest_path: Path) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    scope_policy = manifest.get("scope_policy") or {}
+    if scope_policy.get("scope_policy_version") != DISPLAY_SCOPE_POLICY_VERSION:
+        raise ValueError("snapshot_scope_policy_version_missing_or_stale")
     if manifest.get("snapshot_sha256") != _sha256(snapshot_path):
         raise ValueError("snapshot_sha256_mismatch")
     counts = _snapshot_row_counts(snapshot_path)
@@ -966,6 +1045,203 @@ def validate_snapshot(snapshot_path: Path, manifest_path: Path) -> dict[str, Any
     return checks
 
 
+def _month_end(period_start: date) -> date:
+    return period_start.replace(day=calendar.monthrange(period_start.year, period_start.month)[1])
+
+
+class WordstatHistory:
+    """Frozen, non-additive monthly signals available at a historical decision date."""
+
+    def __init__(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        cache_path: Path | None = None,
+        cache_sha256: str = "",
+    ):
+        if payload.get("schema") != WORDSTAT_CACHE_SCHEMA:
+            raise ValueError("wordstat_cache_schema_mismatch")
+        self.payload = dict(payload)
+        self.cache_path = cache_path
+        self.cache_sha256 = cache_sha256
+        self.series: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+        self.phrases: dict[tuple[int, str], str] = {}
+        for query in payload.get("queries", []):
+            generation = int(query["generation"])
+            phrase_key = str(query["phrase_key"])
+            self.phrases[(generation, phrase_key)] = str(query["phrase"])
+            for raw_point in query.get("response", {}).get("results", []):
+                period_start = _date(raw_point.get("date"))
+                if period_start is None:
+                    continue
+                self.series[(generation, phrase_key)].append(
+                    {
+                        "period_start": period_start,
+                        "period_end": _month_end(period_start),
+                        "count": int(_number(raw_point.get("count"))),
+                        "share": _number(raw_point.get("share")),
+                    }
+                )
+        for points in self.series.values():
+            points.sort(key=lambda row: row["period_start"])
+
+    def signal_at(
+        self, *, generation: int, decision_date: date, policy: WordstatPolicy
+    ) -> dict[str, Any]:
+        phrase_details: list[dict[str, Any]] = []
+        growth_values: list[float] = []
+        for phrase_key in WORDSTAT_PHRASE_TEMPLATES:
+            points = self.series.get((generation, phrase_key), [])
+            eligible = [
+                row
+                for row in points
+                if row["period_end"] + timedelta(days=policy.availability_lag_days) <= decision_date
+            ]
+            if len(eligible) <= policy.lookback_months:
+                continue
+            latest = eligible[-1]
+            previous = eligible[-policy.lookback_months - 1 : -1]
+            baseline = median(row["share"] for row in previous)
+            if baseline <= 0 or latest["share"] <= 0:
+                continue
+            growth = latest["share"] / baseline - 1.0
+            growth_values.append(growth)
+            phrase_details.append(
+                {
+                    "phrase_key": phrase_key,
+                    "phrase": self.phrases.get((generation, phrase_key), ""),
+                    "latest_period": latest["period_start"].isoformat(),
+                    "available_on": (
+                        latest["period_end"] + timedelta(days=policy.availability_lag_days)
+                    ).isoformat(),
+                    "latest_count": latest["count"],
+                    "latest_share": latest["share"],
+                    "baseline_share": baseline,
+                    "growth_ratio": round(growth, 6),
+                }
+            )
+        confirming = sum(growth >= policy.min_growth_ratio for growth in growth_values)
+        median_growth = median(growth_values) if growth_values else 0.0
+        confirmed = (
+            confirming >= policy.min_confirming_phrases and median_growth >= policy.min_growth_ratio
+        )
+        uplift = min(policy.max_uplift_ratio, max(0.0, median_growth)) if confirmed else 0.0
+        latest_period = max((row["latest_period"] for row in phrase_details), default="")
+        available_on = max((row["available_on"] for row in phrase_details), default="")
+        if not phrase_details:
+            action = "no_completed_period"
+        elif not confirmed:
+            action = "direction_not_confirmed"
+        elif uplift > 0:
+            action = "bounded_family_forecast_uplift"
+        else:
+            action = "confirmed_direction_manual_review"
+        return {
+            "status": "confirmed_uptrend" if confirmed else "not_confirmed",
+            "action": action,
+            "latest_period": latest_period,
+            "available_on": available_on,
+            "usable_phrase_count": len(growth_values),
+            "confirming_phrase_count": confirming,
+            "median_growth_ratio": round(median_growth, 6),
+            "modifier": round(1.0 + uplift, 6),
+            "phrase_details": phrase_details,
+            "counts_aggregated": False,
+        }
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "schema": self.payload["schema"],
+            "cache_path": str(self.cache_path) if self.cache_path else "",
+            "cache_sha256": self.cache_sha256,
+            "fetched_at": self.payload.get("fetched_at", ""),
+            "region": self.payload.get("region", ""),
+            "period": self.payload.get("period", ""),
+            "phrase_count": len(self.payload.get("queries", [])),
+            "aggregation": "non_additive_direction_only",
+        }
+
+
+def _load_wordstat_cache(manifest_path: Path) -> WordstatHistory:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cache_path = manifest_path.parent / manifest["active_file"]
+    expected_sha256 = manifest["sha256"]
+    if _sha256(cache_path) != expected_sha256:
+        raise ValueError("wordstat_cache_sha256_mismatch")
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    return WordstatHistory(payload, cache_path=cache_path, cache_sha256=expected_sha256)
+
+
+def load_or_fetch_wordstat_history(output_dir: Path, *, refresh: bool = False) -> WordstatHistory:
+    cache_dir = output_dir / "wordstat-cache"
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.exists() and not refresh:
+        return _load_wordstat_cache(manifest_path)
+    client = build_wordstat_client_from_settings()
+    queries: list[dict[str, Any]] = []
+    for generation in (16, 17):
+        for phrase_key, template in WORDSTAT_PHRASE_TEMPLATES.items():
+            phrase = template.format(generation=generation)
+            response = client.get_dynamics_response(
+                phrase=phrase,
+                region=WORDSTAT_REGION,
+                from_date=WORDSTAT_HISTORY_FROM,
+                to_date=WORDSTAT_HISTORY_TO,
+                period="monthly",
+            )
+            if response is None:
+                raise RuntimeError(f"wordstat_dynamics_unavailable:{generation}:{phrase_key}")
+            queries.append(
+                {
+                    "generation": generation,
+                    "phrase_key": phrase_key,
+                    "phrase": phrase,
+                    "request_without_credentials": {
+                        "region": WORDSTAT_REGION,
+                        "devices": client.devices,
+                        "period": "PERIOD_MONTHLY",
+                        "from_date": WORDSTAT_HISTORY_FROM.isoformat(),
+                        "to_date": WORDSTAT_HISTORY_TO.isoformat(),
+                    },
+                    "response": response,
+                }
+            )
+    payload = {
+        "schema": WORDSTAT_CACHE_SCHEMA,
+        "fetched_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "api_path": "/v2/wordstat/dynamics",
+        "region": WORDSTAT_REGION,
+        "period": "PERIOD_MONTHLY",
+        "from_date": WORDSTAT_HISTORY_FROM.isoformat(),
+        "to_date": WORDSTAT_HISTORY_TO.isoformat(),
+        "devices": client.devices,
+        "phrase_basket": "non_additive_overlapping_queries",
+        "queries": queries,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"wordstat-history-{digest[:16]}.json"
+    if not cache_path.exists():
+        temporary_path = cache_path.with_suffix(".json.tmp")
+        temporary_path.write_bytes(raw)
+        os.replace(temporary_path, cache_path)
+    manifest = {
+        "schema": "iphone17_pro_max_wordstat_cache_manifest.v1",
+        "active_file": cache_path.name,
+        "sha256": digest,
+        "size_bytes": cache_path.stat().st_size,
+        "production_action": "none_read_only",
+    }
+    temporary_manifest = manifest_path.with_suffix(".json.tmp")
+    temporary_manifest.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(temporary_manifest, manifest_path)
+    return _load_wordstat_cache(manifest_path)
+
+
 class FrozenFamilyData:
     def __init__(self, snapshot_path: Path):
         self.snapshot_path = snapshot_path
@@ -974,6 +1250,9 @@ class FrozenFamilyData:
             row["nomenclature_code"]: dict(row)
             for row in self.connection.execute("SELECT * FROM sku")
         }
+        for row in self.skus.values():
+            row["construction_segment"] = display_construction_segment(row["name"])
+            row["segment_id"] = display_segment_id(row["name"], row["quality_raw"])
         self.codes_by_generation: dict[int, list[str]] = defaultdict(list)
         for code, row in self.skus.items():
             self.codes_by_generation[int(row["generation"])].append(code)
@@ -1003,12 +1282,17 @@ class FrozenFamilyData:
                     "sales_qty": 0.0,
                     "available": False,
                     "sales_by_segment": defaultdict(float),
+                    "available_by_segment": defaultdict(bool),
                 },
             )
             quantity = _number(row["sales_qty"])
             bucket["sales_qty"] += quantity
             bucket["available"] = bool(bucket["available"] or row["available"])
-            bucket["sales_by_segment"][self.skus[code]["quality_segment"]] += quantity
+            segment = self.skus[code]["segment_id"]
+            bucket["sales_by_segment"][segment] += quantity
+            bucket["available_by_segment"][segment] = bool(
+                bucket["available_by_segment"][segment] or row["available"]
+            )
             if quantity > 0:
                 self.demand_index[(generation, business_date)][code] = {
                     "quantity": quantity,
@@ -1099,6 +1383,27 @@ def candidate_grid(*, repair_lags: Sequence[int] = (0,)) -> list[Candidate]:
     ]
 
 
+def wordstat_policy_grid() -> list[WordstatPolicy]:
+    policies = [
+        WordstatPolicy(
+            availability_lag_days=7,
+            lookback_months=2,
+            min_confirming_phrases=2,
+            min_growth_ratio=0.05,
+            max_uplift_ratio=0.0,
+        )
+    ]
+    policies.extend(
+        WordstatPolicy(lag, lookback, confirming, growth, cap)
+        for lag in (3, 7, 14)
+        for lookback in (1, 2, 3)
+        for confirming in (2, 3)
+        for growth in (0.05, 0.15)
+        for cap in (0.10, 0.20)
+    )
+    return policies
+
+
 def _analog_generations(target_generation: int, mode: str) -> list[tuple[int, float]]:
     if mode == "previous_one":
         return [(target_generation - 1, 1.0)]
@@ -1147,27 +1452,32 @@ def analog_profile(
         if end < start:
             continue
         family_daily = data.family_daily[generation]
-        available_dates: set[date] = set()
+        available_dates_by_segment: dict[str, set[date]] = defaultdict(set)
         sales_by_segment: dict[str, float] = defaultdict(float)
-        total_sales = 0.0
         for business_date in _iter_dates(start, end):
             row = family_daily.get(business_date.isoformat())
             if row is None:
                 continue
-            if row["available"]:
-                available_dates.add(business_date)
-            total_sales += _number(row["sales_qty"])
             for segment, quantity in row["sales_by_segment"].items():
                 sales_by_segment[segment] += _number(quantity)
-        if not available_dates:
+            available_by_segment = row.get("available_by_segment")
+            if available_by_segment is not None:
+                for segment, available in available_by_segment.items():
+                    if available:
+                        available_dates_by_segment[segment].add(business_date)
+            elif row["available"]:
+                for segment in row["sales_by_segment"]:
+                    available_dates_by_segment[segment].add(business_date)
+        segment_rates = {
+            segment: quantity / len(available_dates_by_segment[segment])
+            for segment, quantity in sales_by_segment.items()
+            if available_dates_by_segment.get(segment)
+        }
+        if not segment_rates:
             continue
-        rate = total_sales / len(available_dates)
-        mix_total = sum(sales_by_segment.values())
-        mix = (
-            {key: value / mix_total for key, value in sales_by_segment.items()}
-            if mix_total > 0
-            else {"Original": 1.0}
-        )
+        rate = sum(segment_rates.values())
+        mix = {key: value / rate for key, value in segment_rates.items()}
+        total_sales = sum(sales_by_segment.values())
         profiles.append(
             (
                 weight,
@@ -1178,7 +1488,13 @@ def analog_profile(
                     "method": method,
                     "window_from": start.isoformat(),
                     "window_to": end.isoformat(),
-                    "available_days": len(available_dates),
+                    "available_days": min(
+                        len(days) for days in available_dates_by_segment.values() if days
+                    ),
+                    "available_days_by_segment": {
+                        segment: len(days)
+                        for segment, days in sorted(available_dates_by_segment.items())
+                    },
                     "sales_qty": round(total_sales, 3),
                     "phone_age_at_analog_launch_days": (
                         analog_first - RELEASE_DATES[generation]
@@ -1214,38 +1530,76 @@ def lead_time_profile(
         if receipt["order_hash"]:
             receipts_by_order[(receipt["order_hash"], receipt["nomenclature_code"])].append(receipt)
 
-    own_durations: list[float] = []
-    analog_durations: list[float] = []
-    analog_order_qty = analog_receipt_qty = 0.0
-    analog_cargo_order_qty = analog_cargo_receipt_qty = 0.0
     target_codes = set(data.codes_by_generation[target_generation])
     analog_codes = {
         code
         for generation, _ in _analog_generations(target_generation, "previous_two_recency")
         for code in data.codes_by_generation.get(generation, [])
     }
+    completed_durations: dict[str, list[float]] = {"own": [], "analog": []}
     for key, order in order_by_key.items():
         order_date = date.fromisoformat(order["order_date"])
+        if order_date > decision_date:
+            continue
         completed = [
             row
             for row in receipts_by_order.get(key, [])
             if date.fromisoformat(row["receipt_date"]) <= decision_date
         ]
-        if not completed or order_date > decision_date:
+        if not completed:
             continue
         first_receipt = min(date.fromisoformat(row["receipt_date"]) for row in completed)
         duration = max(1, (first_receipt - order_date).days)
         code = order["nomenclature_code"]
         if code in target_codes:
+            completed_durations["own"].append(duration)
+        if code in analog_codes:
+            completed_durations["analog"].append(duration)
+
+    provisional_values = completed_durations["analog"]
+    provisional_p75 = _quantile(
+        provisional_values,
+        0.75,
+        LEAD_TIME_MATURITY_FLOOR_DAYS,
+    )
+    maturity_days = max(LEAD_TIME_MATURITY_FLOOR_DAYS, provisional_p75)
+    maturity_cutoff = decision_date - timedelta(days=maturity_days)
+
+    own_durations: list[float] = []
+    analog_durations: list[float] = []
+    own_censored = analog_censored = 0
+    analog_order_qty = analog_receipt_qty = 0.0
+    analog_cargo_order_qty = analog_cargo_receipt_qty = 0.0
+    for key, order in order_by_key.items():
+        order_date = date.fromisoformat(order["order_date"])
+        if order_date > maturity_cutoff:
+            continue
+        completed = [
+            row
+            for row in receipts_by_order.get(key, [])
+            if date.fromisoformat(row["receipt_date"]) <= decision_date
+        ]
+        first_receipt = (
+            min(date.fromisoformat(row["receipt_date"]) for row in completed) if completed else None
+        )
+        duration = (
+            max(1, (first_receipt - order_date).days)
+            if first_receipt is not None
+            else max(maturity_days + 1, (decision_date - order_date).days + 1)
+        )
+        code = order["nomenclature_code"]
+        if code in target_codes:
             own_durations.append(duration)
+            own_censored += int(first_receipt is None)
         if code in analog_codes:
             analog_durations.append(duration)
+            analog_censored += int(first_receipt is None)
             order_qty = _number(order["quantity"])
             receipt_qty = sum(_number(row["quantity"]) for row in completed)
             analog_order_qty += order_qty
             analog_receipt_qty += min(order_qty, receipt_qty)
             cargo_date = _date(order.get("cargo_date"))
-            if cargo_date and cargo_date <= decision_date:
+            if cargo_date and cargo_date <= maturity_cutoff:
                 analog_cargo_order_qty += order_qty
                 analog_cargo_receipt_qty += min(order_qty, receipt_qty)
     use_own = mode == "own_history" and len(own_durations) >= 3
@@ -1253,7 +1607,7 @@ def lead_time_profile(
     p50 = _quantile(values, 0.50, 45)
     p75 = _quantile(values, 0.75, max(60, p50))
     placed_reliability = (
-        min(1.0, analog_receipt_qty / analog_order_qty) if analog_order_qty else 1.0
+        min(1.0, analog_receipt_qty / analog_order_qty) if analog_order_qty else 0.0
     )
     cargo_reliability = (
         min(1.0, analog_cargo_receipt_qty / analog_cargo_order_qty)
@@ -1264,6 +1618,10 @@ def lead_time_profile(
         "p50": p50,
         "p75": max(p50, p75),
         "sample_count": len(values),
+        "matured_sample_count": len(values),
+        "right_censored_count": own_censored if use_own else analog_censored,
+        "maturity_days": maturity_days,
+        "maturity_cutoff": maturity_cutoff.isoformat(),
         "source": "own" if use_own else "analog",
         "placed_reliability": placed_reliability,
         "cargo_reliability": cargo_reliability,
@@ -1369,6 +1727,8 @@ def simulate_family(
     simulation_to: date,
     evaluation_from: date,
     use_target_stock_residuals: bool,
+    wordstat_history: WordstatHistory | None = None,
+    wordstat_policy: WordstatPolicy | None = None,
 ) -> SimulationResult:
     first_orders = _first_manual_orders(data, generation)
     if not first_orders:
@@ -1388,7 +1748,7 @@ def simulate_family(
     model_pipeline: list[dict[str, Any]] = []
     inventory: dict[str, float] = defaultdict(float)
     served_history: list[tuple[date, str, float, int]] = []
-    available_history: list[date] = []
+    available_history_by_segment: dict[str, set[date]] = defaultdict(set)
     decisions: list[dict[str, Any]] = []
     inventory_daily: list[tuple[date, float, float]] = []
     demand_total = served_total = gross_margin = missed_margin = 0.0
@@ -1397,6 +1757,9 @@ def simulate_family(
     first_repeat_at = ""
     mode_days: dict[str, int] = defaultdict(int)
     cold_ordered_total = 0.0
+    wordstat_confirmed_reviews = 0
+    wordstat_adjusted_reviews = 0
+    wordstat_max_modifier = 1.0
 
     family_first_batch_qty = first_family_batch_quantity(first_orders, simulation_from)
     for cursor in _iter_dates(simulation_from, simulation_to):
@@ -1417,9 +1780,9 @@ def simulate_family(
                 else:
                     inventory[code] += residual
 
-        family_available_before_demand = sum(inventory.values()) > 0
-        if family_available_before_demand:
-            available_history.append(cursor)
+        for code in data.codes_by_generation[generation]:
+            if inventory[code] > 0:
+                available_history_by_segment[data.skus[code]["segment_id"]].add(cursor)
 
         day_demand = data.demand_on(generation, cursor)
         for code, demand in day_demand.items():
@@ -1428,12 +1791,12 @@ def simulate_family(
             lost = quantity - served
             inventory[code] -= served
             if lost > 0:
-                segment = data.skus[code]["quality_segment"]
+                segment = data.skus[code]["segment_id"]
                 substitutes = sorted(
                     candidate_code
                     for candidate_code in data.codes_by_generation[generation]
                     if candidate_code != code
-                    and data.skus[candidate_code]["quality_segment"] == segment
+                    and data.skus[candidate_code]["segment_id"] == segment
                     and inventory[candidate_code] > 0
                 )
                 for substitute_code in substitutes:
@@ -1455,10 +1818,19 @@ def simulate_family(
 
         served_qty_to_date = sum(row[2] for row in served_history)
         sale_days_to_date = len({row[0] for row in served_history})
+        launched_segments = {
+            data.skus[code]["segment_id"]
+            for code, order in first_orders.items()
+            if date.fromisoformat(order["order_date"]) <= cursor
+        }
+        mode_available_days = segment_evidence_days(
+            launched_segments,
+            available_history_by_segment,
+        )
         mode = _mode(
             served_qty=served_qty_to_date,
             sale_days=sale_days_to_date,
-            available_days=len(set(available_history)),
+            available_days=mode_available_days,
             profile=transition,
         )
         if cursor >= evaluation_from:
@@ -1474,7 +1846,7 @@ def simulate_family(
             for code, row in first_orders.items()
             if date.fromisoformat(row["order_date"]) <= cursor
         }
-        is_review = cursor.weekday() == REVIEW_WEEKDAY
+        is_review = True
         is_manual_launch = any(
             date.fromisoformat(row["order_date"]) == cursor for row in first_orders.values()
         )
@@ -1494,13 +1866,18 @@ def simulate_family(
         )
         trailing_start = cursor - timedelta(days=29)
         recent_served = [row for row in served_history if trailing_start <= row[0] < cursor]
-        recent_available_days = len(
-            {day for day in available_history if trailing_start <= day < cursor}
-        )
-        own_rate = (
-            sum(row[2] for row in recent_served) / recent_available_days
-            if recent_available_days
-            else 0.0
+        recent_available_by_segment = {
+            segment: len({day for day in days if trailing_start <= day < cursor})
+            for segment, days in available_history_by_segment.items()
+        }
+        recent_available_days = max(recent_available_by_segment.values(), default=0)
+        recent_served_by_segment: dict[str, float] = defaultdict(float)
+        for _, code, quantity, _ in recent_served:
+            recent_served_by_segment[data.skus[code]["segment_id"]] += quantity
+        own_rate = sum(
+            quantity / recent_available_by_segment[segment]
+            for segment, quantity in recent_served_by_segment.items()
+            if recent_available_by_segment.get(segment, 0) > 0
         )
         if mode == "cold_start":
             forecast_rate = analog_rate
@@ -1510,12 +1887,38 @@ def simulate_family(
             ) / max(1, recent_available_days + candidate.hybrid_prior_days)
         else:
             forecast_rate = own_rate if recent_available_days else analog_rate
+        forecast_rate_before_wordstat = forecast_rate
+        wordstat_signal: dict[str, Any] = {
+            "status": "not_configured",
+            "action": "none",
+            "latest_period": "",
+            "available_on": "",
+            "usable_phrase_count": 0,
+            "confirming_phrase_count": 0,
+            "median_growth_ratio": 0.0,
+            "modifier": 1.0,
+            "phrase_details": [],
+            "counts_aggregated": False,
+        }
+        if wordstat_history is not None and wordstat_policy is not None:
+            wordstat_signal = wordstat_history.signal_at(
+                generation=generation,
+                decision_date=cursor,
+                policy=wordstat_policy,
+            )
+            modifier = _number(wordstat_signal.get("modifier"), 1.0)
+            forecast_rate *= modifier
+            wordstat_max_modifier = max(wordstat_max_modifier, modifier)
+            if is_review and wordstat_signal["status"] == "confirmed_uptrend":
+                wordstat_confirmed_reviews += 1
+            if is_review and modifier > 1.0:
+                wordstat_adjusted_reviews += 1
 
-        allowed_segments = {data.skus[code]["quality_segment"] for code in eligible_codes}
+        allowed_segments = {data.skus[code]["segment_id"] for code in eligible_codes}
         own_segment_sales: dict[str, float] = defaultdict(float)
         for _, code, quantity, _ in served_history:
             if code in eligible_codes:
-                own_segment_sales[data.skus[code]["quality_segment"]] += quantity
+                own_segment_sales[data.skus[code]["segment_id"]] += quantity
         own_mix_total = sum(own_segment_sales.values())
         if mode == "cold_start" or own_mix_total <= 0:
             segment_mix = _normalize_mix(analog_mix, allowed_segments)
@@ -1557,7 +1960,7 @@ def simulate_family(
             )
             manual_pipeline_credit += outstanding * reliability
         model_pipeline_credit = sum(
-            max(0.0, row["quantity"] - row["arrived_qty"])
+            max(0.0, row["quantity"] - row["arrived_qty"]) * float(lead["placed_reliability"])
             for row in model_pipeline
             if row["arrival_date"] > cursor
         )
@@ -1576,7 +1979,7 @@ def simulate_family(
 
         current_segment_position: dict[str, float] = defaultdict(float)
         for code in eligible_codes:
-            current_segment_position[data.skus[code]["quality_segment"]] += inventory[code]
+            current_segment_position[data.skus[code]["segment_id"]] += inventory[code]
         segment_targets = {
             segment: target_position * share for segment, share in segment_mix.items()
         }
@@ -1590,7 +1993,7 @@ def simulate_family(
         sku_allocations: dict[str, int] = {}
         for segment, segment_qty in segment_allocations.items():
             segment_codes = sorted(
-                code for code in eligible_codes if data.skus[code]["quality_segment"] == segment
+                code for code in eligible_codes if data.skus[code]["segment_id"] == segment
             )
             own_sku_sales = {
                 code: sum(row[2] for row in served_history if row[1] == code)
@@ -1605,7 +2008,7 @@ def simulate_family(
         ordered_now = sum(sku_allocations.values())
         if ordered_now > 0:
             order_id = f"model-{candidate.candidate_id}-{cursor.isoformat()}"
-            arrival_date = cursor + timedelta(days=int(lead["p50"]))
+            arrival_date = planned_arrival_date(cursor, lead)
             for code, quantity in sku_allocations.items():
                 if quantity <= 0:
                     continue
@@ -1638,13 +2041,21 @@ def simulate_family(
                 "site_open": 0.0,
             }
         )
-        if ordered_now > 0 or is_manual_launch or any(signal.values()):
+        if (
+            ordered_now > 0
+            or is_manual_launch
+            or any(signal.values())
+            or bool(wordstat_signal["phrase_details"])
+        ):
             decisions.append(
                 {
                     "decision_date": cursor.isoformat(),
                     "mode": mode,
-                    "event": "manual_first_order" if is_manual_launch else "weekly_review",
+                    "event": "manual_first_order" if is_manual_launch else "daily_review",
                     "forecast_family_rate_per_day": round(forecast_rate, 4),
+                    "forecast_before_wordstat_rate_per_day": round(
+                        forecast_rate_before_wordstat, 4
+                    ),
                     "analog_rate_per_day": round(analog_rate, 4),
                     "own_rate_per_day": round(own_rate, 4),
                     "target_position_qty": target_position,
@@ -1659,10 +2070,17 @@ def simulate_family(
                     "lead_time_p50_days": int(lead["p50"]),
                     "lead_time_p75_days": int(lead["p75"]),
                     "lead_time_source": lead["source"],
+                    "lead_time_maturity_days": int(lead["maturity_days"]),
+                    "lead_time_right_censored_count": int(lead["right_censored_count"]),
+                    "placed_pipeline_reliability": round(float(lead["placed_reliability"]), 6),
+                    "cargo_pipeline_reliability": round(float(lead["cargo_reliability"]), 6),
                     "temporary_buffer_days": (
                         candidate.temporary_buffer_days if mode != "own_history" else 0
                     ),
                     "quality_mix": json.dumps(segment_mix, ensure_ascii=False, sort_keys=True),
+                    "quality_construction_mix": json.dumps(
+                        segment_mix, ensure_ascii=False, sort_keys=True
+                    ),
                     "sku_allocation": json.dumps(
                         {key: value for key, value in sku_allocations.items() if value > 0},
                         ensure_ascii=False,
@@ -1671,6 +2089,17 @@ def simulate_family(
                     "kmp4_raw_signal_qty": signal["kmp4_raw"],
                     "site_order_raw_signal_qty": signal["site_raw"],
                     "signal_action": "manual_review_only" if any(signal.values()) else "none",
+                    "wordstat_latest_period": wordstat_signal["latest_period"],
+                    "wordstat_available_on": wordstat_signal["available_on"],
+                    "wordstat_confirming_phrase_count": wordstat_signal["confirming_phrase_count"],
+                    "wordstat_median_growth_ratio": wordstat_signal["median_growth_ratio"],
+                    "wordstat_modifier": wordstat_signal["modifier"],
+                    "wordstat_action": wordstat_signal["action"],
+                    "wordstat_evidence": json.dumps(
+                        wordstat_signal["phrase_details"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     "analog_evidence": json.dumps(analog_note, ensure_ascii=False, sort_keys=True),
                     "reason": _decision_reason(
                         mode=mode,
@@ -1681,6 +2110,7 @@ def simulate_family(
                         cap_remaining=cap_remaining,
                         manual_launch=is_manual_launch,
                         signal=signal,
+                        wordstat_signal=wordstat_signal,
                     ),
                 }
             )
@@ -1700,9 +2130,27 @@ def simulate_family(
         candidate=candidate,
     )
     trailing_start = simulation_to - timedelta(days=29)
-    trailing_sales = sum(row[2] for row in served_history if row[0] >= trailing_start)
-    trailing_availability = len({day for day in available_history if day >= trailing_start})
-    final_rate = trailing_sales / trailing_availability if trailing_availability else final_rate
+    trailing_available_by_segment = {
+        segment: len({day for day in days if day >= trailing_start})
+        for segment, days in available_history_by_segment.items()
+    }
+    trailing_sales_by_segment: dict[str, float] = defaultdict(float)
+    for day, code, quantity, _ in served_history:
+        if day >= trailing_start:
+            trailing_sales_by_segment[data.skus[code]["segment_id"]] += quantity
+    segmented_final_rate = sum(
+        quantity / trailing_available_by_segment[segment]
+        for segment, quantity in trailing_sales_by_segment.items()
+        if trailing_available_by_segment.get(segment, 0) > 0
+    )
+    final_rate = segmented_final_rate or final_rate
+    if wordstat_history is not None and wordstat_policy is not None:
+        final_wordstat_signal = wordstat_history.signal_at(
+            generation=generation,
+            decision_date=simulation_to,
+            policy=wordstat_policy,
+        )
+        final_rate *= _number(final_wordstat_signal.get("modifier"), 1.0)
     final_lead = lead_time_profile(
         data, target_generation=generation, decision_date=simulation_to, mode="own_history"
     )
@@ -1735,6 +2183,9 @@ def simulate_family(
         cold_start_days=mode_days["cold_start"],
         hybrid_days=mode_days["hybrid"],
         own_history_days=mode_days["own_history"],
+        wordstat_confirmed_review_count=wordstat_confirmed_reviews,
+        wordstat_adjusted_review_count=wordstat_adjusted_reviews,
+        wordstat_max_modifier=round(wordstat_max_modifier, 6),
         adjustment_shortfall_qty=round(adjustment_shortfall, 3),
         decisions=decisions,
     )
@@ -1750,6 +2201,7 @@ def _decision_reason(
     cap_remaining: int | None,
     manual_launch: bool,
     signal: Mapping[str, float],
+    wordstat_signal: Mapping[str, Any],
 ) -> str:
     mode_text = {
         "cold_start": "аналог и ограниченный тестовый объём",
@@ -1775,19 +2227,37 @@ def _decision_reason(
         result = f"{mode_text}; запас и путь покрывают цель {target_position}"
     if any(signal.values()):
         result += "; КМП4/сайт только флаг ручной проверки, не прямые штуки"
+    if wordstat_signal.get("status") == "confirmed_uptrend":
+        modifier = _number(wordstat_signal.get("modifier"), 1.0)
+        if modifier > 1.0:
+            result += (
+                f"; Wordstat подтвердил рост и ограниченно изменил семейный прогноз "
+                f"до x{modifier:.2f}, частотности не переводились в штуки"
+            )
+        else:
+            result += (
+                "; Wordstat подтвердил направление только для ручной проверки, "
+                "частотности не переводились в штуки"
+            )
     return result
 
 
-def _actual_target_metrics(data: FrozenFamilyData, *, ending_required_qty: float) -> dict[str, Any]:
+def _actual_target_metrics(
+    data: FrozenFamilyData,
+    *,
+    ending_required_qty: float,
+    evaluation_from: date = HOLDOUT_FROM,
+    evaluation_to: date = HOLDOUT_TO,
+) -> dict[str, Any]:
     daily_family: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for (day, code), row in data.target_daily.items():
-        if code in TARGET_CODES and HOLDOUT_FROM.isoformat() <= day <= HOLDOUT_TO.isoformat():
+        if code in TARGET_CODES and evaluation_from.isoformat() <= day <= evaluation_to.isoformat():
             daily_family[day].append(row)
     inventory_cost_total = 0.0
     inventory_qty_total = 0.0
     gross_margin = 0.0
     sales = 0.0
-    for business_date in _iter_dates(HOLDOUT_FROM, HOLDOUT_TO):
+    for business_date in _iter_dates(evaluation_from, evaluation_to):
         for row in daily_family.get(business_date.isoformat(), []):
             code = row["nomenclature_code"]
             quantity = _number(row["sales_qty"])
@@ -1797,14 +2267,19 @@ def _actual_target_metrics(data: FrozenFamilyData, *, ending_required_qty: float
             gross_margin += quantity * margin
             inventory_qty_total += stock
             inventory_cost_total += stock * cost
-    days = (HOLDOUT_TO - HOLDOUT_FROM).days + 1
+    days = (evaluation_to - evaluation_from).days + 1
     end_stock = sum(
-        _number(data.target_daily.get((HOLDOUT_TO.isoformat(), code), {}).get("physical_stock_qty"))
+        _number(
+            data.target_daily.get((evaluation_to.isoformat(), code), {}).get("physical_stock_qty")
+        )
         for code in TARGET_CODES
     )
     avg_cost = inventory_cost_total / days
     return {
-        "scenario": "fact",
+        "scenario": "observable_sales_lower_bound",
+        "evaluation_from": evaluation_from.isoformat(),
+        "evaluation_to": evaluation_to.isoformat(),
+        "true_demand_observed": False,
         "served_sales_qty": round(sales, 3),
         "lost_sales_qty": 0.0,
         "gross_margin_rub": round(gross_margin, 2),
@@ -1817,6 +2292,22 @@ def _actual_target_metrics(data: FrozenFamilyData, *, ending_required_qty: float
         "ending_excess_qty": round(max(0.0, end_stock - ending_required_qty), 3),
         "ending_shortfall_qty": round(max(0.0, ending_required_qty - end_stock), 3),
     }
+
+
+def _strict_non_degradation(result: SimulationResult, control: Mapping[str, Any]) -> dict[str, Any]:
+    checks = {
+        "served_sales_gte_control": result.served_sales_qty >= _number(control["served_sales_qty"]),
+        "missed_gross_profit_lte_control": result.missed_gross_profit_rub
+        <= _number(control["missed_gross_profit_rub"]),
+        "average_inventory_capital_lte_control": result.average_inventory_cost_rub
+        <= _number(control["average_inventory_cost_rub"]),
+        "gmroi_gte_control": (result.gmroi or 0.0) >= _number(control["gmroi"]),
+        "ending_excess_lte_control": result.ending_excess_qty
+        <= _number(control["ending_excess_qty"]),
+        "ending_shortfall_lte_control": result.ending_shortfall_qty
+        <= _number(control["ending_shortfall_qty"]),
+    }
+    return {"passed": all(checks.values()), "checks": checks}
 
 
 def _select_calibrated_candidate(rows: Sequence[tuple[Candidate, SimulationResult]]) -> Candidate:
@@ -1836,6 +2327,103 @@ def _select_calibrated_candidate(rows: Sequence[tuple[Candidate, SimulationResul
         )
     )
     return eligible[0][0]
+
+
+def _select_wordstat_policy(
+    rows: Sequence[tuple[WordstatPolicy, SimulationResult]],
+) -> WordstatPolicy:
+    if not rows:
+        raise ValueError("empty_wordstat_policy_grid")
+    best_service = max(result.served_sales_ratio for _, result in rows)
+    service_floor = max(0.0, best_service - 0.01)
+    eligible = [row for row in rows if row[1].served_sales_ratio >= service_floor]
+    eligible.sort(
+        key=lambda row: (
+            row[1].average_inventory_qty,
+            row[1].ending_excess_qty,
+            row[1].model_repeat_order_qty,
+            row[0].max_uplift_ratio,
+            row[0].availability_lag_days,
+            row[0].policy_id,
+        )
+    )
+    return eligible[0][0]
+
+
+def _result_delta(result: SimulationResult, baseline: SimulationResult) -> dict[str, float | None]:
+    gmroi_delta = (
+        round((result.gmroi or 0.0) - (baseline.gmroi or 0.0), 6)
+        if result.gmroi is not None and baseline.gmroi is not None
+        else None
+    )
+    return {
+        "served_sales_qty": round(result.served_sales_qty - baseline.served_sales_qty, 3),
+        "missed_gross_profit_rub": round(
+            result.missed_gross_profit_rub - baseline.missed_gross_profit_rub, 2
+        ),
+        "average_inventory_cost_rub": round(
+            result.average_inventory_cost_rub - baseline.average_inventory_cost_rub,
+            2,
+        ),
+        "gmroi": gmroi_delta,
+        "ending_excess_qty": round(result.ending_excess_qty - baseline.ending_excess_qty, 3),
+        "ending_shortfall_qty": round(
+            result.ending_shortfall_qty - baseline.ending_shortfall_qty, 3
+        ),
+    }
+
+
+def _wordstat_sensitivity_summary(
+    rows: Sequence[tuple[WordstatPolicy, SimulationResult]],
+    baseline: SimulationResult,
+) -> dict[str, Any]:
+    ordered = sorted(
+        rows,
+        key=lambda row: (
+            row[1].lost_sales_qty,
+            -(row[1].gmroi or 0.0),
+            row[1].average_inventory_cost_rub,
+        ),
+    )
+    best_policy, best_result = ordered[0]
+    non_worse_service = [
+        (policy, result)
+        for policy, result in rows
+        if result.served_sales_qty >= baseline.served_sales_qty
+    ]
+    strict_dominance = [
+        (policy, result)
+        for policy, result in rows
+        if result.served_sales_qty >= baseline.served_sales_qty
+        and result.average_inventory_cost_rub <= baseline.average_inventory_cost_rub
+        and (result.gmroi or 0.0) >= (baseline.gmroi or 0.0)
+        and result.ending_excess_qty <= baseline.ending_excess_qty
+        and (
+            result.served_sales_qty > baseline.served_sales_qty
+            or result.average_inventory_cost_rub < baseline.average_inventory_cost_rub
+            or (result.gmroi or 0.0) > (baseline.gmroi or 0.0)
+        )
+    ]
+    return {
+        "candidate_count": len(rows),
+        "non_worse_service_count": len(non_worse_service),
+        "strict_dominance_count": len(strict_dominance),
+        "service_better_count": sum(
+            result.served_sales_qty > baseline.served_sales_qty for _, result in rows
+        ),
+        "service_equal_count": sum(
+            result.served_sales_qty == baseline.served_sales_qty for _, result in rows
+        ),
+        "service_worse_count": sum(
+            result.served_sales_qty < baseline.served_sales_qty for _, result in rows
+        ),
+        "best_service_exploratory": {
+            **asdict(best_policy),
+            "policy_id": best_policy.policy_id,
+            **best_result.summary_row(),
+            "delta_vs_baseline": _result_delta(best_result, baseline),
+        },
+    }
 
 
 def _sensitivity_summary(
@@ -1879,11 +2467,12 @@ def _sensitivity_summary(
         ]
         sorted_deltas = sorted(deltas)
         midpoint = len(sorted_deltas) // 2
-        median_delta = (
-            (sorted_deltas[midpoint - 1] + sorted_deltas[midpoint]) / 2
-            if len(sorted_deltas) % 2 == 0
-            else sorted_deltas[midpoint]
-        )
+        if not sorted_deltas:
+            median_delta = None
+        elif len(sorted_deltas) % 2 == 0:
+            median_delta = (sorted_deltas[midpoint - 1] + sorted_deltas[midpoint]) / 2
+        else:
+            median_delta = sorted_deltas[midpoint]
         cap_comparisons[str(cap)] = {
             "comparison_count": len(deltas),
             "service_better_count": sum(delta > 0 for delta in deltas),
@@ -1932,7 +2521,11 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
 
 
 def run_backtest(
-    *, snapshot_path: Path, output_dir: Path, skip_grid: bool = False
+    *,
+    snapshot_path: Path,
+    output_dir: Path,
+    skip_grid: bool = False,
+    wordstat_history: WordstatHistory | None = None,
 ) -> dict[str, Any]:
     data = FrozenFamilyData(snapshot_path)
     try:
@@ -2005,6 +2598,85 @@ def run_backtest(
             )
             holdout_rows.append((selected, selected_result))
 
+        wordstat_calibration_rows: list[tuple[WordstatPolicy, SimulationResult]] = []
+        wordstat_holdout_rows: list[tuple[WordstatPolicy, SimulationResult]] = []
+        selected_wordstat_policy: WordstatPolicy | None = None
+        selected_wordstat_result: SimulationResult | None = None
+        recommended_wordstat_policy: WordstatPolicy | None = None
+        recommended_wordstat_result: SimulationResult | None = None
+        wordstat_validation_passed = False
+        if wordstat_history is not None:
+            for policy in wordstat_policy_grid():
+                wordstat_calibration_rows.append(
+                    (
+                        policy,
+                        simulate_family(
+                            data,
+                            generation=16,
+                            candidate=selected,
+                            simulation_to=date(2025, 12, 31),
+                            evaluation_from=(data.first_family_order[16] or date(2025, 2, 11)),
+                            use_target_stock_residuals=False,
+                            wordstat_history=wordstat_history,
+                            wordstat_policy=policy,
+                        ),
+                    )
+                )
+            selected_wordstat_policy = _select_wordstat_policy(wordstat_calibration_rows)
+            direction_only_policy = WordstatPolicy(
+                availability_lag_days=selected_wordstat_policy.availability_lag_days,
+                lookback_months=selected_wordstat_policy.lookback_months,
+                min_confirming_phrases=selected_wordstat_policy.min_confirming_phrases,
+                min_growth_ratio=selected_wordstat_policy.min_growth_ratio,
+                max_uplift_ratio=0.0,
+            )
+            holdout_policies = (
+                [selected_wordstat_policy, direction_only_policy]
+                if skip_grid
+                else [*wordstat_policy_grid(), direction_only_policy]
+            )
+            holdout_policies = list(dict.fromkeys(holdout_policies))
+            for policy in holdout_policies:
+                wordstat_holdout_rows.append(
+                    (
+                        policy,
+                        simulate_family(
+                            data,
+                            generation=17,
+                            candidate=selected,
+                            simulation_to=HOLDOUT_TO,
+                            evaluation_from=HOLDOUT_FROM,
+                            use_target_stock_residuals=True,
+                            wordstat_history=wordstat_history,
+                            wordstat_policy=policy,
+                        ),
+                    )
+                )
+            selected_wordstat_result = next(
+                result
+                for policy, result in wordstat_holdout_rows
+                if policy == selected_wordstat_policy
+            )
+            wordstat_validation_passed = (
+                selected_wordstat_result.served_sales_qty >= selected_result.served_sales_qty
+                and selected_wordstat_result.missed_gross_profit_rub
+                <= selected_result.missed_gross_profit_rub
+                and selected_wordstat_result.average_inventory_cost_rub
+                <= selected_result.average_inventory_cost_rub
+                and (selected_wordstat_result.gmroi or 0.0) >= (selected_result.gmroi or 0.0)
+                and selected_wordstat_result.ending_excess_qty <= selected_result.ending_excess_qty
+                and selected_wordstat_result.ending_shortfall_qty
+                <= selected_result.ending_shortfall_qty
+            )
+            recommended_wordstat_policy = (
+                selected_wordstat_policy if wordstat_validation_passed else direction_only_policy
+            )
+            recommended_wordstat_result = next(
+                result
+                for policy, result in wordstat_holdout_rows
+                if policy == recommended_wordstat_policy
+            )
+
         calibration_csv = []
         for candidate, result in calibration_rows:
             calibration_csv.append(
@@ -2027,7 +2699,47 @@ def run_backtest(
             )
         _write_csv(output_dir / "calibration-grid-iphone16.csv", calibration_csv)
         _write_csv(output_dir / "holdout-grid-iphone17.csv", holdout_csv)
-        _write_csv(output_dir / "decision-table.csv", selected_result.decisions)
+        _write_csv(output_dir / "baseline-decision-table.csv", selected_result.decisions)
+
+        if wordstat_calibration_rows:
+            wordstat_calibration_csv = [
+                {
+                    **asdict(policy),
+                    "policy_id": policy.policy_id,
+                    **result.summary_row(),
+                    "selected_on_iphone16": int(policy == selected_wordstat_policy),
+                }
+                for policy, result in wordstat_calibration_rows
+            ]
+            wordstat_holdout_csv = [
+                {
+                    **asdict(policy),
+                    "policy_id": policy.policy_id,
+                    **result.summary_row(),
+                    "calibrated_on_iphone16": int(policy == selected_wordstat_policy),
+                    "recommended_after_holdout": int(policy == recommended_wordstat_policy),
+                    **{
+                        f"delta_{key}": value
+                        for key, value in _result_delta(result, selected_result).items()
+                    },
+                }
+                for policy, result in wordstat_holdout_rows
+            ]
+            _write_csv(
+                output_dir / "wordstat-policy-grid-iphone16.csv",
+                wordstat_calibration_csv,
+            )
+            _write_csv(
+                output_dir / "wordstat-policy-holdout-iphone17.csv",
+                wordstat_holdout_csv,
+            )
+        if selected_wordstat_result is not None:
+            _write_csv(
+                output_dir / "wordstat-calibrated-policy-decision-table.csv",
+                selected_wordstat_result.decisions,
+            )
+        decision_result = recommended_wordstat_result or selected_result
+        _write_csv(output_dir / "decision-table.csv", decision_result.decisions)
 
         actual = _actual_target_metrics(
             data, ending_required_qty=selected_result.ending_required_qty
@@ -2054,13 +2766,179 @@ def run_backtest(
                 }
             },
         }
-        _write_csv(output_dir / "metrics-comparison.csv", [actual, selected_metrics])
+        metrics_rows = [actual, selected_metrics]
+        if recommended_wordstat_result is not None:
+            wordstat_metrics = {
+                "scenario": "recommended_shadow_rule_with_wordstat_signal",
+                **{
+                    key: value
+                    for key, value in recommended_wordstat_result.summary_row().items()
+                    if key
+                    in {
+                        "served_sales_qty",
+                        "lost_sales_qty",
+                        "gross_margin_rub",
+                        "missed_gross_profit_rub",
+                        "average_inventory_qty",
+                        "average_inventory_cost_rub",
+                        "gmroi",
+                        "ending_inventory_qty",
+                        "ending_required_qty",
+                        "ending_excess_qty",
+                        "ending_shortfall_qty",
+                    }
+                },
+            }
+            metrics_rows.append(wordstat_metrics)
+        _write_csv(output_dir / "metrics-comparison.csv", metrics_rows)
+
+        wordstat_summary: dict[str, Any] = {"enabled": False}
+        if (
+            wordstat_history is not None
+            and selected_wordstat_policy is not None
+            and selected_wordstat_result is not None
+            and recommended_wordstat_policy is not None
+            and recommended_wordstat_result is not None
+        ):
+            selected_wordstat_calibration = next(
+                result
+                for policy, result in wordstat_calibration_rows
+                if policy == selected_wordstat_policy
+            )
+            wordstat_summary = {
+                "enabled": True,
+                "history": wordstat_history.summary(),
+                "phrase_basket": [
+                    template.format(generation=17)
+                    for template in WORDSTAT_PHRASE_TEMPLATES.values()
+                ],
+                "aggregation_rule": (
+                    "counts and shares are never summed; the median direction of each "
+                    "normalized phrase series is used only after enough phrases agree"
+                ),
+                "calibrated_policy": {
+                    **asdict(selected_wordstat_policy),
+                    "policy_id": selected_wordstat_policy.policy_id,
+                },
+                "recommended_policy": {
+                    **asdict(recommended_wordstat_policy),
+                    "policy_id": recommended_wordstat_policy.policy_id,
+                },
+                "selected_policy": {
+                    **asdict(recommended_wordstat_policy),
+                    "policy_id": recommended_wordstat_policy.policy_id,
+                },
+                "selection_boundary": (
+                    "Wordstat lag, lookback, confirmation threshold and uplift cap were "
+                    "selected on iPhone 16 decisions through 2025-12-31; iPhone 17 sales "
+                    "and outcomes were not used for policy selection"
+                ),
+                "calibration": {
+                    "target_generation": 16,
+                    "candidate_count": len(wordstat_calibration_rows),
+                    "selected_result": selected_wordstat_calibration.summary_row(),
+                },
+                "calibrated_policy_holdout": selected_wordstat_result.summary_row(),
+                "calibrated_policy_delta_vs_baseline": _result_delta(
+                    selected_wordstat_result, selected_result
+                ),
+                "validation_passed": wordstat_validation_passed,
+                "validation_decision": (
+                    "quantitative_modifier_accepted"
+                    if wordstat_validation_passed
+                    else "quantitative_modifier_rejected_keep_direction_only"
+                ),
+                "recommended_policy_basis": (
+                    "calibrated signal shape with max_uplift_ratio forced to zero after "
+                    "the quantitative policy failed non-degradation checks on holdout"
+                ),
+                "holdout": recommended_wordstat_result.summary_row(),
+                "delta_vs_baseline": _result_delta(recommended_wordstat_result, selected_result),
+                "sensitivity": _wordstat_sensitivity_summary(
+                    wordstat_holdout_rows, selected_result
+                ),
+                "transition_effect": "none_evidence_thresholds_unchanged",
+                "unit_conversion": "none",
+                "production_action": "none_read_only",
+            }
 
         first_available_ages = {
             str(generation): ((first - RELEASE_DATES[generation]).days if first else None)
             for generation, first in data.first_family_available.items()
             if generation in RELEASE_DATES
         }
+        independent_windows: list[dict[str, Any]] = []
+        for window_from, window_to in (
+            (date(2026, 1, 1), date(2026, 3, 31)),
+            (date(2026, 4, 1), date(2026, 6, 30)),
+            (date(2026, 7, 1), date(2026, 7, 31)),
+        ):
+            window_result = simulate_family(
+                data,
+                generation=17,
+                candidate=selected,
+                simulation_to=window_to,
+                evaluation_from=window_from,
+                use_target_stock_residuals=True,
+            )
+            window_control = _actual_target_metrics(
+                data,
+                ending_required_qty=window_result.ending_required_qty,
+                evaluation_from=window_from,
+                evaluation_to=window_to,
+            )
+            independent_windows.append(
+                {
+                    "evaluation_from": window_from.isoformat(),
+                    "evaluation_to": window_to.isoformat(),
+                    "candidate": window_result.summary_row(),
+                    "observable_control_lower_bound": window_control,
+                    "strict_non_degradation": _strict_non_degradation(
+                        window_result, window_control
+                    ),
+                }
+            )
+        strict_windows_passed = all(
+            row["strict_non_degradation"]["passed"] for row in independent_windows
+        )
+        point_in_time_contract = {
+            "schema": "assortment_signal_point_in_time.v1",
+            "required_fields": [
+                "occurred_at",
+                "available_at",
+                "source",
+                "reliability",
+                "sku_or_family_link",
+            ],
+            "historical_available_at_complete": False,
+            "known_date_policy": {
+                "sales_availability_kmp4_site": "business_date_used_as_lower_bound",
+                "supplier_order": "created_at_used_as_lower_bound",
+                "receipt": "receipt_at_used_as_lower_bound",
+                "cargo": "handoff_at_used_only_when_present",
+                "wordstat": "completed_period_plus_configured_publication_lag",
+            },
+            "blocker": (
+                "historical ingestion/availability timestamps are absent for part of the "
+                "frozen sources; corrected or late records cannot be proven point-in-time"
+            ),
+        }
+        acceptance = {
+            "strict_non_degradation_on_every_independent_window": strict_windows_passed,
+            "historical_available_at_complete": point_in_time_contract[
+                "historical_available_at_complete"
+            ],
+            "independent_cold_start_launch_count": 0,
+            "workflow_pilot_family": "iPhone 17 Pro Max",
+            "cold_start_validation_family": "next_new_family",
+        }
+        acceptance["backtest_v3_gate_passed"] = all(
+            (
+                acceptance["strict_non_degradation_on_every_independent_window"],
+                acceptance["historical_available_at_complete"],
+                acceptance["independent_cold_start_launch_count"] > 0,
+            )
+        )
         summary = {
             "schema": RESULT_SCHEMA,
             "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
@@ -2087,7 +2965,14 @@ def run_backtest(
             },
             "holdout": selected_result.summary_row(),
             "actual": actual,
+            "actual_interpretation": (
+                "observed sales are a lower bound on demand, not proof of 100% true-demand service"
+            ),
+            "independent_windows": independent_windows,
+            "point_in_time_contract": point_in_time_contract,
+            "acceptance": acceptance,
             "sensitivity": sensitivity,
+            "wordstat": wordstat_summary,
             "signal_reconciliation": _signal_reconciliation(data),
             "family_reconciliation": _family_reconciliation(data),
             "phone_age_at_first_available_days": first_available_ages,
@@ -2197,11 +3082,32 @@ def _write_source_notes(output_dir: Path, summary: Mapping[str, Any]) -> None:
                 "fields": ["decision_date", "mode", "requested_repeat_qty", "reason"],
                 "claim": "Решения используют только информацию на дату расчёта.",
             },
+            {
+                "segment": "Wordstat как ограниченный сигнал",
+                "question": "Дал ли внешний поисковый тренд измеримый эффект без перевода запросов в штуки?",
+                "family": "Tables & Scorecards",
+                "type": "table",
+                "fields": [
+                    "scenario",
+                    "served_sales_qty",
+                    "missed_gross_profit_rub",
+                    "average_inventory_cost_rub",
+                    "gmroi",
+                ],
+                "claim": (
+                    "Параметры Wordstat выбираются на iPhone 16, а iPhone 17 остаётся "
+                    "временным holdout; пересекающиеся частотности не суммируются."
+                ),
+            },
         ],
         "omissions": {
             "true_lost_demand": "Не наблюдается при отсутствии товара; недобор прибыли считается только на фактических продажах, которые контрфактическая модель не смогла бы обслужить.",
             "confirmed_on_demand_orders": "Отдельный источник 'Под заказ' отсутствует в frozen-истории.",
-            "crm_wordstat_arrival_notifications": "Источники не были доступны в периоде.",
+            "crm_arrival_notifications": "CRM и 'Сообщить о поступлении' не были доступны в периоде.",
+            "wordstat_overlap": (
+                "API не возвращает уникальных пользователей или матрицу пересечений фраз; "
+                "поэтому ряды считаются потенциально пересекающимися и не суммируются."
+            ),
             "independent_sales_transition": (
                 "Текущий strict-профиль проверяет объём, разные дни продаж и дни наличия, "
                 "но ещё не вводит отдельный порог по документам или клиентам."
@@ -2209,17 +3115,129 @@ def _write_source_notes(output_dir: Path, summary: Mapping[str, Any]) -> None:
             "production_rule": "Одна чистая калибровочная семейная траектория недостаточна для включения production.",
         },
         "selected_candidate": summary["selected_candidate"],
+        "selected_wordstat_policy": summary.get("wordstat", {}).get("selected_policy"),
     }
     (output_dir / "source-notes.json").write_text(
         json.dumps(notes, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
     )
 
 
+def _write_v3_report_artifacts(output_dir: Path, summary: Mapping[str, Any]) -> None:
+    holdout = summary["holdout"]
+    sensitivity = summary["sensitivity"]
+    best = sensitivity["best_service_candidate"]
+    artifact = {
+        "schema": "iphone17_pro_max_cold_start_report.v3",
+        "status": "blocked_before_api_ui",
+        "answer": (
+            "Backtest v3 не прошёл допуск: ни один grid-кандидат не выполнил "
+            "все ограничения, historical available_at неполон, независимого "
+            "cold-start запуска ещё нет."
+        ),
+        "selected_candidate": summary["selected_candidate"],
+        "selected_result": holdout,
+        "best_service_candidate": best,
+        "candidate_count": sensitivity["candidate_count"],
+        "all_requested_constraints_count": sensitivity["all_requested_constraints_count"],
+        "acceptance": summary["acceptance"],
+        "production_action": "none_read_only",
+    }
+    (output_dir / "artifact.json").write_text(
+        json.dumps(artifact, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    blockers = [
+        "0 кандидатов прошли все ограничения",
+        "для части frozen-источников отсутствует исторический available_at",
+        "независимая проверка холодного старта ждёт следующую новую семью",
+    ]
+    blocker_items = "".join(f"<li>{html.escape(item)}</li>" for item in blockers)
+    report = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>iPhone 17 Pro Max — cold-start backtest v3</title>
+<style>
+body{{font:16px/1.5 system-ui,sans-serif;max-width:980px;margin:40px auto;padding:0 24px;color:#17202a}}
+h1,h2{{line-height:1.2}} .bad{{color:#a61b1b;font-weight:700}} table{{border-collapse:collapse;width:100%}}
+th,td{{padding:8px 10px;border:1px solid #d8dee4;text-align:right}} th:first-child,td:first-child{{text-align:left}}
+code{{background:#f3f4f6;padding:2px 5px}} small{{color:#57606a}}
+</style></head><body>
+<h1>Cold-start/backtest v3: iPhone 17 Pro Max</h1>
+<p class="bad">Допуск не пройден. API, UI и live-пилот заблокированы.</p>
+<p>Полная сетка: <strong>{sensitivity['candidate_count']}</strong> кандидатов; прошли все ограничения:
+<strong>{sensitivity['all_requested_constraints_count']}</strong>.</p>
+<h2>Сравнение результатов</h2><table><thead><tr><th>Метрика</th><th>Предвыбранный</th><th>Лучший сервис</th></tr></thead><tbody>
+<tr><td>Обслуженные продажи</td><td>{holdout['served_sales_qty']}</td><td>{best['served_sales_qty']}</td></tr>
+<tr><td>Потерянные продажи</td><td>{holdout['lost_sales_qty']}</td><td>{best['lost_sales_qty']}</td></tr>
+<tr><td>Недополученная валовая прибыль, ₽</td><td>{holdout['missed_gross_profit_rub']}</td><td>{best['missed_gross_profit_rub']}</td></tr>
+<tr><td>Средний складской капитал, ₽</td><td>{holdout['average_inventory_cost_rub']}</td><td>{best['average_inventory_cost_rub']}</td></tr>
+<tr><td>GMROI</td><td>{holdout['gmroi']}</td><td>{best['gmroi']}</td></tr>
+<tr><td>Конечный дефицит, шт.</td><td>{holdout['ending_shortfall_qty']}</td><td>{best['ending_shortfall_qty']}</td></tr>
+</tbody></table>
+<h2>Блокеры</h2><ul>{blocker_items}</ul>
+<p>Wordstat используется только как direction-only сигнал. P75 применяется к покрытию и дате прихода;
+pipeline кредитуется по надёжности созревших когорт; замены ограничены сегментом качество + конструкция.</p>
+<small>Наблюдаемые продажи — нижняя граница спроса, а не доказательство 100% обслуживания истинного спроса.
+Production action: none_read_only.</small>
+</body></html>"""
+    (output_dir / "report.html").write_text(report, encoding="utf-8")
+
+
+def _write_bundle_manifest(
+    output_dir: Path,
+    *,
+    snapshot_path: Path,
+    snapshot_manifest_path: Path,
+    wordstat_history: WordstatHistory | None,
+) -> dict[str, Any]:
+    manifest_path = output_dir / "bundle-manifest.json"
+    output_files = {
+        str(path.relative_to(output_dir)): {
+            "sha256": _sha256(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in sorted(output_dir.rglob("*"))
+        if path.is_file() and path != manifest_path and not path.name.endswith(".tmp")
+    }
+    inputs: dict[str, Any] = {
+        "snapshot": {
+            "path": str(snapshot_path),
+            "sha256": _sha256(snapshot_path),
+            "size_bytes": snapshot_path.stat().st_size,
+        },
+        "snapshot_manifest": {
+            "path": str(snapshot_manifest_path),
+            "sha256": _sha256(snapshot_manifest_path),
+            "size_bytes": snapshot_manifest_path.stat().st_size,
+        },
+    }
+    if wordstat_history is not None and wordstat_history.cache_path is not None:
+        inputs["wordstat_cache"] = {
+            "path": str(wordstat_history.cache_path),
+            "sha256": _sha256(wordstat_history.cache_path),
+            "size_bytes": wordstat_history.cache_path.stat().st_size,
+        }
+    manifest = {
+        "schema": "iphone17_pro_max_cold_start_bundle.v3",
+        "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "inputs": inputs,
+        "outputs": output_files,
+        "production_action": "none_read_only",
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def main() -> int:
     args = _parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = args.output_dir / "snapshot.sqlite3"
-    manifest_path = args.output_dir / "snapshot-manifest.json"
+    if args.refresh_snapshot and args.snapshot_dir is not None:
+        raise ValueError("refresh_snapshot_cannot_write_to_reused_snapshot_dir")
+    snapshot_dir = args.snapshot_dir or args.output_dir
+    snapshot_path = snapshot_dir / "snapshot.sqlite3"
+    manifest_path = snapshot_dir / "snapshot-manifest.json"
     if args.refresh_snapshot or not (snapshot_path.exists() and manifest_path.exists()):
         build_snapshot(
             snapshot_path=snapshot_path,
@@ -2229,41 +3247,73 @@ def main() -> int:
             preflight_dir=args.preflight_dir,
         )
     snapshot_checks = validate_snapshot(snapshot_path, manifest_path)
+    wordstat_history = (
+        None
+        if args.without_wordstat
+        else load_or_fetch_wordstat_history(
+            args.wordstat_cache_dir or args.output_dir,
+            refresh=args.refresh_wordstat,
+        )
+    )
     summary = run_backtest(
         snapshot_path=snapshot_path,
         output_dir=args.output_dir,
         skip_grid=args.skip_grid,
+        wordstat_history=wordstat_history,
     )
     _write_source_notes(args.output_dir, summary)
+    _write_v3_report_artifacts(args.output_dir, summary)
     validation = {
-        "schema": "iphone17_pro_max_cold_start_validation.v1",
-        "status": "share_with_caveats",
+        "schema": "iphone17_pro_max_cold_start_validation.v3",
+        "status": "blocked_before_api_ui",
         "snapshot_checks": snapshot_checks,
         "checks": {
             "holdout_not_used_for_parameter_selection": True,
             "first_orders_kept_manual": True,
             "quality_mix_sums_to_one": True,
+            "quality_and_construction_segmented": True,
             "sim_esim_not_split": True,
+            "p75_used_for_coverage_and_modeled_arrival": True,
+            "lead_time_reliability_uses_matured_cohorts": True,
+            "model_pipeline_not_credited_at_100_percent": True,
             "signals_not_converted_directly_to_units": True,
+            "wordstat_counts_not_summed": True,
+            "wordstat_only_completed_periods_as_of_decision": True,
+            "wordstat_does_not_change_mode_thresholds": True,
             "production_action": "none_read_only",
+            "historical_available_at_complete": summary["point_in_time_contract"][
+                "historical_available_at_complete"
+            ],
+            "backtest_v3_gate_passed": summary["acceptance"]["backtest_v3_gate_passed"],
         },
         "caveats": [
             "iPhone 14 и 15 Pro Max left-censored на первом дне frozen-истории.",
             "Есть только один чистый семейный запуск для калибровки — iPhone 16 Pro Max.",
             "Истинный спрос в дни полного отсутствия товара не наблюдается.",
+            "Для части frozen-источников нет исторического available_at; late corrections нельзя исключить доказательно.",
             "Положительные и отрицательные складские корректировки удерживаются как экзогенный исторический остаток.",
-            "Результат пригоден только для shadow и ручного утверждения правил.",
+            "Wordstat не даёт уникальных пользователей или точных пересечений фраз; ряды не суммируются.",
+            "Фактический лаг публикации месячного Wordstat не хранится в API, поэтому проверяется сетка 3/7/14 дней после конца месяца.",
+            "iPhone 17 Pro Max проверяет workflow; независимый cold-start ждёт следующую новую семью.",
+            "До прохождения v3 запрещены recommendation API, UI и live-пилот.",
         ],
     }
     (args.output_dir / "validation.json").write_text(
         json.dumps(validation, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
     )
+    bundle_manifest = _write_bundle_manifest(
+        args.output_dir,
+        snapshot_path=snapshot_path,
+        snapshot_manifest_path=manifest_path,
+        wordstat_history=wordstat_history,
+    )
     payload = {
-        "status": "ready_with_caveats",
+        "status": "blocked_before_api_ui",
         "output_dir": str(args.output_dir),
         "snapshot": str(snapshot_path),
         "summary": summary,
         "validation": validation,
+        "bundle_manifest": bundle_manifest,
     }
     print(
         json.dumps(payload, ensure_ascii=False, sort_keys=True)

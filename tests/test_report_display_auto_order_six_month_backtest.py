@@ -23,6 +23,7 @@ from tasks.report_display_auto_order_six_month_backtest import (
     initial_pipeline,
     item_active_as_of,
     load_backtest_items,
+    load_backtest_items_with_scope_audit,
     load_or_build_historical_lifecycle_trajectory,
     run_simulation,
     select_launch_profile,
@@ -68,6 +69,13 @@ def test_load_backtest_items_tolerates_legacy_database_schema() -> None:
                 "VALUES ('SKU-1', 'Дисплей', 'дисплеи', 'working', 7)"
             )
         )
+        connection.execute(
+            text(
+                "INSERT INTO assortment_lifecycle_classification "
+                "(nomenclature_code, name, folder, status, last_run_id) "
+                "VALUES ('BITOK-1', 'Дисплей (биток)', 'дисплеи', 'working', 7)"
+            )
+        )
 
     rows, run_id = load_backtest_items(engine, folder="дисплеи")
 
@@ -82,6 +90,13 @@ def test_load_backtest_items_tolerates_legacy_database_schema() -> None:
             "last_run_id": 7,
         }
     ]
+    scoped_rows, scoped_run_id, scope_audit = load_backtest_items_with_scope_audit(
+        engine,
+        folder="дисплеи",
+    )
+    assert scoped_rows == rows
+    assert scoped_run_id == run_id
+    assert scope_audit["excluded_reason_counts"] == {"excluded_display_name_bitok": 1}
 
 
 def test_historical_lifecycle_trajectory_is_cached_and_reused(tmp_path: Path) -> None:

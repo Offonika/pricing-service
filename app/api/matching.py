@@ -67,10 +67,14 @@ from app.schemas.matching import (
     CurrentMatch,
     DecisionHistoryItem,
     DecisionHistoryResponse,
+    DisplayFamilyDetailSchema,
+    DisplayFamilyRegistrySummarySchema,
+    DisplayFamilyRegistryVersionSchema,
     MatchingActionResponse,
     MatchRequest,
     MatchStatus,
     PaginatedCandidates,
+    PaginatedDisplayFamiliesSchema,
     PaginatedProducts,
     ProductFacets,
     ProductRow,
@@ -95,6 +99,12 @@ from app.schemas.matching import (
 from app.services.bitrix_matching_auth import verify_matching_session_token
 from app.services.compatibility_mapping import CompatibilityMappingService
 from app.services.competitor_url_aliases import normalize_competitor_url, parse_competitor_url
+from app.services.display_family_registry import (
+    display_family_registry_summary,
+    get_active_display_family_detail,
+    list_active_display_families,
+    list_display_family_registry_versions,
+)
 from app.services.manual_matching_decisions import (
     build_decision_snapshot,
     normalize_reason_code,
@@ -2167,6 +2177,78 @@ def get_compatibility_history(
         _compatibility_history_schema(row)
         for row in CompatibilityMappingService(db).list_history(limit=limit)
     ]
+
+
+@router.get(
+    "/matching/compatibility/display-families/summary",
+    response_model=DisplayFamilyRegistrySummarySchema,
+)
+def get_display_family_registry_summary(
+    db: Session = Depends(get_db),
+    _: str = Depends(_authorize),
+) -> DisplayFamilyRegistrySummarySchema:
+    return DisplayFamilyRegistrySummarySchema.model_validate(display_family_registry_summary(db))
+
+
+@router.get(
+    "/matching/compatibility/display-families/versions",
+    response_model=list[DisplayFamilyRegistryVersionSchema],
+)
+def get_display_family_registry_versions(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: str = Depends(_authorize),
+) -> list[DisplayFamilyRegistryVersionSchema]:
+    return [
+        DisplayFamilyRegistryVersionSchema.model_validate(item)
+        for item in list_display_family_registry_versions(db, limit=limit)
+    ]
+
+
+@router.get(
+    "/matching/compatibility/display-families",
+    response_model=PaginatedDisplayFamiliesSchema,
+)
+def get_display_families(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: str | None = Query(None),
+    singleton: bool | None = Query(None),
+    has_warnings: bool | None = Query(None),
+    needs_review: bool | None = Query(None),
+    matching_review: bool | None = Query(None),
+    quality_unknown: bool | None = Query(None),
+    db: Session = Depends(get_db),
+    _: str = Depends(_authorize),
+) -> PaginatedDisplayFamiliesSchema:
+    return PaginatedDisplayFamiliesSchema.model_validate(
+        list_active_display_families(
+            db,
+            page=page,
+            page_size=page_size,
+            search=search,
+            singleton=singleton,
+            has_warnings=has_warnings,
+            needs_review=needs_review,
+            matching_review=matching_review,
+            quality_unknown=quality_unknown,
+        )
+    )
+
+
+@router.get(
+    "/matching/compatibility/display-families/{family_id}",
+    response_model=DisplayFamilyDetailSchema,
+)
+def get_display_family(
+    family_id: int,
+    db: Session = Depends(get_db),
+    _: str = Depends(_authorize),
+) -> DisplayFamilyDetailSchema:
+    payload = get_active_display_family_detail(db, family_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="display family not found in active version")
+    return DisplayFamilyDetailSchema.model_validate(payload)
 
 
 @router.get("/matching/products", response_model=PaginatedProducts)

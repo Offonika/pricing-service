@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -367,6 +367,96 @@ class CompatibilitySummary(BaseModel):
     unresolved_product_values: int
     unresolved_competitor_values: int
     blocked_values: int
+
+
+class DisplayFamilyRegistryVersionSchema(BaseModel):
+    id: int
+    version_number: int
+    status: Literal["active", "superseded", "rolled_back"]
+    effective_from: date
+    source_schema: str
+    inventory_checksum: str
+    membership_checksum: str
+    family_count: int
+    member_count: int
+    created_by: str
+    created_at: datetime
+    superseded_at: datetime | None = None
+    rolled_back_at: datetime | None = None
+
+
+class DisplayFamilyRegistrySummarySchema(BaseModel):
+    active_version: DisplayFamilyRegistryVersionSchema | None = None
+    version_count: int
+    family_count: int
+    member_count: int
+    singleton_family_count: int
+    multi_sku_family_count: int
+    review_member_count: int
+    matching_review_member_count: int
+    quality_unknown_member_count: int
+    warning_counts: dict[str, int] = Field(default_factory=dict)
+    status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class DisplayFamilyRowSchema(BaseModel):
+    id: int
+    family_key: str
+    member_count: int
+    is_singleton: bool
+    total_current_stock_qty: int
+    review_member_count: int
+    matching_review_member_count: int
+    quality_unknown_member_count: int
+    construction_unknown_member_count: int
+    phone_model_ids: list[int] = Field(default_factory=list)
+    phone_models: list[str] = Field(default_factory=list)
+    segment_ids: list[str] = Field(default_factory=list)
+    warning_codes: list[str] = Field(default_factory=list)
+    note_codes: list[str] = Field(default_factory=list)
+
+
+class PaginatedDisplayFamiliesSchema(BaseModel):
+    items: list[DisplayFamilyRowSchema]
+    page: int
+    page_size: int
+    total: int
+
+
+class DisplayFamilyMemberSchema(BaseModel):
+    id: int
+    product_id: int
+    segment_id: str
+    proposal_status: str
+    quality_segment: str
+    construction_segment: str
+    requires_manual_review: bool
+    current_stock_qty: int
+    warning_codes: list[str] = Field(default_factory=list)
+    note_codes: list[str] = Field(default_factory=list)
+    scope_reasons: list[str] = Field(default_factory=list)
+    product: dict[str, Any] = Field(default_factory=dict)
+    matching_evidence: dict[str, Any] = Field(default_factory=dict)
+    identity_evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class DisplayFamilyDecisionEventSchema(BaseModel):
+    id: int
+    action: str
+    actor: str
+    reason: str
+    effective_at: date
+    created_at: datetime
+    product_id: int | None = None
+    evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class DisplayFamilyDetailSchema(DisplayFamilyRowSchema):
+    registry_version: DisplayFamilyRegistryVersionSchema
+    physical_model_signatures: list[list[str]] = Field(default_factory=list)
+    evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+    members: list[DisplayFamilyMemberSchema] = Field(default_factory=list)
+    events: list[DisplayFamilyDecisionEventSchema] = Field(default_factory=list)
 
 
 class CompatibilityBrand(BaseModel):

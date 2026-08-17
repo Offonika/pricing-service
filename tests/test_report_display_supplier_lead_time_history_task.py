@@ -5,7 +5,9 @@ from pathlib import Path
 
 from tasks.report_display_supplier_lead_time_history import (
     DEFAULT_RECEIPT_MAPPING_JSON,
+    DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
     RECEIPT_MAPPING_UNRESOLVED,
+    SUPPLIER_ORDER_MAPPING_UNRESOLVED,
     _load_document_line_mapping,
     aggregate_lead_time_rows,
     build_lead_time_detail_rows,
@@ -35,7 +37,18 @@ def test_display_receipt_mapping_uses_actual_line_quantity() -> None:
     )
 
     assert mapping.line_quantity_column == "_Fld4514"
+    assert mapping.line_number_column == "_LineNo4508"
     assert mapping.line_supplier_order_column == "_Fld4525RRef"
+
+
+def test_display_supplier_order_mapping_carries_line_identity_and_quantity() -> None:
+    mapping = _load_document_line_mapping(
+        DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
+        error_code=SUPPLIER_ORDER_MAPPING_UNRESOLVED,
+    )
+
+    assert mapping.line_number_column == "_LineNo2516"
+    assert mapping.line_quantity_column == "_Fld2520"
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

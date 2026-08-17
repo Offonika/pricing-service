@@ -3,6 +3,7 @@ import os
 from app.models.base import Base
 
 if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
+    from app.models.assortment_lifecycle_signal import AssortmentLifecycleSignal
     from app.models.card_balance_reconciliation import (
         CardBalanceCashbox,
         CardBalanceReconciliation,
@@ -46,6 +47,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         DeviceBrandAlias,
     )
     from app.models.device_model import Keyword, KeywordDemand, PhoneModel, PhoneModelAlias
+    from app.models.display_family_registry import (
+        DisplayFamily,
+        DisplayFamilyDecisionEvent,
+        DisplayFamilyMember,
+        DisplayFamilyRegistryVersion,
+    )
     from app.models.executive_dashboard import (
         ExecutiveActionItem,
         ExecutiveDashboardSnapshot,
@@ -152,6 +159,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
 
     __all__ = [
         "Base",
+        "AssortmentLifecycleSignal",
         "Product",
         "ProductStock",
         "ProcurementOrderFormation",
@@ -194,6 +202,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "DeviceBrand",
         "DeviceBrandAlias",
         "CompatibilityMappingDecision",
+        "DisplayFamilyRegistryVersion",
+        "DisplayFamily",
+        "DisplayFamilyMember",
+        "DisplayFamilyDecisionEvent",
         "Keyword",
         "KeywordDemand",
         "ExpertiseCase",

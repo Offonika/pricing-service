@@ -2497,10 +2497,144 @@ def test_representation_minimum_is_a_maximum_floor_not_an_addition() -> None:
 
     baseline = simulate_scenario(**common)
     floored = simulate_scenario(representation_minimums={(start, "SKU-1"): Decimal("13")}, **common)
+    family_allocated = simulate_scenario(
+        ordinary_order_overrides={(start, "SKU-1"): Decimal("5")}, **common
+    )
 
     assert baseline.model["SKU-1"].order_qty == Decimal("12")
     assert floored.model["SKU-1"].order_qty == Decimal("13")
     assert floored.decision_rows[0]["representation_minimum_qty"] == "13"
+    assert family_allocated.model["SKU-1"].order_qty == Decimal("5")
+    assert family_allocated.decision_rows[0]["ordinary_recommended_before_family_qty"] == "12"
+    assert family_allocated.decision_rows[0]["ordinary_family_allocated_order_qty"] == "5"
+
+
+def test_ordinary_topup_receives_only_its_component_on_explicit_p75_date() -> None:
+    start = date(2026, 4, 1)
+    p75_arrival = start + timedelta(days=7)
+    scenario = FrozenScenario(
+        scenario_id="ordinary-topup-p75",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+    fact_rows = {
+        business_date: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "4" if offset == 3 else "0",
+                "placed_incoming_qty": "0",
+            }
+        ]
+        for offset in range(9)
+        for business_date in [start + timedelta(days=offset)]
+    }
+
+    result = simulate_scenario(
+        scenario=scenario,
+        fact_rows_by_date=fact_rows,
+        decision_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "decision_date": start.isoformat(),
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "2",
+                    "lead_time_p75_days": "7",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "100",
+                    "gross_margin_per_unit_rub": "50",
+                }
+            ]
+        },
+        initial_pipeline_rows=[],
+        sales_by_code={"SKU-1": {}},
+        policy=AutoOrderPolicy(order_cadence_days=7),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=start + timedelta(days=8),
+        keep_detail=True,
+        ordinary_order_overrides={(start, "SKU-1"): Decimal("5")},
+        ordinary_order_topup_qty_overrides={(start, "SKU-1"): Decimal("2")},
+        ordinary_order_topup_arrival_date_overrides={(start, "SKU-1"): p75_arrival},
+    )
+
+    assert result.model["SKU-1"].served_observed_qty == Decimal("3")
+    assert result.model["SKU-1"].lost_observed_qty == Decimal("1")
+    assert result.model["SKU-1"].ending_inventory_qty == Decimal("2")
+    assert result.decision_rows[0]["ordinary_topup_order_component_qty"] == "2"
+    assert (
+        result.decision_rows[0]["ordinary_topup_expected_arrival_date"] == p75_arrival.isoformat()
+    )
+
+
+def test_ordinary_topup_requires_explicit_arrival_date() -> None:
+    start = date(2026, 4, 1)
+    scenario = FrozenScenario(
+        scenario_id="ordinary-topup-missing-arrival",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="explicit arrival date"):
+        simulate_scenario(
+            scenario=scenario,
+            fact_rows_by_date={
+                start: [
+                    {
+                        "nomenclature_code": "SKU-1",
+                        "status": "sale",
+                        "physical_stock_qty": "0",
+                        "observed_sales_qty": "0",
+                        "placed_incoming_qty": "0",
+                    }
+                ]
+            },
+            decision_rows_by_date={
+                start: [
+                    {
+                        "nomenclature_code": "SKU-1",
+                        "decision_date": start.isoformat(),
+                        "scheduled_review": "1",
+                        "status": "sale",
+                        "forecast_rate_sales": "0",
+                        "lead_time_p50_days": "2",
+                        "lead_time_p75_days": "7",
+                        "lead_time_confidence": "high",
+                        "inventory_cost_per_unit_rub": "100",
+                        "gross_margin_per_unit_rub": "50",
+                    }
+                ]
+            },
+            initial_pipeline_rows=[],
+            sales_by_code={"SKU-1": {}},
+            policy=AutoOrderPolicy(order_cadence_days=7),
+            config=load_scenario_config(
+                Path("config/assortment/display-auto-order-backtest-scenarios.json")
+            ),
+            date_from=start,
+            date_to=start,
+            keep_detail=True,
+            ordinary_order_overrides={(start, "SKU-1"): Decimal("5")},
+            ordinary_order_topup_qty_overrides={(start, "SKU-1"): Decimal("2")},
+        )
 
 
 def test_decision_service_buffer_survives_event_review_until_next_scheduled_review() -> None:

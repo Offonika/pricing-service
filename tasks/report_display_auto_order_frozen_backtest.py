@@ -1673,6 +1673,9 @@ def simulate_scenario(
     keep_loss_detail: bool = True,
     hybrid_gap_detail_only: bool = False,
     acceleration_detail_only: bool = False,
+    ordinary_order_overrides: Mapping[tuple[date, str], Decimal] | None = None,
+    ordinary_order_topup_qty_overrides: Mapping[tuple[date, str], Decimal] | None = None,
+    ordinary_order_topup_arrival_date_overrides: Mapping[tuple[date, str], date] | None = None,
 ) -> SimulationResult:
     if (
         scenario.base_pipeline_lot_risk_boundary
@@ -2623,6 +2626,10 @@ def simulate_scenario(
             acceleration_open_before = open_acceleration_protection_qty[code]
             acceleration_open_after = acceleration_open_before
             ordinary_recommended = ZERO
+            ordinary_recommended_before_family = ZERO
+            family_order_override_applied = False
+            ordinary_topup_order_component = ZERO
+            ordinary_topup_arrival_date: date | None = None
             hybrid_evaluation = HybridGapEvaluation(
                 ZERO,
                 None,
@@ -3141,6 +3148,30 @@ def simulate_scenario(
                 )
                 ordinary_recommended = recommended
 
+            ordinary_recommended_before_family = ordinary_recommended
+            family_override = (ordinary_order_overrides or {}).get((cursor, code))
+            if family_override is not None:
+                ordinary_recommended = max(ZERO, _decimal(family_override))
+                recommended = ordinary_recommended + acceleration_order_component
+                family_order_override_applied = True
+            raw_topup_qty = (ordinary_order_topup_qty_overrides or {}).get((cursor, code))
+            if raw_topup_qty is not None:
+                if family_override is None:
+                    raise ValueError("ordinary top-up quantity requires an order override")
+                ordinary_topup_order_component = max(ZERO, _decimal(raw_topup_qty))
+                if ordinary_topup_order_component > ordinary_recommended:
+                    raise ValueError("ordinary top-up quantity exceeds the overridden order")
+                ordinary_topup_arrival_date = (
+                    ordinary_order_topup_arrival_date_overrides or {}
+                ).get((cursor, code))
+                if ordinary_topup_order_component > ZERO and ordinary_topup_arrival_date is None:
+                    raise ValueError("ordinary top-up quantity requires an explicit arrival date")
+                if (
+                    ordinary_topup_arrival_date is not None
+                    and ordinary_topup_arrival_date <= cursor
+                ):
+                    raise ValueError("ordinary top-up arrival date must be after its decision")
+
             if normalized_hybrid_quantile != "off" and status == AssortmentStatus.SALE.value:
                 hybrid_lead_days = int(
                     row.get(f"lead_time_{normalized_hybrid_quantile}_days")
@@ -3245,6 +3276,17 @@ def simulate_scenario(
                 "triggered": int(triggered),
                 "recommended_order_qty_raw": str(raw),
                 "recommended_order_qty": str(recommended),
+                "ordinary_recommended_before_family_qty": str(ordinary_recommended_before_family),
+                "ordinary_family_allocated_order_qty": str(ordinary_recommended),
+                "family_order_override_applied": int(family_order_override_applied),
+                "ordinary_topup_order_component_qty": str(ordinary_topup_order_component),
+                "ordinary_topup_expected_arrival_date": (
+                    ordinary_topup_arrival_date.isoformat()
+                    if ordinary_topup_arrival_date is not None
+                    else ""
+                ),
+                "inventory_cost_per_unit_rub": str(current_cost[code]),
+                "gross_margin_per_unit_rub": str(current_margin[code]),
                 "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
                 "hybrid_gap_requested_qty": str(hybrid_requested),
                 "hybrid_gap_order_component_qty": str(hybrid_order_component),
@@ -3265,8 +3307,15 @@ def simulate_scenario(
             if recommended > ZERO:
                 arrival = cursor + timedelta(days=max(1, arrival_lead_days))
                 ordinary_arrival_qty = max(ZERO, recommended - hybrid_order_component)
-                if ordinary_arrival_qty > ZERO:
-                    arrivals[arrival][code] += ordinary_arrival_qty
+                ordinary_base_arrival_qty = ordinary_arrival_qty - ordinary_topup_order_component
+                if ordinary_base_arrival_qty < ZERO:
+                    raise ValueError("ordinary top-up exceeds the ordinary arrival component")
+                if ordinary_base_arrival_qty > ZERO:
+                    arrivals[arrival][code] += ordinary_base_arrival_qty
+                if ordinary_topup_order_component > ZERO:
+                    if ordinary_topup_arrival_date is None:
+                        raise ValueError("ordinary top-up arrival date is missing")
+                    arrivals[ordinary_topup_arrival_date][code] += ordinary_topup_order_component
                 if hybrid_order_component > ZERO:
                     hybrid_arrival = hybrid_evaluation.new_arrival_date or arrival
                     arrivals[hybrid_arrival][code] += hybrid_order_component
@@ -3530,6 +3579,19 @@ def simulate_scenario(
                         "ordinary_min_stock_qty": str(ordinary_min_qty),
                         "ordinary_max_stock_qty": str(ordinary_max_qty),
                         "ordinary_recommended_order_qty": str(ordinary_recommended),
+                        "ordinary_recommended_before_family_qty": str(
+                            ordinary_recommended_before_family
+                        ),
+                        "ordinary_family_allocated_order_qty": str(ordinary_recommended),
+                        "family_order_override_applied": int(family_order_override_applied),
+                        "ordinary_topup_order_component_qty": str(ordinary_topup_order_component),
+                        "ordinary_topup_expected_arrival_date": (
+                            ordinary_topup_arrival_date.isoformat()
+                            if ordinary_topup_arrival_date is not None
+                            else ""
+                        ),
+                        "inventory_cost_per_unit_rub": str(current_cost[code]),
+                        "gross_margin_per_unit_rub": str(current_margin[code]),
                         "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
                         "hybrid_gap_min_coverable_days": normalized_hybrid_min_days,
                         "hybrid_gap_acceleration_filter_enabled": int(

@@ -14,7 +14,7 @@ import json
 import shutil
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
@@ -25,6 +25,10 @@ from openpyxl import Workbook
 from sqlalchemy import bindparam, text
 
 from app.services.assortment_lifecycle import AssortmentStatus
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+)
 from app.services.procurement_order_formation import normalize_guid
 from tasks.build_display_auto_order_dry_run import AutoOrderPolicy
 from tasks.report_display_auto_order_six_month_backtest import (
@@ -310,6 +314,7 @@ class PreflightTables:
     reconciliations: list[dict[str, Any]]
     site_events: list[dict[str, Any]]
     status: str
+    scope_audit: dict[str, Any] = field(default_factory=empty_display_scope_audit)
 
 
 def load_scenario_config(path: Path) -> BacktestScenarioConfig:
@@ -2126,6 +2131,8 @@ def build_preflight_tables(
     source_metadata: Mapping[str, Any] | None = None,
     launch_profile_min_samples: int = DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
 ) -> PreflightTables:
+    scope_result = filter_display_scope_records(items)
+    items = scope_result.included
     codes = sorted(
         {
             _clean(item.get("nomenclature_code"))
@@ -2138,6 +2145,10 @@ def build_preflight_tables(
         for item in items
         if _clean(item.get("nomenclature_code"))
     }
+    allowed_codes = set(codes)
+    site_event_rows = tuple(
+        row for row in site_event_rows if _clean(row.get("nomenclature_code")) in allowed_codes
+    )
     signal_queue = build_demand_signal_queue_history(
         codes=codes,
         kmp4_raw_by_code=kmp4_raw_by_code,
@@ -2184,7 +2195,7 @@ def build_preflight_tables(
         }
         for code, lots in sorted(initial_pipeline_by_code.items())
         for lot in lots
-        if lot.qty > ZERO
+        if lot.qty > ZERO and code in allowed_codes
     ]
     historical_sales = [
         {
@@ -2650,8 +2661,13 @@ def build_preflight_tables(
         initial_pipeline=initial_pipeline,
         source_quality=quality,
         reconciliations=reconciliations,
-        site_events=[dict(row) for row in site_event_rows],
+        site_events=[
+            dict(row)
+            for row in site_event_rows
+            if _clean(row.get("nomenclature_code")) in allowed_codes
+        ],
         status=status,
+        scope_audit=scope_result.audit,
     )
 
 
@@ -2760,6 +2776,7 @@ def write_preflight_artifacts(
     manifest = {
         "schema": PREFLIGHT_SCHEMA,
         "preflight_status": tables.status,
+        "scope_policy": tables.scope_audit,
         "created_at": datetime.now().astimezone().isoformat(),
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),

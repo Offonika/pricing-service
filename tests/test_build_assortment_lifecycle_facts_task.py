@@ -13,6 +13,7 @@ from tasks.build_assortment_lifecycle_facts import (
     _default_history_months,
     _default_limit,
 )
+from tasks.build_assortment_lifecycle_updates import build_updates_from_records
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +44,91 @@ def test_sales_distribution_scope_contains_only_skus_with_short_window_sales() -
             "MISSING": {180: Decimal("5")},
         }
     ) == ["POSITIVE"]
+
+
+def test_facts_task_excludes_bitok_before_output(tmp_path: Path) -> None:
+    raw_path = tmp_path / "source-rows.json"
+    warehouse_path = tmp_path / "warehouse-policy.json"
+    output_path = tmp_path / "facts.json"
+    raw_path.write_text(
+        json.dumps(
+            {
+                "nomenclature_rows": [
+                    {
+                        "nomenclature_code": "BITOK-1",
+                        "name": "Дисплей (биток)",
+                    },
+                    {"nomenclature_code": "OK-1", "name": "Дисплей обычный"},
+                ],
+                "supplier_order_rows": [],
+                "receipt_rows": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    warehouse_path.write_text(
+        json.dumps(
+            {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "central",
+                    "central_reserve_qty": 2,
+                },
+                "warehouses": [
+                    {"warehouse_code": "shop-1", "sells_systematically": True},
+                    {"warehouse_code": "central", "is_central": True},
+                    {"warehouse_code": "defect", "is_defect_warehouse": True},
+                    {"warehouse_code": "transit", "is_transit": True},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.build_assortment_lifecycle_facts",
+            "--input-json",
+            str(raw_path),
+            "--warehouse-policy-json",
+            str(warehouse_path),
+            "--output-json",
+            str(output_path),
+            "--json",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    cli = json.loads(result.stdout)
+    assert [row["nomenclature_code"] for row in payload["items"]] == ["OK-1"]
+    assert payload["meta"]["scope_policy"]["excluded_item_count"] == 1
+    assert cli["summary"]["scope_policy"]["excluded_reason_counts"] == {
+        "excluded_display_name_bitok": 1
+    }
+
+
+def test_lifecycle_update_builder_never_classifies_bitok() -> None:
+    rows, summaries = build_updates_from_records(
+        [
+            {
+                "nomenclature_code": "BITOK-1",
+                "name": "Дисплей (биток)",
+                "folder_path": "Дисплеи",
+            }
+        ],
+        folder_filter="дисплеи",
+    )
+
+    assert rows == []
+    assert summaries == []
 
 
 def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path) -> None:
@@ -100,6 +186,11 @@ def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path
     warehouse_path.write_text(
         json.dumps(
             {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "central",
+                    "central_reserve_qty": 2,
+                },
                 "warehouses": [
                     {"warehouse_code": "shop-1", "sells_systematically": True},
                     {"warehouse_code": "central", "is_central": True},
@@ -215,7 +306,17 @@ def test_build_assortment_lifecycle_facts_task_blocks_without_receipt_mapping(
         )
 
     warehouse_path.write_text(
-        json.dumps({"warehouses": [{"warehouse_code": "shop-1"}]}, ensure_ascii=False),
+        json.dumps(
+            {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "shop-1",
+                    "central_reserve_qty": 2,
+                },
+                "warehouses": [{"warehouse_code": "shop-1"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     supplier_mapping_path.write_text(

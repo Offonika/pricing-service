@@ -46,6 +46,10 @@ from app.services.assortment_lifecycle_replay_store import (
     AssortmentLifecycleReplayStore,
     stable_hash,
 )
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+)
 from app.services.onec_stock_availability import (
     MOVEMENT_SQL,
     OPENING_BALANCE_SQL,
@@ -263,7 +267,11 @@ def _chunks(values: Sequence[str], size: int = 700) -> Iterable[tuple[str, ...]]
         yield tuple(values[offset : offset + size])
 
 
-def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str, Any]], int]:
+def load_backtest_items_with_scope_audit(
+    app_engine: Any,
+    *,
+    folder: str,
+) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
     """Load every display row from one classification run, without status filtering.
 
     The former backtest called ``load_auto_order_items`` and therefore kept only
@@ -289,7 +297,8 @@ def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str,
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
         if run_id is None:
-            return [], 0
+            scope_result = filter_display_scope_records([])
+            return [], 0, scope_result.audit
         rows = (
             connection.execute(
                 select(*readable_columns)
@@ -302,7 +311,16 @@ def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str,
             .mappings()
             .all()
         )
-    return [dict(row) for row in rows], int(run_id)
+    scope_result = filter_display_scope_records([dict(row) for row in rows])
+    return list(scope_result.included), int(run_id), scope_result.audit
+
+
+def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str, Any]], int]:
+    items, run_id, _scope_audit = load_backtest_items_with_scope_audit(
+        app_engine,
+        folder=folder,
+    )
+    return items, run_id
 
 
 def fetch_daily_sales(
@@ -2090,6 +2108,7 @@ def write_replay_only_artifacts(
     supplier_order_row_count: int,
     receipt_row_count: int,
     stock_counts: Mapping[str, Any],
+    scope_policy_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write the reusable replay without running any order simulation."""
 
@@ -2099,6 +2118,7 @@ def write_replay_only_artifacts(
         "status": "complete",
         "mode": "replay_only",
         "production_action": "none_read_only",
+        "scope_policy": dict(scope_policy_audit or empty_display_scope_audit()),
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
         "history_start": history_start.isoformat(),
@@ -2232,7 +2252,10 @@ def main() -> int:
 
     app_engine = build_engine(app_url, pool_pre_ping=True)
     try:
-        items, run_id = load_backtest_items(app_engine, folder=args.folder)
+        items, run_id, scope_policy_audit = load_backtest_items_with_scope_audit(
+            app_engine,
+            folder=args.folder,
+        )
         coverage_rows = []
         with app_engine.connect() as connection:
             if connection.dialect.has_table(connection, "onec_stock_availability_coverage"):
@@ -2318,6 +2341,11 @@ def main() -> int:
             receipt_mapping=receipt_mapping,
             limit=50000,
         )
+        allowed_codes = set(codes)
+        source_rows = {
+            key: [row for row in rows if _clean(row.get("nomenclature_code")) in allowed_codes]
+            for key, rows in source_rows.items()
+        }
     finally:
         onec_engine.dispose()
 
@@ -2341,6 +2369,8 @@ def main() -> int:
             "preflight_schema": preflight_manifest.get("schema"),
             "preflight_files": preflight_manifest.get("files"),
             "production_action": "none_read_only",
+            "scope_policy_version": scope_policy_audit["scope_policy_version"],
+            "scope_excluded_count": scope_policy_audit["excluded_item_count"],
         },
     )
     if args.replay_only:
@@ -2361,6 +2391,7 @@ def main() -> int:
             supplier_order_row_count=len(source_rows["supplier_order_rows"]),
             receipt_row_count=len(source_rows["receipt_rows"]),
             stock_counts=stock_counts,
+            scope_policy_audit=scope_policy_audit,
         )
         print(json.dumps(payload, ensure_ascii=False))
         return 0
@@ -2434,6 +2465,8 @@ def main() -> int:
     payload = {
         "schema": "display_auto_order_six_month_backtest.v2",
         "status": "share_with_caveats",
+        "production_action": "none_read_only",
+        "scope_policy": scope_policy_audit,
         "date_from": args.date_from.isoformat(),
         "date_to": args.date_to.isoformat(),
         "history_start": args.history_start.isoformat(),

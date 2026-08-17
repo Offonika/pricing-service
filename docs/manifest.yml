@@ -267,6 +267,19 @@ documents:
       - tests/test_procurement_order_formation_api.py
       - tests/test_procurement_order_formation_dry_run.py
     keywords: [assortment-status, canonical-plan, procurement, order-formation, newborn-need, onec]
+  - path: docs/display-margin-flow-reorder-point-code-task.md
+    title: Display Margin Flow Reorder Point Code Task
+    doc_type: task
+    domain: procurement
+    status: accepted
+    owner: engineering
+    source_of_truth: false
+    related_code:
+      - tasks/build_display_auto_order_dry_run.py
+      - config/assortment/display-auto-order-policy.json
+    related_tests:
+      - tests/test_build_display_auto_order_dry_run_task.py
+    keywords: [display, procurement, margin-flow, reorder-point, safety-stock, code-task]
   - path: docs/specs/onec-stock-effective-availability.md
     title: 1C Stock Effective Availability
     doc_type: spec

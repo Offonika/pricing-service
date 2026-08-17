@@ -515,9 +515,9 @@ def test_onec_status_values_stay_stable_when_labels_change() -> None:
     # сломает обмен. Страж следит, что два словаря не срослись обратно.
     from app.services.assortment_lifecycle import ONEC_STATUS_VALUE_NAMES
 
-    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE] == "Растим"
+    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE] == "Растим (ПРОДАЖА)"
     assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.SALE] == "ПРОДАЖА"
-    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.WORKING] == "Поддерживаем"
+    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.WORKING] == "Поддерживаем (Рабочий)"
     assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.WORKING] == "Рабочий"
     # Оба словаря обязаны покрывать все статусы целиком.
     assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)

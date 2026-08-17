@@ -795,6 +795,48 @@ class AssortmentLifecycleReplayStore:
         if row_count != int(expected[1]) or digest.hexdigest() != expected[0]:
             raise ValueError(f"replay_trajectory_checksum_mismatch:{trajectory_hash}")
 
+    def iter_trajectory_rows_for_codes(
+        self,
+        trajectory_hash: str,
+        codes: Iterable[str],
+    ) -> Iterator[dict[str, Any]]:
+        """Yield a bounded, row-verified SKU partition from one trajectory."""
+
+        normalized_codes = sorted(
+            {_required_text(code, "replay_trajectory_sku_required") for code in codes}
+        )
+        if not normalized_codes:
+            return
+        if len(normalized_codes) > 500:
+            raise ValueError("replay_trajectory_code_partition_too_large")
+        if not self.path.exists():
+            raise ValueError(f"replay_store_not_found:{self.path}")
+        self.initialize()
+        placeholders = ",".join("?" for _ in normalized_codes)
+        with self._connect() as connection:
+            expected = connection.execute(
+                "SELECT 1 FROM replay_trajectory WHERE trajectory_hash = ?",
+                (trajectory_hash,),
+            ).fetchone()
+            if expected is None:
+                raise ValueError(f"replay_trajectory_not_found:{trajectory_hash}")
+            cursor = connection.execute(
+                f"""
+                SELECT payload_json, payload_sha256
+                FROM replay_trajectory_row
+                WHERE trajectory_hash = ?
+                  AND nomenclature_code IN ({placeholders})
+                ORDER BY nomenclature_code, business_date
+                """,
+                (trajectory_hash, *normalized_codes),
+            )
+            for payload_json, payload_sha256 in cursor:
+                payload = json.loads(payload_json)
+                canonical = _canonical_json(payload)
+                if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != payload_sha256:
+                    raise ValueError(f"replay_trajectory_row_checksum_mismatch:{trajectory_hash}")
+                yield payload
+
     def load_dataset_facts(self, dataset_hash: str) -> list[dict[str, Any]]:
         if not self.path.exists():
             raise ValueError(f"replay_store_not_found:{self.path}")

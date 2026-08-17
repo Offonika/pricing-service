@@ -367,6 +367,9 @@ def _load_candidate_parameters(path: Path) -> tuple[str, dict[str, Any]]:
 
 def _prepare(
     args: argparse.Namespace,
+    *,
+    date_to: date | None = None,
+    scope_codes_override: set[str] | None = None,
 ) -> tuple[
     FrozenInputs,
     dict[str, DisplayFamilyMember],
@@ -380,11 +383,23 @@ def _prepare(
     Any,
 ]:
     policy_v2 = load_assortment_lifecycle_v2_policy(args.policy_json)
+    effective_date_to = date_to or policy_v2.periods.training_to
+    if effective_date_to > policy_v2.periods.holdout_to:
+        raise ValueError("display family preparation exceeds the configured holdout")
     validate_preflight_directory(args.preflight_dir)
-    inputs = load_frozen_inputs(args.preflight_dir, date_to=policy_v2.periods.training_to)
+    inputs = load_frozen_inputs(args.preflight_dir, date_to=effective_date_to)
     members, first_seen = build_family_members_from_decisions(inputs.decision_rows_by_date)
     focus_codes = family_codes_for_focus(members, focus_code=args.focus_code)
-    scope_codes = focus_codes if args.scope == "targeted" else set(members)
+    if scope_codes_override is not None:
+        frozen_scope_codes = {
+            str(code).strip() for code in scope_codes_override if str(code).strip()
+        }
+        if not frozen_scope_codes or not frozen_scope_codes <= focus_codes:
+            raise ValueError("frozen family scope is absent from prepared inputs")
+        scope_codes = frozen_scope_codes
+        focus_codes = frozen_scope_codes
+    else:
+        scope_codes = focus_codes if args.scope == "targeted" else set(members)
     inputs = restrict_inputs(inputs, codes=scope_codes)
     members = {code: member for code, member in members.items() if code in scope_codes}
     first_seen = {code: value for code, value in first_seen.items() if code in scope_codes}
@@ -393,7 +408,7 @@ def _prepare(
         lifecycle_csv=args.replay_dir / "v2-lifecycle-history.csv",
         fact_by_key=inputs.fact_by_key,
         profile=_profile(parameters),
-        date_to=policy_v2.periods.training_to,
+        date_to=effective_date_to,
     )
     group_keys = _load_item_group_keys(args.replay_store_path, dataset_hash=args.dataset_hash)
     masks, bit_by_variant = build_representation_masks(

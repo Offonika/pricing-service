@@ -458,6 +458,15 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
         reconciliations=[{"source": "reserve", "status": "pass"}],
         site_events=[],
         status="PASS",
+        scope_audit={
+            "scope_policy_version": "display_scope_policy.v1",
+            "source_item_count": 2,
+            "included_item_count": 1,
+            "excluded_item_count": 1,
+            "excluded_row_count": 1,
+            "excluded_reason_counts": {"excluded_display_name_bitok": 1},
+            "exclusions": [],
+        },
     )
     site_csv = tmp_path / "source-site-events.csv"
     site_csv.write_text(
@@ -480,6 +489,7 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
     assert manifest["preflight_status"] == "PASS"
     assert manifest["schema"] == "display_auto_order_backtest_preflight.v2"
     assert manifest["row_counts"]["historical_sales"] == 1
+    assert manifest["scope_policy"]["excluded_item_count"] == 1
 
     (tmp_path / "decision-inputs.csv").write_text("changed", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum mismatch"):

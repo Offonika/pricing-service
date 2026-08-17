@@ -16,6 +16,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_onec_item_inventory_costs,
     is_display_assortment_record,
     validate_document_line_mapping,
+    validate_minimum_representation_policy,
     validate_warehouse_policy,
 )
 
@@ -219,6 +220,33 @@ def test_internal_warehouse_signal_is_not_external_customer_need() -> None:
 
     assert facts[0]["has_need_signal"] is True
     assert facts[0]["has_external_need_signal"] is False
+
+
+def test_bitok_is_excluded_before_lifecycle_facts() -> None:
+    facts, summary = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xBITOK",
+                "nomenclature_code": "BITOK-1",
+                "name": "Дисплей тестовый (биток)",
+            },
+            {
+                "nomenclature_ref": "0xOK",
+                "nomenclature_code": "OK-1",
+                "name": "Дисплей тестовый",
+            },
+        ],
+        supplier_order_rows=[
+            {"nomenclature_ref": "0xBITOK", "order_date": "2026-01-01"},
+            {"nomenclature_ref": "0xOK", "order_date": "2026-01-02"},
+        ],
+        receipt_rows=[],
+        warehouse_policy=_warehouse_policy(),
+    )
+
+    assert [row["nomenclature_code"] for row in facts] == ["OK-1"]
+    assert summary["scope_policy"]["excluded_item_count"] == 1
+    assert summary["scope_policy"]["excluded_reason_counts"] == {"excluded_display_name_bitok": 1}
 
 
 def test_complete_sale_history_turns_missing_sale_row_into_proven_zero() -> None:
@@ -686,6 +714,16 @@ def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> 
         }
     )
     costs = {f"SKU-{index}": Decimal(str((index + 1) * 100)) for index in range(8)}
+    minimum_policy = validate_minimum_representation_policy(
+        {
+            "policy_version": "test-11-plus-2",
+            "minimum_representation_policy": {
+                "central_warehouse_code": "cdek",
+                "central_reserve_qty": 2,
+            },
+            "warehouses": warehouses,
+        }
+    )
     facts, _ = build_assortment_lifecycle_fact_records(
         nomenclature_rows=rows,
         supplier_order_rows=[],
@@ -693,12 +731,16 @@ def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> 
         warehouse_policy=warehouses,
         inventory_costs=costs,
         comparable_group_min_size=8,
+        minimum_representation_policy=minimum_policy,
     )
     cheapest = next(item for item in facts if item["nomenclature_code"] == "SKU-0")
     unknown = next(item for item in facts if item["nomenclature_code"] == "SKU-UNKNOWN")
     assert cheapest["cost_quartile"] == "Q1"
     assert cheapest["cost_group_sample_size"] == 8
     assert cheapest["minimum_representation_qty"] == 13
+    assert cheapest["active_physical_store_count"] == 11
+    assert cheapest["central_representation_reserve_qty"] == 2
+    assert cheapest["minimum_representation_policy_version"] == "test-11-plus-2"
     assert unknown["inventory_cost_per_unit"] is None
     assert unknown["cost_quartile"] == ""
     assert unknown["minimum_representation_qty"] is None

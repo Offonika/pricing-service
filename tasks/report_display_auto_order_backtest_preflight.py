@@ -42,7 +42,7 @@ from tasks.report_display_auto_order_six_month_backtest import (
     _clean,
     build_launch_observations,
     fetch_historical_open_supplier_pipeline,
-    load_backtest_items,
+    load_backtest_items_with_scope_audit,
     normalize_purchase_history,
 )
 from tasks.report_display_supplier_lead_time_history import (
@@ -129,7 +129,10 @@ def main() -> int:
 
     application_engine = build_engine(application_url, pool_pre_ping=True)
     try:
-        items, run_id = load_backtest_items(application_engine, folder=args.folder)
+        items, run_id, scope_policy_audit = load_backtest_items_with_scope_audit(
+            application_engine,
+            folder=args.folder,
+        )
     finally:
         application_engine.dispose()
     if not items:
@@ -249,6 +252,11 @@ def main() -> int:
             receipt_mapping=receipt_mapping,
             limit=50000,
         )
+        allowed_codes = set(codes)
+        source_rows = {
+            key: [row for row in rows if _clean(row.get("nomenclature_code")) in allowed_codes]
+            for key, rows in source_rows.items()
+        }
         progress(
             "lead_time_sources_loaded",
             supplier_order_rows=len(source_rows["supplier_order_rows"]),
@@ -330,6 +338,7 @@ def main() -> int:
         source_metadata=source_metadata,
         launch_profile_min_samples=args.launch_profile_min_samples,
     )
+    tables.scope_audit = scope_policy_audit
     progress(
         "tables_built",
         status=tables.status,

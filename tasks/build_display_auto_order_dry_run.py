@@ -20,6 +20,11 @@ from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
 from app.services.assortment_lifecycle_v2_policy import load_assortment_lifecycle_v2_policy
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+    merge_display_scope_audits,
+)
 from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
@@ -452,7 +457,7 @@ def main() -> int:
         or ""
     )
     if args.lifecycle_facts_json:
-        items = load_auto_order_items_from_facts(
+        items, scope_audit = load_auto_order_items_from_facts_with_scope_audit(
             args.lifecycle_facts_json,
             folder=args.folder,
             lifecycle_model_version=args.lifecycle_model_version,
@@ -465,7 +470,7 @@ def main() -> int:
     else:
         app_engine = build_engine(database_url, pool_pre_ping=True)
         try:
-            items, run_id = load_auto_order_items(
+            items, run_id, scope_audit = load_auto_order_items_with_scope_audit(
                 app_engine,
                 folder=args.folder,
                 include_sale_review_candidates=(
@@ -515,6 +520,12 @@ def main() -> int:
                         ),
                     )
                 )
+            analog_scope_result = filter_display_scope_records(items)
+            items = list(analog_scope_result.included)
+            scope_audit = merge_display_scope_audits(
+                scope_audit,
+                analog_scope_result.audit,
+            )
             codes = tuple(str(item["nomenclature_code"]) for item in items)
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
@@ -596,7 +607,12 @@ def main() -> int:
         lifecycle_model_version=args.lifecycle_model_version,
     )
     write_csv(args.output_csv, rows)
-    summary = build_summary(rows, run_id=run_id, source_errors=source_errors)
+    summary = build_summary(
+        rows,
+        run_id=run_id,
+        source_errors=source_errors,
+        scope_policy_audit=scope_audit,
+    )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(
@@ -611,12 +627,12 @@ def main() -> int:
     return 0
 
 
-def load_auto_order_items(
+def load_auto_order_items_with_scope_audit(
     engine,
     *,
     folder: str,
     include_sale_review_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], int | None]:
+) -> tuple[list[dict[str, Any]], int | None, dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
         available_columns = {
@@ -655,16 +671,31 @@ def load_auto_order_items(
             .mappings()
             .all()
         )
-    return [dict(row) for row in rows], run_id
+    scope_result = filter_display_scope_records([dict(row) for row in rows])
+    return list(scope_result.included), run_id, scope_result.audit
 
 
-def load_auto_order_items_from_facts(
+def load_auto_order_items(
+    engine,
+    *,
+    folder: str,
+    include_sale_review_candidates: bool = False,
+) -> tuple[list[dict[str, Any]], int | None]:
+    items, run_id, _scope_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder=folder,
+        include_sale_review_candidates=include_sale_review_candidates,
+    )
+    return items, run_id
+
+
+def load_auto_order_items_from_facts_with_scope_audit(
     path: Path,
     *,
     folder: str,
     lifecycle_model_version: str,
     include_sale_review_candidates: bool = False,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Build the dry-run cohort from one immutable lifecycle fact snapshot."""
 
     from app.services.assortment_lifecycle import (
@@ -681,7 +712,8 @@ def load_auto_order_items_from_facts(
 
     policy = load_assortment_lifecycle_v2_policy()
     items: list[dict[str, Any]] = []
-    for raw in _load_records(path):
+    scope_result = filter_display_scope_records(_load_records(path))
+    for raw in scope_result.included:
         if folder and not _matches_folder(raw, folder):
             continue
         if raw.get("future_ka_mapping_status") != "ready":
@@ -733,6 +765,22 @@ def load_auto_order_items_from_facts(
                 "blockers": list(decision.blockers),
             }
         )
+    return items, scope_result.audit
+
+
+def load_auto_order_items_from_facts(
+    path: Path,
+    *,
+    folder: str,
+    lifecycle_model_version: str,
+    include_sale_review_candidates: bool = False,
+) -> list[dict[str, Any]]:
+    items, _scope_audit = load_auto_order_items_from_facts_with_scope_audit(
+        path,
+        folder=folder,
+        lifecycle_model_version=lifecycle_model_version,
+        include_sale_review_candidates=include_sale_review_candidates,
+    )
     return items
 
 
@@ -1453,6 +1501,7 @@ def build_dry_run_rows(
     if lifecycle_model_version not in {"v1", "v2-shadow", "v2-live"}:
         raise ValueError(f"unsupported assortment lifecycle model: {lifecycle_model_version}")
     rows: list[dict[str, Any]] = []
+    scoped_items = filter_display_scope_records(items).included
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
@@ -1468,7 +1517,7 @@ def build_dry_run_rows(
         + distribution_to_shelf_days
     )
     effective_target_days = planning_horizon_days + safety_stock_days
-    for item in items:
+    for item in scoped_items:
         code = _clean(item.get("nomenclature_code"))
         stock = facts.get("stock", {}).get(code, {})
         reserve = facts.get("reserve", {}).get(code, {})
@@ -2316,11 +2365,8 @@ def _price_batch_rule_for_row(
     applies_to_analog_roles: Sequence[str],
 ) -> PriceBatchRule | None:
     configured_statuses = {status.casefold() for status in applies_to_statuses}
-    row_statuses = {
-        _clean(row.get("_assortment_status")).casefold(),
-        _clean(row.get("status_label")).casefold(),
-    }
-    if configured_statuses and not configured_statuses.intersection(row_statuses):
+    row_status = _clean(row.get("_assortment_status")).casefold()
+    if configured_statuses and row_status not in configured_statuses:
         return None
     configured_roles = {role.casefold() for role in applies_to_analog_roles}
     if configured_roles and _clean(row.get("analog_role")).casefold() not in configured_roles:
@@ -2946,6 +2992,7 @@ def build_summary(
     *,
     run_id: int | None,
     source_errors: Mapping[str, str],
+    scope_policy_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     decisions = Counter(_clean(row.get("dry_run_decision")) for row in rows)
     warnings = Counter(
@@ -3054,6 +3101,9 @@ def build_summary(
         ),
         "total_b2b_order_delta_qty": _out_decimal(total_b2b_order_delta),
         "source_errors": dict(source_errors),
+        "scope_policy": dict(
+            scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
+        ),
     }
 
 

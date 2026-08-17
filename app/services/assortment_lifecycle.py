@@ -112,14 +112,16 @@ class CommercialMark(StrEnum):
 # ВАЖНО: эти названия свободно меняются, потому что они только для наших
 # экранов и отчётов. Значение, уезжающее в 1С, живёт отдельно —
 # ONEC_STATUS_VALUE_NAMES ниже.
+# Переходный формат двух переименованных рабочих стадий сохраняет прежнее
+# название в скобках, чтобы пользователь не путал старые и новые отчёты.
 ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.FRUIT: "Рассматриваем",
     AssortmentStatus.NEWBORN: "Заказали",
     AssortmentStatus.NEWBORN_NEED: "Добираем",
     AssortmentStatus.NEW_ITEM: "Завезли",
     AssortmentStatus.SALES_START: "Пошли продажи",
-    AssortmentStatus.SALE: "Растим",
-    AssortmentStatus.WORKING: "Поддерживаем",
+    AssortmentStatus.SALE: "Растим (ПРОДАЖА)",
+    AssortmentStatus.WORKING: "Поддерживаем (Рабочий)",
     AssortmentStatus.MATRIX: "Держим всегда",
     AssortmentStatus.ON_DEMAND: "Только под заказ",
     AssortmentStatus.REPLACE_CANDIDATE: "Меняем на аналог",

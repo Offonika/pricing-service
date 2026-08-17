@@ -54,6 +54,7 @@ DEFAULT_OUTPUT_JSON = (
 DEFAULT_POLICY_JSON = Path("config/assortment/display-auto-order-policy.json")
 ONEC_EMPTY_DATE = date(1753, 1, 1)
 OPEN_SUPPLIER_ORDER_BALANCE_PERIOD = datetime.fromisoformat("3999-11-01T00:00:00")
+ACTIVE_CUSTOMER_ORDER_STATUS_CODES = frozenset({"sale", "working"})
 MIN_PURCHASE_PRICE_FOR_ANALOG_SCORE = Decimal("5")
 SUPPORTED_VARIANT_COLOR_RE = re.compile(
     r"(?:черн|бел|син|красн|зелен|зелён|сер|розов|фиолетов|голуб|золот|"
@@ -92,6 +93,9 @@ CSV_COLUMNS = [
     "sellable_stock_qty",
     "reserved_qty",
     "free_stock_qty",
+    "active_customer_order_qty",
+    "active_customer_order_count",
+    "order_available_stock_qty",
     "central_stock_qty",
     "total_stock_qty",
     "incoming_qty",
@@ -478,6 +482,7 @@ def main() -> int:
     facts = {
         "stock": {},
         "reserve": {},
+        "customer_orders": {},
         "incoming": {},
         "sales": {},
         "returns": {},
@@ -521,6 +526,10 @@ def main() -> int:
             codes = tuple(str(item["nomenclature_code"]) for item in items)
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
+            facts["customer_orders"] = fetch_active_customer_order_totals(
+                onec_engine,
+                codes=codes,
+            )
             facts["incoming"] = fetch_incoming_totals(
                 onec_engine,
                 codes=codes,
@@ -888,6 +897,62 @@ def fetch_reserved_totals(
           AND reserve._Fld7657_RTRef = 0x00000084
           AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """,
+        codes=codes,
+    ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
+    with engine.connect() as conn:
+        return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
+
+
+def fetch_active_customer_order_totals(
+    engine,
+    *,
+    codes: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Return positive unfulfilled customer-order balances per SKU.
+
+    The 1C register also contains internal store requests represented as
+    ``Потребности <магазин>`` customer orders. They are intentionally included:
+    the procurement formula treats them as demand commitments and never filters
+    counterparties by name.
+    """
+
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
+        return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_active_customer_order_totals(engine, codes=batch),
+        )
+    codes = code_batches[0]
+    sql = _expanding_text(
+        """
+        WITH active_order_balances AS (
+            SELECT
+                NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
+                customer_order._IDRRef AS customer_order_ref,
+                SUM(CAST(balance._Fld7140 AS decimal(18, 3))) AS open_qty
+            FROM dbo._AccumRgT7145 AS balance WITH (NOLOCK)
+            JOIN dbo._Reference62 AS product WITH (NOLOCK)
+                ON product._IDRRef = balance._Fld7131RRef
+            JOIN dbo._Document132 AS customer_order WITH (NOLOCK)
+                ON customer_order._IDRRef = balance._Fld7129RRef
+            WHERE balance._Period = :balance_period
+              AND customer_order._Posted = 0x01
+              AND customer_order._Marked = 0x00
+              AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+            GROUP BY
+                NULLIF(LTRIM(RTRIM(product._Code)), N''),
+                customer_order._IDRRef
+            HAVING SUM(CAST(balance._Fld7140 AS decimal(18, 3))) > 0
+        )
+        SELECT
+            code,
+            SUM(open_qty) AS active_customer_order_qty,
+            COUNT(*) AS active_customer_order_count
+        FROM active_order_balances
+        GROUP BY code
         """,
         codes=codes,
     ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
@@ -1496,8 +1561,10 @@ def build_dry_run_rows(
     effective_target_days = planning_horizon_days + safety_stock_days
     for item in scoped_items:
         code = _clean(item.get("nomenclature_code"))
+        assortment_status = _clean(item.get("status")).casefold()
         stock = facts.get("stock", {}).get(code, {})
         reserve = facts.get("reserve", {}).get(code, {})
+        customer_orders = facts.get("customer_orders", {}).get(code, {})
         incoming = facts.get("incoming", {}).get(code, {})
         sales = facts.get("sales", {}).get(code, {})
         returns = facts.get("returns", {}).get(code, {})
@@ -1505,6 +1572,21 @@ def build_dry_run_rows(
         sellable_stock_qty = _decimal(stock.get("sellable_stock_qty"))
         reserved_qty = _decimal(reserve.get("reserved_qty"))
         free_stock_qty = sellable_stock_qty - reserved_qty
+        active_customer_order_qty = (
+            _decimal(customer_orders.get("active_customer_order_qty"))
+            if assortment_status in ACTIVE_CUSTOMER_ORDER_STATUS_CODES
+            else Decimal("0")
+        )
+        active_customer_order_count = (
+            int(customer_orders.get("active_customer_order_count") or 0)
+            if assortment_status in ACTIVE_CUSTOMER_ORDER_STATUS_CODES
+            else 0
+        )
+        order_available_stock_qty = (
+            sellable_stock_qty - active_customer_order_qty
+            if assortment_status in ACTIVE_CUSTOMER_ORDER_STATUS_CODES
+            else free_stock_qty
+        )
         central_stock_qty = _decimal(stock.get("central_stock_qty"))
         total_stock_qty = _decimal(stock.get("total_stock_qty"))
         incoming_qty = _decimal(incoming.get("incoming_qty"))
@@ -1676,7 +1758,10 @@ def build_dry_run_rows(
         target_stock_qty = forecast_qty + safety_stock_qty
         if min_display_qty and net_sales_qty > 0:
             target_stock_qty = max(target_stock_qty, Decimal(str(min_display_qty)))
-        raw_order_qty = max(Decimal("0"), target_stock_qty - free_stock_qty - incoming_qty)
+        raw_order_qty = max(
+            Decimal("0"),
+            target_stock_qty - order_available_stock_qty - incoming_qty,
+        )
         recommended_order_qty_raw = _ceil_decimal(raw_order_qty)
         recommended_order_qty = rounded_order_qty(
             recommended_order_qty_raw,
@@ -1695,7 +1780,10 @@ def build_dry_run_rows(
             else target_stock_qty
         )
         marketplace_order_impact_qty = recommended_order_qty_raw - _ceil_decimal(
-            max(Decimal("0"), non_marketplace_target_stock_qty - free_stock_qty - incoming_qty)
+            max(
+                Decimal("0"),
+                non_marketplace_target_stock_qty - order_available_stock_qty - incoming_qty,
+            )
         )
         marketplace_risk_code, marketplace_risk_ru = _classify_marketplace_risk(
             net_sales_qty=net_sales_qty,
@@ -1711,6 +1799,10 @@ def build_dry_run_rows(
             blockers.append("source_error")
         if free_stock_qty < 0:
             warnings.append("reserve_more_than_sellable_stock")
+        if active_customer_order_qty > 0:
+            warnings.append("active_customer_orders_added_to_need")
+        if order_available_stock_qty < 0:
+            warnings.append("active_customer_orders_exceed_sellable_stock")
         if net_sales_qty <= 0:
             warnings.append("no_recent_net_sales")
         if recommended_order_qty_raw > recommended_order_qty:
@@ -1765,7 +1857,7 @@ def build_dry_run_rows(
             recommended_order_qty=recommended_order_qty,
             recommended_order_qty_raw=recommended_order_qty_raw,
             target_stock_qty=target_stock_qty,
-            free_stock_qty=free_stock_qty,
+            free_stock_qty=order_available_stock_qty,
             incoming_qty=incoming_qty,
             net_sales_qty=net_sales_qty,
             target_days=target_days,
@@ -1840,6 +1932,9 @@ def build_dry_run_rows(
                 "sellable_stock_qty": _out_decimal(sellable_stock_qty),
                 "reserved_qty": _out_decimal(reserved_qty),
                 "free_stock_qty": _out_decimal(free_stock_qty),
+                "active_customer_order_qty": _out_decimal(active_customer_order_qty),
+                "active_customer_order_count": active_customer_order_count,
+                "order_available_stock_qty": _out_decimal(order_available_stock_qty),
                 "central_stock_qty": _out_decimal(central_stock_qty),
                 "total_stock_qty": _out_decimal(total_stock_qty),
                 "incoming_qty": _out_decimal(incoming_qty),
@@ -2029,8 +2124,11 @@ def build_dry_run_rows(
         avg_daily_sales_qty = _decimal(row.get("avg_daily_sales_qty"))
         if avg_daily_sales_qty <= 0:
             continue
-        free_stock_qty = _decimal(row.get("free_stock_qty"))
-        days_of_stock_remaining = free_stock_qty / avg_daily_sales_qty
+        order_available_stock_qty = max(
+            Decimal("0"),
+            _decimal(row.get("order_available_stock_qty")),
+        )
+        days_of_stock_remaining = order_available_stock_qty / avg_daily_sales_qty
         required_days = (
             _decimal(row.get("lead_time_days"))
             + _decimal(row.get("distribution_to_shelf_days"))
@@ -2048,6 +2146,15 @@ def build_dry_run_rows(
             f"дней, а полный цикл довоза (путь + буфер) занимает {_out_decimal(required_days)} "
             "дней - есть риск пустой полки раньше следующего планового пересмотра. "
             f"{row.get('reason_ru', '')}"
+        ).strip()
+    for row in rows:
+        active_customer_order_qty = _decimal(row.get("active_customer_order_qty"))
+        if active_customer_order_qty <= 0:
+            continue
+        row["reason_ru"] = (
+            f"{row.get('reason_ru', '')} Активный невыполненный остаток Заказов "
+            f"покупателей {_out_decimal(active_customer_order_qty)} шт. включён в "
+            "потребность; Зарезервировано и Под заказ в этой формуле не используются."
         ).strip()
     return rows
 
@@ -2092,7 +2199,7 @@ def apply_price_batch_policy(
             allocations={id(row): raw_qty},
             supported_rows=[],
             group_target_stock_qty=_decimal(row.get("target_stock_qty")),
-            group_free_stock_qty=_decimal(row.get("free_stock_qty")),
+            group_free_stock_qty=_decimal(row.get("order_available_stock_qty")),
             group_incoming_qty=_decimal(row.get("incoming_qty")),
             group_avg_daily_sales_qty=_decimal(row.get("avg_daily_sales_qty")),
             price_batch_rules=price_batch_rules,
@@ -2326,7 +2433,7 @@ def apply_b2b_final_order_policies(
             max(
                 Decimal("0"),
                 _decimal(row.get("b2b_replacement_target_stock_qty"))
-                - _decimal(row.get("free_stock_qty"))
+                - _decimal(row.get("order_available_stock_qty"))
                 - _decimal(row.get("incoming_qty")),
             )
         )
@@ -2338,7 +2445,7 @@ def apply_b2b_final_order_policies(
             allocations={id(temp): raw_qty},
             supported_rows=[],
             group_target_stock_qty=_decimal(row.get("b2b_replacement_target_stock_qty")),
-            group_free_stock_qty=_decimal(row.get("free_stock_qty")),
+            group_free_stock_qty=_decimal(row.get("order_available_stock_qty")),
             group_incoming_qty=_decimal(row.get("incoming_qty")),
             group_avg_daily_sales_qty=_decimal(row.get("avg_daily_sales_qty")),
             price_batch_rules=price_batch_rules,
@@ -2465,7 +2572,7 @@ def apply_b2b_customer_demand_advisory(
                 replacement_target_stock_qty,
                 Decimal(str(min_display_qty)),
             )
-        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        free_stock_qty = _decimal(row.get("order_available_stock_qty"))
         incoming_qty = _decimal(row.get("incoming_qty"))
         replacement_order_qty_raw = _ceil_decimal(
             max(
@@ -2540,7 +2647,7 @@ def apply_b2b_customer_demand_advisory(
             Decimal("0"),
         )
         group_free_stock_qty = sum(
-            (_decimal(row.get("free_stock_qty")) for row in group_rows),
+            (_decimal(row.get("order_available_stock_qty")) for row in group_rows),
             Decimal("0"),
         )
         group_incoming_qty = sum(
@@ -2698,7 +2805,7 @@ def _apply_speed_horizon_rule(
                 _append_warning(row, "speed_tier_manual_review")
                 row["reason_ru"] = _speed_review_reason(speed_rule, len(group_rows))
                 continue
-            free_stock_qty = _decimal(row.get("free_stock_qty"))
+            free_stock_qty = _decimal(row.get("order_available_stock_qty"))
             below_structural_floor = free_stock_qty < STRUCTURAL_FLOOR_QTY
             accelerating_speed = row.get("sales_speed_trend") == "accelerating"
             days_in_sale_medium = _decimal(row.get("days_in_sale_medium"))
@@ -2797,7 +2904,7 @@ def _apply_speed_horizon_rule(
         min_display_qty = int(_decimal(row.get("min_display_qty")))
         if min_display_qty and net_sales_qty > 0:
             target_stock_qty = max(target_stock_qty, Decimal(str(min_display_qty)))
-        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        free_stock_qty = _decimal(row.get("order_available_stock_qty"))
         incoming_qty = _decimal(row.get("incoming_qty"))
         recommended_order_qty_raw = _ceil_decimal(
             max(Decimal("0"), target_stock_qty - free_stock_qty - incoming_qty)
@@ -3399,6 +3506,7 @@ def _data_sources(*, demand_rule: DemandUpliftRule | None = None) -> str:
     sources = [
         "1c:stock_totals",
         "1c:reserved_stock_totals",
+        "1c:active_customer_order_balance",
         "1c:open_supplier_order_balance_pipeline",
         "1c:rtu_lines",
         "1c:return_lines",

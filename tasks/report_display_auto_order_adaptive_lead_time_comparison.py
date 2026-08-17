@@ -68,6 +68,8 @@ CSV_COLUMNS = [
     "adaptive_forecast_qty",
     "adaptive_safety_stock_qty",
     "free_stock_qty",
+    "active_customer_order_qty",
+    "order_available_stock_qty",
     "incoming_qty",
     "lead_time_source_level",
     "lead_time_confidence",
@@ -316,19 +318,34 @@ def build_row_comparison(
     transition_to_better = role == "transition_to_better_analog"
     slow_review = speed_action == "manual_review"
     group_role = role in {"primary_analog", "transition_to_better_analog"}
+    active_customer_order_qty = _decimal(row.get("active_customer_order_qty")) or Decimal("0")
+    explicit_order_available_stock = _clean(row.get("order_available_stock_qty"))
     if group_role:
         avg_daily = _decimal(row.get("speed_group_avg_daily_sales_qty")) or Decimal("0")
-        free_stock = _decimal(row.get("analog_group_free_stock_qty")) or Decimal("0")
+        order_available_stock = (
+            _decimal(explicit_order_available_stock)
+            if explicit_order_available_stock
+            else _decimal(row.get("analog_group_free_stock_qty")) or Decimal("0")
+        )
         incoming = _decimal(row.get("analog_group_incoming_qty")) or Decimal("0")
     else:
         avg_daily = _decimal(row.get("avg_daily_sales_qty")) or Decimal("0")
-        free_stock = _decimal(row.get("free_stock_qty")) or Decimal("0")
+        order_available_stock = (
+            _decimal(explicit_order_available_stock)
+            if explicit_order_available_stock
+            else _decimal(row.get("free_stock_qty")) or Decimal("0")
+        )
         incoming = _decimal(row.get("incoming_qty")) or Decimal("0")
 
     adaptive_forecast_qty = _ceil(avg_daily * Decimal(str(forecast_days)))
     adaptive_safety_qty = _ceil(avg_daily * Decimal(str(adaptive_safety_days)))
     adaptive_target_stock = adaptive_forecast_qty + adaptive_safety_qty
-    adaptive_qty_raw = _ceil(max(Decimal("0"), adaptive_target_stock - free_stock - incoming))
+    adaptive_qty_raw = _ceil(
+        max(
+            Decimal("0"),
+            adaptive_target_stock - order_available_stock - incoming,
+        )
+    )
     adaptive_qty = rounded_order_qty(adaptive_qty_raw, order_rounding_rules)
 
     adaptive_decision = "order" if adaptive_qty > 0 else "do_not_order"
@@ -365,6 +382,11 @@ def build_row_comparison(
         lead_candidate=lead_candidate,
         seasonality_adjustment=seasonality_adjustment,
     )
+    if active_customer_order_qty > 0:
+        reason += (
+            "; активный невыполненный остаток Заказов покупателей "
+            f"{_out_decimal(active_customer_order_qty)} шт. включён в потребность"
+        )
     return {
         "nomenclature_code": _clean(row.get("nomenclature_code")),
         "name": _clean(row.get("name")),
@@ -391,7 +413,9 @@ def build_row_comparison(
         "adaptive_safety_stock_days": adaptive_safety_days,
         "adaptive_forecast_qty": _out_decimal(adaptive_forecast_qty),
         "adaptive_safety_stock_qty": _out_decimal(adaptive_safety_qty),
-        "free_stock_qty": _out_decimal(free_stock),
+        "free_stock_qty": _clean(row.get("free_stock_qty")),
+        "active_customer_order_qty": _out_decimal(active_customer_order_qty),
+        "order_available_stock_qty": _out_decimal(order_available_stock),
         "incoming_qty": _out_decimal(incoming),
         "lead_time_source_level": source_level,
         "lead_time_confidence": (
@@ -460,6 +484,8 @@ def build_sync_ready_rows(
         row["forecast_qty"] = _clean(comparison_row.get("adaptive_forecast_qty"))
         row["safety_stock_qty"] = _clean(comparison_row.get("adaptive_safety_stock_qty"))
         row["free_stock_qty"] = _clean(comparison_row.get("free_stock_qty"))
+        row["active_customer_order_qty"] = _clean(comparison_row.get("active_customer_order_qty"))
+        row["order_available_stock_qty"] = _clean(comparison_row.get("order_available_stock_qty"))
         row["incoming_qty"] = _clean(comparison_row.get("incoming_qty"))
         row["reason_ru"] = _clean(comparison_row.get("reason_ru"))
 

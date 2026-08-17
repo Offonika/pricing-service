@@ -246,6 +246,23 @@
     "min_order_qty": 1,
     "max_order_qty": null,
     "include_sale_review_candidates": true,
+    "active_customer_order_policy": {
+      "decision_date": "2026-08-17",
+      "implementation_status": "wired_in_dry_run",
+      "applies_to_status_codes": [
+        "sale",
+        "working"
+      ],
+      "source": "1C active customer order balance _AccumRgT7145",
+      "active_order_filter_ru": "положительный конечный остаток проведенного и не удаленного Заказа покупателя",
+      "include_store_need_counterparties": true,
+      "store_need_name_pattern_ru": "Потребности <магазин>",
+      "formula": "max(0, target_stock_qty + active_customer_order_qty - sellable_stock_qty - incoming_qty)",
+      "ignored_1c_fields_ru": [
+        "Зарезервировано",
+        "Под заказ"
+      ]
+    },
     "order_rounding_rules": [
       {
         "threshold_gt": 2000,
@@ -329,6 +346,7 @@
     "speed_horizon_rules - целевой запас считаем по скорости группы аналогов: super_fast максимум 60 дней покрытия и 7 дней страховки; fast максимум 70 дней и 10 дней страховки; normal максимум 82 дня и 14 дней страховки; slow не раздуваем автозаказом, отправляем на review.",
     "max_order_qty = null - верхний потолок по штукам снят; заказ показывает полную расчетную потребность.",
     "include_sale_review_candidates = true - строки ПРОДАЖА участвуют в расчете групп аналогов как review-only; автозаказ создается только по строкам order.",
+    "active_customer_order_policy - для sale (Растим / ПРОДАЖА) и working (Поддерживаем / Рабочий) положительный невыполненный остаток Заказов покупателей, включая Потребности <магазин>, добавляется к потребности; Зарезервировано и Под заказ не участвуют в формуле количества.",
     "onec_catalog_analog_candidate_model_tokens - из каталога 1С подтягиваем аналоги только по явно разрешенным токенам модели; сейчас включена только группа Apple iPhone 11.",
     "demand_uplift_rules - точечные поправки на скрытый спрос из-за перебоев наличия; глобально не применяются."
   ]

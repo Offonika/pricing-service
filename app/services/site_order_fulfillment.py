@@ -39,6 +39,12 @@ DEFAULT_CHAT_DIALOG_IDS = {
 SOURCE_BITRIX_CHAT = "bitrix_chat"
 PARSER_VERSION = "bitrix-order-v1"
 
+GENERATED_ORDER_REPORT_MARKERS = (
+    "master-mobile.ru: контроль интернет-заказов",
+    "master-mobile.ru: crm интернет-заказы",
+    "интернет-заказы: требуется действие",
+)
+
 EVENT_PICKUP_UNCLAIMED = "pickup_unclaimed_reported"
 EVENT_PICKUP_STORED = "pickup_stored_at_point"
 EVENT_PICKUP_RECEIVED = "pickup_client_received"
@@ -515,6 +521,9 @@ def parse_bitrix_message(
 
 
 def parse_site_chat_text(text_value: str) -> list[ParsedOrderMention]:
+    normalized_text = _clean_text(text_value)
+    if any(marker in normalized_text for marker in GENERATED_ORDER_REPORT_MARKERS):
+        return []
     order_numbers = extract_order_numbers(text_value)
     if not order_numbers:
         return []

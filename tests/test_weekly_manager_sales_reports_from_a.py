@@ -11,6 +11,7 @@ from app.services.online_demand_metrics import (
     OnlineDemandWeeklySummary,
 )
 from infra.cron.weekly_manager_sales_reports_from_a import (
+    _prepare_telegram_caption,
     _resolve_chat_ids_for_artifact,
     render_summary,
     sync_weekly_manager_sales_report,
@@ -182,6 +183,22 @@ def test_resolve_chat_ids_for_artifact_prefers_scoped_override() -> None:
         "1287954453",
         "911475089",
     ]
+
+
+def test_prepare_telegram_caption_keeps_short_text_unchanged() -> None:
+    caption = "Короткий отчёт"
+
+    assert _prepare_telegram_caption(caption) == caption
+
+
+def test_prepare_telegram_caption_limits_utf8_bytes_without_breaking_unicode() -> None:
+    caption = "📊 Продажи и конверсия\n" + ("Розничная сеть: результат недели. " * 80)
+
+    prepared = _prepare_telegram_caption(caption, max_utf8_bytes=900)
+
+    assert len(prepared.encode("utf-8")) <= 900
+    assert prepared.endswith("\n…")
+    assert "Розничная сеть" in prepared
 
 
 def test_render_summary_includes_status_line() -> None:

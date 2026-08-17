@@ -98,8 +98,8 @@
     "implementation_status": "wired_in_dry_run",
     "description": "Ценовой слой корректирует график и партию: дешевые товары можно заказывать реже и крупнее, дорогие - чаще и меньшими партиями.",
     "applies_to_statuses": [
-      "ПРОДАЖА",
-      "Рабочий"
+      "sale",
+      "working"
     ],
     "applies_to_analog_roles": [
       "single_sku",

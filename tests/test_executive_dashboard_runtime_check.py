@@ -335,6 +335,42 @@ def test_monitor_allows_service_accrual_grace_but_fails_after_1100() -> None:
     assert any("service accrual source is unhealthy" in item for item in late_errors)
 
 
+def test_monitor_ignores_scheduled_reconciliation_stale_before_1100_but_fails_after() -> None:
+    payloads = _payloads()
+    payloads["management_balance"].update(
+        source_status="ready",
+        freshness_status="fresh",
+        validation_errors=[],
+    )
+    payloads["dashboard"]["blocks"][1].update(
+        source_status="ready",
+        freshness_status="fresh",
+    )
+    payloads["dashboard"]["blocks"].append(
+        {
+            "key": "reconciliation",
+            "source_status": "stale",
+            "freshness_status": "stale",
+        }
+    )
+
+    early_status, early_degraded, early_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 10, 59, tzinfo=MOSCOW_TZ),
+    )
+    late_status, late_degraded, late_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 0, tzinfo=MOSCOW_TZ),
+    )
+
+    assert early_status == "healthy"
+    assert not early_degraded
+    assert not early_errors
+    assert late_status == "failed"
+    assert not any(item["name"] == "dashboard.reconciliation" for item in late_degraded)
+    assert any("reconciliation is unhealthy" in error for error in late_errors)
+
+
 def test_monitor_reports_other_stale_dashboard_blocks_without_false_outage() -> None:
     payloads = _payloads()
     payloads["dashboard"]["blocks"][1].update(source_status="ready", freshness_status="fresh")

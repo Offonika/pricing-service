@@ -202,6 +202,7 @@ def evaluate_data_health(
     profit_loss_ready_after: time = time(11, 45),
     procurement_ready_after: time = time(11, 0),
     payables_ready_after: time = time(11, 0),
+    reconciliation_ready_after: time = time(11, 0),
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     degraded_checks: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -326,6 +327,20 @@ def evaluate_data_health(
         key = str(block.get("key") or "unknown")
         if _is_unhealthy(block):
             source_status, freshness_status = _status_pair(block)
+            if key == "reconciliation":
+                local_time = now.astimezone(MOSCOW_TZ).time()
+                if (
+                    local_time < reconciliation_ready_after
+                    and source_status == "stale"
+                    and freshness_status == "stale"
+                ):
+                    continue
+                if local_time >= reconciliation_ready_after:
+                    errors.append(
+                        "dashboard reconciliation is unhealthy after the refresh grace period: "
+                        f"source_status={source_status}, freshness_status={freshness_status}"
+                    )
+                    continue
             if (
                 key == "procurement_import"
                 and now.astimezone(MOSCOW_TZ).time() >= procurement_ready_after
@@ -393,6 +408,7 @@ def main() -> None:
     parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(11, 45))
     parser.add_argument("--procurement-ready-after", type=_parse_clock, default=time(11, 0))
     parser.add_argument("--payables-ready-after", type=_parse_clock, default=time(11, 0))
+    parser.add_argument("--reconciliation-ready-after", type=_parse_clock, default=time(11, 0))
     args = parser.parse_args()
 
     settings = get_settings()
@@ -440,6 +456,7 @@ def main() -> None:
             profit_loss_ready_after=args.profit_loss_ready_after,
             procurement_ready_after=args.procurement_ready_after,
             payables_ready_after=args.payables_ready_after,
+            reconciliation_ready_after=args.reconciliation_ready_after,
         )
 
     errors = availability_errors + data_errors

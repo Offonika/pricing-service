@@ -30,7 +30,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-08"
+updated_at: "2026-08-17"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -701,6 +701,9 @@ fallback-режимом: пользователь видит прежнюю ст
   `stale`;
 - для ОПУ monitor grace действует до 11:45, после штатной пересборки периодного
   кэша ДДС в 11:30;
+- `reconciliation` обновляется ежедневным finance snapshot в 10:45 МСК. До 11:00
+  ночной `stale`, вызванный ожиданием штатной пересборки, не понижает состояние
+  monitor. После 11:00 `stale/missing/source_error` считается ошибкой мониторинга;
 - procurement snapshot — полный read-only список открытых `cargo + ved_import`,
   обновление в 10:35; после 11:00 `stale/missing/source_error` считается ошибкой мониторинга;
 - payables snapshot — read-only срез кредиторской задолженности 1С в 10:40;
@@ -933,3 +936,7 @@ app/admin context или через OAuth-контекст установлен�
   показывает read-only `exchange`, stale, missing, freshness и coverage показываются
   явно, доступы и обмен остаются без управляющих действий.
 - Docs/OpenAPI: manifest и generated contract без drift.
+
+## Changelog
+
+- 2026-08-17 — Для `reconciliation` утверждён утренний grace-период до 11:00 МСК.

@@ -220,6 +220,19 @@
     "min_order_qty": 1,
     "max_order_qty": null,
     "include_sale_review_candidates": true,
+    "margin_flow_policy": {
+      "enabled": true,
+      "status_code": "sale",
+      "speed_min_inclusive": 0.1,
+      "speed_max_inclusive": 0.25,
+      "profitability_min_exclusive": 31,
+      "safety_stock_days": 25,
+      "physical_store_count": 11,
+      "central_warehouse_code": "РБ0000010",
+      "central_reserve_qty": 2,
+      "minimum_representation_qty": 13,
+      "reliable_incoming_rule": "cargo_handoff_only"
+    },
     "order_rounding_rules": [
       {
         "threshold_gt": 2000,

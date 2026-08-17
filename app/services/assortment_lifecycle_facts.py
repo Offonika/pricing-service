@@ -103,6 +103,13 @@ class DocumentLineMapping:
         )
 
 
+@dataclass(frozen=True)
+class MinimumRepresentationPolicy:
+    version: str
+    central_warehouse_code: str
+    central_reserve_qty: int
+
+
 def default_history_start(today: date | None = None, *, history_months: int) -> date:
     effective_today = today or date.today()
     return effective_today - timedelta(days=max(1, history_months) * 31)
@@ -136,6 +143,38 @@ def validate_warehouse_policy(payload: Mapping[str, Any]) -> list[dict[str, Any]
             }
         )
     return result
+
+
+def validate_minimum_representation_policy(
+    payload: Mapping[str, Any],
+) -> MinimumRepresentationPolicy:
+    raw = payload.get("minimum_representation_policy")
+    if not isinstance(raw, Mapping):
+        raise ValueError("minimum_representation_policy_required")
+    version = _clean(payload.get("policy_version") or raw.get("version"))
+    if not version:
+        raise ValueError("warehouse_policy_version_required")
+    central_warehouse_code = _clean(raw.get("central_warehouse_code"))
+    if not central_warehouse_code:
+        raise ValueError("minimum_representation_central_warehouse_code_required")
+    try:
+        central_reserve_qty = int(raw.get("central_reserve_qty"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("minimum_representation_central_reserve_qty_invalid") from exc
+    if central_reserve_qty < 0:
+        raise ValueError("minimum_representation_central_reserve_qty_negative")
+    warehouse_codes = {
+        _clean(row.get("warehouse_code") or row.get("code"))
+        for row in payload.get("warehouses", [])
+        if isinstance(row, Mapping)
+    }
+    if central_warehouse_code not in warehouse_codes:
+        raise ValueError("minimum_representation_central_warehouse_missing")
+    return MinimumRepresentationPolicy(
+        version=version,
+        central_warehouse_code=central_warehouse_code,
+        central_reserve_qty=central_reserve_qty,
+    )
 
 
 def normalize_manual_overrides(
@@ -211,8 +250,16 @@ def build_assortment_lifecycle_fact_records(
     first_observed_stock_dates: Mapping[str, date] | None = None,
     inventory_costs: Mapping[str, Decimal] | None = None,
     comparable_group_min_size: int = 8,
+    minimum_representation_policy: MinimumRepresentationPolicy | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     scope_result = filter_display_scope_records(nomenclature_rows)
+    active_physical_store_count = _active_physical_sales_point_count(warehouse_policy)
+    central_reserve_qty = (
+        minimum_representation_policy.central_reserve_qty
+        if minimum_representation_policy is not None
+        else 2
+    )
+    minimum_representation_qty = active_physical_store_count + central_reserve_qty
     items_by_key: dict[str, Mapping[str, Any]] = {}
     code_by_key: dict[str, str] = {}
     key_by_code: dict[str, str] = {}
@@ -420,10 +467,15 @@ def build_assortment_lifecycle_fact_records(
                     len(cost_values_by_group.get(comparable_group, [])) if comparable_group else 0
                 ),
                 "minimum_representation_qty": (
-                    _active_physical_sales_point_count(warehouse_policy) + 2
-                    if cost_quartile in {"Q1", "Q2"}
-                    else None
+                    minimum_representation_qty if cost_quartile in {"Q1", "Q2"} else None
                 ),
+                "minimum_representation_policy_version": (
+                    minimum_representation_policy.version
+                    if minimum_representation_policy is not None
+                    else "legacy-default"
+                ),
+                "active_physical_store_count": active_physical_store_count,
+                "central_representation_reserve_qty": central_reserve_qty,
             }
         )
         fact.update(

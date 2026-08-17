@@ -70,12 +70,17 @@ def test_facts_task_excludes_bitok_before_output(tmp_path: Path) -> None:
     warehouse_path.write_text(
         json.dumps(
             {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "central",
+                    "central_reserve_qty": 2,
+                },
                 "warehouses": [
                     {"warehouse_code": "shop-1", "sells_systematically": True},
                     {"warehouse_code": "central", "is_central": True},
                     {"warehouse_code": "defect", "is_defect_warehouse": True},
                     {"warehouse_code": "transit", "is_transit": True},
-                ]
+                ],
             },
             ensure_ascii=False,
         ),
@@ -181,13 +186,18 @@ def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path
     warehouse_path.write_text(
         json.dumps(
             {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "central",
+                    "central_reserve_qty": 2,
+                },
                 "warehouses": [
                     {"warehouse_code": "shop-1", "sells_systematically": True},
                     {"warehouse_code": "central", "is_central": True},
                     {"warehouse_code": "defect", "is_defect_warehouse": True},
                     {"warehouse_code": "transit", "is_transit": True},
                     {"warehouse_code": "rare", "is_non_systematic_sale": True},
-                ]
+                ],
             },
             ensure_ascii=False,
         ),
@@ -296,7 +306,17 @@ def test_build_assortment_lifecycle_facts_task_blocks_without_receipt_mapping(
         )
 
     warehouse_path.write_text(
-        json.dumps({"warehouses": [{"warehouse_code": "shop-1"}]}, ensure_ascii=False),
+        json.dumps(
+            {
+                "policy_version": "test-v1",
+                "minimum_representation_policy": {
+                    "central_warehouse_code": "shop-1",
+                    "central_reserve_qty": 2,
+                },
+                "warehouses": [{"warehouse_code": "shop-1"}],
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     supplier_mapping_path.write_text(

@@ -16,6 +16,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_onec_item_inventory_costs,
     is_display_assortment_record,
     validate_document_line_mapping,
+    validate_minimum_representation_policy,
     validate_warehouse_policy,
 )
 
@@ -713,6 +714,16 @@ def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> 
         }
     )
     costs = {f"SKU-{index}": Decimal(str((index + 1) * 100)) for index in range(8)}
+    minimum_policy = validate_minimum_representation_policy(
+        {
+            "policy_version": "test-11-plus-2",
+            "minimum_representation_policy": {
+                "central_warehouse_code": "cdek",
+                "central_reserve_qty": 2,
+            },
+            "warehouses": warehouses,
+        }
+    )
     facts, _ = build_assortment_lifecycle_fact_records(
         nomenclature_rows=rows,
         supplier_order_rows=[],
@@ -720,12 +731,16 @@ def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> 
         warehouse_policy=warehouses,
         inventory_costs=costs,
         comparable_group_min_size=8,
+        minimum_representation_policy=minimum_policy,
     )
     cheapest = next(item for item in facts if item["nomenclature_code"] == "SKU-0")
     unknown = next(item for item in facts if item["nomenclature_code"] == "SKU-UNKNOWN")
     assert cheapest["cost_quartile"] == "Q1"
     assert cheapest["cost_group_sample_size"] == 8
     assert cheapest["minimum_representation_qty"] == 13
+    assert cheapest["active_physical_store_count"] == 11
+    assert cheapest["central_representation_reserve_qty"] == 2
+    assert cheapest["minimum_representation_policy_version"] == "test-11-plus-2"
     assert unknown["inventory_cost_per_unit"] is None
     assert unknown["cost_quartile"] == ""
     assert unknown["minimum_representation_qty"] is None

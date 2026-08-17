@@ -7,6 +7,7 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from app.services.exporters.ut103_customer_price_types import (
+    CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2,
     CustomerPriceTypeUpdateMessage,
     CustomerPriceTypeUpdateRow,
     build_customer_price_type_updates_xml,
@@ -93,10 +94,117 @@ def test_contract_rejects_duplicate_counterparty_before_writing() -> None:
             "idempotency_key": "customer-price-type:another-batch:0X8FDA0025901E48EE11ED222EA7D9B21E",
         }
     )
-    with pytest.raises(ValueError, match="duplicate counterparty_ref"):
+    with pytest.raises(ValueError, match="duplicate counterparty/contract target"):
         build_customer_price_type_updates_xml(
             CustomerPriceTypeUpdateMessage(message_id="duplicate", rows=(_row(), duplicate))
         )
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        ("Розница", "2.Бронзовый"),
+        ("2.Бронзовый", "Розница"),
+        ("2.Бронзовый", "3.Серебряный"),
+        ("3.Серебряный", "2.Бронзовый"),
+        ("3.Серебряный", "4.Золотой"),
+        ("4.Золотой", "3.Серебряный"),
+        ("4.Золотой", "5.Платиновый"),
+        ("5.Платиновый", "4.Золотой"),
+    ],
+)
+def test_v2_accepts_all_adjacent_exact_contract_directions(current: str, target: str) -> None:
+    contract_ref = "0X00000000000000000000000000000011"
+    row = CustomerPriceTypeUpdateRow(
+        idempotency_key=f"decision-1:{current}:{target}",
+        counterparty_ref=COUNTERPARTY_REF,
+        counterparty_guid=COUNTERPARTY_GUID,
+        counterparty_name="МикроСервис",
+        expected_current_price_type=current,
+        target_price_type=target,
+        decision_id="decision-1",
+        contract_ref=contract_ref,
+        contract_guid=one_c_guid_from_counterparty_ref(contract_ref),
+        snapshot_hash="a" * 64,
+    )
+
+    root = ET.fromstring(
+        build_customer_price_type_updates_xml(
+            CustomerPriceTypeUpdateMessage(
+                message_id="v2-adjacent",
+                rows=(row,),
+                schema=CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2,
+            )
+        )
+    )
+
+    assert root.findtext("Header/Schema") == CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2
+    assert root.findtext("Items/Item/DecisionId") == "decision-1"
+    assert root.findtext("Items/Item/ContractRef") == contract_ref
+    assert root.findtext("Items/Item/SnapshotHash") == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        ("Розница", "3.Серебряный"),
+        ("2.Бронзовый бн", "Розница"),
+        ("Key Account", "5.Платиновый"),
+        ("3.Серебряный USD", "4.Золотой"),
+    ],
+)
+def test_v2_rejects_multistep_and_special_directions(current: str, target: str) -> None:
+    contract_ref = "0X00000000000000000000000000000011"
+    row = CustomerPriceTypeUpdateRow(
+        idempotency_key="unsafe-v2",
+        counterparty_ref=COUNTERPARTY_REF,
+        counterparty_guid=COUNTERPARTY_GUID,
+        counterparty_name="МикроСервис",
+        expected_current_price_type=current,
+        target_price_type=target,
+        decision_id="decision-unsafe",
+        contract_ref=contract_ref,
+        contract_guid=one_c_guid_from_counterparty_ref(contract_ref),
+        snapshot_hash="b" * 64,
+    )
+    with pytest.raises(ValueError, match="adjacent standard"):
+        build_customer_price_type_updates_xml(
+            CustomerPriceTypeUpdateMessage(
+                message_id="unsafe-v2",
+                rows=(row,),
+                schema=CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2,
+            )
+        )
+
+
+def test_v2_allows_multiple_exact_contracts_for_one_counterparty() -> None:
+    rows = []
+    for suffix in ("11", "12"):
+        contract_ref = f"0X{'0' * 30}{suffix}"
+        rows.append(
+            CustomerPriceTypeUpdateRow(
+                idempotency_key=f"decision-multi:{suffix}",
+                counterparty_ref=COUNTERPARTY_REF,
+                counterparty_guid=COUNTERPARTY_GUID,
+                counterparty_name="МикроСервис",
+                expected_current_price_type="2.Бронзовый",
+                target_price_type="Розница",
+                decision_id="decision-multi",
+                contract_ref=contract_ref,
+                contract_guid=one_c_guid_from_counterparty_ref(contract_ref),
+                snapshot_hash="c" * 64,
+            )
+        )
+    root = ET.fromstring(
+        build_customer_price_type_updates_xml(
+            CustomerPriceTypeUpdateMessage(
+                message_id="multi-contract-v2",
+                rows=tuple(rows),
+                schema=CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2,
+            )
+        )
+    )
+    assert len(root.findall("Items/Item")) == 2
 
 
 def test_write_and_parse_customer_price_type_result(tmp_path: Path) -> None:

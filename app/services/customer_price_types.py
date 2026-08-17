@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -126,6 +126,19 @@ class CustomerPriceTypeRunService:
         if len(months) != 1:
             raise ValueError("all facts in a run must use the same snapshot_month")
         snapshot_month = next(iter(months))
+        with self.session_factory() as session:
+            repository = SqlAlchemyCustomerPriceTypeRepository(session)
+            completions = repository.previous_action_completions(
+                counterparty_refs=[item.counterparty_ref for item in normalized],
+                before_month=snapshot_month,
+            )
+        normalized = [
+            replace(
+                item,
+                previous_action_completion=dict(completions.get(item.counterparty_ref, {})),
+            )
+            for item in normalized
+        ]
         fingerprint = build_source_fingerprint(normalized, source_statuses=source_statuses)
         resolved_run_key = run_key or build_default_run_key(
             snapshot_month=snapshot_month,
@@ -286,6 +299,10 @@ class CustomerPriceTypeQualityConflict(RuntimeError):
     """Raised when an expert review is based on a stale sample version."""
 
 
+class CustomerPriceTypeQualityFrozen(RuntimeError):
+    """Legacy quality rows are immutable after the review-v2 cutover."""
+
+
 class CustomerPriceTypeQualityService:
     GROUPS = (
         "manager_work",
@@ -296,8 +313,11 @@ class CustomerPriceTypeQualityService:
         "downgrade_approval",
         "no_action",
     )
-    READ_ROLES = {"internal", "executive", "network_head", "quality"}
-    PREPARE_ROLES = {"internal", "executive", "network_head"}
+    READ_ROLES = {"internal", "executive", "quality"}
+    PREPARE_ROLES = {"internal", "executive"}
+    FROZEN_MESSAGE = (
+        "Историческая выборка заморожена. Новые оценки выполняются в разделе проверки решений."
+    )
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -317,23 +337,7 @@ class CustomerPriceTypeQualityService:
         per_group: int,
         access: CustomerPriceTypeAccessScope,
     ) -> dict[str, Any]:
-        if access.role not in self.PREPARE_ROLES:
-            raise PermissionError("quality sample preparation access denied")
-        run = self.resolve_run(snapshot_month)
-        if run is None:
-            raise LookupError("customer price-type run not found")
-        created, total = self.repository.prepare_quality_samples(
-            run=run,
-            actor=access.actor,
-            per_group=per_group,
-        )
-        self.session.commit()
-        return {
-            **CustomerPriceTypeReadService._run_envelope(run),
-            "created": created,
-            "total": total,
-            "per_group": per_group,
-        }
+        raise CustomerPriceTypeQualityFrozen(self.FROZEN_MESSAGE)
 
     def review(
         self,
@@ -345,52 +349,7 @@ class CustomerPriceTypeQualityService:
         expected_version: int,
         access: CustomerPriceTypeAccessScope,
     ) -> Any:
-        self._require_read(access)
-        existing = self.repository.get_quality_sample(sample_id, access)
-        if existing is None:
-            raise LookupError("quality sample not found")
-        sample = existing[0]
-        normalized_comment = comment.strip() if comment and comment.strip() else None
-        if review_result == "correct":
-            if correct_group is not None and correct_group != sample.system_group:
-                raise ValueError("correct review must keep the system result")
-            resolved_group = sample.system_group
-        elif review_result == "incorrect":
-            if correct_group is None or correct_group in {sample.system_group, "data_check"}:
-                raise ValueError("incorrect review requires a different business result")
-            if normalized_comment is None:
-                raise ValueError("incorrect review requires a comment")
-            resolved_group = correct_group
-        elif review_result == "data_issue":
-            if normalized_comment is None:
-                raise ValueError("data issue review requires a comment")
-            resolved_group = "data_check"
-        else:
-            raise ValueError("unknown quality review result")
-        reviewed_at = datetime.now(UTC).replace(tzinfo=None)
-        updated = self.repository.update_quality_sample_review(
-            sample_id=sample_id,
-            correct_group=resolved_group,
-            comment=normalized_comment,
-            reviewed_by=access.actor,
-            reviewed_at=reviewed_at,
-            expected_version=expected_version,
-            access=access,
-        )
-        if not updated:
-            row = self.repository.get_quality_sample(sample_id, access)
-            if row is None:
-                raise LookupError("quality sample not found")
-            raise CustomerPriceTypeQualityConflict("quality sample version is stale")
-        self.session.commit()
-        return self.repository.get_quality_sample(
-            sample_id,
-            CustomerPriceTypeAccessScope(
-                actor=access.actor,
-                role="internal",
-                can_view_money=access.can_view_money,
-            ),
-        )
+        raise CustomerPriceTypeQualityFrozen(self.FROZEN_MESSAGE)
 
     def metrics(
         self,

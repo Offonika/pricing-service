@@ -51,6 +51,7 @@ from app.services.query_batching import (
     normalized_text_batches,
 )
 
+DEFAULT_SCOPE_EXCLUSIONS_CSV_NAME = "display-auto-order-scope-exclusions.csv"
 DEFAULT_OUTPUT_CSV = (
     Path("reports/assortment_lifecycle")
     / date.today().isoformat()
@@ -487,7 +488,7 @@ def main() -> int:
     )
     app_engine = build_engine(database_url, pool_pre_ping=True)
     try:
-        items, run_id, scope_policy_audit = load_auto_order_items_with_scope_audit(
+        items, run_id, scope_policy_audit, scope_gate_audit = load_auto_order_items_with_scope_audit(
             app_engine,
             folder=args.folder,
             include_sale_review_candidates=(
@@ -717,12 +718,18 @@ def main() -> int:
             registry_error=family_registry_error,
         )
     write_csv(args.output_csv, rows)
+    scope_gate_csv = write_scope_gate_csv(
+        args.scope_exclusions_csv or args.output_csv.parent / DEFAULT_SCOPE_EXCLUSIONS_CSV_NAME,
+        scope_gate_audit.get("exclusions") or (),
+    )
     summary = build_summary(
         rows,
         run_id=run_id,
         source_errors=source_errors,
         scope_policy_audit=scope_policy_audit,
+        scope_gate_audit=scope_gate_audit,
     )
+    summary["auto_order_scope_gate"]["output_csv"] = str(scope_gate_csv)
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(
@@ -737,44 +744,240 @@ def main() -> int:
     return 0
 
 
+# Журнал выпавших карточек (раздел "Границы и риск-гейты",
+# docs/specs/assortment-status-contour-plan.md): условия скоупа раньше стояли в
+# SQL WHERE, поэтому живая карточка с продажами исчезала из расчёта молча - её
+# не было ни в CSV, ни в summary. Гейт вычисляется в Python, а каждая отсечённая
+# карточка попадает в аудит с причиной. Набор условий и их строгость (`is False`
+# / `is True`) повторяют прежний SQL один в один: расчёт заказа не меняется.
+AUTO_ORDER_SCOPE_GATE_VERSION = "display_auto_order_scope_gate.v1"
+AUTO_ORDER_SCOPE_GATE_ELIGIBLE_STATUSES = ("working", "sale")
+AUTO_ORDER_SCOPE_GATE_DEMAND_METHOD_CODE = "available_days_average"
+AUTO_ORDER_SCOPE_GATE_KA_MAPPING_STATUS = "ready"
+
+GATE_STATUS_NOT_ELIGIBLE = "gate_status_not_eligible"
+GATE_DEMAND_METHOD_NOT_SUPPORTED = "gate_demand_method_not_supported"
+GATE_FUTURE_KA_MAPPING_NOT_READY = "gate_future_ka_mapping_not_ready"
+GATE_MANUAL_REVIEW_REQUIRED = "gate_manual_review_required"
+GATE_AUTO_ORDER_NOT_ALLOWED = "gate_auto_order_not_allowed"
+GATE_MISSING_IN_LATEST_RUN = "gate_missing_in_latest_classification_run"
+
+# Порядок задаёт основную причину для карточки, нарушившей несколько условий:
+# сначала то, что лечится настройкой карточки, потом технические признаки.
+AUTO_ORDER_SCOPE_GATE_PRIORITY = (
+    GATE_STATUS_NOT_ELIGIBLE,
+    GATE_DEMAND_METHOD_NOT_SUPPORTED,
+    GATE_FUTURE_KA_MAPPING_NOT_READY,
+    GATE_MANUAL_REVIEW_REQUIRED,
+    GATE_AUTO_ORDER_NOT_ALLOWED,
+    GATE_MISSING_IN_LATEST_RUN,
+)
+
+AUTO_ORDER_SCOPE_GATE_LABELS_RU = {
+    GATE_STATUS_NOT_ELIGIBLE: "статус карточки вне автозаказа",
+    GATE_DEMAND_METHOD_NOT_SUPPORTED: "способ расчёта спроса не поддержан автозаказом",
+    GATE_FUTURE_KA_MAPPING_NOT_READY: "карточка не готова к переносу в КА 2",
+    GATE_MANUAL_REVIEW_REQUIRED: "карточка помечена ручной проверкой",
+    GATE_AUTO_ORDER_NOT_ALLOWED: "автозаказ по карточке запрещён классификацией",
+    GATE_MISSING_IN_LATEST_RUN: "карточки нет в последнем прогоне классификации",
+}
+
+AUTO_ORDER_SCOPE_GATE_CSV_COLUMNS = (
+    "nomenclature_code",
+    "article",
+    "name",
+    "gate_reason_code",
+    "gate_reason_label_ru",
+    "gate_reason_codes",
+    "status",
+    "status_label",
+    "demand_method_code",
+    "demand_method_reason",
+    "future_ka_mapping_status",
+    "missing_required_attributes",
+    "manual_review_required",
+    "auto_order_allowed",
+    "last_run_id",
+)
+
+
+def auto_order_scope_gate_reasons(
+    record: Mapping[str, Any],
+    *,
+    include_sale_review_candidates: bool = False,
+) -> tuple[str, ...]:
+    """Причины, по которым карточка не попадает в расчёт автозаказа."""
+
+    reasons: set[str] = set()
+    status = str(record.get("status") or "")
+    if include_sale_review_candidates:
+        if status not in AUTO_ORDER_SCOPE_GATE_ELIGIBLE_STATUSES:
+            reasons.add(GATE_STATUS_NOT_ELIGIBLE)
+        if record.get("manual_review_required") is not False:
+            reasons.add(GATE_MANUAL_REVIEW_REQUIRED)
+    else:
+        if status != "working":
+            reasons.add(GATE_STATUS_NOT_ELIGIBLE)
+        if record.get("auto_order_allowed") is not True:
+            reasons.add(GATE_AUTO_ORDER_NOT_ALLOWED)
+    if str(record.get("future_ka_mapping_status") or "") != AUTO_ORDER_SCOPE_GATE_KA_MAPPING_STATUS:
+        reasons.add(GATE_FUTURE_KA_MAPPING_NOT_READY)
+    if str(record.get("demand_method_code") or "") != AUTO_ORDER_SCOPE_GATE_DEMAND_METHOD_CODE:
+        reasons.add(GATE_DEMAND_METHOD_NOT_SUPPORTED)
+    return tuple(code for code in AUTO_ORDER_SCOPE_GATE_PRIORITY if code in reasons)
+
+
+def _auto_order_scope_gate_exclusion(
+    record: Mapping[str, Any],
+    reasons: Sequence[str],
+) -> dict[str, Any]:
+    missing_attributes = record.get("missing_required_attributes")
+    if isinstance(missing_attributes, (list, tuple)):
+        missing_attributes = ", ".join(str(value) for value in missing_attributes)
+    return {
+        "nomenclature_code": str(record.get("nomenclature_code") or ""),
+        "article": str(record.get("article") or ""),
+        "name": str(record.get("name") or ""),
+        "gate_reason_code": reasons[0],
+        "gate_reason_label_ru": AUTO_ORDER_SCOPE_GATE_LABELS_RU.get(reasons[0], reasons[0]),
+        "gate_reason_codes": ", ".join(reasons),
+        "status": str(record.get("status") or ""),
+        "status_label": str(record.get("status_label") or ""),
+        "demand_method_code": str(record.get("demand_method_code") or ""),
+        "demand_method_reason": str(record.get("demand_method_reason") or ""),
+        "future_ka_mapping_status": str(record.get("future_ka_mapping_status") or ""),
+        "missing_required_attributes": str(missing_attributes or ""),
+        "manual_review_required": bool(record.get("manual_review_required")),
+        "auto_order_allowed": bool(record.get("auto_order_allowed")),
+        "last_run_id": record.get("last_run_id"),
+    }
+
+
+def build_auto_order_scope_gate_audit(
+    exclusions: Sequence[Mapping[str, Any]],
+    *,
+    source_item_count: int,
+    included_item_count: int,
+    run_id: int | None,
+    previous_run_id: int | None = None,
+) -> dict[str, Any]:
+    reason_counts = Counter(str(row.get("gate_reason_code") or "") for row in exclusions)
+    status_counts = Counter(
+        str(row.get("status") or "")
+        for row in exclusions
+        if str(row.get("gate_reason_code") or "") == GATE_STATUS_NOT_ELIGIBLE
+    )
+    return {
+        "scope_gate_version": AUTO_ORDER_SCOPE_GATE_VERSION,
+        "run_id": run_id,
+        "previous_run_id": previous_run_id,
+        "source_item_count": source_item_count,
+        "included_item_count": included_item_count,
+        "excluded_item_count": len(exclusions),
+        "excluded_reason_counts": dict(sorted(reason_counts.items())),
+        "excluded_status_counts": dict(sorted(status_counts.items())),
+        "exclusions": [dict(row) for row in exclusions],
+    }
+
+
+def _load_rows_missing_from_latest_run(
+    conn,
+    table,
+    *,
+    folder: str,
+    run_id: int | None,
+    present_codes: set[str],
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Карточки предыдущего прогона, которых больше нет в последнем."""
+
+    if run_id is None:
+        return [], None
+    previous_run_id = conn.execute(
+        select(func.max(table.c.last_run_id)).where(
+            table.c.folder.ilike(f"%{folder}%"),
+            table.c.last_run_id < run_id,
+        )
+    ).scalar()
+    if previous_run_id is None:
+        return [], None
+    rows = (
+        conn.execute(
+            select(table)
+            .where(
+                table.c.folder.ilike(f"%{folder}%"),
+                table.c.last_run_id == previous_run_id,
+            )
+            .order_by(table.c.nomenclature_code.asc())
+        )
+        .mappings()
+        .all()
+    )
+    missing_by_code: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        record = dict(row)
+        code = str(record.get("nomenclature_code") or "")
+        if not code or code in present_codes or code in missing_by_code:
+            continue
+        missing_by_code[code] = record
+    return list(missing_by_code.values()), previous_run_id
+
+
 def load_auto_order_items_with_scope_audit(
     engine,
     *,
     folder: str,
     include_sale_review_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], int | None, dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int | None, dict[str, Any], dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
         run_id = conn.execute(
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
-        conditions = [
-            table.c.folder.ilike(f"%{folder}%"),
-            table.c.last_run_id == run_id,
-            table.c.future_ka_mapping_status == "ready",
-            table.c.demand_method_code == "available_days_average",
-        ]
-        if include_sale_review_candidates:
-            conditions.extend(
-                [
-                    table.c.status.in_(("working", "sale")),
-                    table.c.manual_review_required.is_(False),
-                ]
-            )
-        else:
-            conditions.extend(
-                [
-                    table.c.auto_order_allowed.is_(True),
-                    table.c.status == "working",
-                ]
-            )
         rows = (
-            conn.execute(select(table).where(*conditions).order_by(table.c.nomenclature_code.asc()))
+            conn.execute(
+                select(table)
+                .where(
+                    table.c.folder.ilike(f"%{folder}%"),
+                    table.c.last_run_id == run_id,
+                )
+                .order_by(table.c.nomenclature_code.asc())
+            )
             .mappings()
             .all()
         )
-    scope_result = filter_display_scope_records([dict(row) for row in rows])
-    return list(scope_result.included), run_id, scope_result.audit
+        source_records = [dict(row) for row in rows]
+        missing_records, previous_run_id = _load_rows_missing_from_latest_run(
+            conn,
+            table,
+            folder=folder,
+            run_id=run_id,
+            present_codes={str(record.get("nomenclature_code") or "") for record in source_records},
+        )
+    eligible_records: list[dict[str, Any]] = []
+    gate_exclusions: list[dict[str, Any]] = []
+    for record in source_records:
+        reasons = auto_order_scope_gate_reasons(
+            record,
+            include_sale_review_candidates=include_sale_review_candidates,
+        )
+        if reasons:
+            gate_exclusions.append(_auto_order_scope_gate_exclusion(record, reasons))
+        else:
+            eligible_records.append(record)
+    for record in missing_records:
+        gate_exclusions.append(
+            _auto_order_scope_gate_exclusion(record, (GATE_MISSING_IN_LATEST_RUN,))
+        )
+    gate_exclusions.sort(key=lambda row: str(row.get("nomenclature_code") or ""))
+    scope_result = filter_display_scope_records(eligible_records)
+    gate_audit = build_auto_order_scope_gate_audit(
+        gate_exclusions,
+        source_item_count=len(source_records) + len(missing_records),
+        included_item_count=len(scope_result.included),
+        run_id=run_id,
+        previous_run_id=previous_run_id,
+    )
+    return list(scope_result.included), run_id, scope_result.audit, gate_audit
 
 
 def load_auto_order_items(
@@ -783,7 +986,7 @@ def load_auto_order_items(
     folder: str,
     include_sale_review_candidates: bool = False,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    items, run_id, _scope_audit = load_auto_order_items_with_scope_audit(
+    items, run_id, _scope_audit, _gate_audit = load_auto_order_items_with_scope_audit(
         engine,
         folder=folder,
         include_sale_review_candidates=include_sale_review_candidates,
@@ -3062,6 +3265,7 @@ def build_summary(
     run_id: int | None,
     source_errors: Mapping[str, str],
     scope_policy_audit: Mapping[str, Any] | None = None,
+    scope_gate_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     decisions = Counter(_clean(row.get("dry_run_decision")) for row in rows)
     warnings = Counter(
@@ -3173,8 +3377,35 @@ def build_summary(
         "scope_policy": dict(
             scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
         ),
+        "auto_order_scope_gate": dict(
+            scope_gate_audit
+            or build_auto_order_scope_gate_audit(
+                (),
+                source_item_count=len(rows),
+                included_item_count=len(rows),
+                run_id=run_id,
+            )
+        ),
         "display_family_order_recommendation": display_family_order_recommendation_summary(rows),
     }
+
+
+def write_scope_gate_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> Path:
+    """Журнал карточек, которые не дошли до расчёта, с причиной по каждой."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=AUTO_ORDER_SCOPE_GATE_CSV_COLUMNS,
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {column: row.get(column, "") for column in AUTO_ORDER_SCOPE_GATE_CSV_COLUMNS}
+            )
+    return path
 
 
 def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> Path:
@@ -4065,6 +4296,15 @@ def _parse_args() -> argparse.Namespace:
         default=_optional_env_int("DISPLAY_AUTO_ORDER_MAX_ORDER_QTY"),
     )
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_OUTPUT_CSV)
+    parser.add_argument(
+        "--scope-exclusions-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Журнал карточек, не дошедших до расчёта, с причиной. "
+            "По умолчанию пишется рядом с --output-csv."
+        ),
+    )
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--json", action="store_true")
     return parser.parse_args()

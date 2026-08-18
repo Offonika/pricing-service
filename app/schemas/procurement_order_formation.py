@@ -37,6 +37,8 @@ class ProcurementClassificationProposalRead(BaseModel):
     reason: str
     manual_minimum: Decimal | None = None
     review_date: date | None = None
+    replacement_sku_code: str | None = None
+    replacement_sku_name: str | None = None
     blocks_order_line: bool
     requested_at: datetime
     requested_by_bitrix_user_id: str
@@ -328,6 +330,10 @@ class ProcurementClassificationCreateRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
     manual_minimum: Decimal | None = Field(default=None, ge=0)
     review_date: date | None = None
+    # Карточка-победитель семьи: обязательна для статусов, снимающих позицию с
+    # ведения; пустой код допускается только вместе с no_replacement.
+    replacement_sku_code: str | None = Field(default=None, max_length=64)
+    no_replacement: bool = False
 
 
 class ProcurementClassificationRejectRequest(BaseModel):

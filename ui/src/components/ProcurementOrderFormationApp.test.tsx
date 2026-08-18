@@ -82,9 +82,73 @@ async function proposeClassification() {
   fireEvent.click(screen.getByRole("button", { name: "На согласование" }));
 }
 
+async function proposePension() {
+  fireEvent.click(screen.getByRole("button", { name: "Изменить классификацию" }));
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: "pension" } });
+  fireEvent.change(screen.getByPlaceholderText("Обязательная причина"), {
+    target: { value: "ведём аналог дешевле" },
+  });
+}
+
 const versionConflict = {
   response: { status: 409, data: { detail: "order version changed; refresh the order" } },
 };
+
+describe("ProcurementOrderFormationApp «Допродаём»", () => {
+  beforeEach(() => {
+    vi.mocked(createProcurementClassification).mockReset();
+    vi.mocked(fetchProcurementOrder).mockReset();
+    vi.mocked(toast.error).mockReset();
+    vi.mocked(toast.success).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("требует код карточки-замены и отправляет его вместе со статусом", async () => {
+    const withPension = order({
+      manual_status_options: { pension: "Допродаём", working: "Рабочий" },
+    });
+    vi.mocked(createProcurementClassification).mockResolvedValue(withPension);
+
+    render(<ProcurementOrderFormationApp initialOrder={withPension} />);
+    await proposePension();
+
+    const submit = screen.getByRole("button", { name: "Перевести в Допродаём" });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)"), {
+      target: { value: "РБ000057818" },
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(createProcurementClassification).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createProcurementClassification).mock.calls[0][2]).toMatchObject({
+      proposed_status: "pension",
+      replacement_sku_code: "РБ000057818",
+      no_replacement: false,
+    });
+  });
+
+  it("разрешает отправку без кода, когда модель снята с производства", async () => {
+    const withPension = order({
+      manual_status_options: { pension: "Допродаём", working: "Рабочий" },
+    });
+    vi.mocked(createProcurementClassification).mockResolvedValue(withPension);
+
+    render(<ProcurementOrderFormationApp initialOrder={withPension} />);
+    await proposePension();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Перевести в Допродаём" }));
+
+    await waitFor(() => expect(createProcurementClassification).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createProcurementClassification).mock.calls[0][2]).toMatchObject({
+      proposed_status: "pension",
+      replacement_sku_code: null,
+      no_replacement: true,
+    });
+  });
+});
 
 describe("ProcurementOrderFormationApp version conflicts", () => {
   beforeEach(() => {

@@ -80,6 +80,7 @@ MANUAL_STATUS_ORDER = (
     "replace_candidate",
     "nonliquid",
     "do_not_order",
+    "pension",
     "review",
 )
 MANUAL_STATUS_LABELS = {
@@ -88,6 +89,7 @@ MANUAL_STATUS_LABELS = {
     "replace_candidate": "Кандидат на замену",
     "nonliquid": "Кандидат на неликвид",
     "do_not_order": "Не закупать",
+    "pension": "Допродаём",
     "review": "Review / разбор",
 }
 ORDER_STATUS_LABELS = {

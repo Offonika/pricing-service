@@ -27,7 +27,13 @@ interface ClassificationEdit {
   reason: string;
   manualMinimum: string;
   reviewDate: string;
+  replacementSkuCode: string;
+  noReplacement: boolean;
 }
+
+// Статусы, снимающие карточку с ведения: для них нужен код карточки-победителя
+// семьи либо явная отметка «замены нет» (решение 2026-08-18).
+const REPLACEMENT_REQUIRED_STATUSES = new Set(["pension", "replace_candidate", "do_not_order"]);
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
   draft: "Заказ на подтверждении",
@@ -116,6 +122,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
       reason: "",
       manualMinimum: line.manual_minimum || "",
       reviewDate: "",
+      replacementSkuCode: "",
+      noReplacement: false,
     };
 
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
@@ -180,6 +188,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
           reason: edit.reason,
           manual_minimum: edit.manualMinimum || null,
           review_date: edit.reviewDate || null,
+          replacement_sku_code: edit.replacementSkuCode.trim() || null,
+          no_replacement: edit.noReplacement,
         })
       );
       setOrder(updated);
@@ -359,13 +369,55 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                               [line.id]: { ...classification, reviewDate: event.target.value },
                             }))}
                           />
+                          {REPLACEMENT_REQUIRED_STATUSES.has(classification.status) && (
+                            <>
+                              <input
+                                disabled={locked || line.removed || classification.noReplacement}
+                                placeholder="Взамен ведём: код 1С (РБ...)"
+                                type="text"
+                                value={classification.replacementSkuCode}
+                                onChange={(event) => setClassificationEdits((current) => ({
+                                  ...current,
+                                  [line.id]: {
+                                    ...classification,
+                                    replacementSkuCode: event.target.value,
+                                  },
+                                }))}
+                              />
+                              <label className="order-formation__no-replacement">
+                                <input
+                                  checked={classification.noReplacement}
+                                  disabled={locked || line.removed}
+                                  type="checkbox"
+                                  onChange={(event) => setClassificationEdits((current) => ({
+                                    ...current,
+                                    [line.id]: {
+                                      ...classification,
+                                      noReplacement: event.target.checked,
+                                      replacementSkuCode: event.target.checked
+                                        ? ""
+                                        : classification.replacementSkuCode,
+                                    },
+                                  }))}
+                                />
+                                Замены нет: снято с производства
+                              </label>
+                            </>
+                          )}
                           <button
                             className="btn btn--small"
-                            disabled={!classification.reason.trim() || Boolean(loadingKey) || locked}
+                            disabled={
+                              !classification.reason.trim() ||
+                              (REPLACEMENT_REQUIRED_STATUSES.has(classification.status) &&
+                                !classification.replacementSkuCode.trim() &&
+                                !classification.noReplacement) ||
+                              Boolean(loadingKey) ||
+                              locked
+                            }
                             onClick={() => saveClassification(line)}
                             type="button"
                           >
-                            На согласование
+                            {classification.status === "pension" ? "Перевести в Допродаём" : "На согласование"}
                           </button>
                         </div>
                       )}

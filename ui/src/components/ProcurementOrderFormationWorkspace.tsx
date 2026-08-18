@@ -56,6 +56,7 @@ const MANUAL_STATUS_LABELS: Record<string, string> = {
   replace_candidate: "Кандидат на замену",
   nonliquid: "Кандидат на неликвид",
   do_not_order: "Не закупать",
+  pension: "Допродаём",
   review: "Review / разбор",
 };
 

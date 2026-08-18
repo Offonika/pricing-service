@@ -11,6 +11,8 @@ related_code:
   - app/api/procurement_order_formation.py
   - app/services/procurement_order_formation.py
   - app/services/procurement_order_formation_workspace.py
+  - app/services/procurement_manual_status_export.py
+  - app/services/procurement_management_marks_export.py
   - app/services/bitrix_procurement_order_formation_auth.py
   - app/services/bitrix_order_formation.py
   - app/services/master_mobile_catalog.py
@@ -22,6 +24,8 @@ related_code:
   - tasks/backfill_procurement_order_product_media.py
   - tasks/build_procurement_order_formation_dry_run.py
   - tasks/sync_procurement_order_formation_results.py
+  - tasks/export_manual_status_overrides.py
+  - tasks/export_management_marks.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
 related_tests:
@@ -29,6 +33,8 @@ related_tests:
   - tests/test_procurement_order_formation_workspace.py
   - tests/test_procurement_order_formation_api.py
   - tests/test_procurement_order_formation_dry_run.py
+  - tests/test_procurement_manual_status_export.py
+  - tests/test_procurement_management_marks_export.py
   - tests/test_master_mobile_catalog.py
   - tests/test_procurement_order_metrics.py
   - tests/test_procurement_order_metrics_backfill.py
@@ -458,6 +464,10 @@ hard blocker. Numeric score `0–100` в будущем допускается �
   снятая карточка не видна закупщику в 1С. Разрешён узкий периметр — свойства
   `Управленческая метка ассортимента` и `Взамен ведём`; жизненные статусы
   лестницы в `УТ 10.3` по-прежнему не выгружаются.
+- Показ метки в 1С выполняет `tasks/export_management_marks.py`; по умолчанию
+  задача работает в `dry_run` и ничего не отправляет, режим `apply` требует
+  отдельного разрешения. Контракт и порядок пилота —
+  `../../1C_Dev_Workflow/docs/specs/ut103-assortment-management-marks-2026-08-18.md`.
 - Прямые записи в SQL 1С и прямое изменение каталога Bitrix запрещены.
 
 ## API

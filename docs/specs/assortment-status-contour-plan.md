@@ -7,6 +7,7 @@ status: accepted
 owner: "operations"
 source_of_truth: true
 related_code:
+  - tasks/build_display_auto_order_dry_run.py
   - app/models/procurement_order_formation.py
   - app/api/procurement_order_formation.py
   - app/services/procurement_order_formation.py
@@ -14,6 +15,7 @@ related_code:
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
 related_tests:
+  - tests/test_build_display_auto_order_dry_run_task.py
   - tests/test_procurement_order_formation.py
   - tests/test_procurement_order_formation_workspace.py
   - tests/test_procurement_order_formation_api.py
@@ -24,7 +26,7 @@ depends_on: []
 supersedes:
   - docs/specs/procurement-order-auto-order-unified-contour.md
 rollout_required: false
-updated_at: "2026-08-17"
+updated_at: "2026-08-18"
 ---
 
 # Канонический план контура статусов ассортимента
@@ -199,6 +201,11 @@ run или итоговый артефакт. До восстановления 
 ## Границы и риск-гейты
 
 - Этот план не разрешает изменения production, Bitrix24 или данных 1С.
+- Карточка, не попавшая в расчёт автозаказа, обязана быть названа с причиной:
+  гейт скоупа вычисляется после выборки, а каждая отсечённая карточка попадает
+  в `auto_order_scope_gate` дневного `summary` и в журнал
+  `display-auto-order-scope-exclusions.csv`. Молчаливое исчезновение карточки
+  из расчёта считается дефектом наблюдаемости, а не нормальной работой гейта.
 - Решением владельца от `2026-08-10` ежедневный автоматический расчёт «К
   заказу» и создание сгруппированных по поставщикам внутренних `draft` в БД
   `pricing-service` являются штатной работой приложения. Предварительное
@@ -289,6 +296,16 @@ Bitrix24 и 1С не изменяются. Каждый будущий шаг с
 
 ## Changelog
 
+- 2026-08-18 — реализован журнал выпавших карточек: условия скоупа автозаказа
+  (статус, способ расчёта спроса, готовность к КА 2, ручная проверка, признак
+  `auto_order_allowed`) вычисляются после выборки, а не в `SQL WHERE`, поэтому
+  каждая отсечённая карточка получает причину в `auto_order_scope_gate`
+  дневного `summary` и в файле `display-auto-order-scope-exclusions.csv`.
+  Отдельно фиксируются карточки, пропавшие из последнего прогона классификации.
+  Состав расчёта не изменился: на прогоне `run_id=1293` в расчёт вошли те же
+  `1536` карточек, названными стали `1133` ранее молчаливо выпадавшие
+  (`720` статус, `362` способ расчёта спроса, `45` готовность к КА 2,
+  `1` ручная проверка, `5` пропали из прогона).
 - 2026-08-17 — активный невыполненный остаток `Заказов покупателей`, включая
   `Потребности <магазин>`, добавлен в формулу количества `sale`/`working`;
   `Зарезервировано` и `Под заказ` исключены из этой формулы.

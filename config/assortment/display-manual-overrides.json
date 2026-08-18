@@ -2198,5 +2198,7 @@
       "nomenclature_code": "РБ000075803",
       "source_review_csv": "reports/assortment_lifecycle/2026-07-06/display-auto-order-dry-run.csv"
     }
-  ]
+  ],
+  "_order_formation_status_synced_at": "2026-08-18T16:04:55.532232+00:00",
+  "_order_formation_status_source_rule": "procurement_order_formation_classification"
 }

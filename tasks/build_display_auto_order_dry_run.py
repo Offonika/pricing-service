@@ -26,6 +26,16 @@ from app.services.display_family_order_recommendation import (
     display_family_order_recommendation_summary,
 )
 from app.services.display_family_registry import load_active_display_family_member_contexts
+from app.services.display_margin_flow import (
+    MarginFlowPolicy,
+    build_margin_flow_facts,
+    fetch_current_party_costs,
+    fetch_point_availability_days,
+    fetch_point_gross_sales,
+    fetch_point_safe_free_stock,
+    fetch_rolling_unit_revenue,
+    qualifies_for_margin_flow,
+)
 from app.services.display_scope_policy import (
     empty_display_scope_audit,
     filter_display_scope_records,
@@ -123,6 +133,17 @@ CSV_COLUMNS = [
     "days_in_sale_long",
     "base_avg_daily_sales_qty",
     "avg_daily_sales_qty",
+    "margin_flow_qualifies",
+    "margin_flow_rule_applied",
+    "margin_flow_point_rate_sum",
+    "margin_flow_profitability_pct",
+    "margin_flow_party_cost_per_unit",
+    "margin_flow_gross_sale_qty_180",
+    "margin_flow_net_revenue_rub_180",
+    "margin_flow_minimum_representation_qty",
+    "margin_flow_reliable_incoming_qty",
+    "margin_flow_free_stock_qty",
+    "margin_flow_data_status",
     "speed_tier",
     "speed_group_avg_daily_sales_qty",
     "speed_max_effective_target_days",
@@ -200,6 +221,7 @@ class WarehousePolicy:
     defect_codes: tuple[str, ...]
     transit_codes: tuple[str, ...]
     non_systematic_codes: tuple[str, ...]
+    physical_sales_point_codes: tuple[str, ...] = ()
 
     @property
     def usable_codes(self) -> tuple[str, ...]:
@@ -352,6 +374,7 @@ class AutoOrderPolicy:
     price_batch_applies_to_statuses: tuple[str, ...] = ()
     price_batch_applies_to_analog_roles: tuple[str, ...] = ()
     supported_analog_policy: SupportedAnalogPolicy = SupportedAnalogPolicy()
+    margin_flow_policy: MarginFlowPolicy = MarginFlowPolicy()
 
     @property
     def lead_time_days(self) -> int:
@@ -397,6 +420,7 @@ class AutoOrderPolicy:
             "price_batch_applies_to_statuses": self.price_batch_applies_to_statuses,
             "price_batch_applies_to_analog_roles": self.price_batch_applies_to_analog_roles,
             "supported_analog_policy": self.supported_analog_policy,
+            "margin_flow_policy": self.margin_flow_policy,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
         return AutoOrderPolicy(**values)
@@ -421,6 +445,7 @@ class AutoOrderPolicy:
         for rule in self.price_batch_rules:
             rule.validate()
         self.supported_analog_policy.validate()
+        self.margin_flow_policy.validate()
         for field_name in [
             "order_cadence_days",
             "supplier_prepare_days",
@@ -474,6 +499,17 @@ def main() -> int:
         app_engine.dispose()
 
     policy = load_warehouse_policy(args.warehouse_policy_json)
+    if auto_order_policy.margin_flow_policy.enabled:
+        if (
+            len(policy.physical_sales_point_codes)
+            != auto_order_policy.margin_flow_policy.physical_store_count
+        ):
+            raise SystemExit("margin flow physical store count does not match warehouse policy")
+        if (
+            auto_order_policy.margin_flow_policy.central_warehouse_code
+            in policy.physical_sales_point_codes
+        ):
+            raise SystemExit("margin flow central warehouse must not be a physical store")
     source_errors: dict[str, str] = {}
     facts = {
         "stock": {},
@@ -482,7 +518,13 @@ def main() -> int:
         "sales": {},
         "returns": {},
         "purchase": {},
+        "margin_flow": {},
     }
+    margin_flow_point_sales: dict[str, dict[str, dict[int, Decimal]]] = {}
+    margin_flow_party_costs: dict[str, Decimal] = {}
+    margin_flow_revenue: dict[str, dict[str, Decimal]] = {}
+    margin_flow_free_stock: dict[str, dict[str, Any]] = {}
+    margin_flow_codes: tuple[str, ...] = ()
     b2b_customer_demand_profiles: dict[str, B2BSkuDemandProfile] = {}
     b2b_customer_demand_error = ""
     if args.b2b_customer_demand_csv:
@@ -519,6 +561,12 @@ def main() -> int:
                 expanded_scope_result.audit,
             )
             codes = tuple(str(item["nomenclature_code"]) for item in items)
+            margin_flow_codes = tuple(
+                str(item["nomenclature_code"])
+                for item in items
+                if _clean(item.get("status")).casefold()
+                == auto_order_policy.margin_flow_policy.status_code.casefold()
+            )
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
             facts["incoming"] = fetch_incoming_totals(
@@ -541,6 +589,36 @@ def main() -> int:
                 date_to=args.as_of + timedelta(days=1),
             )
             facts["purchase"] = fetch_latest_purchase_prices(onec_engine, codes=codes)
+            margin_locations = (
+                *policy.physical_sales_point_codes,
+                auto_order_policy.margin_flow_policy.central_warehouse_code,
+            )
+            if auto_order_policy.margin_flow_policy.enabled:
+                try:
+                    margin_flow_point_sales = fetch_point_gross_sales(
+                        onec_engine,
+                        codes=margin_flow_codes,
+                        warehouse_codes=margin_locations,
+                        as_of=args.as_of,
+                    )
+                    margin_flow_party_costs = fetch_current_party_costs(
+                        onec_engine,
+                        codes=margin_flow_codes,
+                    )
+                    margin_flow_revenue = fetch_rolling_unit_revenue(
+                        onec_engine,
+                        codes=margin_flow_codes,
+                        as_of=args.as_of,
+                        history_days=auto_order_policy.sales_window_days,
+                    )
+                    margin_flow_free_stock = fetch_point_safe_free_stock(
+                        onec_engine,
+                        codes=margin_flow_codes,
+                        warehouse_codes=margin_locations,
+                        quality_names=policy.usable_stock_quality_names,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fail closed for this rule only.
+                    source_errors["margin_flow_onec"] = f"{type(exc).__name__}: {exc}"
         except (
             Exception
         ) as exc:  # noqa: BLE001 - report must stay read-only and explain source gaps.
@@ -561,6 +639,26 @@ def main() -> int:
                     auto_order_policy.sales_window_days,
                 ),
             )
+            if auto_order_policy.margin_flow_policy.enabled:
+                margin_locations = (
+                    *policy.physical_sales_point_codes,
+                    auto_order_policy.margin_flow_policy.central_warehouse_code,
+                )
+                margin_flow_availability = fetch_point_availability_days(
+                    days_in_sale_engine,
+                    codes=margin_flow_codes,
+                    warehouse_codes=margin_locations,
+                    as_of=args.as_of,
+                )
+                facts["margin_flow"] = build_margin_flow_facts(
+                    codes=margin_flow_codes,
+                    warehouse_codes=margin_locations,
+                    point_sales=margin_flow_point_sales,
+                    point_availability=margin_flow_availability,
+                    party_costs=margin_flow_party_costs,
+                    rolling_revenue=margin_flow_revenue,
+                    point_free_stock=margin_flow_free_stock,
+                )
         except (
             Exception
         ) as exc:  # noqa: BLE001 - days-in-sale correction is best-effort, must not block dry-run.
@@ -588,6 +686,7 @@ def main() -> int:
         max_order_qty=auto_order_policy.max_order_qty,
         order_rounding_rules=auto_order_policy.order_rounding_rules,
         speed_horizon_rules=auto_order_policy.speed_horizon_rules,
+        margin_flow_policy=auto_order_policy.margin_flow_policy,
         demand_uplift_rules=auto_order_policy.demand_uplift_rules,
         price_batch_rules=auto_order_policy.price_batch_rules,
         price_batch_applies_to_statuses=auto_order_policy.price_batch_applies_to_statuses,
@@ -705,6 +804,7 @@ def load_warehouse_policy(path: Path) -> WarehousePolicy:
     defect: list[str] = []
     transit: list[str] = []
     non_systematic: list[str] = []
+    physical_sales_points: list[str] = []
     for raw in raw_warehouses:
         if not isinstance(raw, Mapping):
             continue
@@ -721,6 +821,14 @@ def load_warehouse_policy(path: Path) -> WarehousePolicy:
             transit.append(code)
         if _bool(raw.get("is_non_systematic_sale")):
             non_systematic.append(code)
+        if (
+            _clean(raw.get("role")) == "physical_sales_point"
+            and _bool(raw.get("sells_systematically"))
+            and not _bool(raw.get("is_transit"))
+            and not _bool(raw.get("is_defect_warehouse"))
+            and not _bool(raw.get("is_non_systematic_sale"))
+        ):
+            physical_sales_points.append(code)
     if not sellable:
         raise SystemExit("warehouse policy has no sellable warehouses")
     return WarehousePolicy(
@@ -730,6 +838,7 @@ def load_warehouse_policy(path: Path) -> WarehousePolicy:
         defect_codes=tuple(defect),
         transit_codes=tuple(transit),
         non_systematic_codes=tuple(non_systematic),
+        physical_sales_point_codes=tuple(physical_sales_points),
     )
 
 
@@ -789,6 +898,7 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
             price_policy.get("applies_to_analog_roles")
         ),
         supported_analog_policy=_supported_analog_policy(supported_analog_raw),
+        margin_flow_policy=_margin_flow_policy(raw.get("margin_flow_policy")),
     )
 
 
@@ -1468,6 +1578,7 @@ def build_dry_run_rows(
     delivery_days: int = 0,
     order_rounding_rules: Sequence[OrderRoundingRule] = (),
     speed_horizon_rules: Sequence[SpeedHorizonRule] = (),
+    margin_flow_policy: MarginFlowPolicy | None = None,
     demand_uplift_rules: Sequence[DemandUpliftRule] = (),
     price_batch_rules: Sequence[PriceBatchRule] = (),
     price_batch_applies_to_statuses: Sequence[str] = (),
@@ -1480,6 +1591,7 @@ def build_dry_run_rows(
     rows: list[dict[str, Any]] = []
     scoped_items = filter_display_scope_records(items).included
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
+    margin_flow_policy = margin_flow_policy or MarginFlowPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
     if delivery_days:
@@ -1663,6 +1775,20 @@ def build_dry_run_rows(
         demand_multiplier = demand_rule.demand_multiplier if demand_rule else Decimal("1")
         adjusted_net_sales_qty = net_sales_qty * demand_multiplier
         avg_daily_sales_qty = base_avg_daily_sales_qty * demand_multiplier
+        margin_flow = facts.get("margin_flow", {}).get(code, {})
+        margin_flow_rate = _decimal(margin_flow.get("point_rate_sum"))
+        margin_flow_profitability = _optional_decimal(margin_flow.get("profitability_pct"))
+        margin_flow_qualifies = qualifies_for_margin_flow(
+            status_code=_clean(item.get("status")),
+            point_rate_sum=margin_flow_rate,
+            profitability_pct=margin_flow_profitability,
+            policy=margin_flow_policy,
+        )
+        margin_flow_data_status = (
+            "ready"
+            if margin_flow_profitability is not None
+            else "missing_party_cost_or_revenue" if margin_flow_policy.enabled else "disabled"
+        )
         forecast_qty = (
             _ceil_decimal(avg_daily_sales_qty * Decimal(str(planning_horizon_days)))
             if net_sales_qty > 0
@@ -1890,6 +2016,35 @@ def build_dry_run_rows(
                     places=4,
                 ),
                 "avg_daily_sales_qty": _out_decimal(avg_daily_sales_qty, places=4),
+                "margin_flow_qualifies": "yes" if margin_flow_qualifies else "",
+                "margin_flow_rule_applied": "",
+                "margin_flow_point_rate_sum": _out_decimal(margin_flow_rate, places=6),
+                "margin_flow_profitability_pct": (
+                    _out_decimal(margin_flow_profitability, places=4)
+                    if margin_flow_profitability is not None
+                    else ""
+                ),
+                "margin_flow_party_cost_per_unit": (
+                    _out_decimal(_decimal(margin_flow.get("party_cost_per_unit")), places=4)
+                    if margin_flow.get("party_cost_per_unit") is not None
+                    else ""
+                ),
+                "margin_flow_gross_sale_qty_180": _out_decimal(
+                    _decimal(margin_flow.get("gross_sale_qty_180"))
+                ),
+                "margin_flow_net_revenue_rub_180": _out_decimal(
+                    _decimal(margin_flow.get("net_revenue_rub_180")), places=2
+                ),
+                "margin_flow_minimum_representation_qty": (
+                    margin_flow_policy.minimum_representation_qty
+                    if margin_flow_policy.enabled
+                    else ""
+                ),
+                "margin_flow_reliable_incoming_qty": _out_decimal(pipeline_cargo_handoff_qty),
+                "margin_flow_free_stock_qty": _out_decimal(
+                    _decimal(margin_flow.get("point_safe_free_stock_qty"))
+                ),
+                "margin_flow_data_status": margin_flow_data_status,
                 "speed_tier": "",
                 "speed_group_avg_daily_sales_qty": "",
                 "speed_max_effective_target_days": "",
@@ -3550,6 +3705,17 @@ def _decimal(value: Any) -> Decimal:
         return Decimal("0")
 
 
+def _optional_decimal(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _out_decimal(value: Decimal, *, places: int = 3) -> str:
     if not isinstance(value, Decimal):
         value = _decimal(value)
@@ -3738,6 +3904,25 @@ def _supported_analog_policy(value: Any) -> SupportedAnalogPolicy:
             Decimal("10"),
         ),
         max_days_since_last_sale=_int_value(value.get("max_days_since_last_sale"), 180),
+    )
+
+
+def _margin_flow_policy(value: Any) -> MarginFlowPolicy:
+    if not isinstance(value, Mapping):
+        return MarginFlowPolicy()
+    return MarginFlowPolicy(
+        enabled=_bool(value.get("enabled")),
+        status_code=_clean(value.get("status_code")) or "sale",
+        speed_min_inclusive=_decimal_value(value.get("speed_min_inclusive"), Decimal("0.1")),
+        speed_max_inclusive=_decimal_value(value.get("speed_max_inclusive"), Decimal("0.25")),
+        profitability_min_exclusive=_decimal_value(
+            value.get("profitability_min_exclusive"), Decimal("31")
+        ),
+        safety_stock_days=_int_value(value.get("safety_stock_days"), 25),
+        minimum_representation_qty=_int_value(value.get("minimum_representation_qty"), 13),
+        physical_store_count=_int_value(value.get("physical_store_count"), 11),
+        central_reserve_qty=_int_value(value.get("central_reserve_qty"), 2),
+        central_warehouse_code=(_clean(value.get("central_warehouse_code")) or "РБ0000010"),
     )
 
 

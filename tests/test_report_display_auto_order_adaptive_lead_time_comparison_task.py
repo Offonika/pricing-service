@@ -118,6 +118,110 @@ def test_adaptive_lead_time_comparison_applies_recent_supplier_seasonality() -> 
     assert row["seasonality_signal"] == "road_seasonality"
 
 
+def test_margin_flow_bypasses_slow_review_and_uses_max_floor_with_cargo_only() -> None:
+    dry_row = _dry_row(
+        speed_tier="slow",
+        speed_max_effective_target_days="",
+        speed_rule_safety_stock_days="",
+        avg_daily_sales_qty="0.05",
+        current_recommended_order_qty="0",
+        current_target_stock_qty="0",
+        current_effective_target_days="0",
+    )
+    dry_row.update(
+        {
+            "speed_rule_action": "manual_review",
+            "dry_run_decision": "manual_review",
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.2",
+            "margin_flow_profitability_pct": "40",
+            "margin_flow_reliable_incoming_qty": "3",
+            "margin_flow_free_stock_qty": "5",
+            "free_stock_qty": "5",
+            "incoming_qty": "99",
+            "blockers": "",
+            "marketplace_risk_code": "",
+        }
+    )
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_name": "Samsung display",
+                "responsible_name": "Бочаров Омар",
+                "order_line_count": "5",
+                "recommended_supplier_prepare_days": "4",
+                "recommended_logistics_days": "16",
+                "lead_time_confidence": "high",
+                "latest_supplier_order_at": "2026-06-01",
+            }
+        ],
+        policy={
+            "order_rounding_rules": [],
+            "margin_flow_policy": {
+                "enabled": True,
+                "safety_stock_days": 25,
+                "minimum_representation_qty": 13,
+            },
+        },
+        as_of=date(2026, 8, 17),
+    )
+
+    row = rows[0]
+    assert row["margin_flow_rule_applied"] == 1
+    assert row["adaptive_forecast_qty"] == "9"
+    assert row["adaptive_safety_stock_qty"] == "5"
+    assert row["adaptive_target_stock_qty"] == "14"
+    assert row["incoming_qty"] == "3"
+    assert row["adaptive_recommended_order_qty"] == "6"
+    assert row["adaptive_decision"] == "order"
+    assert "margin_flow_rule_applied" in row["warnings"]
+
+
+def test_margin_flow_uses_floor_not_additive_thirteen() -> None:
+    dry_row = _dry_row(
+        speed_tier="slow",
+        speed_max_effective_target_days="",
+        speed_rule_safety_stock_days="",
+        avg_daily_sales_qty="0.01",
+        current_recommended_order_qty="0",
+        current_target_stock_qty="0",
+        current_effective_target_days="0",
+    )
+    dry_row.update(
+        {
+            "speed_rule_action": "manual_review",
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.1",
+            "margin_flow_profitability_pct": "40",
+            "margin_flow_reliable_incoming_qty": "0",
+            "margin_flow_free_stock_qty": "0",
+            "free_stock_qty": "0",
+            "blockers": "",
+        }
+    )
+    row = build_comparison_rows(
+        [dry_row],
+        [],
+        policy={
+            "order_rounding_rules": [],
+            "margin_flow_policy": {
+                "enabled": True,
+                "safety_stock_days": 25,
+                "minimum_representation_qty": 13,
+            },
+        },
+        as_of=date(2026, 8, 17),
+    )[0]
+
+    assert row["adaptive_forecast_qty"] == "8"
+    assert row["adaptive_safety_stock_qty"] == "3"
+    assert row["adaptive_target_stock_qty"] == "13"
+    assert row["adaptive_recommended_order_qty"] == "13"
+
+
 def test_adaptive_lead_time_comparison_summary_totals() -> None:
     rows = [
         {

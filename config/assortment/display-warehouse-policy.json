@@ -1,4 +1,9 @@
 {
+  "policy_version": "2026-08-17.2",
+  "minimum_representation_policy": {
+    "central_warehouse_code": "РБ0000010",
+    "central_reserve_qty": 2
+  },
   "usable_stock_quality_names": [
     "Новый"
   ],

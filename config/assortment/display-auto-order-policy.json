@@ -231,7 +231,9 @@
       "central_warehouse_code": "РБ0000010",
       "central_reserve_qty": 2,
       "minimum_representation_qty": 13,
-      "reliable_incoming_rule": "cargo_handoff_only"
+      "reliable_incoming_rule": "open_supplier_order_balance",
+      "reliable_incoming_rule_decision_date": "2026-08-17",
+      "reliable_incoming_rule_note_ru": "Весь открытый остаток заказа поставщику засчитывается на 100% и вычитается сразу, независимо от стадии. ОТМЕНЕНО 2026-08-17: cargo_handoff_only, при котором засчитывалось только количество с отметкой «Сдано в карго»."
     },
     "order_rounding_rules": [
       {

@@ -2040,7 +2040,11 @@ def build_dry_run_rows(
                     if margin_flow_policy.enabled
                     else ""
                 ),
-                "margin_flow_reliable_incoming_qty": _out_decimal(pipeline_cargo_handoff_qty),
+                # Решение 2026-08-17: весь открытый остаток заказа поставщику
+                # засчитывается на 100% независимо от стадии. Отменяет прежнее
+                # cargo_handoff_only, где вычиталось только pipeline_cargo_handoff_qty,
+                # а товар на согласовании и сборке у поставщика заказывался повторно.
+                "margin_flow_reliable_incoming_qty": _out_decimal(incoming_qty),
                 "margin_flow_free_stock_qty": _out_decimal(
                     _decimal(margin_flow.get("point_safe_free_stock_qty"))
                 ),

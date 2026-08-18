@@ -304,7 +304,7 @@ def merge_manual_overrides(
 def write_json(path: str | Path, payload: dict[str, Any]) -> None:
     target = resolve_repo_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def resolve_webhook_url(settings: Settings | None = None) -> str:

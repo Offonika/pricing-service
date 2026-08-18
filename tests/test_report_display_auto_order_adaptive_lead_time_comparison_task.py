@@ -69,6 +69,49 @@ def test_adaptive_lead_time_comparison_keeps_fallback_for_low_confidence() -> No
     assert "lead_time_low_confidence_fallback" in row["warnings"]
 
 
+def test_adaptive_lead_time_preserves_active_customer_order_need() -> None:
+    dry_row = _dry_row(
+        current_recommended_order_qty="101",
+        current_target_stock_qty="104",
+        current_effective_target_days="52",
+    )
+    dry_row.update(
+        {
+            "free_stock_qty": "6",
+            "active_customer_order_qty": "7",
+            "order_available_stock_qty": "3",
+        }
+    )
+
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_name": "Samsung display",
+                "responsible_name": "Бочаров Омар",
+                "order_line_count": "5",
+                "recommended_supplier_prepare_days": "4",
+                "recommended_logistics_days": "16",
+                "lead_time_confidence": "high",
+                "latest_supplier_order_at": "2026-06-01",
+            }
+        ],
+        policy={"order_rounding_rules": []},
+        as_of=date(2026, 7, 5),
+    )
+
+    row = rows[0]
+    assert row["adaptive_target_stock_qty"] == "104"
+    assert row["free_stock_qty"] == "6"
+    assert row["active_customer_order_qty"] == "7"
+    assert row["order_available_stock_qty"] == "3"
+    assert row["adaptive_recommended_order_qty_raw"] == "101"
+    assert row["adaptive_recommended_order_qty"] == "101"
+    assert "Заказов покупателей 7 шт." in row["reason_ru"]
+
+
 def test_adaptive_lead_time_comparison_applies_recent_supplier_seasonality() -> None:
     dry_row = _dry_row(
         speed_tier="normal",

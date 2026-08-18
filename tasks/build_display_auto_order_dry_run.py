@@ -336,6 +336,7 @@ class SupportedAnalogPolicy:
 @dataclass(frozen=True)
 class AutoOrderPolicy:
     sales_window_days: int = 180
+    active_customer_order_max_age_days: int = 30
     target_days: int = 14
     order_cadence_days: int = 0
     supplier_prepare_days: int = 0
@@ -379,6 +380,7 @@ class AutoOrderPolicy:
     def with_overrides(self, **overrides: int | None) -> AutoOrderPolicy:
         values = {
             "sales_window_days": self.sales_window_days,
+            "active_customer_order_max_age_days": self.active_customer_order_max_age_days,
             "target_days": self.target_days,
             "order_cadence_days": self.order_cadence_days,
             "supplier_prepare_days": self.supplier_prepare_days,
@@ -408,6 +410,8 @@ class AutoOrderPolicy:
     def validate(self) -> None:
         if self.sales_window_days <= 0:
             raise SystemExit("sales_window_days must be positive")
+        if self.active_customer_order_max_age_days <= 0:
+            raise SystemExit("active_customer_order_max_age_days must be positive")
         if self.target_days <= 0:
             raise SystemExit("target_days must be positive")
         if self.min_order_qty <= 0:
@@ -529,6 +533,8 @@ def main() -> int:
             facts["customer_orders"] = fetch_active_customer_order_totals(
                 onec_engine,
                 codes=codes,
+                as_of=args.as_of,
+                max_age_days=auto_order_policy.active_customer_order_max_age_days,
             )
             facts["incoming"] = fetch_incoming_totals(
                 onec_engine,
@@ -765,8 +771,16 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
     )
     if not isinstance(raw, Mapping):
         return AutoOrderPolicy()
+    active_customer_order_raw = (
+        raw.get("active_customer_order_policy")
+        if isinstance(raw.get("active_customer_order_policy"), Mapping)
+        else {}
+    )
     return AutoOrderPolicy(
         sales_window_days=_int_value(raw.get("sales_window_days"), 180),
+        active_customer_order_max_age_days=_int_value(
+            active_customer_order_raw.get("active_order_max_age_days"), 30
+        ),
         target_days=_int_value(raw.get("target_days"), 14),
         order_cadence_days=_int_value(raw.get("order_cadence_days"), 0),
         supplier_prepare_days=_int_value(
@@ -908,6 +922,8 @@ def fetch_active_customer_order_totals(
     engine,
     *,
     codes: Sequence[str],
+    as_of: date,
+    max_age_days: int,
 ) -> dict[str, dict[str, Any]]:
     """Return positive unfulfilled customer-order balances per SKU.
 
@@ -915,6 +931,11 @@ def fetch_active_customer_order_totals(
     ``Потребности <магазин>`` customer orders. They are intentionally included:
     the procurement formula treats them as demand commitments and never filters
     counterparties by name.
+
+    Only orders dated within ``max_age_days`` of ``as_of`` count. 1C keeps the
+    register clean only inside the transfer-assistant correction window; older
+    orders are never closed and accumulate stale balances (58M+ units observed
+    on 2026-08-18), so an unbounded read would poison the demand formula.
     """
 
     code_batches = normalized_text_batches(codes)
@@ -923,9 +944,15 @@ def fetch_active_customer_order_totals(
     if len(code_batches) > 1:
         return load_text_mapping_in_batches(
             codes,
-            lambda batch: fetch_active_customer_order_totals(engine, codes=batch),
+            lambda batch: fetch_active_customer_order_totals(
+                engine,
+                codes=batch,
+                as_of=as_of,
+                max_age_days=max_age_days,
+            ),
         )
     codes = code_batches[0]
+    min_order_at = datetime.combine(as_of - timedelta(days=max_age_days), time.min)
     sql = _expanding_text(
         """
         WITH active_order_balances AS (
@@ -941,6 +968,7 @@ def fetch_active_customer_order_totals(
             WHERE balance._Period = :balance_period
               AND customer_order._Posted = 0x01
               AND customer_order._Marked = 0x00
+              AND customer_order._Date_Time >= :active_order_min_date
               AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
             GROUP BY
                 NULLIF(LTRIM(RTRIM(product._Code)), N''),
@@ -955,7 +983,10 @@ def fetch_active_customer_order_totals(
         GROUP BY code
         """,
         codes=codes,
-    ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
+    ).bindparams(
+        bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD),
+        bindparam("active_order_min_date", value=min_order_at),
+    )
     with engine.connect() as conn:
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
 

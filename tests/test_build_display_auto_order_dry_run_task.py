@@ -3,12 +3,15 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.services.procurement_b2b_customer_demand import (
     B2BCustomerDemandComponent,
     B2BSkuDemandProfile,
 )
 from tasks.build_display_auto_order_dry_run import (
     DEFAULT_POLICY_JSON,
+    AutoOrderPolicy,
     DemandUpliftRule,
     OrderRoundingRule,
     PriceBatchRule,
@@ -114,7 +117,12 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
 def test_active_customer_order_query_uses_positive_open_balances_without_name_filter() -> None:
     engine = _CaptureEngine()
 
-    fetch_active_customer_order_totals(engine, codes=["RB1"])
+    fetch_active_customer_order_totals(
+        engine,
+        codes=["RB1"],
+        as_of=date(2026, 8, 18),
+        max_age_days=30,
+    )
 
     (customer_order_sql,) = engine.statements
     assert "_AccumRgT7145" in customer_order_sql
@@ -126,6 +134,26 @@ def test_active_customer_order_query_uses_positive_open_balances_without_name_fi
     assert "HAVING SUM" in customer_order_sql
     assert "> 0" in customer_order_sql
     assert "Потребности" not in customer_order_sql
+    # Решение 2026-08-18: 1С не закрывает старые потребности, поэтому без
+    # отсечки по дате формула тянет многолетние мёртвые остатки регистра.
+    assert "customer_order._Date_Time >= :active_order_min_date" in customer_order_sql
+
+
+def test_active_customer_order_policy_reads_max_age_and_validates(tmp_path) -> None:
+    policy_path = tmp_path / "auto-order-policy.json"
+    policy_path.write_text(
+        '{"auto_order_policy": {"active_customer_order_policy":'
+        ' {"active_order_max_age_days": 45}}}',
+        encoding="utf-8",
+    )
+    policy = load_auto_order_policy(policy_path)
+    assert policy.active_customer_order_max_age_days == 45
+
+    default_policy = load_auto_order_policy(tmp_path / "missing.json")
+    assert default_policy.active_customer_order_max_age_days == 30
+
+    with pytest.raises(SystemExit):
+        AutoOrderPolicy(active_customer_order_max_age_days=0).validate()
 
 
 def test_stock_totals_batches_more_than_sql_server_rpc_limit(tmp_path) -> None:

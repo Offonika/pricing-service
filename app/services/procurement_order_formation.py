@@ -6,7 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings, get_settings
@@ -14,6 +14,9 @@ from app.models.procurement_order_formation import (
     ProcurementClassificationProposal,
     ProcurementOrderFormation,
     ProcurementOrderFormationLine,
+)
+from app.services.assortment_lifecycle_classification_store import (
+    ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
@@ -41,6 +44,7 @@ MANUAL_STATUS_LABELS = {
     "replace_candidate": "Кандидат на замену",
     "nonliquid": "Кандидат на неликвид",
     "do_not_order": "Не закупать",
+    "pension": "Допродаём",
 }
 LIFECYCLE_STATUS_LABELS = {
     "fruit": "Плод",
@@ -49,8 +53,15 @@ LIFECYCLE_STATUS_LABELS = {
     "sales_start": "СП",
     "sale": "Продажа",
 }
-ALWAYS_BLOCKING_STATUSES = frozenset({"replace_candidate", "nonliquid", "do_not_order"})
+ALWAYS_BLOCKING_STATUSES = frozenset({"replace_candidate", "nonliquid", "do_not_order", "pension"})
 APPROVED_PROPOSAL_STATUSES = frozenset({"approved", "sent_to_1c", "applied", "reflected"})
+# Решение 2026-08-18: карточку снимают с ведения в пользу другой карточки семьи,
+# поэтому код победителя обязателен. Пустым он остаётся только с явной отметкой
+# «замены нет» — например когда модель снята с производства.
+REPLACEMENT_REQUIRED_STATUSES = frozenset({"pension", "replace_candidate", "do_not_order"})
+# Решение 2026-08-18: «Допродаём» назначает один человек, второе согласование не
+# требуется. Остальные ручные статусы сохраняют запрет самоутверждения.
+SELF_APPROVED_STATUSES = frozenset({"pension"})
 STATUS_PROPERTY_NAME = "Статус ассортимента"
 STATUS_REASON_PROPERTY_NAME = "Причина статуса ассортимента"
 STATUS_CHANGED_AT_PROPERTY_NAME = "Дата изменения статуса ассортимента"
@@ -302,6 +313,8 @@ def serialize_proposal(proposal: ProcurementClassificationProposal) -> dict[str,
         "reason": proposal.reason,
         "manual_minimum": proposal.manual_minimum,
         "review_date": proposal.review_date,
+        "replacement_sku_code": proposal.replacement_sku_code,
+        "replacement_sku_name": proposal.replacement_sku_name,
         "blocks_order_line": proposal.blocks_order_line,
         "requested_at": proposal.requested_at,
         "requested_by_bitrix_user_id": proposal.requested_by_bitrix_user_id,
@@ -435,6 +448,12 @@ def create_classification_proposal(
     review_date = values.get("review_date")
     if manual_minimum is not None and review_date is None:
         raise ValueError("review date is required when manual minimum is set")
+    replacement_code, replacement_name = resolve_replacement_sku(
+        db,
+        proposed_status,
+        values.get("replacement_sku_code"),
+        no_replacement=bool(values.get("no_replacement")),
+    )
 
     for proposal in line.classification_proposals:
         if proposal.status == "proposed":
@@ -448,6 +467,8 @@ def create_classification_proposal(
         reason=reason,
         manual_minimum=manual_minimum,
         review_date=review_date,
+        replacement_sku_code=replacement_code,
+        replacement_sku_name=replacement_name,
         blocks_order_line=classification_blocks_line(
             proposed_status,
             explicit_demand=line.explicit_demand,
@@ -458,9 +479,76 @@ def create_classification_proposal(
         idempotency_key=f"proc-class:{line.stable_key}:{uuid.uuid4().hex}",
     )
     db.add(proposal)
+    if proposed_status in SELF_APPROVED_STATUSES:
+        _apply_classification_approval(proposal, line, session)
     invalidate_order_approval(order)
     db.commit()
     return get_order(db, order_id)
+
+
+def resolve_replacement_sku(
+    db: Session,
+    proposed_status: str,
+    raw_code: Any,
+    *,
+    no_replacement: bool,
+) -> tuple[str | None, str | None]:
+    """Код карточки-победителя семьи для статусов, снимающих позицию с ведения."""
+    code = str(raw_code or "").strip()
+    if proposed_status not in REPLACEMENT_REQUIRED_STATUSES:
+        if not code:
+            return None, None
+    elif not code:
+        if not no_replacement:
+            raise ValueError(
+                "replacement nomenclature code is required for status "
+                f"{proposed_status!r}; set no_replacement when the model is discontinued"
+            )
+        return None, None
+    if len(code) > 64:
+        raise ValueError("replacement nomenclature code is too long")
+    bind = db.get_bind()
+    if not inspect(bind).has_table(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name):
+        # Витрина классификации ещё не построена: код сохраняем как есть, чтобы
+        # решение менеджера не блокировалось состоянием служебной таблицы.
+        return code, None
+    row = (
+        db.execute(
+            select(
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.name,
+            ).where(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code == code)
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise ValueError(f"replacement nomenclature code was not found: {code}")
+    return str(row["nomenclature_code"]), str(row["name"] or "") or None
+
+
+def _apply_classification_approval(
+    proposal: ProcurementClassificationProposal,
+    line: ProcurementOrderFormationLine,
+    session: ProcurementOrderFormationSession,
+) -> None:
+    """Согласование ручного статуса; см. approve_classification_proposal."""
+    proposal.approved_at = datetime.now(UTC).replace(tzinfo=None)
+    proposal.approved_by_actor = session.actor
+    proposal.approved_by_bitrix_user_id = session.user_id
+    proposal.approved_by_name = session.user_name or session.actor
+    # Ручные статусы являются внутренним решением pricing-service. Исторический
+    # общий флаг property apply больше не может превратить это решение в XML для
+    # УТ 10.3: иначе снова появятся два источника жизненного статуса.
+    proposal.onec_message_id = None
+    proposal.onec_status = "not_applicable"
+    proposal.status = "approved"
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "storage": "pricing-service",
+        "legacy_onec_export_disabled": True,
+    }
+    line.version += 1
 
 
 def approve_classification_proposal(
@@ -474,7 +562,6 @@ def approve_classification_proposal(
     commit: bool = True,
 ) -> tuple[ProcurementOrderFormation, ProcurementClassificationProposal, str, str, Path | None]:
     settings = settings or get_settings()
-    ensure_classification_approver(session.user_id, settings=settings)
     order = get_order(db, order_id)
     line = _line_from_order(order, line_id)
     proposal = next(
@@ -485,29 +572,17 @@ def approve_classification_proposal(
         raise LookupError("classification proposal was not found")
     if proposal.status != "proposed":
         raise ValueError("only proposed classification can be approved")
-    if str(proposal.requested_by_bitrix_user_id) == str(session.user_id):
-        raise PermissionError("classification proposal cannot be self-approved")
+    # Решение 2026-08-18: «Допродаём» назначает один человек, поэтому для него не
+    # нужны ни отдельный утверждающий, ни второй сотрудник.
+    if proposal.proposed_status not in SELF_APPROVED_STATUSES:
+        ensure_classification_approver(session.user_id, settings=settings)
+        if str(proposal.requested_by_bitrix_user_id) == str(session.user_id):
+            raise PermissionError("classification proposal cannot be self-approved")
 
-    approved_at = datetime.now(UTC).replace(tzinfo=None)
-    proposal.approved_at = approved_at
-    proposal.approved_by_actor = session.actor
-    proposal.approved_by_bitrix_user_id = session.user_id
-    proposal.approved_by_name = session.user_name or session.actor
-    # Ручные статусы являются внутренним решением pricing-service. Исторический
-    # общий флаг property apply больше не может превратить это решение в XML для
-    # УТ 10.3: иначе снова появятся два источника жизненного статуса.
     mode = "internal"
     xml_preview = ""
     written_path: Path | None = None
-    proposal.onec_message_id = None
-    proposal.onec_status = "not_applicable"
-    proposal.status = "approved"
-    proposal.payload = {
-        **(proposal.payload or {}),
-        "storage": "pricing-service",
-        "legacy_onec_export_disabled": True,
-    }
-    line.version += 1
+    _apply_classification_approval(proposal, line, session)
     invalidate_order_approval(order)
     if commit:
         db.commit()

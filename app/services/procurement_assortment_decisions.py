@@ -21,6 +21,9 @@ MANUAL_STATUS_DECISIONS = {
     "nonliquid",
     "do_not_order",
 }
+# «Допродаём» вводится только в приложении «Формирование заказа» (решение
+# 2026-08-18) и не заводится в legacy смарт-процессе: его enum-значения живут в
+# боевом Bitrix и меняются отдельным запуском ensure_procurement_bitrix_process.py.
 SUPPORTED_DECISIONS = {*MANUAL_STATUS_DECISIONS, "working"}
 DECISION_FIELD_KEYS = [
     "auto_order_sku_code",
@@ -40,6 +43,7 @@ DECISION_LABELS = {
     "replace_candidate": "Кандидат на замену",
     "nonliquid": "Неликвид",
     "do_not_order": "Не закупать",
+    "pension": "Допродаём",
 }
 
 
@@ -253,6 +257,11 @@ def load_manual_overrides(path: str | Path) -> dict[str, Any]:
 def merge_manual_overrides(
     payload: dict[str, Any],
     decisions: list[dict[str, Any]],
+    *,
+    source_prefix: str = "bitrix_procurement_order:",
+    synced_at_key: str = "_bitrix_assortment_status_synced_at",
+    source_rule_key: str = "_bitrix_assortment_status_source_rule",
+    source_rule: str = SOURCE_RULE,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     items = payload.get("items")
     if not isinstance(items, list):
@@ -261,7 +270,7 @@ def merge_manual_overrides(
     by_source = {
         clean_string(item.get("approval_source")): index
         for index, item in enumerate(existing)
-        if clean_string(item.get("approval_source")).startswith("bitrix_procurement_order:")
+        if clean_string(item.get("approval_source")).startswith(source_prefix)
     }
     merge_rows: list[dict[str, Any]] = []
     for decision in decisions:
@@ -286,8 +295,8 @@ def merge_manual_overrides(
             }
         )
     merged = dict(payload)
-    merged["_bitrix_assortment_status_synced_at"] = datetime.now(timezone.utc).isoformat()
-    merged["_bitrix_assortment_status_source_rule"] = SOURCE_RULE
+    merged[synced_at_key] = datetime.now(timezone.utc).isoformat()
+    merged[source_rule_key] = source_rule
     merged["items"] = existing
     return merged, merge_rows
 

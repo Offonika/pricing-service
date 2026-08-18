@@ -67,6 +67,8 @@ export interface ProcurementClassificationProposal {
   reason: string;
   manual_minimum?: string | null;
   review_date?: string | null;
+  replacement_sku_code?: string | null;
+  replacement_sku_name?: string | null;
   blocks_order_line: boolean;
   requested_at: string;
   requested_by_bitrix_user_id: string;
@@ -658,6 +660,8 @@ export async function createProcurementClassification(
     reason: string;
     manual_minimum?: string | null;
     review_date?: string | null;
+    replacement_sku_code?: string | null;
+    no_replacement?: boolean;
   }
 ) {
   const { data } = await api.post<ProcurementOrderFormation>(

@@ -9,7 +9,8 @@
     "matrix",
     "on_demand",
     "nonliquid",
-    "do_not_order"
+    "do_not_order",
+    "pension"
   ],
   "_analog_winner_confirmation_added": 98,
   "_analog_winner_confirmation_applied_at": "2026-07-04T20:05:35",

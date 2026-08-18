@@ -1167,7 +1167,7 @@ def _demand_method_fields(
             "demand_method_confidence": data_quality_score,
         }
     manual_status = _clean(item.get("manual_status")).casefold()
-    if manual_status in {"nonliquid", "do_not_order", "replace_candidate"}:
+    if manual_status in {"nonliquid", "do_not_order", "replace_candidate", "pension"}:
         return {
             "demand_method_code": "manual_review",
             "demand_method_reason": "Есть ручной стоп или статус, обычную формулу не применяем.",

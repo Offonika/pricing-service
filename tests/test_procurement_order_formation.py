@@ -36,6 +36,7 @@ from app.services.procurement_order_formation import (
     build_order_message,
     classification_blocks_line,
     create_classification_proposal,
+    effective_assortment_status,
     line_blockers,
     normalize_guid,
     onec_binary_ref_to_guid,
@@ -466,10 +467,65 @@ def test_manual_minimum_requires_review_date(db_session) -> None:
         )
 
 
+def test_pension_requires_replacement_code_or_explicit_absence(db_session) -> None:
+    order = _order(db_session)
+    line_id = order.lines[0].id
+    with pytest.raises(ValueError, match="replacement nomenclature code is required"):
+        create_classification_proposal(
+            db_session,
+            order.id,
+            line_id,
+            {
+                "proposed_status": "pension",
+                "reason": "Ведём аналог дешевле",
+            },
+            _session("77"),
+        )
+
+    order = create_classification_proposal(
+        db_session,
+        order.id,
+        line_id,
+        {
+            "proposed_status": "pension",
+            "reason": "Модель снята с производства",
+            "no_replacement": True,
+        },
+        _session("77"),
+    )
+    proposal = order.lines[0].classification_proposals[0]
+    assert proposal.replacement_sku_code is None
+
+
+def test_pension_is_approved_by_one_person_and_blocks_the_line(db_session) -> None:
+    order = _order(db_session)
+    order = create_classification_proposal(
+        db_session,
+        order.id,
+        order.lines[0].id,
+        {
+            "proposed_status": "pension",
+            "reason": "Ведём РБ000057818 вместо этой карточки",
+            "replacement_sku_code": "РБ000057818",
+        },
+        _session("77"),
+    )
+    proposal = order.lines[0].classification_proposals[0]
+
+    # Решение 2026-08-18: второе согласование для «Допродаём» не требуется.
+    assert proposal.status == "approved"
+    assert proposal.approved_by_bitrix_user_id == "77"
+    assert proposal.replacement_sku_code == "РБ000057818"
+    assert proposal.blocks_order_line is True
+    assert proposal.onec_status == "not_applicable"
+    assert effective_assortment_status(order.lines[0]) == "pension"
+
+
 def test_stop_statuses_and_on_demand_rules() -> None:
     assert classification_blocks_line("do_not_order", explicit_demand=True)
     assert classification_blocks_line("replace_candidate", explicit_demand=True)
     assert classification_blocks_line("nonliquid", explicit_demand=True)
+    assert classification_blocks_line("pension", explicit_demand=True)
     assert classification_blocks_line("on_demand", explicit_demand=False)
     assert not classification_blocks_line("on_demand", explicit_demand=True)
     assert not classification_blocks_line("working", explicit_demand=False)

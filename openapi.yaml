@@ -22079,6 +22079,16 @@ components:
             format: date
           - type: 'null'
           title: Review Date
+        replacement_sku_code:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Replacement Sku Code
+        no_replacement:
+          type: boolean
+          title: No Replacement
+          default: false
       type: object
       required:
       - expected_order_version
@@ -22120,6 +22130,16 @@ components:
             format: date
           - type: 'null'
           title: Review Date
+        replacement_sku_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Replacement Sku Code
+        replacement_sku_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Replacement Sku Name
         blocks_order_line:
           type: boolean
           title: Blocks Order Line

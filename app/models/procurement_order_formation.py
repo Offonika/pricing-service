@@ -181,6 +181,10 @@ class ProcurementClassificationProposal(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     manual_minimum: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
     review_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Код и наименование карточки-победителя семьи: решение 2026-08-18 требует
+    # указывать, что ведут вместо снятой позиции.
+    replacement_sku_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    replacement_sku_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     blocks_order_line: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     requested_at: Mapped[datetime] = mapped_column(

@@ -471,13 +471,15 @@ def main() -> int:
     )
     app_engine = build_engine(database_url, pool_pre_ping=True)
     try:
-        items, run_id, scope_policy_audit, scope_gate_audit = load_auto_order_items_with_scope_audit(
-            app_engine,
-            folder=args.folder,
-            include_sale_review_candidates=(
-                args.include_sale_review_candidates
-                or auto_order_policy.include_sale_review_candidates
-            ),
+        items, run_id, scope_policy_audit, scope_gate_audit = (
+            load_auto_order_items_with_scope_audit(
+                app_engine,
+                folder=args.folder,
+                include_sale_review_candidates=(
+                    args.include_sale_review_candidates
+                    or auto_order_policy.include_sale_review_candidates
+                ),
+            )
         )
     finally:
         app_engine.dispose()
@@ -894,6 +896,8 @@ def load_auto_order_items_with_scope_audit(
         previous_run_id=previous_run_id,
     )
     return list(scope_result.included), run_id, scope_result.audit, gate_audit
+
+
 def load_auto_order_items(
     engine,
     *,

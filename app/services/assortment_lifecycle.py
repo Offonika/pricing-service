@@ -131,23 +131,22 @@ ASSORTMENT_STATUS_LABELS = {
 }
 
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
-# человеческих названий: в справочнике 1С заведены свои значения, и обмен
-# сломается, если отправить туда незнакомую строку. Переименование статусов у
-# нас не должно трогать учётную систему.
+# человеческих названий: обмен сломается, если отправить в справочник 1С
+# незнакомую строку.
+#
+# Решение 2026-08-18: в 1С у свойства не было заведено ни одного значения, им
+# никогда не пользовались. Поэтому значения заводятся сразу в действующих
+# названиях, а старые (`Плод`, `Рабочий`, `Пенсия` и прочие) в учётную систему
+# не переносятся. В 1С уходят ТОЛЬКО управленческие метки ниже: стадии лестницы
+# считаются на сервере и не выгружаются до отдельного решения о передаче
+# изменений.
 ONEC_STATUS_VALUE_NAMES = {
-    AssortmentStatus.FRUIT: "Плод",
-    AssortmentStatus.NEWBORN: "Новорожденный",
-    AssortmentStatus.NEWBORN_NEED: "ДН / Добор новорожденного",
-    AssortmentStatus.NEW_ITEM: "Новинка",
-    AssortmentStatus.SALES_START: "СП / Старт продаж",
-    AssortmentStatus.SALE: "ПРОДАЖА",
-    AssortmentStatus.WORKING: "Рабочий",
-    AssortmentStatus.MATRIX: "Матричный",
-    AssortmentStatus.ON_DEMAND: "Под заказ",
-    AssortmentStatus.REPLACE_CANDIDATE: "Кандидат на замену",
-    AssortmentStatus.NONLIQUID: "Кандидат на неликвид",
-    AssortmentStatus.DO_NOT_ORDER: "Не закупать",
-    AssortmentStatus.PENSION: "Пенсия",
+    AssortmentStatus.MATRIX: "Держим всегда",
+    AssortmentStatus.ON_DEMAND: "Только под заказ",
+    AssortmentStatus.REPLACE_CANDIDATE: "Меняем на аналог",
+    AssortmentStatus.NONLIQUID: "Выводим",
+    AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
+    AssortmentStatus.PENSION: "Допродаём",
 }
 
 PROCUREMENT_PROFILE_LABELS = {
@@ -924,6 +923,14 @@ def build_status_property_update_rows(
     source: str = DEFAULT_STATUS_SOURCE,
     changed_at: date | None = None,
 ) -> tuple[NomenclaturePropertyUpdateRow, ...]:
+    if decision.status not in ONEC_STATUS_VALUE_NAMES:
+        # Решение 2026-08-18: в 1С уходят только управленческие метки. Стадии
+        # лестницы считаются на сервере; их выгрузка требует отдельного решения
+        # вместе с передачей одних изменений, а не всего пересчёта.
+        raise ValueError(
+            "lifecycle stage export to UT 10.3 is disabled; "
+            f"status {decision.status.value!r} stays in pricing-service"
+        )
     effective_date = changed_at or decision.changed_at or date.today()
     reason = decision.reason_text
     approved_by = decision.approved_by

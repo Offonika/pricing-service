@@ -19,6 +19,7 @@ from app.services.exporters.ut103_nomenclature_properties import (
 )
 from app.services.procurement_management_marks_export import (
     MANAGEMENT_MARK_PROPERTY_NAME,
+    MANAGEMENT_MARK_VALUE_NAMES,
     REPLACEMENT_PROPERTY_NAME,
     build_management_marks_message,
     collect_management_marks,
@@ -106,6 +107,18 @@ def test_pension_mark_and_replacement_reach_the_package(db_session) -> None:
     assert REPLACEMENT_PROPERTY_NAME in property_names
 
 
+def test_marks_go_into_the_existing_assortment_status_property() -> None:
+    # Решение 2026-08-18: пишем в уже заведённое свойство 1С, значения совпадают
+    # с переименованным справочником (РБ0020043 «Допродаём» и другие).
+    assert MANAGEMENT_MARK_PROPERTY_NAME == "Статус ассортимента"
+    assert MANAGEMENT_MARK_VALUE_NAMES == {
+        "pension": "Допродаём",
+        "do_not_order": "Не закупаем",
+        "replace_candidate": "Меняем на аналог",
+        "nonliquid": "Выводим",
+    }
+
+
 def test_lifecycle_property_export_stays_prohibited() -> None:
     # Запрет 2026-08-05 не снимается: узкий периметр решения 2026-08-18 его не трогает.
     message = build_management_marks_message(
@@ -126,7 +139,7 @@ def test_lifecycle_property_export_stays_prohibited() -> None:
         nomenclature_code="РБ000006737",
         property_name="Статус ассортимента",
         value_type="property_value",
-        new_value_name="Пенсия",
+        new_value_name="Растим (ПРОДАЖА)",
     )
     with pytest.raises(ValueError, match="lifecycle property export"):
         build_nomenclature_property_updates_xml(

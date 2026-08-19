@@ -117,7 +117,11 @@ def export_manual_status_overrides(
         source_rule_key=SOURCE_RULE_KEY,
         source_rule=SOURCE_RULE,
     )
-    if not dry_run:
+    # Файл лежит в репозитории, а задача идёт ежечасно: без этой проверки каждый
+    # прогон переписывал бы отметку времени и оставлял вечный diff. Сравниваем
+    # сами решения, а не факт слияния: повторный прогон даёт те же записи.
+    changed = merged.get("items") != payload.get("items")
+    if not dry_run and changed:
         write_json(overrides_path, merged)
     return decisions, merge_rows
 

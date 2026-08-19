@@ -68,22 +68,18 @@ def test_build_assortment_lifecycle_updates_task_writes_export_rows(
 
     summary = json.loads(result.stdout)
     item = summary["items"][0]
-    assert summary["rows"] == 5
+    # Решение 2026-08-18: стадия лестницы в 1С не уходит, остаётся только
+    # профиль закупочного поведения.
+    assert summary["rows"] == 1
     assert item["status"] == "new_item"
+    assert item["export_blockers"] == ["lifecycle_stage_not_exported"]
     assert item["expensive_profile"] == "fast_expensive"
     assert item["sales_point_warehouse_codes"] == ["shop-1"]
     assert item["manager_need_signals"][0]["accepted"] is True
     assert item["manager_need_signals"][0]["suspicious"] is True
 
     rows = json.loads(output_path.read_text(encoding="utf-8"))["items"]
-    assert [row["property_name"] for row in rows] == [
-        "Статус ассортимента",
-        "Причина статуса ассортимента",
-        "Дата изменения статуса ассортимента",
-        "Источник статуса ассортимента",
-        "Профиль закупочного поведения",
-    ]
-    assert rows[0]["new_value_tag"] == "new_item"
+    assert [row["property_name"] for row in rows] == ["Профиль закупочного поведения"]
     assert rows[-1]["new_value_tag"] == "fast_expensive"
 
 
@@ -183,7 +179,8 @@ def test_build_assortment_lifecycle_updates_display_folder_includes_laptop_matri
     summary = json.loads(result.stdout)
     assert summary["items"][0]["nomenclature_code"] == "РБ000042811"
     assert summary["items"][0]["status"] == "fruit"
-    assert summary["rows"] == 4
+    # Стадия «Рассматриваем» в 1С не уходит, профиль закупки у карточки не задан.
+    assert summary["rows"] == 0
 
 
 def test_build_assortment_lifecycle_updates_excludes_bitok_before_statuses(
@@ -293,10 +290,11 @@ def test_build_assortment_lifecycle_updates_keeps_status_and_blocks_incomplete_e
     )
 
     summary = json.loads(result.stdout)
-    assert summary["rows"] == 4
+    assert summary["rows"] == 0
     assert summary["items"][0]["status"] == "fruit"
     assert summary["items"][0]["commercial_marks"] == ["exclusive"]
-    assert set(summary["items"][0]["export_blockers"]) == {
+    assert "lifecycle_stage_not_exported" in summary["items"][0]["export_blockers"]
+    assert set(summary["items"][0]["export_blockers"]) >= {
         "exclusive_kind_required",
         "exclusive_evidence_required",
         "exclusive_min_stock_required",
@@ -350,11 +348,11 @@ def test_build_assortment_lifecycle_updates_exports_complete_exclusive_mark(
     summary = json.loads(result.stdout)
     assert summary["items"][0]["status"] == "new_item"
     assert summary["items"][0]["commercial_marks"] == ["exclusive"]
-    assert summary["items"][0]["export_blockers"] == []
+    assert summary["items"][0]["export_blockers"] == ["lifecycle_stage_not_exported"]
 
     rows = json.loads(output_path.read_text(encoding="utf-8"))["items"]
     property_names = [row["property_name"] for row in rows]
-    assert "Статус ассортимента" in property_names
+    assert "Статус ассортимента" not in property_names
     assert "Коммерческие признаки" in property_names
     assert "Тип эксклюзивности" in property_names
     assert "Ручной минимальный остаток" in property_names

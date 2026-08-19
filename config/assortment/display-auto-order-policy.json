@@ -63,7 +63,10 @@
     ]
   },
   "off_schedule_signal_policy": {
-    "description": "Внеплановый сигнал включается раньше планового графика, если сборка поставщика уходит выше нормы или есть риск опустошения склада.",
+    "description": "Внеплановый сигнал включается раньше планового графика, если сборка поставщика уходит выше нормы или есть риск дефицита.",
+    "stockout_guard_decision_date": "2026-08-17",
+    "stockout_guard_documentation_status": "accepted_code_pending",
+    "stockout_guard_implementation_note_ru": "Документация принята. Текущий код ещё ограничивает stockout_guard решением do_not_order; это ограничение отменено и должно быть снято отдельной кодовой задачей. Production этой фиксацией не меняется.",
     "baseline_source": "supplier_prepare_profile.recommended_supplier_prepare_days",
     "baseline_metric": "median_or_p75_by_confidence",
     "warning_over_baseline_pct": 30,
@@ -86,9 +89,32 @@
       },
       {
         "level": "stockout_guard",
-        "label_ru": "защита от опустошения склада",
-        "condition_ru": "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс 10 дней запаса",
-        "action_ru": "создать внеплановую Потребность на заказ или ручную задачу до обычного дня графика"
+        "label_ru": "защита от дефицита",
+        "decision_date": "2026-08-17",
+        "implementation_status": "accepted_code_pending",
+        "applies_to_status_codes": [
+          "sale",
+          "working"
+        ],
+        "applies_to_final_decisions": [
+          "order",
+          "do_not_order"
+        ],
+        "excluded_if_order_blocker": true,
+        "customer_commitment_source_ru": "только активные Заказы покупателей",
+        "ignored_1c_fields_ru": [
+          "Зарезервировано",
+          "Под заказ"
+        ],
+        "available_stock_formula": "max(0, sellable_stock_qty - active_customer_order_qty)",
+        "days_to_stockout_formula": "available_stock_qty / avg_daily_sales_qty",
+        "required_days_with_reliable_incoming_formula": "days_until_nearest_reliable_incoming + distribution_to_shelf_days + stockout_guard_days",
+        "required_days_without_reliable_incoming_formula": "full_new_supply_lead_time_days + distribution_to_shelf_days + stockout_guard_days",
+        "condition_ru": "сигнал срабатывает, если дней доступного остатка меньше индивидуального срока довоза с распределением и буфером 10 дней",
+        "action_if_order_ru": "не менять рассчитанное количество; поднять срочность и проверить ускоренный маршрут, перемещение, локальную закупку или подтвержденную замену",
+        "action_if_do_not_order_ru": "создать внеплановую Потребность на заказ или ручную задачу до обычного дня графика",
+        "action_ru": "показать срочный риск и выполнить действие по текущему решению order или do_not_order",
+        "cancelled_rule_ru": "ОТМЕНЕНО 2026-08-17: проверять stockout_guard только для решения do_not_order"
       }
     ]
   },
@@ -220,18 +246,25 @@
     "min_order_qty": 1,
     "max_order_qty": null,
     "include_sale_review_candidates": true,
-    "margin_flow_policy": {
-      "enabled": true,
-      "status_code": "sale",
-      "speed_min_inclusive": 0.1,
-      "speed_max_inclusive": 0.25,
-      "profitability_min_exclusive": 31,
-      "safety_stock_days": 25,
-      "physical_store_count": 11,
-      "central_warehouse_code": "РБ0000010",
-      "central_reserve_qty": 2,
-      "minimum_representation_qty": 13,
-      "reliable_incoming_rule": "cargo_handoff_only"
+    "active_customer_order_policy": {
+      "decision_date": "2026-08-17",
+      "implementation_status": "wired_in_dry_run",
+      "applies_to_status_codes": [
+        "sale",
+        "working"
+      ],
+      "source": "1C active customer order balance _AccumRgT7145",
+      "active_order_max_age_days": 30,
+      "active_order_max_age_decision_date": "2026-08-18",
+      "active_order_max_age_reason_ru": "1С чистит потребности только в окне корректировки Помощника перемещений; заказы старше не закрываются никогда (на 2026-08-18 накоплено 58,9 млн шт мертвых остатков), поэтому без фильтра по дате формула потребности отравляется старьем.",
+      "active_order_filter_ru": "положительный конечный остаток проведенного и не удаленного Заказа покупателя не старше active_order_max_age_days от даты расчета",
+      "include_store_need_counterparties": true,
+      "store_need_name_pattern_ru": "Потребности <магазин>",
+      "formula": "max(0, target_stock_qty + active_customer_order_qty - sellable_stock_qty - incoming_qty)",
+      "ignored_1c_fields_ru": [
+        "Зарезервировано",
+        "Под заказ"
+      ]
     },
     "order_rounding_rules": [
       {
@@ -316,6 +349,7 @@
     "speed_horizon_rules - целевой запас считаем по скорости группы аналогов: super_fast максимум 60 дней покрытия и 7 дней страховки; fast максимум 70 дней и 10 дней страховки; normal максимум 82 дня и 14 дней страховки; slow не раздуваем автозаказом, отправляем на review.",
     "max_order_qty = null - верхний потолок по штукам снят; заказ показывает полную расчетную потребность.",
     "include_sale_review_candidates = true - строки ПРОДАЖА участвуют в расчете групп аналогов как review-only; автозаказ создается только по строкам order.",
+    "active_customer_order_policy - для sale (Растим / ПРОДАЖА) и working (Поддерживаем / Рабочий) положительный невыполненный остаток Заказов покупателей, включая Потребности <магазин>, добавляется к потребности; Зарезервировано и Под заказ не участвуют в формуле количества. Учитываются только заказы не старше active_order_max_age_days = 30 дней (решение 2026-08-18): 1С не закрывает старые потребности, и без фильтра в формулу попадает многолетний мусор.",
     "onec_catalog_analog_candidate_model_tokens - из каталога 1С подтягиваем аналоги только по явно разрешенным токенам модели; сейчас включена только группа Apple iPhone 11.",
     "demand_uplift_rules - точечные поправки на скрытый спрос из-за перебоев наличия; глобально не применяются."
   ]

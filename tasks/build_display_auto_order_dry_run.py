@@ -73,6 +73,10 @@ CSV_COLUMNS = [
     *FAMILY_RECOMMENDATION_COLUMNS,
     "latest_purchase_price",
     "latest_purchase_price_at",
+    "order_rounding_price_group",
+    "order_rounding_group_median_price",
+    "order_rounding_price_gate",
+    "order_rounding_price_gate_ru",
     "analog_group_id",
     "analog_group_size",
     "analog_role",
@@ -245,6 +249,39 @@ class OrderRoundingRule:
 
 
 @dataclass(frozen=True)
+class OrderRoundingPriceGatePolicy:
+    """Ценовой гейт округления (решение 2026-08-19).
+
+    Округлять количество разрешено только карточке, чья закупочная цена не выше
+    медианы своей ценовой группы. Группа - бренд плюс класс устройства, и
+    определяется она по свойствам и названию карточки, а НЕ по папке каталога
+    1С: папка это ручная раскладка, её меняют без следа в свойствах. Проверка
+    2026-08-19 показала, что папка сегодня чистая (бренд из имени папки есть в
+    названии у 78 из 78 спорных карточек), но привязываться к ней всё равно
+    нельзя - решение пользователя.
+    """
+
+    enabled: bool = False
+    min_group_size: int = 10
+    small_group_round_to: int = 10
+
+    def validate(self) -> None:
+        if self.min_group_size <= 0:
+            raise SystemExit("order rounding price gate min_group_size must be positive")
+        if self.small_group_round_to <= 0:
+            raise SystemExit("order rounding price gate small_group_round_to must be positive")
+
+
+@dataclass(frozen=True)
+class OrderRoundingGate:
+    group_label: str = ""
+    median_price: Decimal | None = None
+    allowed: bool = True
+    reason_code: str = ""
+    forced_round_to: int | None = None
+
+
+@dataclass(frozen=True)
 class SpeedHorizonRule:
     tier: str
     min_group_avg_daily_sales_qty: Decimal
@@ -351,6 +388,7 @@ class AutoOrderPolicy:
     max_order_qty: int | None = None
     include_sale_review_candidates: bool = False
     order_rounding_rules: tuple[OrderRoundingRule, ...] = ()
+    order_rounding_price_gate: OrderRoundingPriceGatePolicy = OrderRoundingPriceGatePolicy()
     speed_horizon_rules: tuple[SpeedHorizonRule, ...] = ()
     onec_catalog_analog_candidate_model_tokens: tuple[str, ...] = ()
     demand_uplift_rules: tuple[DemandUpliftRule, ...] = ()
@@ -395,6 +433,7 @@ class AutoOrderPolicy:
             "max_order_qty": self.max_order_qty,
             "include_sale_review_candidates": self.include_sale_review_candidates,
             "order_rounding_rules": self.order_rounding_rules,
+            "order_rounding_price_gate": self.order_rounding_price_gate,
             "speed_horizon_rules": self.speed_horizon_rules,
             "onec_catalog_analog_candidate_model_tokens": (
                 self.onec_catalog_analog_candidate_model_tokens
@@ -425,6 +464,7 @@ class AutoOrderPolicy:
             rule.validate()
         for rule in self.order_rounding_rules:
             rule.validate()
+        self.order_rounding_price_gate.validate()
         for rule in self.speed_horizon_rules:
             rule.validate()
         for rule in self.price_batch_rules:
@@ -605,6 +645,7 @@ def main() -> int:
         sales_window_days=auto_order_policy.sales_window_days,
         max_order_qty=auto_order_policy.max_order_qty,
         order_rounding_rules=auto_order_policy.order_rounding_rules,
+        order_rounding_price_gate=auto_order_policy.order_rounding_price_gate,
         speed_horizon_rules=auto_order_policy.speed_horizon_rules,
         demand_uplift_rules=auto_order_policy.demand_uplift_rules,
         price_batch_rules=auto_order_policy.price_batch_rules,
@@ -1002,6 +1043,9 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
         max_order_qty=_optional_int_value(raw.get("max_order_qty")),
         include_sale_review_candidates=_bool(raw.get("include_sale_review_candidates")),
         order_rounding_rules=_order_rounding_rules(raw.get("order_rounding_rules")),
+        order_rounding_price_gate=_order_rounding_price_gate_policy(
+            raw.get("order_rounding_price_gate")
+        ),
         speed_horizon_rules=_speed_horizon_rules(raw.get("speed_horizon_rules")),
         onec_catalog_analog_candidate_model_tokens=_string_tuple(
             raw.get("onec_catalog_analog_candidate_model_tokens")
@@ -1768,6 +1812,7 @@ def build_dry_run_rows(
     supplier_assembly_days: int = 0,
     delivery_days: int = 0,
     order_rounding_rules: Sequence[OrderRoundingRule] = (),
+    order_rounding_price_gate: OrderRoundingPriceGatePolicy | None = None,
     speed_horizon_rules: Sequence[SpeedHorizonRule] = (),
     demand_uplift_rules: Sequence[DemandUpliftRule] = (),
     price_batch_rules: Sequence[PriceBatchRule] = (),
@@ -1780,6 +1825,13 @@ def build_dry_run_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     scoped_items = filter_display_scope_records(items).included
+    # Ценовой гейт округления считается ДО цикла: медиана группы нужна каждой
+    # строке, а собрать её можно только по всем карточкам прогона сразу.
+    rounding_gates = order_rounding_price_gates(
+        scoped_items,
+        purchase_facts=facts.get("purchase", {}),
+        policy=order_rounding_price_gate or OrderRoundingPriceGatePolicy(),
+    )
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
@@ -1843,6 +1895,8 @@ def build_dry_run_rows(
         batch_error_return_qty = _decimal(returns.get("batch_error_return_qty"))
         defect_return_qty = _decimal(returns.get("defect_return_qty"))
         latest_purchase_price = _decimal(purchase.get("latest_purchase_price"))
+        rounding_gate = rounding_gates.get(code) or OrderRoundingGate()
+        row_order_rounding_rules = _gate_order_rounding_rules(rounding_gate, order_rounding_rules)
         # Спрос брутто: возвраты не вычитаются из базы расчёта количества.
         # 82.6% возвратов дисплеев — причина "Не понадобился" (качество "Новый"),
         # не брак; вычитание всех возвратов занижало реальный спрос почти на
@@ -2003,11 +2057,11 @@ def build_dry_run_rows(
             recommended_order_qty_raw,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=row_order_rounding_rules,
         )
         order_rounding_rule = _order_rounding_rule_for_qty(
             recommended_order_qty_raw,
-            order_rounding_rules,
+            row_order_rounding_rules,
         )
         marketplace_has_exposure = total_stock_qty > 0 or incoming_qty > 0
         non_marketplace_target_stock_qty = (
@@ -2146,6 +2200,18 @@ def build_dry_run_rows(
                 "quality_normalized": _clean(item.get("quality_normalized")),
                 "price_segment": _clean(item.get("price_segment")),
                 "latest_purchase_price": _out_decimal(latest_purchase_price, places=2),
+                "order_rounding_price_group": rounding_gate.group_label,
+                "order_rounding_group_median_price": (
+                    _out_decimal(rounding_gate.median_price, places=2)
+                    if rounding_gate.median_price is not None
+                    else ""
+                ),
+                "order_rounding_price_gate": rounding_gate.reason_code,
+                "order_rounding_price_gate_ru": ORDER_ROUNDING_GATE_LABELS_RU.get(
+                    rounding_gate.reason_code, ""
+                ),
+                "_order_rounding_allowed": rounding_gate.allowed,
+                "_order_rounding_forced_round_to": rounding_gate.forced_round_to,
                 "latest_purchase_price_at": _date_text(purchase.get("latest_purchase_price_at")),
                 "analog_group_id": "",
                 "analog_group_size": 1,
@@ -2472,7 +2538,7 @@ def _apply_allocations_and_price_batch(
             raw_qty,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=_row_order_rounding_rules(row, order_rounding_rules),
         )
 
     for row in group_rows:
@@ -2492,11 +2558,19 @@ def _apply_allocations_and_price_batch(
             row["price_batch_decision"] = "exact_need"
             continue
         row["price_batch_min_qty"] = price_rule.minimum_batch_qty
+        minimum_batch_qty = Decimal(str(price_rule.minimum_batch_qty))
+        # Минимальная партия финальна (решение 2026-08-19): поднятые до партии
+        # 12 шт остаются 12 шт. Раньше округление считалось от
+        # max(raw_qty, minimum_batch_qty) и молча раздувало сами партии.
         candidate_qty = rounded_order_qty(
-            max(raw_qty, Decimal(str(price_rule.minimum_batch_qty))),
+            raw_qty if raw_qty >= minimum_batch_qty else minimum_batch_qty,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=(
+                _row_order_rounding_rules(row, order_rounding_rules)
+                if raw_qty >= minimum_batch_qty
+                else ()
+            ),
         )
         candidate_total = (
             sum(final_by_id.values(), Decimal("0")) - final_by_id[id(row)] + candidate_qty
@@ -2570,9 +2644,13 @@ def _apply_allocations_and_price_batch(
 
         row["recommended_order_qty_raw"] = _out_decimal(raw_qty)
         row["recommended_order_qty"] = _out_decimal(final_qty)
-        rounding_rule = _order_rounding_rule_for_qty(
-            max(raw_qty, _decimal(row.get("price_batch_min_qty"))),
-            order_rounding_rules,
+        rounding_rule = (
+            _order_rounding_rule_for_qty(
+                raw_qty,
+                _row_order_rounding_rules(row, order_rounding_rules),
+            )
+            if raw_qty >= _decimal(row.get("price_batch_min_qty"))
+            else None
         )
         row["order_rounding_rule"] = _order_rounding_rule_text(rounding_rule)
         row["order_rounding_multiple"] = rounding_rule.round_to if rounding_rule else ""
@@ -2820,7 +2898,7 @@ def apply_b2b_customer_demand_advisory(
             replacement_order_qty_raw,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=_row_order_rounding_rules(row, order_rounding_rules),
         )
         replacement_decision = (
             "manual_review"
@@ -2900,7 +2978,7 @@ def apply_b2b_customer_demand_advisory(
             group_order_qty_raw,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=_row_order_rounding_rules(winner, order_rounding_rules),
         )
         group_replacement_decision = (
             "manual_review"
@@ -3072,7 +3150,7 @@ def _apply_speed_horizon_rule(
                     recommended_order_qty_raw,
                     min_order_qty=min_order_qty,
                     max_order_qty=max_order_qty,
-                    order_rounding_rules=order_rounding_rules,
+                    order_rounding_rules=_row_order_rounding_rules(row, order_rounding_rules),
                 )
                 row["recommended_order_qty_raw"] = _out_decimal(recommended_order_qty_raw)
                 row["recommended_order_qty"] = _out_decimal(recommended_order_qty)
@@ -3149,11 +3227,11 @@ def _apply_speed_horizon_rule(
             recommended_order_qty_raw,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
+            order_rounding_rules=_row_order_rounding_rules(row, order_rounding_rules),
         )
         order_rounding_rule = _order_rounding_rule_for_qty(
             recommended_order_qty_raw,
-            order_rounding_rules,
+            _row_order_rounding_rules(row, order_rounding_rules),
         )
 
         row["safety_stock_days"] = speed_rule.safety_stock_days
@@ -3287,6 +3365,11 @@ def build_summary(
         for row in rows
         if _clean(row.get("price_batch_decision"))
     )
+    order_rounding_gates = Counter(
+        _clean(row.get("order_rounding_price_gate"))
+        for row in rows
+        if _clean(row.get("order_rounding_price_gate"))
+    )
     analog_group_ids = {
         _clean(row.get("analog_group_id"))
         for row in rows
@@ -3341,6 +3424,7 @@ def build_summary(
         "decision_counts": dict(sorted(decisions.items())),
         "analog_role_counts": dict(sorted(analog_roles.items())),
         "price_batch_decision_counts": dict(sorted(price_batch_decisions.items())),
+        "order_rounding_price_gate_counts": dict(sorted(order_rounding_gates.items())),
         "analog_group_count": len(analog_group_ids),
         "demand_adjustment_rule_counts": dict(sorted(demand_rules.items())),
         "speed_tier_counts": dict(sorted(speed_tiers.items())),
@@ -3886,6 +3970,185 @@ def _round_up_to_multiple(value: Decimal, multiple: Decimal) -> Decimal:
     return (value / multiple).to_integral_value(rounding=ROUND_CEILING) * multiple
 
 
+ORDER_ROUNDING_TABLET_RE = re.compile(
+    r"(?<![a-z])(ipad|matepad|mediapad|tab|pad)(?![a-z])",
+    re.IGNORECASE,
+)
+ORDER_ROUNDING_WATCH_RE = re.compile(
+    r"(?<![a-z])(watch|band|forerunner|fenix|gt\s*\d)(?![a-z])",
+    re.IGNORECASE,
+)
+ORDER_ROUNDING_BRAND_ALIASES = {
+    "redmi": "xiaomi",
+    "poco": "xiaomi",
+}
+ORDER_ROUNDING_GATE_LABELS_RU = {
+    "at_or_below_median": "цена не выше медианы группы - округление разрешено",
+    "above_median": "цена выше медианы группы - округление не применяется",
+    "small_group": "в группе меньше карточек с ценой, чем нужно для медианы - шаг 10",
+    "no_purchase_price": "нет закупочной цены - округление не применяется",
+}
+
+
+def _order_rounding_device_class(name: str) -> str:
+    """Класс устройства по названию карточки (решение 2026-08-19).
+
+    Берём из названия, а не из папки: папка выделяет планшеты только у Apple и
+    Samsung, поэтому дисплеи Huawei MediaPad/MatePad, Lenovo Tab и Acer Iconia
+    сидят в общих папках бренда. По названию их находится 170 против 86.
+    """
+
+    if ORDER_ROUNDING_TABLET_RE.search(name):
+        return "планшет"
+    if ORDER_ROUNDING_WATCH_RE.search(name):
+        return "часы"
+    return "телефон"
+
+
+def _order_rounding_brand_token(value: Any) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", _clean(value).casefold()).strip()
+    if not text:
+        return ""
+    token = text.split(" ", 1)[0]
+    return ORDER_ROUNDING_BRAND_ALIASES.get(token, token)
+
+
+def _order_rounding_brand_vocabulary(items: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """Словарь брендов собирается из самих данных прогона, а не из константы.
+
+    Реквизит бренда заполнен у всех карточек дисплеев, поэтому список брендов
+    получается самоподдерживающимся: новый бренд в номенклатуре попадает в
+    словарь сам, править код не нужно.
+    """
+
+    brands = set(ORDER_ROUNDING_BRAND_ALIASES)
+    brands.update(KNOWN_DEVICE_BRANDS)
+    for item in items:
+        token = _order_rounding_brand_token(item.get("brand_compatibility"))
+        if token:
+            brands.add(token)
+    return tuple(sorted(brands))
+
+
+def _first_brand_in_text(value: str, brands: Sequence[str]) -> str:
+    """Первый бренд по позиции в названии.
+
+    Мультибрендовый дисплей `Дисплей для Tecno Spark 7 / Infinix Hot 10i`
+    относится к группе Tecno: реквизит `Бренд` у таких карточек называет любой
+    из совместимых брендов (на 2026-08-19 таких карточек 78), поэтому сам по
+    себе он группу задавать не может.
+    """
+
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold())
+    best_position: int | None = None
+    best_brand = ""
+    for brand in brands:
+        match = re.search(rf"(?<![a-z0-9]){re.escape(brand)}(?![a-z0-9])", normalized)
+        if match is None:
+            continue
+        if best_position is None or match.start() < best_position:
+            best_position = match.start()
+            best_brand = brand
+    return ORDER_ROUNDING_BRAND_ALIASES.get(best_brand, best_brand)
+
+
+def _order_rounding_group_key(
+    item: Mapping[str, Any],
+    *,
+    brands: Sequence[str],
+) -> tuple[str, str]:
+    name = _clean(item.get("name"))
+    brand = _first_brand_in_text(name, brands) or _order_rounding_brand_token(
+        item.get("brand_compatibility")
+    )
+    return brand or "бренд не определён", _order_rounding_device_class(name)
+
+
+def _median_decimal(values: Sequence[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    count = len(ordered)
+    middle = count // 2
+    if count % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / Decimal("2")
+
+
+def order_rounding_price_gates(
+    items: Sequence[Mapping[str, Any]],
+    *,
+    purchase_facts: Mapping[str, Mapping[str, Any]],
+    policy: OrderRoundingPriceGatePolicy,
+) -> dict[str, OrderRoundingGate]:
+    if not policy.enabled:
+        return {}
+    brands = _order_rounding_brand_vocabulary(items)
+    group_by_code: dict[str, tuple[str, str]] = {}
+    price_by_code: dict[str, Decimal] = {}
+    prices_by_group: dict[tuple[str, str], list[Decimal]] = {}
+    for item in items:
+        code = _clean(item.get("nomenclature_code"))
+        if not code:
+            continue
+        key = _order_rounding_group_key(item, brands=brands)
+        group_by_code[code] = key
+        price = _decimal(purchase_facts.get(code, {}).get("latest_purchase_price"))
+        if price > 0:
+            price_by_code[code] = price
+            prices_by_group.setdefault(key, []).append(price)
+    gates: dict[str, OrderRoundingGate] = {}
+    for code, key in group_by_code.items():
+        label = f"{key[0]} / {key[1]}"
+        price = price_by_code.get(code)
+        if price is None:
+            # Нет цены - подтверждать условие нечем, вслепую заказ не раздуваем.
+            gates[code] = OrderRoundingGate(label, None, False, "no_purchase_price")
+            continue
+        group_prices = prices_by_group.get(key, [])
+        if len(group_prices) < policy.min_group_size:
+            # Медиану считать не на чем: округляем фиксированным шагом, лестница
+            # по количеству здесь не применяется (решение 2026-08-19).
+            gates[code] = OrderRoundingGate(
+                label,
+                None,
+                True,
+                "small_group",
+                policy.small_group_round_to,
+            )
+            continue
+        median_price = _median_decimal(group_prices)
+        allowed = price <= median_price
+        gates[code] = OrderRoundingGate(
+            label,
+            median_price,
+            allowed,
+            "at_or_below_median" if allowed else "above_median",
+        )
+    return gates
+
+
+def _gate_order_rounding_rules(
+    gate: OrderRoundingGate,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> Sequence[OrderRoundingRule]:
+    if not gate.allowed:
+        return ()
+    if gate.forced_round_to:
+        return (OrderRoundingRule(threshold_gt=Decimal("0"), round_to=gate.forced_round_to),)
+    return order_rounding_rules
+
+
+def _row_order_rounding_rules(
+    row: Mapping[str, Any],
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> Sequence[OrderRoundingRule]:
+    if row.get("_order_rounding_allowed") is False:
+        return ()
+    forced_round_to = row.get("_order_rounding_forced_round_to")
+    if forced_round_to:
+        return (OrderRoundingRule(threshold_gt=Decimal("0"), round_to=int(forced_round_to)),)
+    return order_rounding_rules
+
+
 def _order_rounding_rule_for_qty(
     raw_qty: Decimal,
     rules: Sequence[OrderRoundingRule],
@@ -4062,6 +4325,19 @@ def _speed_horizon_rules(value: Any) -> tuple[SpeedHorizonRule, ...]:
             key=lambda rule: rule.min_group_avg_daily_sales_qty,
             reverse=True,
         )
+    )
+
+
+def _order_rounding_price_gate_policy(value: Any) -> OrderRoundingPriceGatePolicy:
+    if not isinstance(value, Mapping):
+        return OrderRoundingPriceGatePolicy()
+    enabled = _clean(value.get("status")).casefold() == "approved" and _clean(
+        value.get("implementation_status")
+    ).casefold() not in {"disabled", "documented_not_wired"}
+    return OrderRoundingPriceGatePolicy(
+        enabled=enabled,
+        min_group_size=_int_value(value.get("min_group_size"), 10),
+        small_group_round_to=_int_value(value.get("small_group_round_to"), 10),
     )
 
 

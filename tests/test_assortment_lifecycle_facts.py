@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import create_engine, text
 
@@ -405,3 +406,90 @@ def test_chunks_preserve_all_refs_for_sqlserver_parameter_limit() -> None:
     chunks = list(_chunks(refs, 2))
 
     assert chunks == [refs[0:2], refs[2:4], refs[4:5]]
+
+
+def _sales_history_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "nomenclature_ref": "0xA",
+            "nomenclature_code": "РБ0001",
+            "folder_path": "ОБЩИЙ КАТАЛОГ / дисплеи",
+        }
+    ]
+
+
+def test_demand_method_accepts_sales_history_without_third_receipt() -> None:
+    # Решение 2026-08-19: два завоза, но товар отработал на полке и продаётся -
+    # средняя по доступным дням допустима без третьего поступления.
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=_sales_history_rows(),
+        supplier_order_rows=[],
+        receipt_rows=[
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 5, 4), "qty": 100},
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 6, 28), "qty": 120},
+        ],
+        warehouse_policy=_warehouse_policy(),
+        sales_window_totals={"РБ0001": {30: Decimal("40"), 90: Decimal("136"), 180: Decimal("168")}},
+        days_in_sale_totals={"РБ0001": {30: Decimal("21"), 90: Decimal("45"), 180: Decimal("57")}},
+        as_of=date(2026, 8, 19),
+    )
+
+    assert facts[0]["demand_method_code"] == "available_days_average"
+    assert facts[0]["demand_method_reason"] == (
+        "Истории продаж достаточно: 57 дней на полке и 136 шт за 90 дней."
+    )
+
+
+def test_demand_method_keeps_manual_review_when_shelf_history_is_short() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=_sales_history_rows(),
+        supplier_order_rows=[],
+        receipt_rows=[
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 8, 1), "qty": 100},
+        ],
+        warehouse_policy=_warehouse_policy(),
+        sales_window_totals={"РБ0001": {30: Decimal("40"), 90: Decimal("40"), 180: Decimal("40")}},
+        days_in_sale_totals={"РБ0001": {30: Decimal("18"), 90: Decimal("18"), 180: Decimal("18")}},
+        as_of=date(2026, 8, 19),
+    )
+
+    assert facts[0]["demand_method_code"] == "manual_review"
+    assert facts[0]["demand_method_reason"] == "Истории пока мало для безопасного автозаказа."
+
+
+def test_demand_method_keeps_manual_review_when_sales_are_thin() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=_sales_history_rows(),
+        supplier_order_rows=[],
+        receipt_rows=[
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 3, 1), "qty": 20},
+        ],
+        warehouse_policy=_warehouse_policy(),
+        sales_window_totals={"РБ0001": {30: Decimal("1"), 90: Decimal("6"), 180: Decimal("9")}},
+        days_in_sale_totals={"РБ0001": {30: Decimal("30"), 90: Decimal("88"), 180: Decimal("150")}},
+        as_of=date(2026, 8, 19),
+    )
+
+    assert facts[0]["demand_method_code"] == "manual_review"
+    assert facts[0]["demand_method_reason"] == "Истории пока мало для безопасного автозаказа."
+
+
+def test_demand_method_still_prefers_three_receipts() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=_sales_history_rows(),
+        supplier_order_rows=[],
+        receipt_rows=[
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 5, 4), "qty": 10},
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 6, 28), "qty": 10},
+            {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 7, 30), "qty": 10},
+        ],
+        warehouse_policy=_warehouse_policy(),
+        sales_window_totals={"РБ0001": {30: Decimal("0"), 90: Decimal("1"), 180: Decimal("2")}},
+        days_in_sale_totals={"РБ0001": {30: Decimal("2"), 90: Decimal("4"), 180: Decimal("6")}},
+        as_of=date(2026, 8, 19),
+    )
+
+    assert facts[0]["demand_method_code"] == "available_days_average"
+    assert facts[0]["demand_method_reason"] == (
+        "Есть повторные поступления, можно считать среднюю по доступным дням."
+    )

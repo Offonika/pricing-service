@@ -311,6 +311,8 @@ def build_assortment_lifecycle_fact_records(
                 group_values=group_values,
                 receipt_dates=receipt_dates.get(key, ()),
                 has_need_signal=bool(manager_signals.get(code)),
+                days_in_sale_long=fact.get("days_in_sale_long"),
+                sales_qty_medium=fact.get("sales_qty_medium"),
             )
         )
         if item_value is not None:
@@ -343,6 +345,8 @@ def build_procurement_feature_snapshot_fields(
     group_values: Sequence[Decimal],
     receipt_dates: Sequence[date],
     has_need_signal: bool,
+    days_in_sale_long: Any = None,
+    sales_qty_medium: Any = None,
 ) -> dict[str, Any]:
     """Build the procurement feature snapshot from 1C card attributes and facts."""
 
@@ -420,6 +424,8 @@ def build_procurement_feature_snapshot_fields(
             receipt_dates=receipt_dates,
             has_need_signal=has_need_signal,
             data_quality_score=data_quality_score,
+            days_in_sale_long=days_in_sale_long,
+            sales_qty_medium=sales_qty_medium,
         )
     )
     return feature_fields
@@ -1152,12 +1158,21 @@ def _calculation_unit_fields(
     }
 
 
+# Порог допуска в автозаказ по истории продаж (решение 2026-08-19). Оба
+# значения проверяются вместе и только когда поступлений меньше трёх:
+# дни на полке за длинное окно и продажи за окно 90 дней.
+DEMAND_METHOD_MIN_DAYS_IN_SALE = Decimal("30")
+DEMAND_METHOD_MIN_SALES_QTY_MEDIUM = Decimal("10")
+
+
 def _demand_method_fields(
     item: Mapping[str, Any],
     *,
     receipt_dates: Sequence[date],
     has_need_signal: bool,
     data_quality_score: str,
+    days_in_sale_long: Any = None,
+    sales_qty_medium: Any = None,
 ) -> dict[str, Any]:
     manual_method = _first_text(item, "demand_method_code", "demand_method")
     if manual_method:
@@ -1183,6 +1198,31 @@ def _demand_method_fields(
         return {
             "demand_method_code": "available_days_average",
             "demand_method_reason": "Есть повторные поступления, можно считать среднюю по доступным дням.",
+            "demand_method_confidence": data_quality_score,
+        }
+    # Решение 2026-08-19 (docs/specs/assortment-lifecycle-policy.md, раздел
+    # "Допуск в автозаказ по истории продаж"): число завозов больше не
+    # единственный вход. Товар, завезённый одной-двумя крупными партиями, но
+    # уже отработавший на полке, попадает в среднюю по доступным дням по своей
+    # истории продаж, а не ждёт третьего поступления.
+    days_in_sale = _decimal(
+        days_in_sale_long
+        if days_in_sale_long is not None
+        else _first_value(item, "days_in_sale_long")
+    ) or Decimal("0")
+    sales_qty = _decimal(
+        sales_qty_medium if sales_qty_medium is not None else _first_value(item, "sales_qty_medium")
+    ) or Decimal("0")
+    if (
+        days_in_sale >= DEMAND_METHOD_MIN_DAYS_IN_SALE
+        and sales_qty >= DEMAND_METHOD_MIN_SALES_QTY_MEDIUM
+    ):
+        return {
+            "demand_method_code": "available_days_average",
+            "demand_method_reason": (
+                f"Истории продаж достаточно: {int(days_in_sale)} дней на полке "
+                f"и {int(sales_qty)} шт за {DEMAND_WINDOW_MEDIUM_DAYS} дней."
+            ),
             "demand_method_confidence": data_quality_score,
         }
     return {

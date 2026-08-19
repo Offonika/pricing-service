@@ -35,6 +35,23 @@ PROHIBITED_LIFECYCLE_PROPERTY_NAMES = frozenset(
     }
 )
 
+# Решение 2026-08-18: в свойство «Статус ассортимента» разрешено записывать
+# управленческие метки — по ним закупщик видит в 1С, что карточку сняли с
+# ведения и почему. Стадии лестницы (Рассматриваем … Поддерживаем) остаются
+# запрещёнными: именно их массовая ночная выгрузка создала второй источник
+# правды и была остановлена 2026-08-05.
+MANAGEMENT_MARK_PROPERTY_NAME = "статус ассортимента"
+ALLOWED_MANAGEMENT_MARK_VALUES = frozenset(
+    {
+        "держим всегда",
+        "только под заказ",
+        "меняем на аналог",
+        "выводим",
+        "не закупаем",
+        "допродаём",
+    }
+)
+
 
 @dataclass(frozen=True)
 class NomenclaturePropertyUpdateRow:
@@ -216,11 +233,15 @@ def _validate_row(
         raise ValueError("nomenclature_code is required")
     if not row.property_name.strip():
         raise ValueError("property_name is required")
-    if row.property_name.strip().casefold() in PROHIBITED_LIFECYCLE_PROPERTY_NAMES:
-        raise ValueError(
-            "lifecycle property export to UT 10.3 is disabled; "
-            "store lifecycle status in pricing-service"
-        )
+    property_key = row.property_name.strip().casefold()
+    if property_key in PROHIBITED_LIFECYCLE_PROPERTY_NAMES:
+        value_key = row.new_value_name.strip().casefold().replace("ё", "е")
+        allowed = {item.replace("ё", "е") for item in ALLOWED_MANAGEMENT_MARK_VALUES}
+        if property_key != MANAGEMENT_MARK_PROPERTY_NAME or value_key not in allowed:
+            raise ValueError(
+                "lifecycle property export to UT 10.3 is disabled; "
+                "only assortment management marks are allowed"
+            )
     if row.target_kind not in VALID_TARGET_KINDS:
         raise ValueError(f"target_kind must be one of: {', '.join(sorted(VALID_TARGET_KINDS))}")
     if row.value_type not in VALID_VALUE_TYPES:

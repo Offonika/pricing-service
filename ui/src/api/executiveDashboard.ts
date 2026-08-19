@@ -599,6 +599,20 @@ export interface ExecutiveInstrumentMetrics {
   latency_ms?: number | null;
   vcpu?: number | null;
   uptime_seconds?: number | null;
+  load_avg_1m?: number | null;
+  load_avg_5m?: number | null;
+  load_per_cpu_pct?: number | null;
+}
+
+export interface ExecutiveInstrumentPublicService {
+  service_key: string;
+  name: string;
+  status: "ready" | "warning" | "critical";
+  http_status?: number | null;
+  latency_ms?: number | null;
+  reason?: string | null;
+  reason_label?: string | null;
+  checked_at?: string | null;
 }
 
 export interface ExecutiveInstrumentService {
@@ -672,6 +686,7 @@ export interface ExecutiveInstrumentDevice {
   monitoring_coverage_30d_pct?: number | null;
   metrics: ExecutiveInstrumentMetrics;
   services: ExecutiveInstrumentService[];
+  public_services?: ExecutiveInstrumentPublicService[];
   backup: {
     status: string;
     protected_datastores: number;

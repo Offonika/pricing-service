@@ -16397,6 +16397,11 @@ components:
           $ref: '#/components/schemas/ExecutiveInstrumentAccess'
         exchange:
           $ref: '#/components/schemas/ExecutiveInstrumentExchange'
+        public_services:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentPublicService'
+          type: array
+          title: Public Services
         problems:
           items:
             $ref: '#/components/schemas/ExecutiveInstrumentProblem'
@@ -16588,6 +16593,24 @@ components:
             minimum: 0.0
           - type: 'null'
           title: Uptime Seconds
+        load_avg_1m:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Load Avg 1M
+        load_avg_5m:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Load Avg 5M
+        load_per_cpu_pct:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Load Per Cpu Pct
       additionalProperties: false
       type: object
       title: ExecutiveInstrumentMetrics
@@ -16640,6 +16663,57 @@ components:
       - title
       - recommended_action
       title: ExecutiveInstrumentProblem
+    ExecutiveInstrumentPublicService:
+      properties:
+        service_key:
+          type: string
+          title: Service Key
+        name:
+          type: string
+          title: Name
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          title: Status
+          default: ready
+        http_status:
+          anyOf:
+          - type: integer
+            maximum: 599.0
+            minimum: 100.0
+          - type: 'null'
+          title: Http Status
+        latency_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Latency Ms
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        reason_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Label
+        checked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Checked At
+      additionalProperties: false
+      type: object
+      required:
+      - service_key
+      - name
+      title: ExecutiveInstrumentPublicService
     ExecutiveInstrumentService:
       properties:
         service_key:
@@ -16718,6 +16792,7 @@ components:
           - 2
           - 3
           - 4
+          - 5
           title: Schema Version
           default: 2
         generated_at:
@@ -22200,6 +22275,10 @@ components:
           type: boolean
           title: Can Reject
           default: false
+        self_proposed:
+          type: boolean
+          title: Self Proposed
+          default: false
         onec_status:
           type: string
           title: Onec Status
@@ -22422,6 +22501,10 @@ components:
         label:
           type: string
           title: Label
+        legacy_label:
+          type: string
+          title: Legacy Label
+          default: ''
         total_count:
           type: integer
           title: Total Count

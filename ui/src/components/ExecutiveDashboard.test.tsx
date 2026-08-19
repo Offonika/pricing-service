@@ -1898,6 +1898,73 @@ describe("executive instruments tab", () => {
     expect(exchange).toHaveTextContent("источник обмена: не настроено");
   });
 
+  it("shows public service status with response code and latency", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 5;
+    data.devices[0].public_services = [
+      {
+        service_key: "site",
+        name: "Публичный сайт компании",
+        status: "critical",
+        http_status: 502,
+        latency_ms: 830,
+        reason: "http_status_unexpected",
+        reason_label: "сервис отвечает ошибкой",
+        checked_at: "2026-08-19T09:00:00Z",
+      },
+      {
+        service_key: "crm",
+        name: "Корпоративный портал CRM",
+        status: "ready",
+        http_status: 200,
+        latency_ms: 410,
+        reason: null,
+        reason_label: null,
+        checked_at: "2026-08-19T09:00:00Z",
+      },
+    ];
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const publicServices = screen.getAllByLabelText("Публичные сервисы")[0];
+    expect(publicServices).toHaveTextContent("Публичный сайт компании");
+    expect(publicServices).toHaveTextContent("не работает");
+    expect(publicServices).toHaveTextContent("ответ 502");
+    expect(publicServices).toHaveTextContent("830,00 мс");
+    expect(publicServices).toHaveTextContent("сервис отвечает ошибкой");
+    expect(publicServices).toHaveTextContent("Корпоративный портал CRM");
+  });
+
+  it("states explicitly when public checks are not configured", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    expect(screen.getAllByLabelText("Публичные сервисы")[0]).toHaveTextContent(
+      "Публичные проверки не настроены."
+    );
+  });
+
+  it("shows linux load average next to cpu and memory", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 5;
+    data.devices[0].metrics = {
+      ...data.devices[0].metrics,
+      load_avg_1m: 4.5,
+      load_per_cpu_pct: 56.3,
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    expect(screen.getAllByText(/Средняя нагрузка/)[0]).toHaveTextContent(
+      "Средняя нагрузка 4,50 (56,30% на ядро)"
+    );
+  });
+
   it("loads the tab from access policy without action requests", async () => {
     window.history.pushState({}, "", "?tab=infrastructure&date=2026-07-31");
     vi.mocked(fetchExecutiveDashboard).mockResolvedValue({

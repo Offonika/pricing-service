@@ -23,6 +23,7 @@ import {
   type ExecutiveManagementBalanceView,
   type ExecutiveInstrumentDevice,
   type ExecutiveInstrumentProblem,
+  type ExecutiveInstrumentPublicService,
   type ExecutiveInstrumentExchange,
   type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
@@ -4500,8 +4501,24 @@ function compactInstrumentMetrics(device: ExecutiveInstrumentDevice) {
   if (device.metrics.disk_free_pct != null) rows.push(`Диск свободен ${formatPlainNumber(device.metrics.disk_free_pct)}%`);
   if (device.metrics.disk_free_gib != null) rows.push(`${formatPlainNumber(device.metrics.disk_free_gib)} ГиБ`);
   if (device.metrics.latency_ms != null) rows.push(`${formatPlainNumber(device.metrics.latency_ms)} мс`);
+  if (device.metrics.load_avg_1m != null) {
+    const perCpu = device.metrics.load_per_cpu_pct != null
+      ? ` (${formatPlainNumber(device.metrics.load_per_cpu_pct)}% на ядро)`
+      : "";
+    rows.push(`Средняя нагрузка ${formatPlainNumber(device.metrics.load_avg_1m)}${perCpu}`);
+  }
   if (device.metrics.uptime_seconds != null) rows.push(`Uptime ${instrumentDuration(device.metrics.uptime_seconds)}`);
   return rows;
+}
+
+const INSTRUMENT_PUBLIC_SERVICE_STATUS_LABELS: Record<string, string> = {
+  ready: "работает",
+  warning: "требует внимания",
+  critical: "не работает",
+};
+
+function instrumentPublicServices(device: ExecutiveInstrumentDevice): ExecutiveInstrumentPublicService[] {
+  return [...(device.public_services || [])].sort((left, right) => left.name.localeCompare(right.name, "ru"));
 }
 
 type InstrumentQuickFilter =
@@ -4632,6 +4649,7 @@ function InstrumentDetails({
 }) {
   const problems = instrumentProblems(device);
   const metrics = compactInstrumentMetrics(device);
+  const publicServices = instrumentPublicServices(device);
   return (
     <div className="executive-instruments__drawer-layer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside
@@ -4695,6 +4713,25 @@ function InstrumentDetails({
           ) : <p className="executive-instruments__muted">Сервисы не зарегистрированы.</p>}
           {device.integrations.count > 0 && <p className="executive-instruments__muted">Интеграции: {statusLabel(device.integrations.status)} · последний успех {formatDateTime(device.integrations.last_success_at)}</p>}
           <InstrumentExchange exchange={device.exchange} />
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-public-title">
+          <h3 id="instrument-public-title">Публичные сервисы</h3>
+          {publicServices.length ? (
+            <ul className="executive-instruments__detail-list">
+              {publicServices.map((service) => (
+                <li key={service.service_key}>
+                  <strong>{service.name}</strong>
+                  <span>
+                    {INSTRUMENT_PUBLIC_SERVICE_STATUS_LABELS[service.status] || service.status}
+                    {service.http_status != null && ` · ответ ${service.http_status}`}
+                    {service.latency_ms != null && ` · ${formatPlainNumber(service.latency_ms)} мс`}
+                    {service.reason_label && ` · ${service.reason_label}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="executive-instruments__muted">Публичные проверки не настроены.</p>}
         </section>
 
         <section className="executive-instruments__drawer-section" aria-labelledby="instrument-backup-title">

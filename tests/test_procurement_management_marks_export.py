@@ -105,6 +105,9 @@ def test_pension_mark_and_replacement_reach_the_package(db_session) -> None:
     property_names = [node.text for node in root.iter("PropertyName")]
     assert MANAGEMENT_MARK_PROPERTY_NAME in property_names
     assert REPLACEMENT_PROPERTY_NAME in property_names
+    # «Взамен ведём» — ссылка на карточку-победителя, а не текст.
+    value_types = [node.text for node in root.iter("ValueType")]
+    assert "nomenclature_ref" in value_types
 
 
 def test_marks_go_into_the_existing_assortment_status_property() -> None:

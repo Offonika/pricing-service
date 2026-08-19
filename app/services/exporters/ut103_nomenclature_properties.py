@@ -16,7 +16,12 @@ XML_ENCODING = "windows-1251"
 
 VALID_MODES = frozenset({"dry_run", "apply"})
 VALID_TARGET_KINDS = frozenset({"property", "requisite"})
-VALID_VALUE_TYPES = frozenset({"property_value", "string", "date", "number", "boolean"})
+# `nomenclature_ref` добавлен решением 2026-08-18: свойство «Взамен ведём»
+# ссылается на карточку-победителя, чтобы закупщик переходил на неё одним
+# щелчком. В пакете едет код 1С, ссылку находит приёмная сторона.
+VALID_VALUE_TYPES = frozenset(
+    {"property_value", "string", "date", "number", "boolean", "nomenclature_ref"}
+)
 
 # Жизненный статус и связанные управленческие поля хранятся только в
 # pricing-service. Универсальный property-транспорт остаётся доступен для SKU,

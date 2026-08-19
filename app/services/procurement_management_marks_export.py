@@ -104,7 +104,9 @@ def build_management_mark_rows(
                     idempotency_key=f"{base_key}:replacement",
                     nomenclature_code=mark["nomenclature_code"],
                     property_name=REPLACEMENT_PROPERTY_NAME,
-                    value_type="string",
+                    # Свойство в 1С имеет тип «Номенклатура»: передаём код,
+                    # приёмник подставляет ссылку на карточку-победителя.
+                    value_type="nomenclature_ref",
                     new_value=replacement,
                     reason=mark["reason"],
                     approved_by=mark["approved_by"],

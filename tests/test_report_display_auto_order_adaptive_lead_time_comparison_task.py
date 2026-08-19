@@ -112,6 +112,70 @@ def test_adaptive_lead_time_preserves_active_customer_order_need() -> None:
     assert "Заказов покупателей 7 шт." in row["reason_ru"]
 
 
+def test_margin_flow_rule_uses_point_metrics_and_minimum_representation() -> None:
+    """Правило «Маржинального потока» (канон assortment-lifecycle-policy.md).
+
+    Скорость берётся суммой по точкам, остаток — свободный по точкам, в пути —
+    весь открытый остаток заказа поставщику, а цель не опускается ниже
+    минимальной представленности 13 шт.
+    """
+
+    row = _dry_row(avg_daily_sales_qty="2", current_recommended_order_qty="40")
+    row.update(
+        {
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.1",
+            "margin_flow_profitability_pct": "42",
+            "margin_flow_free_stock_qty": "2",
+            "margin_flow_reliable_incoming_qty": "1",
+            "free_stock_qty": "50",
+            "incoming_qty": "50",
+        }
+    )
+    rows = build_comparison_rows(
+        [row],
+        [],
+        policy={
+            "order_rounding_rules": [{"threshold_gt": 100, "round_to": 10}],
+            "margin_flow_policy": {
+                "enabled": True,
+                "safety_stock_days": 25,
+                "minimum_representation_qty": 13,
+            },
+        },
+        as_of=date(2026, 8, 19),
+    )
+
+    result = rows[0]
+    assert result["margin_flow_rule_applied"] == 1
+    assert result["margin_flow_minimum_representation_qty"] == 13
+    assert result["adaptive_target_stock_qty"] == "13"
+    assert result["adaptive_recommended_order_qty"] == "10"
+    assert "margin_flow_rule_applied" in result["warnings"]
+    assert "Маржинальный поток" in result["reason_ru"]
+    assert "открытый остаток заказа поставщику" in result["reason_ru"]
+
+
+def test_margin_flow_rule_is_off_when_policy_is_missing() -> None:
+    row = _dry_row(avg_daily_sales_qty="2", current_recommended_order_qty="40")
+    row.update(
+        {
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.1",
+            "margin_flow_free_stock_qty": "2",
+            "margin_flow_reliable_incoming_qty": "1",
+        }
+    )
+    rows = build_comparison_rows(
+        [row],
+        [],
+        policy={"order_rounding_rules": [{"threshold_gt": 100, "round_to": 10}]},
+        as_of=date(2026, 8, 19),
+    )
+
+    assert rows[0]["margin_flow_rule_applied"] == 0
+
+
 def test_adaptive_lead_time_comparison_applies_recent_supplier_seasonality() -> None:
     dry_row = _dry_row(
         speed_tier="normal",

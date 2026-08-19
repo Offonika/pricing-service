@@ -12,6 +12,7 @@ from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
 )
 from tasks.build_display_auto_order_dry_run import (
+    CSV_COLUMNS,
     DEFAULT_POLICY_JSON,
     AutoOrderPolicy,
     DemandUpliftRule,
@@ -671,6 +672,73 @@ def test_display_auto_order_dry_run_deducts_incoming_from_need() -> None:
     assert rows[0]["dry_run_decision"] == "do_not_order"
     assert rows[0]["warnings"] == "incoming_deducted_from_need"
     assert "товаром в пути 3 шт." in rows[0]["reason_ru"]
+
+
+def test_margin_flow_reliable_incoming_counts_full_open_supplier_order_balance() -> None:
+    """Решение 2026-08-17: открытый заказ засчитывается на 100% независимо от стадии.
+
+    Отменяет cargo_handoff_only, где вычиталось только сданное в карго, а товар
+    на согласовании и сборке у поставщика заказывался повторно.
+    """
+
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB2",
+                "name": "Display test 2",
+                "status_label": "Рабочий",
+                "quality_raw": "ORIG",
+                "price_segment": "premium",
+            }
+        ],
+        facts={
+            "stock": {
+                "RB2": {
+                    "sellable_stock_qty": Decimal("3"),
+                    "central_stock_qty": Decimal("3"),
+                    "total_stock_qty": Decimal("3"),
+                }
+            },
+            "reserve": {},
+            "incoming": {
+                "RB2": {
+                    "incoming_qty": Decimal("8"),
+                    "incoming_order_count": 2,
+                    "pipeline_cargo_handoff_qty": Decimal("3"),
+                    "pipeline_supplier_processing_qty": Decimal("5"),
+                }
+            },
+            "sales": {"RB2": {"sales_qty_window": Decimal("36")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    assert rows[0]["pipeline_cargo_handoff_qty"] == "3"
+    assert rows[0]["pipeline_supplier_processing_qty"] == "5"
+    assert rows[0]["margin_flow_reliable_incoming_qty"] == "8"
+
+
+def test_production_policy_keeps_margin_flow_rule_wired() -> None:
+    """Страж от повторной потери правила «Маржинального потока».
+
+    19.08.2026 подключение правила и блок policy были стёрты при переносе
+    несохранённых наработок рабочего дерева, а канон продолжал описывать правило
+    как действующее. Тест ловит и удаление блока из боевой политики, и удаление
+    разбора этого блока из задачи расчёта.
+    """
+
+    policy = load_auto_order_policy(DEFAULT_POLICY_JSON)
+
+    assert policy.margin_flow_policy.enabled is True
+    assert policy.margin_flow_policy.status_code == "sale"
+    assert policy.margin_flow_policy.minimum_representation_qty == 13
+    assert policy.margin_flow_policy.physical_store_count == 11
+    assert policy.margin_flow_policy.central_reserve_qty == 2
+    assert "margin_flow_qualifies" in CSV_COLUMNS
+    assert "margin_flow_reliable_incoming_qty" in CSV_COLUMNS
 
 
 def test_display_auto_order_dry_run_rounds_positive_need_to_min_order_qty() -> None:

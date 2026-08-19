@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -13,6 +15,7 @@ from tasks.build_display_auto_order_dry_run import (
     DEFAULT_POLICY_JSON,
     AutoOrderPolicy,
     DemandUpliftRule,
+    OrderRoundingPriceGatePolicy,
     OrderRoundingRule,
     PriceBatchRule,
     SpeedHorizonRule,
@@ -29,6 +32,7 @@ from tasks.build_display_auto_order_dry_run import (
     load_auto_order_items_with_scope_audit,
     load_auto_order_policy,
     load_warehouse_policy,
+    order_rounding_price_gates,
     rounded_order_qty,
     write_scope_gate_csv,
 )
@@ -2631,3 +2635,369 @@ def test_build_summary_exposes_scope_gate_audit() -> None:
     assert summary["auto_order_scope_gate"]["excluded_reason_counts"] == {
         "gate_status_not_eligible": 1
     }
+
+
+def _rounding_gate_filler_items(
+    *,
+    prefix: str,
+    brand: str,
+    name_prefix: str,
+    prices: Sequence[str],
+) -> tuple[list[dict[str, object]], dict[str, dict[str, object]]]:
+    """Карточки-наполнители группы: нужны только чтобы медиана считалась."""
+
+    items: list[dict[str, object]] = []
+    purchase: dict[str, dict[str, object]] = {}
+    for index, price in enumerate(prices):
+        code = f"{prefix}-{index}"
+        items.append(
+            {
+                "nomenclature_code": code,
+                "name": f"{name_prefix} {index}",
+                "status_label": "Рабочий",
+                "quality_raw": "ORIG",
+                "price_segment": "mid_low",
+                "brand_compatibility": brand,
+            }
+        )
+        purchase[code] = {"latest_purchase_price": Decimal(price)}
+    return items, purchase
+
+
+def test_order_rounding_ladder_from_config_uses_five_ten_fifty_hundred_steps() -> None:
+    policy = load_auto_order_policy(DEFAULT_POLICY_JSON)
+    rules = policy.order_rounding_rules
+
+    def rounded(value: str) -> Decimal:
+        return rounded_order_qty(
+            Decimal(value),
+            min_order_qty=1,
+            max_order_qty=None,
+            order_rounding_rules=rules,
+        )
+
+    assert rounded("1") == Decimal("5")
+    assert rounded("23") == Decimal("25")
+    assert rounded("49") == Decimal("50")
+    assert rounded("50") == Decimal("50")
+    assert rounded("51") == Decimal("60")
+    assert rounded("371") == Decimal("380")
+    assert rounded("501") == Decimal("510")
+    # Границы относятся к верхнему шагу; на самих границах результат совпадает
+    # при любом прочтении, потому что 1000 кратно 10 и 50, а 2000 - 50 и 100.
+    assert rounded("1000") == Decimal("1000")
+    assert rounded("1001") == Decimal("1050")
+    assert rounded("2000") == Decimal("2000")
+    assert rounded("2001") == Decimal("2100")
+
+
+def test_order_rounding_price_gate_blocks_card_above_group_median() -> None:
+    items, purchase = _rounding_gate_filler_items(
+        prefix="RB-FILL",
+        brand="Apple",
+        name_prefix="Дисплей для Apple iPhone фон",
+        prices=["10", "20", "30", "40", "50", "70", "80", "90", "100"],
+    )
+    items.extend(
+        [
+            {
+                "nomenclature_code": "RB-CHEAP",
+                "name": "Дисплей для Apple iPhone 13 + тачскрин",
+                "status_label": "Рабочий",
+                "quality_raw": "ORIG",
+                "price_segment": "mid_low",
+                "brand_compatibility": "Apple",
+            },
+            {
+                "nomenclature_code": "RB-EXPENSIVE",
+                "name": "Дисплей для Apple iPhone 15 Pro Max + тачскрин",
+                "status_label": "Рабочий",
+                "quality_raw": "ORIG",
+                "price_segment": "mid_low",
+                "brand_compatibility": "Apple",
+            },
+        ]
+    )
+    purchase["RB-CHEAP"] = {"latest_purchase_price": Decimal("15")}
+    purchase["RB-EXPENSIVE"] = {"latest_purchase_price": Decimal("500")}
+
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                "RB-CHEAP": {"sales_qty_window": Decimal("180")},
+                "RB-EXPENSIVE": {"sales_qty_window": Decimal("180")},
+            },
+            "returns": {},
+            "purchase": purchase,
+        },
+        source_errors={},
+        target_days=23,
+        sales_window_days=180,
+        order_rounding_rules=(
+            OrderRoundingRule(threshold_gt=Decimal("49"), round_to=10),
+            OrderRoundingRule(threshold_gt=Decimal("0"), round_to=5),
+        ),
+        order_rounding_price_gate=OrderRoundingPriceGatePolicy(enabled=True, min_group_size=10),
+    )
+    by_code = {row["nomenclature_code"]: row for row in rows}
+
+    cheap = by_code["RB-CHEAP"]
+    assert cheap["recommended_order_qty_raw"] == "23"
+    assert cheap["recommended_order_qty"] == "25"
+    assert cheap["order_rounding_price_gate"] == "at_or_below_median"
+    assert cheap["order_rounding_price_group"] == "apple / телефон"
+    assert cheap["order_rounding_group_median_price"] == "50"
+
+    expensive = by_code["RB-EXPENSIVE"]
+    assert expensive["recommended_order_qty_raw"] == "23"
+    assert expensive["recommended_order_qty"] == "23"
+    assert expensive["order_rounding_price_gate"] == "above_median"
+
+
+def test_order_rounding_price_gate_rounds_small_group_by_ten_without_price_condition() -> None:
+    items, purchase = _rounding_gate_filler_items(
+        prefix="RB-SMALL",
+        brand="Garmin",
+        name_prefix="Дисплей для Garmin Forerunner фон",
+        prices=["10", "20"],
+    )
+    items.append(
+        {
+            "nomenclature_code": "RB-SMALL-MAIN",
+            "name": "Дисплей для Garmin Forerunner 965",
+            "status_label": "Рабочий",
+            "quality_raw": "ORIG",
+            "price_segment": "premium",
+            "brand_compatibility": "Garmin",
+        }
+    )
+    purchase["RB-SMALL-MAIN"] = {"latest_purchase_price": Decimal("9000")}
+
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-SMALL-MAIN": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+            "purchase": purchase,
+        },
+        source_errors={},
+        target_days=23,
+        sales_window_days=180,
+        order_rounding_rules=(
+            OrderRoundingRule(threshold_gt=Decimal("49"), round_to=10),
+            OrderRoundingRule(threshold_gt=Decimal("0"), round_to=5),
+        ),
+        order_rounding_price_gate=OrderRoundingPriceGatePolicy(enabled=True, min_group_size=10),
+    )
+    row = {row["nomenclature_code"]: row for row in rows}["RB-SMALL-MAIN"]
+
+    assert row["order_rounding_price_gate"] == "small_group"
+    assert row["order_rounding_group_median_price"] == ""
+    assert row["recommended_order_qty_raw"] == "23"
+    assert row["recommended_order_qty"] == "30"
+
+
+def test_order_rounding_price_gate_skips_card_without_purchase_price() -> None:
+    items, purchase = _rounding_gate_filler_items(
+        prefix="RB-NOPRICE-FILL",
+        brand="Samsung",
+        name_prefix="Дисплей для Samsung Galaxy фон",
+        prices=["10", "20", "30", "40", "50", "60", "70", "80", "90", "100"],
+    )
+    items.append(
+        {
+            "nomenclature_code": "RB-NOPRICE",
+            "name": "Дисплей для Samsung Galaxy S24 + тачскрин",
+            "status_label": "Рабочий",
+            "quality_raw": "ORIG",
+            "price_segment": "mid_low",
+            "brand_compatibility": "Samsung",
+        }
+    )
+
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-NOPRICE": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+            "purchase": purchase,
+        },
+        source_errors={},
+        target_days=23,
+        sales_window_days=180,
+        order_rounding_rules=(
+            OrderRoundingRule(threshold_gt=Decimal("49"), round_to=10),
+            OrderRoundingRule(threshold_gt=Decimal("0"), round_to=5),
+        ),
+        order_rounding_price_gate=OrderRoundingPriceGatePolicy(enabled=True, min_group_size=10),
+    )
+    row = {row["nomenclature_code"]: row for row in rows}["RB-NOPRICE"]
+
+    assert row["order_rounding_price_gate"] == "no_purchase_price"
+    assert row["recommended_order_qty_raw"] == "23"
+    assert row["recommended_order_qty"] == "23"
+
+
+def test_order_rounding_group_splits_device_classes_inside_one_brand() -> None:
+    gates = order_rounding_price_gates(
+        [
+            {
+                "nomenclature_code": "RB-PHONE",
+                "name": "Дисплей для Apple iPhone 15 Pro + тачскрин",
+                "brand_compatibility": "Apple",
+            },
+            {
+                "nomenclature_code": "RB-TABLET",
+                "name": "Дисплей для Apple iPad mini 7 (A2993/A2995)",
+                "brand_compatibility": "Apple",
+            },
+            {
+                "nomenclature_code": "RB-WATCH",
+                "name": "Дисплей для Apple Watch Series 9 45 мм",
+                "brand_compatibility": "Apple",
+            },
+            {
+                "nomenclature_code": "RB-HUAWEI-TABLET",
+                "name": "Дисплей для Huawei MatePad SE 11 (AGS6-W09)",
+                "brand_compatibility": "Huawei",
+            },
+        ],
+        purchase_facts={},
+        policy=OrderRoundingPriceGatePolicy(enabled=True, min_group_size=10),
+    )
+
+    assert gates["RB-PHONE"].group_label == "apple / телефон"
+    assert gates["RB-TABLET"].group_label == "apple / планшет"
+    assert gates["RB-WATCH"].group_label == "apple / часы"
+    # Папка кладёт планшеты Huawei в общую папку бренда; название - нет.
+    assert gates["RB-HUAWEI-TABLET"].group_label == "huawei / планшет"
+
+
+def test_order_rounding_group_takes_first_brand_in_name_for_multibrand_card() -> None:
+    gates = order_rounding_price_gates(
+        [
+            {
+                "nomenclature_code": "RB000044988",
+                "name": "Дисплей для Tecno Spark 7 (KF6N) / Infinix Hot 10i (X659B) + тачскрин",
+                "brand_compatibility": "Infinix",
+            },
+            {
+                "nomenclature_code": "RB000047004",
+                "name": "Дисплей для Infinix Hot 10 Play (X688B) / Tecno Pova Neo (LE6)",
+                "brand_compatibility": "Tecno",
+            },
+        ],
+        purchase_facts={},
+        policy=OrderRoundingPriceGatePolicy(enabled=True, min_group_size=10),
+    )
+
+    assert gates["RB000044988"].group_label == "tecno / телефон"
+    assert gates["RB000047004"].group_label == "infinix / телефон"
+
+
+def _price_batch_row_items() -> list[dict[str, object]]:
+    return [
+        {
+            "nomenclature_code": "RB-BATCH",
+            "name": "Дисплей для Samsung Galaxy A15",
+            "status": "working",
+            "status_label": "Поддерживаем (Рабочий)",
+            "auto_order_allowed": True,
+            "quality_raw": "Аналог",
+            "price_segment": "mid_low",
+            "brand_compatibility": "Samsung",
+        }
+    ]
+
+
+def _price_batch_rows(*, sales_qty: str, target_days: int, excess_days: int) -> dict[str, object]:
+    rows = build_dry_run_rows(
+        _price_batch_row_items(),
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-BATCH": {"sales_qty_window": Decimal(sales_qty)}},
+            "returns": {},
+            "purchase": {},
+        },
+        source_errors={},
+        target_days=target_days,
+        sales_window_days=180,
+        order_rounding_rules=(
+            OrderRoundingRule(threshold_gt=Decimal("49"), round_to=10),
+            OrderRoundingRule(threshold_gt=Decimal("0"), round_to=5),
+        ),
+        speed_horizon_rules=(
+            SpeedHorizonRule(
+                tier="normal",
+                min_group_avg_daily_sales_qty=Decimal("0.1"),
+                max_effective_target_days=target_days,
+                safety_stock_days=0,
+            ),
+        ),
+        price_batch_rules=(
+            PriceBatchRule(
+                speed_tier="normal",
+                price_segments=("mid_low",),
+                minimum_batch_qty=12,
+                max_automatic_excess_coverage_days=excess_days,
+            ),
+        ),
+        price_batch_applies_to_statuses=("working",),
+        price_batch_applies_to_analog_roles=("single_sku",),
+    )
+    return rows[0]
+
+
+def test_price_batch_minimum_qty_is_final_and_never_rounded_up() -> None:
+    row = _price_batch_rows(sales_qty="90", target_days=6, excess_days=30)
+
+    assert row["recommended_order_qty_raw"] == "3"
+    assert row["price_batch_min_qty"] == 12
+    # Раньше округление считалось от max(raw, 12) и выдавало 15 - партия
+    # раздувалась молча. Решение 2026-08-19: партия финальна.
+    assert row["recommended_order_qty"] == "12"
+    assert row["price_batch_decision"] == "rounded_to_price_minimum"
+
+
+def test_price_batch_excess_within_thirty_days_stays_automatic() -> None:
+    row = _price_batch_rows(sales_qty="54", target_days=10, excess_days=30)
+
+    assert row["recommended_order_qty"] == "12"
+    assert row["price_batch_decision"] == "rounded_to_price_minimum"
+    assert row["dry_run_decision"] == "order"
+
+
+def test_price_batch_excess_above_thirty_days_goes_to_manual_review() -> None:
+    row = _price_batch_rows(sales_qty="45", target_days=12, excess_days=30)
+
+    assert row["price_batch_decision"] == "manual_review_excess"
+    assert row["dry_run_decision"] == "manual_review"
+    assert "price_batch_excess_manual_review" in row["warnings"]
+
+
+def test_price_segment_schedule_policy_uses_single_thirty_day_excess_threshold() -> None:
+    policy = json.loads(DEFAULT_POLICY_JSON.read_text(encoding="utf-8"))
+    rules = policy["price_segment_schedule_policy"]["rules"]
+
+    with_threshold = [rule for rule in rules if "max_automatic_excess_coverage_days" in rule]
+    assert len(with_threshold) == 3
+    assert {rule["max_automatic_excess_coverage_days"] for rule in with_threshold} == {30}
+    assert {rule["minimum_batch_qty"] for rule in with_threshold} == {20, 12, 10}
+
+    # Дорогим сегментам поле не заводим: количество там не поднимают до партии.
+    expensive = [rule for rule in rules if set(rule["price_segments"]) & {"mid_high", "premium"}]
+    assert len(expensive) == 3
+    assert all("max_automatic_excess_coverage_days" not in rule for rule in expensive)
+    assert all(rule["rounding_mode"] == "exact_need" for rule in expensive)

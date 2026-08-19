@@ -463,9 +463,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           )}
                         </div>
                       )}
-                      {line.risk_codes.map((risk) => (
-                        <small key={risk} title={risk}>
-                          Сигнал: {procurementRiskLabel(risk)}
+                      {Array.from(
+                        line.risk_codes.reduce((groups, risk) => {
+                          const label = procurementRiskLabel(risk);
+                          groups.set(label, [...(groups.get(label) ?? []), risk]);
+                          return groups;
+                        }, new Map<string, string[]>()),
+                      ).map(([label, codes]) => (
+                        <small key={label} title={codes.join(", ")}>
+                          Сигнал: {label}
                         </small>
                       ))}
                     </td>

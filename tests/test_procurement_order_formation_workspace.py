@@ -174,6 +174,19 @@ def _approval_item(proposal: ProcurementLifecycleTransitionProposal) -> dict[str
     }
 
 
+def test_every_manual_status_has_a_recommendation() -> None:
+    # Витрина падала с KeyError, когда статус был в списке фильтров, но без
+    # подсказки: приложение отдавало 404 и не открывалось совсем.
+    from app.services.procurement_order_formation_workspace import (
+        MANUAL_STATUS_LABELS,
+        MANUAL_STATUS_ORDER,
+        MANUAL_STATUS_RECOMMENDATIONS,
+    )
+
+    assert set(MANUAL_STATUS_ORDER) <= set(MANUAL_STATUS_RECOMMENDATIONS)
+    assert set(MANUAL_STATUS_ORDER) <= set(MANUAL_STATUS_LABELS)
+
+
 def test_order_calculation_excel_contains_classification_and_active_filtered_lines(
     lifecycle_db,
     sqlite_engine,

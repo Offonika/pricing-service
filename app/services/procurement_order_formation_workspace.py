@@ -124,6 +124,7 @@ MANUAL_STATUS_RECOMMENDATIONS = {
     "replace_candidate": "Подтвердить товар для замены",
     "nonliquid": "Проверить остаток и последние продажи",
     "do_not_order": "Не включать в закупку",
+    "pension": "Допродать остаток и закрыть карточку",
     "review": "Открыть ручной разбор",
 }
 DECISION_STATE_LABELS = {
@@ -1641,7 +1642,9 @@ def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str,
         has_blockers = bool(blockers)
         decision_state = "blocked" if has_blockers else "control"
         reason = str(row.get("reason_text") or "Требуется ручная проверка")
-        action_label = MANUAL_STATUS_RECOMMENDATIONS[filter_status]
+        # Страховка от новых статусов: витрина не должна падать целиком из-за
+        # отсутствующей подсказки.
+        action_label = MANUAL_STATUS_RECOMMENDATIONS.get(filter_status, "Проверить решение")
         items.append(
             {
                 "proposal_id": None,

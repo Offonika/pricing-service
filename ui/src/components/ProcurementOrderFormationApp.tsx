@@ -268,6 +268,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
           <table className="order-formation__table">
             <thead>
               <tr>
+                <th>№</th>
                 <th>Товар</th>
                 <th>Классификация</th>
                 <th>Рекомендация</th>
@@ -288,6 +289,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     key={line.id}
                     className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
                   >
+                    <td className="order-formation__line-number">{line.line_number}</td>
                     <td>
                       <strong>{line.nomenclature_name}</strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>

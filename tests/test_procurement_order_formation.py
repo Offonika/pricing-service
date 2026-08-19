@@ -50,6 +50,7 @@ from app.services.procurement_order_formation import (
 from app.services.procurement_order_formation_workspace import (
     assemble_assistant_orders,
     build_order_assistant,
+    list_classification_proposals,
 )
 
 ONEC_REF = "0xBDB90025901E48EF11E1967C2685293E"
@@ -988,3 +989,42 @@ def test_commerceml_readback_flags_unrecognized_legacy_status_instead_of_pending
     assert summary == {"reflected": 0, "pending": 0, "missing": 0, "unrecognized": 1}
     assert proposal.status == "applied"
     assert proposal.bitrix_readback_value == "Эксклюзив"
+
+
+def test_properties_queue_marks_own_proposal_as_not_approvable(db_session) -> None:
+    # Правило «второго сотрудника» раньше срабатывало только на сервере: автор
+    # видел активную кнопку «Принять» и упирался в английскую ошибку
+    # `classification proposal cannot be self-approved`. Теперь очередь сама
+    # говорит, кому решение доступно.
+    order = _order(db_session)
+    create_classification_proposal(
+        db_session,
+        order.id,
+        order.lines[0].id,
+        {"proposed_status": "nonliquid", "reason": "старая модель, выводим карточку"},
+        _session("77"),
+    )
+    settings = Settings(procurement_order_formation_classification_approver_user_ids=["42", "77"])
+
+    author_view = list_classification_proposals(
+        db_session,
+        session=_session("77"),
+        settings=settings,
+    )
+    colleague_view = list_classification_proposals(
+        db_session,
+        session=_session("42"),
+        settings=settings,
+    )
+    outsider_view = list_classification_proposals(
+        db_session,
+        session=_session("99"),
+        settings=settings,
+    )
+
+    author_proposal = author_view["items"][0]["proposal"]
+    assert (author_proposal["can_approve"], author_proposal["self_proposed"]) == (False, True)
+    colleague_proposal = colleague_view["items"][0]["proposal"]
+    assert (colleague_proposal["can_approve"], colleague_proposal["self_proposed"]) == (True, False)
+    # Не допущенный сотрудник тоже не должен видеть активную кнопку.
+    assert outsider_view["items"][0]["proposal"]["can_approve"] is False

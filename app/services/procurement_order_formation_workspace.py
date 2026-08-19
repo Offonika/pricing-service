@@ -23,7 +23,10 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationLine,
 )
 from app.services.assortment_lifecycle import (
+    ASSORTMENT_STATUS_LABELS,
+    ASSORTMENT_STATUS_LEGACY_LABELS,
     AssortmentLifecycleInput,
+    AssortmentStatus,
     decide_assortment_status,
 )
 from app.services.assortment_lifecycle_classification_store import (
@@ -64,14 +67,27 @@ from app.services.procurement_supplier_profiles import (
 DISPLAY_FOLDER = "дисплеи"
 DISPLAY_RESPONSIBLE_NAME = "Омар"
 LIFECYCLE_ORDER = ("fruit", "newborn", "new_item", "sales_start", "sale", "working")
+# Подписи витрины: действующее название статуса. Прежнее живёт рядом в
+# LIFECYCLE_LEGACY_LABELS и показывается на карточке отдельной строкой —
+# решение пользователя 2026-08-19.
 LIFECYCLE_LABELS = {
-    "fruit": "Плод",
-    "newborn": "Новорожденный",
-    "newborn_need": "ДН / Добор новорождённого",
-    "new_item": "Новинка",
-    "sales_start": "СП / Старт продаж",
-    "sale": "ПРОДАЖА",
-    "working": "Рабочий",
+    "fruit": ASSORTMENT_STATUS_LABELS[AssortmentStatus.FRUIT],
+    "newborn": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEWBORN],
+    "newborn_need": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEWBORN_NEED],
+    "new_item": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NEW_ITEM],
+    "sales_start": ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALES_START],
+    "sale": ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE],
+    "working": ASSORTMENT_STATUS_LABELS[AssortmentStatus.WORKING],
+    "review": "Разбор",
+}
+LIFECYCLE_LEGACY_LABELS = {
+    "fruit": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.FRUIT],
+    "newborn": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.NEWBORN],
+    "newborn_need": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.NEWBORN_NEED],
+    "new_item": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.NEW_ITEM],
+    "sales_start": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.SALES_START],
+    "sale": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.SALE],
+    "working": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.WORKING],
     "review": "Review / разбор",
 }
 MANUAL_STATUS_ORDER = (
@@ -84,12 +100,21 @@ MANUAL_STATUS_ORDER = (
     "review",
 )
 MANUAL_STATUS_LABELS = {
-    "matrix": "Матричный",
-    "on_demand": "Под заказ",
-    "replace_candidate": "Кандидат на замену",
-    "nonliquid": "Кандидат на неликвид",
-    "do_not_order": "Не закупать",
-    "pension": "Допродаём",
+    "matrix": ASSORTMENT_STATUS_LABELS[AssortmentStatus.MATRIX],
+    "on_demand": ASSORTMENT_STATUS_LABELS[AssortmentStatus.ON_DEMAND],
+    "replace_candidate": ASSORTMENT_STATUS_LABELS[AssortmentStatus.REPLACE_CANDIDATE],
+    "nonliquid": ASSORTMENT_STATUS_LABELS[AssortmentStatus.NONLIQUID],
+    "do_not_order": ASSORTMENT_STATUS_LABELS[AssortmentStatus.DO_NOT_ORDER],
+    "pension": ASSORTMENT_STATUS_LABELS[AssortmentStatus.PENSION],
+    "review": "Разбор",
+}
+MANUAL_STATUS_LEGACY_LABELS = {
+    "matrix": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.MATRIX],
+    "on_demand": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.ON_DEMAND],
+    "replace_candidate": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.REPLACE_CANDIDATE],
+    "nonliquid": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.NONLIQUID],
+    "do_not_order": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.DO_NOT_ORDER],
+    "pension": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.PENSION],
     "review": "Review / разбор",
 }
 ORDER_STATUS_LABELS = {
@@ -349,6 +374,7 @@ def build_dashboard(
             {
                 "status": status_code,
                 "label": LIFECYCLE_LABELS[status_code],
+                "legacy_label": LIFECYCLE_LEGACY_LABELS.get(status_code, ""),
                 "total_count": status_counts[status_code],
                 "action_count": action_count,
                 "action_kind": "review" if is_working else "transition",
@@ -998,6 +1024,8 @@ def list_classification_proposals(
     status: str = "",
     page: int = 1,
     page_size: int = 50,
+    session: ProcurementOrderFormationSession | None = None,
+    settings: Settings | None = None,
 ) -> dict[str, Any]:
     proposals = list(
         db.scalars(
@@ -1015,13 +1043,37 @@ def list_classification_proposals(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
     start = (page - 1) * page_size
+    # Кто вправе утвердить предложение. Без этого признака интерфейс показывал
+    # активную кнопку «Принять» и автору предложения, а сервер отбивал её
+    # правилом «второго сотрудника» — пользователь упирался в тупик.
+    approver_ids = {
+        str(value).strip()
+        for value in (
+            settings or get_settings()
+        ).procurement_order_formation_classification_approver_user_ids
+        if str(value).strip()
+    }
     items = []
     for proposal in filtered[start : start + page_size]:
         line = proposal.line
         order = line.order
+        serialized_proposal = serialize_proposal(proposal)
+        self_proposed = bool(
+            session
+            and str(proposal.requested_by_bitrix_user_id or "") == str(session.user_id)
+        )
+        can_decide = bool(
+            session
+            and proposal.status == "proposed"
+            and str(session.user_id) in approver_ids
+            and not self_proposed
+        )
+        serialized_proposal["can_approve"] = can_decide
+        serialized_proposal["can_reject"] = can_decide
+        serialized_proposal["self_proposed"] = self_proposed
         items.append(
             {
-                "proposal": serialize_proposal(proposal),
+                "proposal": serialized_proposal,
                 "order_id": order.id,
                 "order_version": order.version,
                 "line_id": line.id,
@@ -1132,9 +1184,9 @@ def serialize_transition(
         "folder": proposal.folder,
         "action_kind": proposal.action_kind,
         "current_status": proposal.current_status,
-        "current_status_label": _status_label(proposal.current_status),
+        "current_status_label": _status_screen_label(proposal.current_status),
         "target_status": proposal.target_status,
-        "target_status_label": _status_label(proposal.target_status),
+        "target_status_label": _status_screen_label(proposal.target_status),
         "proposal_status": proposal.status,
         "reason": _pending_decision_reason(
             current_status=proposal.current_status,
@@ -1433,9 +1485,9 @@ def _build_transition_message(
                     nomenclature_code=proposal.nomenclature_code,
                     property_name=STATUS_PROPERTY_NAME,
                     value_type="property_value",
-                    new_value_name=_status_label(proposal.target_status),
+                    new_value_name=_onec_status_value(proposal.target_status),
                     new_value_tag=str(proposal.target_status or ""),
-                    expected_current_value_name=_status_label(proposal.current_status),
+                    expected_current_value_name=_onec_status_value(proposal.current_status),
                     expected_current_value_tag=proposal.current_status,
                     reason=reason,
                     approved_by=approved_by,
@@ -1503,7 +1555,7 @@ def _serialize_snapshot_row(
         "folder": str(row.get("folder") or ""),
         "action_kind": "view",
         "current_status": status_code,
-        "current_status_label": _status_label(status_code),
+        "current_status_label": _status_screen_label(status_code),
         "target_status": None,
         "target_status_label": None,
         "proposal_status": "snapshot",
@@ -1559,7 +1611,40 @@ def _status_label(status: str | None) -> str:
     if status is None:
         return ""
     normalized = normalize_status(status) or status
-    return LIFECYCLE_LABELS.get(normalized) or status_label(normalized) or str(status)
+    return (
+        LIFECYCLE_LABELS.get(normalized)
+        or MANUAL_STATUS_LABELS.get(normalized)
+        or status_label(normalized)
+        or str(status)
+    )
+
+
+def _onec_status_value(status: str | None) -> str:
+    """Название статуса для свойства номенклатуры в 1С.
+
+    Экранные подписи переименованы (решение 2026-08-19), а в учётной системе
+    значения остались прежними, поэтому в обмен уходит старое название.
+    """
+
+    return _status_legacy_label(status) or _status_label(status)
+
+
+def _status_legacy_label(status: str | None) -> str:
+    """Прежнее название статуса или пусто, если его не переименовывали."""
+
+    if status is None:
+        return ""
+    normalized = normalize_status(status) or status
+    legacy = LIFECYCLE_LEGACY_LABELS.get(normalized) or MANUAL_STATUS_LEGACY_LABELS.get(normalized)
+    return legacy if legacy and legacy != _status_label(normalized) else ""
+
+
+def _status_screen_label(status: str | None) -> str:
+    """Действующее название плюс прежнее в скобках — для строк списков."""
+
+    label = _status_label(status)
+    legacy = _status_legacy_label(status)
+    return f"{label} ({legacy})" if legacy else label
 
 
 def _decision_state(
@@ -1579,7 +1664,7 @@ def _decision_state(
 def _attention_action_label(proposal: ProcurementLifecycleTransitionProposal) -> str:
     if proposal.action_kind != "transition" or not proposal.target_status:
         return "Открыть разбор"
-    return f"{_status_label(proposal.current_status)} → {_status_label(proposal.target_status)}"
+    return f"{_status_screen_label(proposal.current_status)} → {_status_screen_label(proposal.target_status)}"
 
 
 def _attention_fact_summary(proposal: ProcurementLifecycleTransitionProposal) -> str:
@@ -1609,7 +1694,7 @@ def _dashboard_attention_item(
         "nomenclature_code": proposal.nomenclature_code,
         "product_name": proposal.product_name,
         "current_status": proposal.current_status,
-        "current_status_label": _status_label(proposal.current_status),
+        "current_status_label": _status_screen_label(proposal.current_status),
         "kind": "lifecycle",
         "filter_status": _dashboard_status(proposal.current_status),
         "action_label": action_label,
@@ -1631,11 +1716,11 @@ def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str,
         if row_status in MANUAL_STATUS_ORDER and row_status != "review":
             filter_status = row_status
             current_status = row_status
-            current_status_label = MANUAL_STATUS_LABELS[row_status]
+            current_status_label = _status_screen_label(row_status)
         elif dashboard_status == "working" and bool(row.get("manual_review_required")):
             filter_status = "review"
             current_status = "working"
-            current_status_label = LIFECYCLE_LABELS["working"]
+            current_status_label = _status_screen_label("working")
         else:
             continue
         blockers = list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
@@ -1685,7 +1770,7 @@ def _pending_decision_reason(
     if action_kind != "transition" or not target_status:
         return text or "Требуется ручной разбор"
     prefix = (
-        f"Рекомендуется переход {_status_label(current_status)} → {_status_label(target_status)}."
+        f"Рекомендуется переход {_status_screen_label(current_status)} → {_status_screen_label(target_status)}."
     )
     lowered = text.casefold()
     fact_marker = "по твердым фактам 1с:"

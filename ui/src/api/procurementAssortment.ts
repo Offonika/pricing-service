@@ -82,6 +82,7 @@ export interface ProcurementClassificationProposal {
   rejection_reason?: string | null;
   can_approve?: boolean;
   can_reject?: boolean;
+  self_proposed?: boolean;
   onec_status: string;
   onec_message_id?: string | null;
 }
@@ -316,6 +317,7 @@ export interface ProcurementOrderAssistantAssembleResponse {
 export interface ProcurementDashboardCard {
   status: string;
   label: string;
+  legacy_label?: string;
   total_count: number;
   action_count: number;
   action_kind: "transition" | "review";

@@ -17,6 +17,7 @@ import {
   type ProcurementOrderFormationLine,
   type ProcurementSupplierProfile,
 } from "../api/procurementAssortment";
+import { procurementErrorText } from "../utils/procurementErrorMessages";
 import "../orderAssistant.css";
 
 interface Props {
@@ -38,19 +39,24 @@ interface AssistantRow {
   line: ProcurementOrderFormationLine;
 }
 
-const QUICK_FILTERS: Array<{ key: QuickFilter; label: string }> = [
-  { key: "all", label: "Все" },
-  { key: "ready", label: "Можно собрать" },
-  { key: "supplier-missing", label: "Без поставщика" },
-  { key: "price-changed", label: "Цена изменилась" },
-  { key: "low-profitability", label: "Рентабельность ниже нормы" },
-  { key: "high-defect", label: "Подтверждённый брак >10%" },
-  { key: "photo-missing", label: "Без фото" },
+// Подсказка объясняет, что именно отбирает счётчик: без неё «Можно собрать 31»
+// читалось как непонятная кнопка.
+const QUICK_FILTERS: Array<{ key: QuickFilter; label: string; hint: string }> = [
+  { key: "all", label: "Все", hint: "Все строки очереди, включая снятые новым расчётом" },
+  {
+    key: "ready",
+    label: "Можно собрать",
+    hint: "Строки без блокеров: есть поставщик, карточка товара и фото. Отметьте их галочками и нажмите «Собрать проекты» — помощник соберёт из них проекты заказов поставщикам.",
+  },
+  { key: "supplier-missing", label: "Без поставщика", hint: "У заказа не заполнен поставщик — собрать проект нельзя" },
+  { key: "price-changed", label: "Цена изменилась", hint: "Закупочная цена отличается от прошлой закупки больше чем на 10%" },
+  { key: "low-profitability", label: "Рентабельность ниже нормы", hint: "Рентабельность по фактам 1С ниже 20%" },
+  { key: "high-defect", label: "Подтверждённый брак >10%", hint: "Подтверждённый брак поставщика выше 10% на достаточной истории" },
+  { key: "photo-missing", label: "Без фото", hint: "Нет фото или карточки товара — строка не идёт в сборку" },
 ];
 
 function errorText(error: unknown) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return detail || (error instanceof Error ? error.message : "Операция не выполнена");
+  return procurementErrorText(error);
 }
 
 function numeric(value?: string | number | null) {
@@ -174,7 +180,10 @@ function filterMatches(row: AssistantRow, filter: QuickFilter) {
   const profitability = numeric(row.line.profitability_pct);
   const defect = numeric(row.line.supplier_defect_pct);
   const priceChange = numeric(row.line.price_change_pct);
-  if (filter === "ready") return rowSelectable(row);
+  // Фильтр показывает ровно то, что уйдёт в сборку: строки готового заказа без
+  // исчезнувшей потребности. Иначе счётчик «Можно собрать» не сходился с числом
+  // строк в таблице — в неё попадали и снятые строки того же заказа.
+  if (filter === "ready") return rowSelectable(row) && !row.line.removed;
   if (filter === "supplier-missing") return supplierMissing(row.order);
   if (filter === "price-changed") return priceChange !== null && priceChange !== 0;
   if (filter === "low-profitability") return profitability !== null && profitability < 20;
@@ -602,7 +611,10 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     if (!data) return 0;
     const summary = data.summary;
     return {
-      all: summary.lines,
+      // Сервер считает только активные строки, а список показывает ещё и
+      // снятые («Потребность исчезла») — их закупщик должен видеть. Поэтому
+      // счётчик «Все» берём по фактически показанным строкам.
+      all: rows.length,
       ready: summary.ready_lines,
       "supplier-missing": summary.supplier_missing_lines,
       "price-changed": summary.price_changed_lines,
@@ -673,13 +685,14 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
         </section>
         <section aria-label="Быстрые фильтры" className="order-assistant__quick-filters">
           {QUICK_FILTERS.map((item) => (
-            <button className={filter === item.key ? "is-active" : ""} key={item.key} onClick={() => setFilter(item.key)} type="button"><span>{item.label}</span><strong>{countFor(item.key)}</strong></button>
+            <button className={filter === item.key ? "is-active" : ""} key={item.key} onClick={() => setFilter(item.key)} title={item.hint} type="button"><span>{item.label}</span><strong>{countFor(item.key)}</strong></button>
           ))}
         </section>
         <div className="order-assistant__table-card">
           <div className="order-assistant__toolbar">
             <button className={filtersOpen ? "is-active" : ""} onClick={() => setFiltersOpen((value) => !value)} type="button">Все фильтры</button>
             <span>{visibleRows.length} строк в текущем фильтре</span>
+            <span className="order-assistant__filter-hint">{QUICK_FILTERS.find((item) => item.key === filter)?.hint}</span>
             <button className="order-assistant__reset" onClick={() => { setFilter("all"); setSearch(""); setSupplier(""); setSupplierClass(""); }} type="button">Сбросить</button>
           </div>
           {filtersOpen && (
@@ -725,7 +738,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                         {row.line.removed && <small className="is-warning">Потребность исчезла</small>}
                         {row.line.payload?.recommendation_discrepancy?.final_quantity && <small className="is-warning">Новый расчёт: {quantity(row.line.payload.recommendation_discrepancy.final_quantity.recommended)} шт.</small>}
                       </td>
-                      <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
+                      <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} title={`${row.order.supplier_name || "Нет поставщика"} — открыть карточку строки справа`} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
                       <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
                       <td><strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{supplierDefectConfirmed ? "Брак поставщика подтверждён" : "Брак по товару — поставщик не подтверждён"}</small><small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small></td>

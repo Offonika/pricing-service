@@ -15,6 +15,10 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
     ProcurementOrderFormationLine,
 )
+from app.services.assortment_lifecycle import (
+    ASSORTMENT_STATUS_LABELS,
+    status_display_label,
+)
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -37,6 +41,10 @@ from app.services.exporters.ut103_procurement_orders import (
     write_procurement_supplier_orders_message,
 )
 
+# ВАЖНО: значения этих двух словарей — названия статусов в 1С и Bitrix, а не
+# подписи для экрана. По ним распознаётся readback из учётной системы и
+# заполняется свойство номенклатуры, поэтому переименование ломает обмен.
+# Экранные подписи берутся из `status_screen_label` ниже.
 MANUAL_STATUS_LABELS = {
     "working": "Рабочий",
     "matrix": "Матричный",
@@ -139,7 +147,7 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "blockers": order_blockers(order),
         "total_amount": total_amount,
         "lines": line_payloads,
-        "manual_status_options": MANUAL_STATUS_LABELS,
+        "manual_status_options": manual_status_screen_options(),
         "supplier_profile": supplier_profile(order),
     }
 
@@ -178,7 +186,7 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "display_family_recommendation": _display_family_recommendation(payload),
         "removed": line.removed,
         "effective_assortment_status": effective_status,
-        "effective_assortment_status_label": status_label(effective_status),
+        "effective_assortment_status_label": status_screen_label(effective_status),
         "latest_classification": serialize_proposal(latest) if latest else None,
         "photo_thumbnail_url": _photo_url(photos, "thumbnail") or _photo_url(photos, "original"),
         "photo_original_url": _photo_url(photos, "original"),
@@ -309,7 +317,7 @@ def serialize_proposal(proposal: ProcurementClassificationProposal) -> dict[str,
         "status": proposal.status,
         "previous_status": proposal.previous_status,
         "proposed_status": proposal.proposed_status,
-        "proposed_status_label": status_label(proposal.proposed_status),
+        "proposed_status_label": status_screen_label(proposal.proposed_status),
         "reason": proposal.reason,
         "manual_minimum": proposal.manual_minimum,
         "review_date": proposal.review_date,
@@ -1084,15 +1092,39 @@ def normalize_status(value: Any) -> str | None:
     known = {**MANUAL_STATUS_LABELS, **LIFECYCLE_STATUS_LABELS}
     if text in known:
         return text
+    # Значения в 1С заводятся под действующими названиями (решение 2026-08-18),
+    # а прежние остались в исторических карточках. Понимаем оба набора, иначе
+    # readback молча висит в "pending".
     by_label = {label.casefold(): code for code, label in known.items()}
+    for code, label in ASSORTMENT_STATUS_LABELS.items():
+        by_label.setdefault(label.casefold(), str(code))
     return by_label.get(text.casefold(), text)
 
 
 def status_label(status: str | None) -> str | None:
+    """Название статуса для 1С и Bitrix. В обмен уходит именно оно."""
+
     normalized = normalize_status(status)
     if normalized is None:
         return None
     return {**MANUAL_STATUS_LABELS, **LIFECYCLE_STATUS_LABELS}.get(normalized, str(status))
+
+
+def status_screen_label(status: str | None) -> str | None:
+    """Подпись статуса для экрана: действующее название плюс прежнее в скобках."""
+
+    normalized = normalize_status(status)
+    if normalized is None:
+        return None
+    if normalized in ASSORTMENT_STATUS_LABELS:
+        return status_display_label(normalized)
+    return status_label(normalized)
+
+
+def manual_status_screen_options() -> dict[str, str]:
+    """Варианты ручного статуса для выпадающего списка приложения."""
+
+    return {code: status_screen_label(code) or label for code, label in MANUAL_STATUS_LABELS.items()}
 
 
 def normalize_guid(value: str | None) -> str:

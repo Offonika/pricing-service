@@ -291,9 +291,59 @@ def test_grouped_dry_run_carries_b2b_advisory_without_changing_order_quantity(
     assert persisted_payload["b2b_customer_demand"] == line["payload"]["b2b_customer_demand"]
     assert persisted_payload["automatic_recommendation"] == {
         "final_quantity": "5",
-        "purchase_price": "100",
+        "purchase_price": "1",
         "calculation_id": "calc",
     }
+
+
+def _grouped_for_supplier_and_price(nomenclature: dict[str, str]) -> list[dict[str, object]]:
+    return build_grouped_orders(
+        [_source("A", "5", "A")],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": nomenclature},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10", name="Каталожный товар", xml_id=guid, assortment_status="Продажа"
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Основной договор"}},
+        warehouse={"ref": "0xw", "code": "W1", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="display",
+        route="direct",
+        batch_id="2026-08-19",
+        order_date=date(2026, 8, 19),
+        calculation_id="calc",
+    )
+
+
+def test_purchase_price_in_project_is_always_one_rouble() -> None:
+    orders = _grouped_for_supplier_and_price(
+        {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}
+    )
+    line = orders[0]["lines"][0]
+    assert line["purchase_price"] == "1"
+    assert line["amount"] == "5.00"
+    assert "purchase_price_missing" not in line["blockers"]
+
+
+def test_main_supplier_from_card_wins_over_purchase_history() -> None:
+    orders = _grouped_for_supplier_and_price(
+        {
+            "nomenclature_ref": "0x00010025901E48EF11E1967C11111111",
+            "main_supplier_ref": "0xcard",
+            "main_supplier_code": "S9",
+            "main_supplier_name": "Основной поставщик карточки",
+        }
+    )
+    assert orders[0]["supplier"]["name"] == "Основной поставщик карточки"
+    assert orders[0]["supplier"]["ref"] == "0xcard"
+
+
+def test_purchase_history_supplier_is_used_when_card_is_empty() -> None:
+    orders = _grouped_for_supplier_and_price(
+        {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}
+    )
+    assert orders[0]["supplier"]["name"] == "Поставщик S1"
 
 
 def test_missing_catalog_product_is_a_hard_blocker() -> None:

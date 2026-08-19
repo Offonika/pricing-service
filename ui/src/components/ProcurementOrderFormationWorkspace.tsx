@@ -674,7 +674,7 @@ function LifecycleQueue({
                       <td>
                         <strong>{item.product_name}</strong>
                         <small>{item.nomenclature_code} · папка Дисплеи</small>
-                        <small>Ответственный: {item.responsible_name || "Омар"}</small>
+                        <small>Ответственный: менеджер по закупке</small>
                       </td>
                       <td>
                         <span className="transition-pill">

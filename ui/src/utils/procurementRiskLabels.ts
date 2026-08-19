@@ -44,6 +44,15 @@ const PROCUREMENT_RISK_LABELS: Record<string, string> = {
   no_recent_net_sales: "Продаж за расчётный период не было",
   reserve_more_than_sellable_stock: "Резерв больше свободного остатка",
   not_auto_order_allowed: "Автозаказ по карточке выключен",
+  // Сигналы адаптивного расчёта и семейств дисплеев. Без подписей интерфейс
+  // показывал «Требуется дополнительная проверка» по три раза в каждой строке.
+  adaptive_lead_time_applied: "Срок поставки взят живой, по истории поставщика",
+  adaptive_lead_time_sync_ready: "Строка пересчитана по живым срокам и готова к заказу",
+  display_family_manual_approval_required:
+    "Распределение внутри семейства дисплеев подтверждает закупщик",
+  recent_seasonality_adjustment_applied: "Учтена текущая сезонность сборки и доставки",
+  accepted_matching_review: "Сопоставление товара принято, нужна проверка",
+  manual_accepted_matching_review: "Сопоставление товара принято вручную",
 };
 
 export function procurementRiskLabel(code: string) {

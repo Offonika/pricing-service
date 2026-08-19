@@ -19,7 +19,8 @@ import {
   type ProcurementOrderFormation,
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
-import { procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { procurementErrorText } from "../utils/procurementErrorMessages";
+import { groupProcurementBlockers, procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -50,13 +51,26 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
   history: "История",
 };
 
+// Названия статусов действующие; прежние держим рядом и показываем мелкой
+// строкой (решение пользователя 2026-08-19), чтобы витрина сходилась со
+// старыми отчётами и устными договорённостями.
 const MANUAL_STATUS_LABELS: Record<string, string> = {
+  matrix: "Держим всегда",
+  on_demand: "Только под заказ",
+  replace_candidate: "Меняем на аналог",
+  nonliquid: "Выводим",
+  do_not_order: "Не закупаем",
+  pension: "Допродаём",
+  review: "Разбор",
+};
+
+const MANUAL_STATUS_LEGACY_LABELS: Record<string, string> = {
   matrix: "Матричный",
   on_demand: "Под заказ",
   replace_candidate: "Кандидат на замену",
   nonliquid: "Кандидат на неликвид",
   do_not_order: "Не закупать",
-  pension: "Допродаём",
+  pension: "Пенсия",
   review: "Review / разбор",
 };
 
@@ -72,13 +86,34 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
+  fruit: "Рассматриваем",
+  newborn: "Заказали",
+  newborn_need: "Добираем",
+  new_item: "Завезли",
+  sales_start: "Пошли продажи",
+  sale: "Растим",
+  working: "Поддерживаем",
+};
+
+const LIFECYCLE_LEGACY_LABELS: Record<string, string> = {
   fruit: "Плод",
   newborn: "Новорожденный",
+  newborn_need: "ДН / Добор новорождённого",
   new_item: "Новинка",
   sales_start: "СП / Старт продаж",
   sale: "ПРОДАЖА",
   working: "Рабочий",
 };
+
+function statusLegacyLabel(status: string) {
+  return LIFECYCLE_LEGACY_LABELS[status] || MANUAL_STATUS_LEGACY_LABELS[status] || "";
+}
+
+function statusScreenLabel(status: string) {
+  const label = LIFECYCLE_STATUS_LABELS[status] || MANUAL_STATUS_LABELS[status] || status;
+  const legacy = statusLegacyLabel(status);
+  return legacy && legacy !== label ? `${label} (${legacy})` : label;
+}
 
 const LIFECYCLE_FACT_LABELS: Record<string, string> = {
   customer_order_count_1c: "Заказов покупателей",
@@ -89,6 +124,22 @@ const LIFECYCLE_FACT_LABELS: Record<string, string> = {
   card_created_at_1c: "Карточка создана",
   model_birth_date: "Модель на рынке с",
 };
+
+// Статусы предложения приходят кодом; на экране закупщику нужен русский текст.
+const PROPOSAL_STATUS_LABELS: Record<string, string> = {
+  proposed: "Ожидает решения",
+  approved: "Утверждено, готов dry-run",
+  sent_to_1c: "Передано в 1С",
+  applied: "Применено в 1С",
+  reflected: "Проверено в каталоге",
+  rejected: "Отклонено",
+  conflict: "Конфликт при проверке",
+  stale: "Устарело",
+};
+
+function proposalStatusLabel(status: string) {
+  return PROPOSAL_STATUS_LABELS[status] || status;
+}
 
 const EVENT_LABELS: Record<string, string> = {
   order_conditions_changed: "Изменены условия заказа",
@@ -102,9 +153,23 @@ const EVENT_LABELS: Record<string, string> = {
 };
 
 function errorText(error: unknown) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  return error instanceof Error ? error.message : "Операция не выполнена";
+  return procurementErrorText(error);
+}
+
+// Один и тот же блокер приходит по каждой проблемной строке, поэтому в реестре
+// считаем причины, а не строки: иначе цифра не сходится с тем, что видно внутри
+// заказа.
+function blockerCountLabel(blockers: string[]) {
+  const count = groupProcurementBlockers(blockers).length;
+  const tail = count % 10;
+  const teen = count % 100;
+  const word =
+    tail === 1 && teen !== 11
+      ? "блокер"
+      : tail >= 2 && tail <= 4 && (teen < 12 || teen > 14)
+        ? "блокера"
+        : "блокеров";
+  return `${count} ${word}`;
 }
 
 function money(value: string | number, currency = "RUB") {
@@ -290,6 +355,7 @@ function Dashboard({
       <section className="lifecycle-cards">
         {data.cards.map((card) => {
           const breakdown = Object.entries(card.action_breakdown || {});
+          const legacyLabel = card.legacy_label || statusLegacyLabel(card.status);
           return (
           <article className={`lifecycle-card lifecycle-card--${card.urgency}`} key={card.status}>
             <button
@@ -298,6 +364,7 @@ function Dashboard({
               type="button"
             >
               <span>{card.label}</span>
+              {legacyLabel && <small className="lifecycle-card__legacy">раньше: {legacyLabel}</small>}
               <strong>{card.total_count}</strong>
             </button>
             <button
@@ -344,7 +411,12 @@ function Dashboard({
             onClick={() => setManualFilter((current) => current === status ? null : status)}
             type="button"
           >
-            <span>{label}</span>
+            <span>
+              {label}
+              {statusLegacyLabel(status) && (
+                <small className="manual-status-card__legacy">раньше: {statusLegacyLabel(status)}</small>
+              )}
+            </span>
             <strong>{data.manual_status_counts[status] || 0}</strong>
           </button>
         ))}
@@ -680,8 +752,8 @@ function LifecycleQueue({
                         <span className="transition-pill">
                           {item.action_kind === "review"
                             ? item.current_status === "newborn"
-                              ? "ДН / Добор новорождённого"
-                              : "Рабочий → Review"
+                              ? statusScreenLabel("newborn_need")
+                              : `${statusScreenLabel("working")} → Разбор`
                             : `${item.current_status_label} → ${item.target_status_label}`}
                         </span>
                       </td>
@@ -856,7 +928,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
                     <span className={`state-pill ${order.blockers.length ? "state-pill--blocked" : "state-pill--ready"}`}>
-                      {order.blockers.length ? `${order.blockers.length} блокер` : "готов"}
+                      {order.blockers.length ? blockerCountLabel(order.blockers) : "готов"}
                     </span>
                   </td>
                   <td><button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button></td>
@@ -933,13 +1005,29 @@ function ClassificationQueue() {
               {data.items.map((item) => (
                 <tr key={item.proposal.id}>
                   <td><strong>{item.product_name}</strong><small>{item.nomenclature_code || item.nomenclature_ref}</small><small>Заказ: {item.supplier_name}</small></td>
-                  <td><strong>{item.effective_status || "Не задан"} → {item.proposal.proposed_status_label}</strong>{item.proposal.manual_minimum && <small>Минимум: {item.proposal.manual_minimum} · пересмотр {item.proposal.review_date}</small>}</td>
+                  <td><strong>{item.effective_status ? statusScreenLabel(item.effective_status) : "Не задан"} → {item.proposal.proposed_status_label}</strong>{item.proposal.manual_minimum && <small>Минимум: {item.proposal.manual_minimum} · пересмотр {item.proposal.review_date}</small>}</td>
                   <td><strong>{item.proposal.reason}</strong><small>Предложил: {item.proposal.requested_by_name || item.proposal.requested_by_bitrix_user_id}</small></td>
                   <td>
                     {item.proposal.status === "proposed" ? (
-                      <button className="btn btn--small" disabled={loadingId === item.proposal.id} onClick={() => void approve(item)} type="button">Принять</button>
+                      <div className="proposal-decision">
+                        <button
+                          className="btn btn--small"
+                          disabled={loadingId === item.proposal.id || item.proposal.can_approve === false}
+                          onClick={() => void approve(item)}
+                          type="button"
+                        >
+                          Принять
+                        </button>
+                        {item.proposal.can_approve === false && (
+                          <small>
+                            {item.proposal.self_proposed
+                              ? "Своё предложение согласовать нельзя — нужен второй сотрудник закупки"
+                              : "Согласование доступно только допущенным сотрудникам закупки"}
+                          </small>
+                        )}
+                      </div>
                     ) : (
-                      <span className={`state-pill ${item.proposal.onec_status === "conflict" ? "state-pill--blocked" : "state-pill--ready"}`}>{item.proposal.status}</span>
+                      <span className={`state-pill ${item.proposal.onec_status === "conflict" ? "state-pill--blocked" : "state-pill--ready"}`}>{proposalStatusLabel(item.proposal.status)}</span>
                     )}
                   </td>
                 </tr>

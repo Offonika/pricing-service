@@ -14,14 +14,16 @@ interface ProcurementAssortmentDecisionAppProps {
   itemId: string;
 }
 
+// value — это xml_id значения в смарт-процессе Bitrix, его менять нельзя.
+// Подпись показываем действующую, прежнюю оставляем в скобках.
 const STATUS_OPTIONS = [
   { value: "no_change", label: "Без изменения" },
-  { value: "matrix", label: "Матричный" },
-  { value: "working", label: "Рабочий" },
-  { value: "on_demand", label: "Под заказ" },
-  { value: "replace_candidate", label: "Кандидат на замену" },
-  { value: "nonliquid", label: "Неликвид" },
-  { value: "do_not_order", label: "Не закупать" },
+  { value: "matrix", label: "Держим всегда (Матричный)" },
+  { value: "working", label: "Поддерживаем (Рабочий)" },
+  { value: "on_demand", label: "Только под заказ (Под заказ)" },
+  { value: "replace_candidate", label: "Меняем на аналог (Кандидат на замену)" },
+  { value: "nonliquid", label: "Выводим (Неликвид)" },
+  { value: "do_not_order", label: "Не закупаем (Не закупать)" },
 ];
 
 interface DecisionForm {

@@ -378,7 +378,7 @@ def read_classification_proposals(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
-    _session: ProcurementOrderFormationSession = Depends(
+    session: ProcurementOrderFormationSession = Depends(
         verify_procurement_order_formation_session
     ),
 ) -> ProcurementClassificationQueueResponse:
@@ -389,6 +389,7 @@ def read_classification_proposals(
                 status=status,
                 page=page,
                 page_size=page_size,
+                session=session,
             )
         )
     except Exception as exc:

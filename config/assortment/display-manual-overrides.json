@@ -2197,8 +2197,21 @@
       "manual_status": "matrix",
       "nomenclature_code": "РБ000075803",
       "source_review_csv": "reports/assortment_lifecycle/2026-07-06/display-auto-order-dry-run.csv"
+    },
+    {
+      "nomenclature_code": "РБ000054196",
+      "manual_status": "pension",
+      "approval_rule": "procurement_order_formation_classification",
+      "approval_rule_ru": "решение в приложении «Формирование заказа»",
+      "approval_source": "procurement_order_formation:2",
+      "manual_approved_by": "Омар Бочаров",
+      "manual_changed_at": "2026-08-19",
+      "manual_reason": "Выводим с оборота",
+      "source_order_line_id": 2746,
+      "source_nomenclature_name": "Дисплей для Apple iPhone Xs + тачскрин (черный) (MNK) (In-Cell)",
+      "sync_blockers": []
     }
   ],
-  "_order_formation_status_synced_at": "2026-08-19T08:00:04.470628+00:00",
+  "_order_formation_status_synced_at": "2026-08-19T10:00:05.552725+00:00",
   "_order_formation_status_source_rule": "procurement_order_formation_classification"
 }

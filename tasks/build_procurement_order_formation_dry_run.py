@@ -841,9 +841,27 @@ def persist_grouped_orders(
             [next_removed_line_number, *(line.line_number for line in order.lines)],
             default=0,
         )
+        # Сопоставление строки должно совпадать с тем, что используется ниже при
+        # записи значений (stable_key, затем identity). Иначе строка, найденная
+        # по stable_key, не уезжает в безопасный диапазон и сталкивается с новой
+        # строкой на том же номере: uq_proc_order_line_order_number.
+        matched_lines: set[int] = set()
         for line_payload in incoming_lines:
-            line = existing_by_identity.get(_incoming_line_identity(line_payload))
-            if line is None or line.line_number == int(line_payload["line_number"]):
+            line = existing.get(str(line_payload["stable_key"])) or existing_by_identity.get(
+                _incoming_line_identity(line_payload)
+            )
+            if line is None:
+                continue
+            matched_lines.add(id(line))
+            if line.line_number == int(line_payload["line_number"]):
+                continue
+            next_temporary_line_number += 1
+            line.line_number = next_temporary_line_number
+        # Несопоставленная строка, сидящая в диапазоне номеров нового расчёта,
+        # тоже обязана освободить место: её номер займёт одна из новых строк.
+        incoming_numbers = {int(item["line_number"]) for item in incoming_lines}
+        for line in order.lines:
+            if id(line) in matched_lines or line.line_number not in incoming_numbers:
                 continue
             next_temporary_line_number += 1
             line.line_number = next_temporary_line_number

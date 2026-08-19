@@ -28,9 +28,11 @@ router = APIRouter()
 page_router = APIRouter()
 
 COOKIE_NAME = "mm_logistics_session"
+# Сборка активного релиза имеет приоритет: легаси-каталог /var/www не обновляется
+# при выкладке и иначе месяцами подменяет свежий ui/dist старым билдом.
 _INDEX_PATHS = (
-    Path("/var/www/pricing-service/index.html"),
     Path(__file__).resolve().parents[2] / "ui" / "dist" / "index.html",
+    Path("/var/www/pricing-service/index.html"),
 )
 
 

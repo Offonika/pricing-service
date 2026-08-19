@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-17"
+updated_at: "2026-08-19"
 ---
 
 # Назначение
@@ -207,6 +207,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Scheduler не включает timer для job, пока runtime registry не переведён из
   `cron_active_timer_disabled` в разрешённое переходное/целевое состояние.
 - Delivery со статусом `unknown` не повторяется автоматически.
+- Страницы встроенных Bitrix24-приложений и logistics fallback отдают frontend из
+  `ui/dist` активного релиза; `/var/www/pricing-service` допустим только как
+  запасной путь и выведен из обращения.
 
 # Errors / Edge Cases
 
@@ -345,6 +348,10 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-19 — frontend встроенных Bitrix24-приложений закреплён за сборкой
+  активного релиза: порядок `_INDEX_PATHS` исправлен в `bitrix_matching` и
+  `logistics_web`, легаси-каталог `/var/www/pricing-service` выведен из
+  обращения после месяца подмены свежего build билдом от 2026-07-16.
 - 2026-08-17 — для production-only display-family цепочки утверждены отдельный
   архитектурный и регрессионный аудит и самостоятельный PR; механическое
   слияние запрещено.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+
+import pytest
 
 from app.services.procurement_b2b_customer_demand import (
     B2BCustomerDemandComponent,
@@ -9,20 +11,26 @@ from app.services.procurement_b2b_customer_demand import (
 )
 from tasks.build_display_auto_order_dry_run import (
     DEFAULT_POLICY_JSON,
+    AutoOrderPolicy,
     DemandUpliftRule,
     OrderRoundingRule,
     PriceBatchRule,
     SpeedHorizonRule,
     _price_batch_rule_for_row,
+    auto_order_scope_gate_reasons,
+    build_auto_order_scope_gate_audit,
     build_dry_run_rows,
     build_summary,
+    fetch_active_customer_order_totals,
     fetch_days_in_sale_totals,
     fetch_reserved_totals,
     fetch_sales_totals,
     fetch_stock_totals,
+    load_auto_order_items_with_scope_audit,
     load_auto_order_policy,
     load_warehouse_policy,
     rounded_order_qty,
+    write_scope_gate_csv,
 )
 
 
@@ -108,6 +116,48 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "sales_qty_window_short" in sales_sql
     assert "window_medium_from" in sales_sql
     assert "window_short_from" in sales_sql
+
+
+def test_active_customer_order_query_uses_positive_open_balances_without_name_filter() -> None:
+    engine = _CaptureEngine()
+
+    fetch_active_customer_order_totals(
+        engine,
+        codes=["RB1"],
+        as_of=date(2026, 8, 18),
+        max_age_days=30,
+    )
+
+    (customer_order_sql,) = engine.statements
+    assert "_AccumRgT7145" in customer_order_sql
+    assert "balance._Fld7131RRef" in customer_order_sql
+    assert "balance._Fld7129RRef" in customer_order_sql
+    assert "balance._Fld7140" in customer_order_sql
+    assert "customer_order._Posted = 0x01" in customer_order_sql
+    assert "customer_order._Marked = 0x00" in customer_order_sql
+    assert "HAVING SUM" in customer_order_sql
+    assert "> 0" in customer_order_sql
+    assert "Потребности" not in customer_order_sql
+    # Решение 2026-08-18: 1С не закрывает старые потребности, поэтому без
+    # отсечки по дате формула тянет многолетние мёртвые остатки регистра.
+    assert "customer_order._Date_Time >= :active_order_min_date" in customer_order_sql
+
+
+def test_active_customer_order_policy_reads_max_age_and_validates(tmp_path) -> None:
+    policy_path = tmp_path / "auto-order-policy.json"
+    policy_path.write_text(
+        '{"auto_order_policy": {"active_customer_order_policy":'
+        ' {"active_order_max_age_days": 45}}}',
+        encoding="utf-8",
+    )
+    policy = load_auto_order_policy(policy_path)
+    assert policy.active_customer_order_max_age_days == 45
+
+    default_policy = load_auto_order_policy(tmp_path / "missing.json")
+    assert default_policy.active_customer_order_max_age_days == 30
+
+    with pytest.raises(SystemExit):
+        AutoOrderPolicy(active_customer_order_max_age_days=0).validate()
 
 
 def test_stock_totals_batches_more_than_sql_server_rpc_limit(tmp_path) -> None:
@@ -396,6 +446,92 @@ def test_display_auto_order_dry_run_can_run_without_max_order_qty_cap() -> None:
     assert rows[0]["recommended_order_qty"] == "7"
     assert rows[0]["dry_run_decision"] == "order"
     assert rows[0]["warnings"] == ""
+
+
+def test_active_customer_orders_increase_need_for_sale_and_working_without_reserve() -> None:
+    items = [
+        {
+            "nomenclature_code": f"RB_{status.upper()}",
+            "name": f"Display {status}",
+            "status": status,
+            "status_label": status_label,
+            "auto_order_allowed": True,
+        }
+        for status, status_label in (
+            ("sale", "Растим (ПРОДАЖА)"),
+            ("working", "Поддерживаем (Рабочий)"),
+        )
+    ]
+    codes = [item["nomenclature_code"] for item in items]
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {code: {"sellable_stock_qty": Decimal("10")} for code in codes},
+            "reserve": {code: {"reserved_qty": Decimal("4")} for code in codes},
+            "customer_orders": {
+                code: {
+                    "active_customer_order_qty": Decimal("7"),
+                    "active_customer_order_count": 3,
+                }
+                for code in codes
+            },
+            "incoming": {},
+            "sales": {code: {"sales_qty_window": Decimal("180")} for code in codes},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    for row in rows:
+        assert row["target_stock_qty"] == "14"
+        assert row["sellable_stock_qty"] == "10"
+        assert row["reserved_qty"] == "4"
+        assert row["free_stock_qty"] == "6"
+        assert row["active_customer_order_qty"] == "7"
+        assert row["active_customer_order_count"] == 3
+        assert row["order_available_stock_qty"] == "3"
+        assert row["recommended_order_qty_raw"] == "11"
+        assert row["recommended_order_qty"] == "11"
+        assert "active_customer_orders_added_to_need" in row["warnings"]
+        assert "Зарезервировано и Под заказ" in row["reason_ru"]
+
+
+def test_active_customer_orders_do_not_change_other_status_formulas() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB_NEW",
+                "name": "Display new item",
+                "status": "new_item",
+                "status_label": "Завезли (Новинка)",
+                "auto_order_allowed": True,
+            }
+        ],
+        facts={
+            "stock": {"RB_NEW": {"sellable_stock_qty": Decimal("10")}},
+            "reserve": {"RB_NEW": {"reserved_qty": Decimal("4")}},
+            "customer_orders": {
+                "RB_NEW": {
+                    "active_customer_order_qty": Decimal("7"),
+                    "active_customer_order_count": 3,
+                }
+            },
+            "incoming": {},
+            "sales": {"RB_NEW": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    row = rows[0]
+    assert row["active_customer_order_qty"] == "0"
+    assert row["active_customer_order_count"] == 0
+    assert row["order_available_stock_qty"] == "6"
+    assert row["recommended_order_qty_raw"] == "8"
 
 
 def test_display_auto_order_dry_run_rounds_large_orders_by_tiers() -> None:
@@ -2285,3 +2421,213 @@ def test_versioned_price_batch_policy_uses_stable_status_codes() -> None:
     policy = load_auto_order_policy(DEFAULT_POLICY_JSON)
 
     assert policy.price_batch_applies_to_statuses == ("sale", "working")
+
+
+# --- Журнал выпавших карточек (gate audit) ---------------------------------
+
+
+def _classification_engine():
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
+    from app.services.assortment_lifecycle_classification_store import (
+        ASSORTMENT_LIFECYCLE_METADATA,
+    )
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    ASSORTMENT_LIFECYCLE_METADATA.create_all(engine)
+    return engine
+
+
+def _classification_row(code: str, **overrides):
+    row = {
+        "nomenclature_code": code,
+        "name": f"Дисплей {code}",
+        "folder": "Товары/дисплеи",
+        "status": "sale",
+        "status_label": "Растим",
+        "article": code[-6:],
+        "auto_order_allowed": True,
+        "manual_review_required": False,
+        "future_ka_mapping_status": "ready",
+        "demand_method_code": "available_days_average",
+        "last_run_id": 2,
+        "source_hash": f"hash-{code}",
+        "source": "test",
+        "classified_at": datetime(2026, 8, 18, 9, 20),
+    }
+    row.update(overrides)
+    return row
+
+
+def _insert_classification_rows(engine, rows):
+    from app.services.assortment_lifecycle_classification_store import (
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE as table,
+    )
+
+    with engine.begin() as conn:
+        conn.execute(table.insert(), list(rows))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, ()),
+        ({"status": "fruit"}, ("gate_status_not_eligible",)),
+        ({"status": "new_item"}, ("gate_status_not_eligible",)),
+        ({"demand_method_code": "manual_review"}, ("gate_demand_method_not_supported",)),
+        ({"future_ka_mapping_status": "needs_mapping"}, ("gate_future_ka_mapping_not_ready",)),
+        ({"manual_review_required": True}, ("gate_manual_review_required",)),
+        (
+            {"status": "fruit", "demand_method_code": "manual_review"},
+            ("gate_status_not_eligible", "gate_demand_method_not_supported"),
+        ),
+    ],
+)
+def test_auto_order_scope_gate_reasons_match_previous_sql_gate(overrides, expected) -> None:
+    record = _classification_row("РБ000000001", **overrides)
+
+    reasons = auto_order_scope_gate_reasons(record, include_sale_review_candidates=True)
+
+    assert reasons == expected
+
+
+def test_auto_order_scope_gate_reasons_for_auto_order_allowed_branch() -> None:
+    record = _classification_row("РБ000000001", status="sale", auto_order_allowed=False)
+
+    reasons = auto_order_scope_gate_reasons(record, include_sale_review_candidates=False)
+
+    # Ветка без sale-кандидатов повторяет старый SQL: status == "working" и
+    # auto_order_allowed is True.
+    assert reasons == ("gate_status_not_eligible", "gate_auto_order_not_allowed")
+
+
+def test_load_auto_order_items_records_every_gate_reason() -> None:
+    engine = _classification_engine()
+    _insert_classification_rows(
+        engine,
+        [
+            _classification_row("РБ000000001"),
+            _classification_row("РБ000000002", status="fruit"),
+            _classification_row("РБ000000003", demand_method_code="manual_review"),
+            _classification_row("РБ000000004", future_ka_mapping_status="needs_mapping"),
+            _classification_row("РБ000000005", manual_review_required=True),
+            _classification_row("РБ000000006", last_run_id=1),
+            _classification_row("РБ000000007", name="Дисплей биток"),
+        ],
+    )
+
+    items, run_id, scope_audit, gate_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder="дисплеи",
+        include_sale_review_candidates=True,
+    )
+
+    assert run_id == 2
+    assert [item["nomenclature_code"] for item in items] == ["РБ000000001"]
+    assert gate_audit["scope_gate_version"] == "display_auto_order_scope_gate.v1"
+    assert gate_audit["previous_run_id"] == 1
+    assert gate_audit["source_item_count"] == 7
+    assert gate_audit["included_item_count"] == 1
+    assert gate_audit["excluded_reason_counts"] == {
+        "gate_demand_method_not_supported": 1,
+        "gate_future_ka_mapping_not_ready": 1,
+        "gate_manual_review_required": 1,
+        "gate_missing_in_latest_classification_run": 1,
+        "gate_status_not_eligible": 1,
+    }
+    # Карточка вне скоупа по имени остаётся в своей политике и не дублируется в журнале.
+    assert scope_audit["excluded_reason_counts"] == {"excluded_display_name_bitok": 1}
+    assert all(row["nomenclature_code"] != "РБ000000007" for row in gate_audit["exclusions"])
+    disappeared = next(
+        row for row in gate_audit["exclusions"] if row["nomenclature_code"] == "РБ000000006"
+    )
+    assert disappeared["gate_reason_code"] == "gate_missing_in_latest_classification_run"
+    assert disappeared["gate_reason_label_ru"] == "карточки нет в последнем прогоне классификации"
+
+
+def test_load_auto_order_items_keeps_calculation_scope_unchanged() -> None:
+    engine = _classification_engine()
+    _insert_classification_rows(
+        engine,
+        [
+            _classification_row("РБ000000001", status="working"),
+            _classification_row("РБ000000002", status="sale"),
+            _classification_row("РБ000000003", status="pension"),
+        ],
+    )
+
+    items, _run_id, _scope_audit, gate_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder="дисплеи",
+        include_sale_review_candidates=True,
+    )
+
+    assert [item["nomenclature_code"] for item in items] == ["РБ000000001", "РБ000000002"]
+    assert gate_audit["excluded_status_counts"] == {"pension": 1}
+
+
+def test_write_scope_gate_csv_lists_reason_per_card(tmp_path) -> None:
+    engine = _classification_engine()
+    _insert_classification_rows(
+        engine,
+        [
+            _classification_row("РБ000000001"),
+            _classification_row(
+                "РБ000000002",
+                status="fruit",
+                status_label="Рассматриваем",
+                demand_method_code="manual_review",
+            ),
+        ],
+    )
+    _items, _run_id, _scope_audit, gate_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder="дисплеи",
+        include_sale_review_candidates=True,
+    )
+
+    path = write_scope_gate_csv(tmp_path / "gate.csv", gate_audit["exclusions"])
+
+    import csv as csv_module
+
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv_module.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["nomenclature_code"] == "РБ000000002"
+    assert rows[0]["gate_reason_code"] == "gate_status_not_eligible"
+    assert rows[0]["gate_reason_codes"] == (
+        "gate_status_not_eligible, gate_demand_method_not_supported"
+    )
+    assert rows[0]["status_label"] == "Рассматриваем"
+
+
+def test_build_summary_exposes_scope_gate_audit() -> None:
+    gate_audit = build_auto_order_scope_gate_audit(
+        [
+            {
+                "nomenclature_code": "РБ000000002",
+                "gate_reason_code": "gate_status_not_eligible",
+                "status": "fruit",
+            }
+        ],
+        source_item_count=2,
+        included_item_count=1,
+        run_id=7,
+    )
+
+    summary = build_summary(
+        [],
+        run_id=7,
+        source_errors={},
+        scope_gate_audit=gate_audit,
+    )
+
+    assert summary["auto_order_scope_gate"]["excluded_item_count"] == 1
+    assert summary["auto_order_scope_gate"]["excluded_reason_counts"] == {
+        "gate_status_not_eligible": 1
+    }

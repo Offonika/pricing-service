@@ -156,6 +156,74 @@ def test_margin_flow_rule_uses_point_metrics_and_minimum_representation() -> Non
     assert "открытый остаток заказа поставщику" in result["reason_ru"]
 
 
+def test_margin_flow_minimum_representation_is_final_without_rounding() -> None:
+    """Решение 2026-08-19: минимум 13 шт — финальное количество.
+
+    Ценовое округление поверх минимальной представленности не применяется, как и
+    поверх минимальной партии дешёвых сегментов.
+    """
+
+    row = _dry_row(avg_daily_sales_qty="2", current_recommended_order_qty="40")
+    row.update(
+        {
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.1",
+            "margin_flow_free_stock_qty": "0",
+            "margin_flow_reliable_incoming_qty": "0",
+        }
+    )
+    rows = build_comparison_rows(
+        [row],
+        [],
+        policy={
+            "order_rounding_rules": [{"threshold_gt": 0, "round_to": 5}],
+            "margin_flow_policy": {
+                "enabled": True,
+                "safety_stock_days": 25,
+                "minimum_representation_qty": 13,
+            },
+        },
+        as_of=date(2026, 8, 19),
+    )
+
+    result = rows[0]
+    assert result["adaptive_target_stock_qty"] == "13"
+    assert result["adaptive_recommended_order_qty"] == "13"
+    assert "margin_flow_minimum_representation_final" in result["warnings"]
+
+
+def test_margin_flow_adds_active_customer_orders_to_need() -> None:
+    """Решение 2026-08-19: активные «Заказы покупателей» входят и в это правило."""
+
+    row = _dry_row(avg_daily_sales_qty="2", current_recommended_order_qty="40")
+    row.update(
+        {
+            "margin_flow_qualifies": "yes",
+            "margin_flow_point_rate_sum": "0.1",
+            "margin_flow_free_stock_qty": "2",
+            "margin_flow_reliable_incoming_qty": "1",
+            "active_customer_order_qty": "4",
+        }
+    )
+    rows = build_comparison_rows(
+        [row],
+        [],
+        policy={
+            "order_rounding_rules": [{"threshold_gt": 0, "round_to": 5}],
+            "margin_flow_policy": {
+                "enabled": True,
+                "safety_stock_days": 25,
+                "minimum_representation_qty": 13,
+            },
+        },
+        as_of=date(2026, 8, 19),
+    )
+
+    result = rows[0]
+    assert result["adaptive_recommended_order_qty"] == "14"
+    assert "активные Заказы покупателей 4" in result["reason_ru"]
+
+
 def test_margin_flow_rule_is_off_when_policy_is_missing() -> None:
     row = _dry_row(avg_daily_sales_qty="2", current_recommended_order_qty="40")
     row.update(

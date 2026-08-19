@@ -375,18 +375,35 @@ def build_row_comparison(
     adaptive_forecast_qty = _ceil(avg_daily * Decimal(str(forecast_days)))
     adaptive_safety_qty = _ceil(avg_daily * Decimal(str(adaptive_safety_days)))
     adaptive_target_stock = adaptive_forecast_qty + adaptive_safety_qty
+    minimum_representation_applied = False
     if margin_flow_applied:
-        adaptive_target_stock = max(
-            adaptive_target_stock,
-            Decimal(str(_int_or_none(margin_flow_policy.get("minimum_representation_qty")) or 13)),
+        minimum_representation_qty = Decimal(
+            str(_int_or_none(margin_flow_policy.get("minimum_representation_qty")) or 13)
         )
+        minimum_representation_applied = adaptive_target_stock < minimum_representation_qty
+        adaptive_target_stock = max(adaptive_target_stock, minimum_representation_qty)
+    # Решение 2026-08-19: активный невыполненный остаток «Заказов покупателей»
+    # добавляется к потребности и внутри «Маржинального потока». Для остальных
+    # строк он уже вычтен из order_available_stock_qty на этапе dry-run, поэтому
+    # второй раз здесь не применяется.
+    margin_flow_customer_orders = active_customer_order_qty if margin_flow_applied else Decimal("0")
     adaptive_qty_raw = _ceil(
         max(
             Decimal("0"),
-            adaptive_target_stock - order_available_stock - incoming,
+            adaptive_target_stock
+            + margin_flow_customer_orders
+            - order_available_stock
+            - incoming,
         )
     )
-    adaptive_qty = rounded_order_qty(adaptive_qty_raw, order_rounding_rules)
+    if minimum_representation_applied:
+        # Решение 2026-08-19: минимальная представленность — финальное количество,
+        # ценовое округление поверх неё не применяется (как у минимальной партии).
+        adaptive_qty = adaptive_qty_raw
+        comparison_warnings_extra = ("margin_flow_minimum_representation_final",)
+    else:
+        adaptive_qty = rounded_order_qty(adaptive_qty_raw, order_rounding_rules)
+        comparison_warnings_extra = ()
 
     adaptive_decision = "order" if adaptive_qty > 0 else "do_not_order"
     action_ru = "рассчитать по живому сроку"
@@ -412,6 +429,7 @@ def build_row_comparison(
     elif margin_flow_applied:
         action_ru = "применить правило Маржинального потока"
         comparison_warnings.append("margin_flow_rule_applied")
+        comparison_warnings.extend(comparison_warnings_extra)
 
     qty_delta = adaptive_qty - current_qty
     target_delta = adaptive_target_stock - current_target_stock
@@ -437,7 +455,13 @@ def build_row_comparison(
             f"минимальная представленность {minimum_representation_qty}) "
             f"= {adaptive_target_stock} шт. Свободно {order_available_stock} шт., "
             f"открытый остаток заказа поставщику {incoming} шт., "
+            f"активные Заказы покупателей {_out_decimal(margin_flow_customer_orders)} шт., "
             f"рекомендация {adaptive_qty} шт."
+            + (
+                " Минимальная представленность — финальное количество, округление не применяется."
+                if minimum_representation_applied
+                else ""
+            )
         )
     elif active_customer_order_qty > 0:
         reason += (

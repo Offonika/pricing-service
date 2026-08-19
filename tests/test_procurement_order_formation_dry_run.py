@@ -377,6 +377,77 @@ def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
     }
 
 
+def _grouped_orders_with_codes(
+    codes: list[str], *, batch_id: str, calculation_id: str
+) -> list[dict[str, object]]:
+    return build_grouped_orders(
+        [_source(code, "5", code) for code in codes],
+        [_lead(code, "S1", "0xs1") for code in codes],
+        nomenclature_by_code={
+            # Ссылка обязана зависеть от кода, а не от позиции в списке: иначе
+            # разные карточки получают одну identity и тест перестаёт быть тестом.
+            code: {"nomenclature_ref": f"0x0001002590{sum(map(ord, code)):022X}"}
+            for code in codes
+        },
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            assortment_status="Продажа",
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Договор"}},
+        warehouse={"code": "MAIN", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id=batch_id,
+        order_date=date(2026, 7, 31),
+        calculation_id=calculation_id,
+        source_run_id=calculation_id,
+        responsible_bitrix_user_id="130757",
+    )
+
+
+def test_persist_renumbers_disappeared_line_when_batch_grows(db_session) -> None:
+    # Боевое падение 2026-08-19 09:31 (uq_proc_order_line_order_number,
+    # order_id/line_number = 99/16): строка, помеченная "потребность исчезла"
+    # на прошлом прогоне, получила номер за пределами тогдашней партии. Когда
+    # партия выросла, этот номер занимает новая строка, а старая остаётся на
+    # месте и ловит конфликт уникальности.
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_with_codes(["A", "B"], batch_id="2026-08-19", calculation_id="900"),
+    )
+    # Потребность по B исчезла: строка остаётся видимой и уезжает за границу партии.
+    ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_with_codes(["A"], batch_id="2026-08-19", calculation_id="901"),
+    )
+    stored = db_session.get(ProcurementOrderFormation, ids[0])
+    assert stored is not None
+    disappeared = [line for line in stored.lines if line.removed]
+    assert [line.nomenclature_code for line in disappeared] == ["B"]
+    occupied_number = disappeared[0].line_number
+
+    # Партия выросла: новых карточек больше, чем номер исчезнувшей строки.
+    grown_codes = ["A", "C", "D", "E"]
+    assert len(grown_codes) >= occupied_number, "тест должен перекрыть занятый номер"
+    grown_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_with_codes(grown_codes, batch_id="2026-08-19", calculation_id="902"),
+    )
+    refreshed = db_session.get(ProcurementOrderFormation, grown_ids[0])
+
+    assert refreshed is not None
+    numbers = [line.line_number for line in refreshed.lines]
+    assert len(numbers) == len(set(numbers)), "номера строк обязаны остаться уникальными"
+    assert {line.nomenclature_code for line in refreshed.lines if not line.removed} == set(
+        grown_codes
+    )
+    assert [line.nomenclature_code for line in refreshed.lines if line.removed] == ["B"]
+
+
 def _grouped_orders_for_persist(*, batch_id: str, calculation_id: str) -> list[dict[str, object]]:
     return build_grouped_orders(
         [_source("A", "5", "A")],

@@ -11,6 +11,7 @@ from app.services.procurement_b2b_customer_demand import (
 )
 from tasks.build_display_auto_order_dry_run import (
     DEFAULT_POLICY_JSON,
+    AutoOrderPolicy,
     DemandUpliftRule,
     OrderRoundingRule,
     PriceBatchRule,
@@ -20,6 +21,7 @@ from tasks.build_display_auto_order_dry_run import (
     build_auto_order_scope_gate_audit,
     build_dry_run_rows,
     build_summary,
+    fetch_active_customer_order_totals,
     fetch_days_in_sale_totals,
     fetch_reserved_totals,
     fetch_sales_totals,
@@ -114,6 +116,48 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "sales_qty_window_short" in sales_sql
     assert "window_medium_from" in sales_sql
     assert "window_short_from" in sales_sql
+
+
+def test_active_customer_order_query_uses_positive_open_balances_without_name_filter() -> None:
+    engine = _CaptureEngine()
+
+    fetch_active_customer_order_totals(
+        engine,
+        codes=["RB1"],
+        as_of=date(2026, 8, 18),
+        max_age_days=30,
+    )
+
+    (customer_order_sql,) = engine.statements
+    assert "_AccumRgT7145" in customer_order_sql
+    assert "balance._Fld7131RRef" in customer_order_sql
+    assert "balance._Fld7129RRef" in customer_order_sql
+    assert "balance._Fld7140" in customer_order_sql
+    assert "customer_order._Posted = 0x01" in customer_order_sql
+    assert "customer_order._Marked = 0x00" in customer_order_sql
+    assert "HAVING SUM" in customer_order_sql
+    assert "> 0" in customer_order_sql
+    assert "Потребности" not in customer_order_sql
+    # Решение 2026-08-18: 1С не закрывает старые потребности, поэтому без
+    # отсечки по дате формула тянет многолетние мёртвые остатки регистра.
+    assert "customer_order._Date_Time >= :active_order_min_date" in customer_order_sql
+
+
+def test_active_customer_order_policy_reads_max_age_and_validates(tmp_path) -> None:
+    policy_path = tmp_path / "auto-order-policy.json"
+    policy_path.write_text(
+        '{"auto_order_policy": {"active_customer_order_policy":'
+        ' {"active_order_max_age_days": 45}}}',
+        encoding="utf-8",
+    )
+    policy = load_auto_order_policy(policy_path)
+    assert policy.active_customer_order_max_age_days == 45
+
+    default_policy = load_auto_order_policy(tmp_path / "missing.json")
+    assert default_policy.active_customer_order_max_age_days == 30
+
+    with pytest.raises(SystemExit):
+        AutoOrderPolicy(active_customer_order_max_age_days=0).validate()
 
 
 def test_stock_totals_batches_more_than_sql_server_rpc_limit(tmp_path) -> None:
@@ -402,6 +446,92 @@ def test_display_auto_order_dry_run_can_run_without_max_order_qty_cap() -> None:
     assert rows[0]["recommended_order_qty"] == "7"
     assert rows[0]["dry_run_decision"] == "order"
     assert rows[0]["warnings"] == ""
+
+
+def test_active_customer_orders_increase_need_for_sale_and_working_without_reserve() -> None:
+    items = [
+        {
+            "nomenclature_code": f"RB_{status.upper()}",
+            "name": f"Display {status}",
+            "status": status,
+            "status_label": status_label,
+            "auto_order_allowed": True,
+        }
+        for status, status_label in (
+            ("sale", "Растим (ПРОДАЖА)"),
+            ("working", "Поддерживаем (Рабочий)"),
+        )
+    ]
+    codes = [item["nomenclature_code"] for item in items]
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {code: {"sellable_stock_qty": Decimal("10")} for code in codes},
+            "reserve": {code: {"reserved_qty": Decimal("4")} for code in codes},
+            "customer_orders": {
+                code: {
+                    "active_customer_order_qty": Decimal("7"),
+                    "active_customer_order_count": 3,
+                }
+                for code in codes
+            },
+            "incoming": {},
+            "sales": {code: {"sales_qty_window": Decimal("180")} for code in codes},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    for row in rows:
+        assert row["target_stock_qty"] == "14"
+        assert row["sellable_stock_qty"] == "10"
+        assert row["reserved_qty"] == "4"
+        assert row["free_stock_qty"] == "6"
+        assert row["active_customer_order_qty"] == "7"
+        assert row["active_customer_order_count"] == 3
+        assert row["order_available_stock_qty"] == "3"
+        assert row["recommended_order_qty_raw"] == "11"
+        assert row["recommended_order_qty"] == "11"
+        assert "active_customer_orders_added_to_need" in row["warnings"]
+        assert "Зарезервировано и Под заказ" in row["reason_ru"]
+
+
+def test_active_customer_orders_do_not_change_other_status_formulas() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB_NEW",
+                "name": "Display new item",
+                "status": "new_item",
+                "status_label": "Завезли (Новинка)",
+                "auto_order_allowed": True,
+            }
+        ],
+        facts={
+            "stock": {"RB_NEW": {"sellable_stock_qty": Decimal("10")}},
+            "reserve": {"RB_NEW": {"reserved_qty": Decimal("4")}},
+            "customer_orders": {
+                "RB_NEW": {
+                    "active_customer_order_qty": Decimal("7"),
+                    "active_customer_order_count": 3,
+                }
+            },
+            "incoming": {},
+            "sales": {"RB_NEW": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    row = rows[0]
+    assert row["active_customer_order_qty"] == "0"
+    assert row["active_customer_order_count"] == 0
+    assert row["order_available_stock_qty"] == "6"
+    assert row["recommended_order_qty_raw"] == "8"
 
 
 def test_display_auto_order_dry_run_rounds_large_orders_by_tiers() -> None:

@@ -137,6 +137,22 @@ def test_dry_run_keeps_the_file_untouched(db_session, tmp_path) -> None:
     assert json.loads(overrides.read_text(encoding="utf-8")) == {"items": []}
 
 
+def test_export_without_changes_keeps_the_file_byte_identical(db_session, tmp_path) -> None:
+    order = _order(db_session)
+    _propose_pension(db_session, order)
+
+    overrides = tmp_path / "display-manual-overrides.json"
+    overrides.write_text(json.dumps({"items": []}, ensure_ascii=False), encoding="utf-8")
+
+    export_manual_status_overrides(db_session, str(overrides))
+    after_first = overrides.read_text(encoding="utf-8")
+    # Второй прогон ничего не меняет: файл лежит в репозитории и не должен
+    # мигать отметкой времени на каждом часовом запуске.
+    export_manual_status_overrides(db_session, str(overrides))
+
+    assert overrides.read_text(encoding="utf-8") == after_first
+
+
 def test_only_approved_decisions_are_exported(db_session) -> None:
     order = _order(db_session)
     create_classification_proposal(

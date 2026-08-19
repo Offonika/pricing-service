@@ -10,6 +10,7 @@ from typing import Any
 
 from app.services.assortment_lifecycle import (
     ASSORTMENT_STATUS_LABELS,
+    ONEC_STATUS_VALUE_NAMES,
     AssortmentLifecycleDecision,
     AssortmentLifecycleInput,
     AssortmentStatus,
@@ -630,9 +631,13 @@ def _item_summary(
 def _status_export_blockers(decision: AssortmentLifecycleDecision) -> tuple[str, ...]:
     if "ut103_export_blocked" in decision.blockers:
         return decision.blockers
-    if decision.status.value in {"matrix", "on_demand", "nonliquid", "do_not_order"}:
-        return decision.blockers
-    return ()
+    # Решение 2026-08-18: в 1С уходят только управленческие метки — по ним
+    # закупщик видит, что карточку сняли с ведения. Стадии лестницы считаются
+    # на сервере и не выгружаются: их массовая ночная передача создала второй
+    # источник правды и была остановлена 2026-08-05.
+    if decision.status not in ONEC_STATUS_VALUE_NAMES:
+        return (*decision.blockers, "lifecycle_stage_not_exported")
+    return decision.blockers
 
 
 def _commercial_export_blockers(decision: CommercialMarksDecision) -> tuple[str, ...]:

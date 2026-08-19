@@ -503,20 +503,24 @@ def test_recent_first_sale_still_gives_sales_start() -> None:
     assert "first_sale_registered" in fresh.reason_codes
 
 
-def test_onec_status_values_stay_stable_when_labels_change() -> None:
-    # Человеческие названия статусов переименованы 2026-08-02 под действие
-    # закупщика («Растим», «Поддерживаем»). В 1С при этом должны уезжать
-    # ПРЕЖНИЕ значения свойства: их справочник мы не меняем, незнакомая строка
-    # сломает обмен. Страж следит, что два словаря не срослись обратно.
+def test_onec_receives_management_marks_only() -> None:
+    # Решение 2026-08-18: в 1С уходят только управленческие метки. Стадии
+    # лестницы считаются на сервере, их выгрузка требует отдельного решения.
+    # Значения заводятся в действующих названиях: в справочнике 1С у свойства
+    # не было ни одного значения, переносить отменённые названия незачем.
     from app.services.assortment_lifecycle import ONEC_STATUS_VALUE_NAMES
 
-    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE] == "Растим (ПРОДАЖА)"
-    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.SALE] == "ПРОДАЖА"
-    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.WORKING] == "Поддерживаем (Рабочий)"
-    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.WORKING] == "Рабочий"
-    # Оба словаря обязаны покрывать все статусы целиком.
     assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)
-    assert set(ONEC_STATUS_VALUE_NAMES) == set(AssortmentStatus)
+    assert set(ONEC_STATUS_VALUE_NAMES) == MANUAL_ASSORTMENT_STATUSES
+    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.PENSION] == "Допродаём"
+    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.DO_NOT_ORDER] == "Не закупаем"
+    for stage in (
+        AssortmentStatus.FRUIT,
+        AssortmentStatus.NEW_ITEM,
+        AssortmentStatus.SALE,
+        AssortmentStatus.WORKING,
+    ):
+        assert stage not in ONEC_STATUS_VALUE_NAMES
 
 
 # --- Переходы по динамике спроса (решение пользователя 2026-08-02) ------------

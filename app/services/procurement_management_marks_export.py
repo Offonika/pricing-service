@@ -20,6 +20,7 @@ from app.models.procurement_order_formation import (
     ProcurementClassificationProposal,
     ProcurementOrderFormationLine,
 )
+from app.services.assortment_lifecycle import ONEC_STATUS_VALUE_NAMES, AssortmentStatus
 from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
@@ -27,15 +28,24 @@ from app.services.exporters.ut103_nomenclature_properties import (
 from app.services.procurement_assortment_decisions import clean_string
 from app.services.procurement_order_formation import APPROVED_PROPOSAL_STATUSES
 
-MANAGEMENT_MARK_PROPERTY_NAME = "Управленческая метка ассортимента"
+# Решение 2026-08-18: пишем в уже заведённое свойство «Статус ассортимента»
+# вместо нового поля. В 1С у него не было ни одного значения и ни одной
+# заполненной карточки, поэтому значения заводятся сразу в действующих
+# названиях. Правило чтения простое: пусто — карточка в работе, заполнено —
+# карточку не ведём.
+MANAGEMENT_MARK_PROPERTY_NAME = "Статус ассортимента"
 REPLACEMENT_PROPERTY_NAME = "Взамен ведём"
 
-# Значения свойства «Управленческая метка ассортимента» в справочнике 1С.
+# Управленческие метки, которые уходят в 1С. Названия берём из общего словаря
+# обмена, чтобы переименование не разъехалось между сервисом и учётной системой.
 MANAGEMENT_MARK_VALUE_NAMES = {
-    "pension": "Допродаём",
-    "do_not_order": "Не закупать",
-    "replace_candidate": "Кандидат на замену",
-    "nonliquid": "Выводим",
+    status.value: ONEC_STATUS_VALUE_NAMES[status]
+    for status in (
+        AssortmentStatus.PENSION,
+        AssortmentStatus.DO_NOT_ORDER,
+        AssortmentStatus.REPLACE_CANDIDATE,
+        AssortmentStatus.NONLIQUID,
+    )
 }
 
 
@@ -94,7 +104,9 @@ def build_management_mark_rows(
                     idempotency_key=f"{base_key}:replacement",
                     nomenclature_code=mark["nomenclature_code"],
                     property_name=REPLACEMENT_PROPERTY_NAME,
-                    value_type="string",
+                    # Свойство в 1С имеет тип «Номенклатура»: передаём код,
+                    # приёмник подставляет ссылку на карточку-победителя.
+                    value_type="nomenclature_ref",
                     new_value=replacement,
                     reason=mark["reason"],
                     approved_by=mark["approved_by"],

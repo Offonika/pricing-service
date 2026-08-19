@@ -16,7 +16,12 @@ XML_ENCODING = "windows-1251"
 
 VALID_MODES = frozenset({"dry_run", "apply"})
 VALID_TARGET_KINDS = frozenset({"property", "requisite"})
-VALID_VALUE_TYPES = frozenset({"property_value", "string", "date", "number", "boolean"})
+# `nomenclature_ref` добавлен решением 2026-08-18: свойство «Взамен ведём»
+# ссылается на карточку-победителя, чтобы закупщик переходил на неё одним
+# щелчком. В пакете едет код 1С, ссылку находит приёмная сторона.
+VALID_VALUE_TYPES = frozenset(
+    {"property_value", "string", "date", "number", "boolean", "nomenclature_ref"}
+)
 
 # Жизненный статус и связанные управленческие поля хранятся только в
 # pricing-service. Универсальный property-транспорт остаётся доступен для SKU,
@@ -32,6 +37,23 @@ PROHIBITED_LIFECYCLE_PROPERTY_NAMES = frozenset(
         "ручной минимальный остаток",
         "статус ассортимента",
         "утвердил статус ассортимента",
+    }
+)
+
+# Решение 2026-08-18: в свойство «Статус ассортимента» разрешено записывать
+# управленческие метки — по ним закупщик видит в 1С, что карточку сняли с
+# ведения и почему. Стадии лестницы (Рассматриваем … Поддерживаем) остаются
+# запрещёнными: именно их массовая ночная выгрузка создала второй источник
+# правды и была остановлена 2026-08-05.
+MANAGEMENT_MARK_PROPERTY_NAME = "статус ассортимента"
+ALLOWED_MANAGEMENT_MARK_VALUES = frozenset(
+    {
+        "держим всегда",
+        "только под заказ",
+        "меняем на аналог",
+        "выводим",
+        "не закупаем",
+        "допродаём",
     }
 )
 
@@ -216,11 +238,15 @@ def _validate_row(
         raise ValueError("nomenclature_code is required")
     if not row.property_name.strip():
         raise ValueError("property_name is required")
-    if row.property_name.strip().casefold() in PROHIBITED_LIFECYCLE_PROPERTY_NAMES:
-        raise ValueError(
-            "lifecycle property export to UT 10.3 is disabled; "
-            "store lifecycle status in pricing-service"
-        )
+    property_key = row.property_name.strip().casefold()
+    if property_key in PROHIBITED_LIFECYCLE_PROPERTY_NAMES:
+        value_key = row.new_value_name.strip().casefold().replace("ё", "е")
+        allowed = {item.replace("ё", "е") for item in ALLOWED_MANAGEMENT_MARK_VALUES}
+        if property_key != MANAGEMENT_MARK_PROPERTY_NAME or value_key not in allowed:
+            raise ValueError(
+                "lifecycle property export to UT 10.3 is disabled; "
+                "only assortment management marks are allowed"
+            )
     if row.target_kind not in VALID_TARGET_KINDS:
         raise ValueError(f"target_kind must be one of: {', '.join(sorted(VALID_TARGET_KINDS))}")
     if row.value_type not in VALID_VALUE_TYPES:

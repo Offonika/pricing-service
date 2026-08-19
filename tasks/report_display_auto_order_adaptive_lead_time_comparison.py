@@ -49,12 +49,6 @@ CSV_COLUMNS = [
     "speed_tier",
     "current_decision",
     "adaptive_decision",
-    "margin_flow_rule_applied",
-    "margin_flow_point_rate_sum",
-    "margin_flow_profitability_pct",
-    "margin_flow_minimum_representation_qty",
-    "margin_flow_reliable_incoming_qty",
-    "margin_flow_free_stock_qty",
     "current_recommended_order_qty",
     "adaptive_recommended_order_qty",
     "adaptive_recommended_order_qty_raw",
@@ -74,6 +68,8 @@ CSV_COLUMNS = [
     "adaptive_forecast_qty",
     "adaptive_safety_stock_qty",
     "free_stock_qty",
+    "active_customer_order_qty",
+    "order_available_stock_qty",
     "incoming_qty",
     "lead_time_source_level",
     "lead_time_confidence",
@@ -206,11 +202,6 @@ def build_comparison_rows(
     policy = policy or {}
     as_of = as_of or date.today()
     order_rounding_rules = tuple(policy.get("order_rounding_rules") or ())
-    margin_flow_policy = (
-        policy.get("margin_flow_policy")
-        if isinstance(policy.get("margin_flow_policy"), Mapping)
-        else {}
-    )
     code_index, group_index = build_lead_time_indexes(lead_time_rows)
     recent_signals = tuple(
         _recent_seasonality_signals(
@@ -275,7 +266,6 @@ def build_comparison_rows(
             adaptive_logistics=adaptive_logistics,
             seasonality_adjustment=seasonality_adjustment,
             order_rounding_rules=order_rounding_rules,
-            margin_flow_policy=margin_flow_policy,
             warnings=warnings,
         )
         result.append(comparison)
@@ -292,7 +282,6 @@ def build_row_comparison(
     adaptive_logistics: int,
     seasonality_adjustment: Mapping[str, Any],
     order_rounding_rules: Sequence[Mapping[str, Any]],
-    margin_flow_policy: Mapping[str, Any],
     warnings: Sequence[str],
 ) -> dict[str, Any]:
     current_qty = _decimal(row.get("recommended_order_qty")) or Decimal("0")
@@ -303,14 +292,9 @@ def build_row_comparison(
     speed_action = _clean(row.get("speed_rule_action"))
     source_warnings = set(_split_codes(row.get("warnings")))
 
-    margin_flow_applied = _truthy(row.get("margin_flow_qualifies")) and _truthy(
-        margin_flow_policy.get("enabled")
-    )
     adaptive_safety_days = _int_or_none(row.get("speed_rule_safety_stock_days"))
     if adaptive_safety_days is None:
         adaptive_safety_days = _int_or_none(row.get("safety_stock_days")) or 0
-    if margin_flow_applied:
-        adaptive_safety_days = _int_or_none(margin_flow_policy.get("safety_stock_days")) or 25
     max_effective_days = _int_or_none(row.get("speed_max_effective_target_days"))
     target_days = _int_or_none(row.get("target_days")) or 0
     cadence_days = _int_or_none(row.get("order_cadence_days")) or 0
@@ -326,65 +310,54 @@ def build_row_comparison(
         + adaptive_safety_days
     )
     adaptive_effective_days = adaptive_uncapped_effective_days
-    if max_effective_days is not None and not margin_flow_applied:
+    if max_effective_days is not None:
         adaptive_effective_days = min(adaptive_effective_days, max_effective_days)
     forecast_days = max(0, adaptive_effective_days - adaptive_safety_days)
 
-    blockers = set(_split_codes(row.get("blockers")))
-    marketplace_risk = _clean(row.get("marketplace_risk_code"))
     blocked_by_status = bool(source_warnings & BLOCKING_WARNING_CODES)
-    if margin_flow_applied:
-        blocked_by_status = bool(blockers) or marketplace_risk in {
-            "critical_marketplace_refusal_nonliquid_risk",
-            "high_marketplace_refusal_risk",
-        }
     transition_to_better = role == "transition_to_better_analog"
     slow_review = speed_action == "manual_review"
-    group_role = (
-        role in {"primary_analog", "transition_to_better_analog"} and not margin_flow_applied
-    )
+    group_role = role in {"primary_analog", "transition_to_better_analog"}
+    active_customer_order_qty = _decimal(row.get("active_customer_order_qty")) or Decimal("0")
+    explicit_order_available_stock = _clean(row.get("order_available_stock_qty"))
     if group_role:
         avg_daily = _decimal(row.get("speed_group_avg_daily_sales_qty")) or Decimal("0")
-        free_stock = _decimal(row.get("analog_group_free_stock_qty")) or Decimal("0")
+        order_available_stock = (
+            _decimal(explicit_order_available_stock)
+            if explicit_order_available_stock
+            else _decimal(row.get("analog_group_free_stock_qty")) or Decimal("0")
+        )
         incoming = _decimal(row.get("analog_group_incoming_qty")) or Decimal("0")
     else:
-        avg_daily = _decimal(
-            row.get("margin_flow_point_rate_sum")
-            if margin_flow_applied
-            else row.get("avg_daily_sales_qty")
-        ) or Decimal("0")
-        free_stock = _decimal(
-            row.get("margin_flow_free_stock_qty")
-            if margin_flow_applied
-            else row.get("free_stock_qty")
-        ) or Decimal("0")
-        incoming = _decimal(
-            row.get("margin_flow_reliable_incoming_qty")
-            if margin_flow_applied
-            else row.get("incoming_qty")
-        ) or Decimal("0")
+        avg_daily = _decimal(row.get("avg_daily_sales_qty")) or Decimal("0")
+        order_available_stock = (
+            _decimal(explicit_order_available_stock)
+            if explicit_order_available_stock
+            else _decimal(row.get("free_stock_qty")) or Decimal("0")
+        )
+        incoming = _decimal(row.get("incoming_qty")) or Decimal("0")
 
     adaptive_forecast_qty = _ceil(avg_daily * Decimal(str(forecast_days)))
     adaptive_safety_qty = _ceil(avg_daily * Decimal(str(adaptive_safety_days)))
     adaptive_target_stock = adaptive_forecast_qty + adaptive_safety_qty
-    if margin_flow_applied:
-        adaptive_target_stock = max(
-            adaptive_target_stock,
-            Decimal(str(_int_or_none(margin_flow_policy.get("minimum_representation_qty")) or 13)),
+    adaptive_qty_raw = _ceil(
+        max(
+            Decimal("0"),
+            adaptive_target_stock - order_available_stock - incoming,
         )
-    adaptive_qty_raw = _ceil(max(Decimal("0"), adaptive_target_stock - free_stock - incoming))
+    )
     adaptive_qty = rounded_order_qty(adaptive_qty_raw, order_rounding_rules)
 
     adaptive_decision = "order" if adaptive_qty > 0 else "do_not_order"
     action_ru = "рассчитать по живому сроку"
     comparison_warnings = list(warnings)
-    if transition_to_better and not margin_flow_applied:
+    if transition_to_better:
         adaptive_qty = Decimal("0")
         adaptive_qty_raw = Decimal("0")
         adaptive_decision = "do_not_order"
         action_ru = "не заказывать старый аналог"
         comparison_warnings.append("analog_transition_preserved")
-    elif slow_review and not margin_flow_applied:
+    elif slow_review:
         adaptive_qty = Decimal("0")
         adaptive_qty_raw = Decimal("0")
         adaptive_decision = "manual_review"
@@ -396,9 +369,6 @@ def build_row_comparison(
         adaptive_decision = "manual_review"
         action_ru = "не включать без ручного разрешения"
         comparison_warnings.append("manual_blocker_preserved")
-    elif margin_flow_applied:
-        action_ru = "применить правило Маржинального потока"
-        comparison_warnings.append("margin_flow_rule_applied")
 
     qty_delta = adaptive_qty - current_qty
     target_delta = adaptive_target_stock - current_target_stock
@@ -412,15 +382,10 @@ def build_row_comparison(
         lead_candidate=lead_candidate,
         seasonality_adjustment=seasonality_adjustment,
     )
-    if margin_flow_applied:
-        reason = (
-            "Маржинальный поток: скорость по отдельным точкам "
-            f"{_out_decimal(avg_daily)} шт/день, рентабельность "
-            f"{_clean(row.get('margin_flow_profitability_pct'))}%, цель "
-            f"max(адаптивная потребность {adaptive_forecast_qty + adaptive_safety_qty}, "
-            f"минимальная представленность {adaptive_target_stock if adaptive_target_stock == Decimal('13') else _int_or_none(margin_flow_policy.get('minimum_representation_qty')) or 13}) "
-            f"= {adaptive_target_stock} шт. Свободно {free_stock} шт., надёжно в пути "
-            f"(сдано в карго) {incoming} шт., рекомендация {adaptive_qty} шт."
+    if active_customer_order_qty > 0:
+        reason += (
+            "; активный невыполненный остаток Заказов покупателей "
+            f"{_out_decimal(active_customer_order_qty)} шт. включён в потребность"
         )
     return {
         "nomenclature_code": _clean(row.get("nomenclature_code")),
@@ -430,18 +395,6 @@ def build_row_comparison(
         "speed_tier": _clean(row.get("speed_tier")),
         "current_decision": _clean(row.get("dry_run_decision")),
         "adaptive_decision": adaptive_decision,
-        "margin_flow_rule_applied": int(margin_flow_applied),
-        "margin_flow_point_rate_sum": _clean(row.get("margin_flow_point_rate_sum")),
-        "margin_flow_profitability_pct": _clean(row.get("margin_flow_profitability_pct")),
-        "margin_flow_minimum_representation_qty": (
-            _int_or_none(margin_flow_policy.get("minimum_representation_qty")) or 13
-            if margin_flow_applied
-            else ""
-        ),
-        "margin_flow_reliable_incoming_qty": (
-            _out_decimal(incoming) if margin_flow_applied else ""
-        ),
-        "margin_flow_free_stock_qty": (_out_decimal(free_stock) if margin_flow_applied else ""),
         "current_recommended_order_qty": _out_decimal(current_qty),
         "adaptive_recommended_order_qty": _out_decimal(adaptive_qty),
         "adaptive_recommended_order_qty_raw": _out_decimal(adaptive_qty_raw),
@@ -460,7 +413,9 @@ def build_row_comparison(
         "adaptive_safety_stock_days": adaptive_safety_days,
         "adaptive_forecast_qty": _out_decimal(adaptive_forecast_qty),
         "adaptive_safety_stock_qty": _out_decimal(adaptive_safety_qty),
-        "free_stock_qty": _out_decimal(free_stock),
+        "free_stock_qty": _clean(row.get("free_stock_qty")),
+        "active_customer_order_qty": _out_decimal(active_customer_order_qty),
+        "order_available_stock_qty": _out_decimal(order_available_stock),
         "incoming_qty": _out_decimal(incoming),
         "lead_time_source_level": source_level,
         "lead_time_confidence": (
@@ -529,11 +484,10 @@ def build_sync_ready_rows(
         row["forecast_qty"] = _clean(comparison_row.get("adaptive_forecast_qty"))
         row["safety_stock_qty"] = _clean(comparison_row.get("adaptive_safety_stock_qty"))
         row["free_stock_qty"] = _clean(comparison_row.get("free_stock_qty"))
+        row["active_customer_order_qty"] = _clean(comparison_row.get("active_customer_order_qty"))
+        row["order_available_stock_qty"] = _clean(comparison_row.get("order_available_stock_qty"))
         row["incoming_qty"] = _clean(comparison_row.get("incoming_qty"))
         row["reason_ru"] = _clean(comparison_row.get("reason_ru"))
-        row["margin_flow_rule_applied"] = (
-            "yes" if _truthy(comparison_row.get("margin_flow_rule_applied")) else ""
-        )
 
         if _clean(row.get("analog_role")) in {"primary_analog", "transition_to_better_analog"}:
             row["analog_group_target_stock_qty"] = adaptive_target
@@ -548,16 +502,6 @@ def build_sync_ready_rows(
 
         data_sources = set(_split_codes(row.get("data_sources")))
         data_sources.add("local:adaptive_lead_time")
-        if _truthy(comparison_row.get("margin_flow_rule_applied")):
-            data_sources.update(
-                {
-                    "1c:_AccumRgT7473_party_cost",
-                    "1c:_AccumRg7550_net_revenue",
-                    "1c:point_sales",
-                    "app:point_availability",
-                    "1c:cargo_handoff_pipeline",
-                }
-            )
         row["data_sources"] = "; ".join(sorted(data_sources))
         rows.append(row)
     return rows
@@ -907,12 +851,6 @@ def _split_codes(value: Any) -> tuple[str, ...]:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return _clean(value).casefold() in {"1", "true", "yes", "y", "да"}
 
 
 def _decimal(value: Any) -> Decimal | None:

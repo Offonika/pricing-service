@@ -138,7 +138,9 @@ def main() -> int:
         [str(row.get("nomenclature_code") or "") for row in selected_rows],
     )
     contracts = load_contracts(args)
-    selected_supplier_refs = choose_selected_supplier_refs(selected_rows, lead_time_rows)
+    selected_supplier_refs = choose_selected_supplier_refs(
+        selected_rows, lead_time_rows, nomenclature
+    )
     order_dimensions = fetch_latest_order_dimensions(
         settings.onec_database_url,
         codes=[str(row.get("nomenclature_code") or "") for row in selected_rows],
@@ -314,7 +316,10 @@ def build_grouped_orders(
             code_index=code_index,
             group_index=group_index,
         )
-        supplier = {
+        # Основной поставщик карточки 1С — источник правды (решение 2026-08-19).
+        # История закупок остаётся запасным вариантом: она показывает, кто возил
+        # товар последним, но не то, у кого его положено заказывать сейчас.
+        supplier = card_supplier(nomenclature) or {
             "ref": _clean((lead_candidate or {}).get("supplier_ref")),
             "code": _clean((lead_candidate or {}).get("supplier_code")),
             "name": _clean((lead_candidate or {}).get("supplier_name")),
@@ -396,7 +401,7 @@ def build_grouped_orders(
         elif _normalize_guid(product.xml_id) != _normalize_guid(xml_id):
             blockers.append("catalog_xml_id_mismatch")
         quantity = _family_recommended_quantity(row)
-        price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
+        price = PROJECT_PURCHASE_PRICE
         b2b_customer_demand = _b2b_customer_demand_payload(row)
         public_article = _clean(nomenclature.get("article")) or code
         public_media = product_media_resolver(public_article) if product_media_resolver else None
@@ -526,14 +531,35 @@ def load_contracts(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+# Закупочную цену в проекте держим равной 1 рублю (решение владельца 2026-08-19):
+# цена из истории вводила закупщика в заблуждение, фактическую он проставляет сам.
+PROJECT_PURCHASE_PRICE = Decimal("1")
+
+
+def card_supplier(nomenclature: Mapping[str, Any]) -> dict[str, str] | None:
+    """Основной поставщик из карточки номенклатуры 1С."""
+    ref = _clean(nomenclature.get("main_supplier_ref"))
+    if not ref:
+        return None
+    return {
+        "ref": ref,
+        "code": _clean(nomenclature.get("main_supplier_code")),
+        "name": _clean(nomenclature.get("main_supplier_name")),
+    }
+
+
 def choose_selected_supplier_refs(
     selected_rows: Sequence[Mapping[str, Any]],
     lead_time_rows: Sequence[Mapping[str, Any]],
+    nomenclature_by_code: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[str]:
     code_index, group_index = build_lead_time_indexes(lead_time_rows)
     refs: set[str] = set()
     for row in selected_rows:
         code = _clean(row.get("nomenclature_code"))
+        card = card_supplier((nomenclature_by_code or {}).get(code) or {})
+        if card:
+            refs.add(card["ref"])
         candidate, _level = choose_lead_time_candidate(
             code,
             display_group_key(row),
@@ -670,8 +696,14 @@ def fetch_nomenclature_by_codes(
             CONVERT(varchar(34), item._IDRRef, 1) AS nomenclature_ref,
             NULLIF(LTRIM(RTRIM(item._Code)), N'') AS nomenclature_code,
             NULLIF(LTRIM(RTRIM(item._Description)), N'') AS nomenclature_name,
-            NULLIF(LTRIM(RTRIM(CAST(item._Fld836 AS nvarchar(max)))), N'') AS article
+            NULLIF(LTRIM(RTRIM(CAST(item._Fld836 AS nvarchar(max)))), N'') AS article,
+            CONVERT(varchar(34), NULLIF(item._Fld851RRef, 0x00000000000000000000000000000000), 1)
+                AS main_supplier_ref,
+            NULLIF(LTRIM(RTRIM(main_supplier._Code)), N'') AS main_supplier_code,
+            NULLIF(LTRIM(RTRIM(main_supplier._Description)), N'') AS main_supplier_name
         FROM dbo._Reference62 AS item WITH (NOLOCK)
+        LEFT JOIN dbo._Reference54 AS main_supplier WITH (NOLOCK)
+            ON main_supplier._IDRRef = item._Fld851RRef
         WHERE item._Marked = 0x00
           AND LTRIM(RTRIM(item._Code)) IN :codes
     """).bindparams(bindparam("codes", expanding=True))

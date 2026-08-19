@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.services.assortment_lifecycle import (
     ASSORTMENT_STATUS_LABELS,
+    ASSORTMENT_STATUS_LEGACY_LABELS,
     MANUAL_ASSORTMENT_STATUSES,
     WORKING_MIN_RECEIPTS,
     WORKING_RECEIPT_WINDOW_DAYS,
@@ -22,6 +23,7 @@ from app.services.assortment_lifecycle import (
     classify_expensive_profile,
     decide_assortment_status,
     decide_commercial_marks,
+    status_display_label,
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
@@ -315,6 +317,18 @@ def test_every_status_has_label_and_no_orphan_labels() -> None:
     # Каждый статус жизненного цикла обязан иметь человекочитаемую метку,
     # и в словаре меток не должно быть значений вне enum (ловит рассинхрон).
     assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)
+
+
+def test_every_status_keeps_its_previous_name_for_screens() -> None:
+    # Решение пользователя 2026-08-19: на экране рядом с действующим названием
+    # показывается прежнее, поэтому забытый статус — это потерянная подсказка.
+    assert set(ASSORTMENT_STATUS_LEGACY_LABELS) == set(AssortmentStatus)
+    assert status_display_label(AssortmentStatus.WORKING) == "Поддерживаем (Рабочий)"
+    assert status_display_label("fruit") == "Рассматриваем (Плод)"
+    # Данные остаются без скобок: их читает не человек, а сопоставление строк.
+    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE] == "Растим"
+    # Неизвестный код не должен обрушить экран.
+    assert status_display_label("review") == "review"
 
 
 def test_manual_statuses_are_subset_of_enum() -> None:

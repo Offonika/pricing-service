@@ -52,6 +52,9 @@ class ProcurementClassificationProposalRead(BaseModel):
     rejection_reason: str | None = None
     can_approve: bool = False
     can_reject: bool = False
+    # Предложение подал сам текущий пользователь: своё решение согласовывает
+    # второй сотрудник, кроме статуса «Допродаём».
+    self_proposed: bool = False
     onec_status: str
     onec_message_id: str | None = None
     onec_error: str | None = None
@@ -375,6 +378,9 @@ class ProcurementClassificationApprovalResponse(BaseModel):
 class ProcurementDashboardCard(BaseModel):
     status: str
     label: str
+    # Прежнее название статуса: витрина показывает его мелкой строкой под
+    # действующим, чтобы старые отчёты и договорённости читались без перевода.
+    legacy_label: str = ""
     total_count: int = 0
     action_count: int = 0
     action_kind: str

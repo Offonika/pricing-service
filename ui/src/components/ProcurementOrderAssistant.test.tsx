@@ -343,4 +343,32 @@ describe("ProcurementOrderAssistant", () => {
       expect.objectContaining({ expected_version: 2, qualification_class: "B" })
     ));
   });
+
+  it("фильтр «Можно собрать» не показывает строки со снятой потребностью", async () => {
+    // Счётчик считал только живые строки, а таблица показывала ещё и снятые
+    // строки того же заказа: на кнопке было 31, в списке — 67.
+    const data = assistantData();
+    const gone = structuredClone(data.orders[0].lines[0]);
+    gone.id = 41;
+    gone.line_number = 2;
+    gone.nomenclature_name = "Дисплей снятый";
+    gone.removed = true;
+    data.orders[0].lines.push(gone);
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+
+    render(<ProcurementOrderAssistantView />);
+
+    // «Все» показывает столько строк, сколько реально видно, включая снятые.
+    expect(await screen.findByText("Дисплей снятый")).toBeInTheDocument();
+    const allButton = screen
+      .getAllByRole("button")
+      .find((button) => button.textContent?.startsWith("Все"));
+    expect(allButton?.textContent).toBe("Все2");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Можно собрать/ }));
+
+    await waitFor(() => expect(screen.queryByText("Дисплей снятый")).not.toBeInTheDocument());
+    expect(screen.getByText("1 строк в текущем фильтре")).toBeInTheDocument();
+  });
+
 });

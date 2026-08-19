@@ -112,16 +112,14 @@ class CommercialMark(StrEnum):
 # ВАЖНО: эти названия свободно меняются, потому что они только для наших
 # экранов и отчётов. Значение, уезжающее в 1С, живёт отдельно —
 # ONEC_STATUS_VALUE_NAMES ниже.
-# Переходный формат двух переименованных рабочих стадий сохраняет прежнее
-# название в скобках, чтобы пользователь не путал старые и новые отчёты.
 ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.FRUIT: "Рассматриваем",
     AssortmentStatus.NEWBORN: "Заказали",
     AssortmentStatus.NEWBORN_NEED: "Добираем",
     AssortmentStatus.NEW_ITEM: "Завезли",
     AssortmentStatus.SALES_START: "Пошли продажи",
-    AssortmentStatus.SALE: "Растим (ПРОДАЖА)",
-    AssortmentStatus.WORKING: "Поддерживаем (Рабочий)",
+    AssortmentStatus.SALE: "Растим",
+    AssortmentStatus.WORKING: "Поддерживаем",
     AssortmentStatus.MATRIX: "Держим всегда",
     AssortmentStatus.ON_DEMAND: "Только под заказ",
     AssortmentStatus.REPLACE_CANDIDATE: "Меняем на аналог",
@@ -129,6 +127,53 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
     AssortmentStatus.PENSION: "Допродаём",
 }
+
+# Прежние названия статусов. Решение пользователя 2026-08-19: на экранах
+# показывать действующее название, а прежнее оставлять рядом в скобках —
+# иначе закупщик не связывает витрину со старыми отчётами и договорённостями.
+# В данных (`status_label`, выгрузки, 1С) остаётся только новое название:
+# скобки нужны глазам человека, а не сопоставлению строк.
+ASSORTMENT_STATUS_LEGACY_LABELS = {
+    AssortmentStatus.FRUIT: "Плод",
+    AssortmentStatus.NEWBORN: "Новорожденный",
+    AssortmentStatus.NEWBORN_NEED: "ДН / Добор новорождённого",
+    AssortmentStatus.NEW_ITEM: "Новинка",
+    AssortmentStatus.SALES_START: "СП / Старт продаж",
+    AssortmentStatus.SALE: "ПРОДАЖА",
+    AssortmentStatus.WORKING: "Рабочий",
+    AssortmentStatus.MATRIX: "Матричный",
+    AssortmentStatus.ON_DEMAND: "Под заказ",
+    AssortmentStatus.REPLACE_CANDIDATE: "Кандидат на замену",
+    AssortmentStatus.NONLIQUID: "Кандидат на неликвид",
+    AssortmentStatus.DO_NOT_ORDER: "Не закупать",
+    AssortmentStatus.PENSION: "Пенсия",
+}
+
+
+def status_legacy_label(status: AssortmentStatus | str | None) -> str:
+    """Прежнее название статуса или пустая строка, если его не переименовывали."""
+
+    if status is None:
+        return ""
+    try:
+        normalized = AssortmentStatus(str(status))
+    except ValueError:
+        return ""
+    return ASSORTMENT_STATUS_LEGACY_LABELS.get(normalized, "")
+
+
+def status_display_label(status: AssortmentStatus | str | None) -> str:
+    """Экранное название: действующее плюс прежнее в скобках."""
+
+    if status is None:
+        return ""
+    try:
+        normalized = AssortmentStatus(str(status))
+    except ValueError:
+        return str(status)
+    label = ASSORTMENT_STATUS_LABELS[normalized]
+    legacy = ASSORTMENT_STATUS_LEGACY_LABELS.get(normalized, "")
+    return f"{label} ({legacy})" if legacy and legacy != label else label
 
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
 # человеческих названий: обмен сломается, если отправить в справочник 1С

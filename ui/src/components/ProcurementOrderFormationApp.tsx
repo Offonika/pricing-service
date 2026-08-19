@@ -9,7 +9,12 @@ import {
   type ProcurementOrderFormation,
   type ProcurementOrderFormationLine,
 } from "../api/procurementAssortment";
-import { procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { procurementErrorText } from "../utils/procurementErrorMessages";
+import {
+  groupProcurementBlockers,
+  groupProcurementRiskCodes,
+  procurementBlockerText,
+} from "../utils/procurementRiskLabels";
 
 interface Props {
   bitrixUserName?: string | null;
@@ -55,24 +60,6 @@ function money(value: string, currency: string) {
   }).format(number);
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
-  "order version changed; refresh the order":
-    "Заказ уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.",
-  "order line version changed; refresh the order":
-    "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.",
-  "transmitted order is read-only; create a new version":
-    "Заказ уже передан в 1С, его нельзя менять. Создайте новую версию заказа.",
-  "approved order is read-only; create a new revision":
-    "Подтверждённый заказ заморожен. Новый расчёт создаст отдельную ревизию.",
-  "classification proposal cannot be self-approved":
-    "Своё предложение согласовать нельзя — нужен второй сотрудник.",
-  "user cannot approve product classification":
-    "У вас нет прав согласовывать классификацию товара.",
-  "classification reason is required": "Укажите причину изменения классификации.",
-  "review date is required when manual minimum is set":
-    "При ручном минимуме обязательно укажите дату пересмотра.",
-  "manual minimum cannot be negative": "Ручной минимум не может быть отрицательным.",
-};
 
 const LINE_CHANGED_MESSAGE =
   "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.";
@@ -82,10 +69,7 @@ function errorStatus(error: unknown) {
 }
 
 function errorText(error: unknown) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return ERROR_MESSAGES[detail] || detail;
-  if (error instanceof Error) return ERROR_MESSAGES[error.message] || error.message;
-  return "Операция не выполнена";
+  return procurementErrorText(error);
 }
 
 export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onBack }: Props) {
@@ -101,6 +85,12 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
   const visibleLines = useMemo(
     () => [...order.lines].sort((left, right) => left.line_number - right.line_number),
     [order.lines]
+  );
+  // Один и тот же блокер приходит по каждой проблемной строке отдельно, поэтому
+  // без группировки экран показывал несколько одинаковых фраз подряд.
+  const blockerGroups = useMemo(
+    () => groupProcurementBlockers(order.blockers),
+    [order.blockers]
   );
   const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
   const draftTotal = useMemo(
@@ -260,12 +250,14 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
 
-      {order.blockers.length > 0 && (
+      {blockerGroups.length > 0 && (
         <section className="order-formation__alert">
           <strong>Передача заблокирована</strong>
           <ul>
-            {order.blockers.map((blocker) => (
-              <li key={blocker} title={blocker}>{procurementRiskLabel(blocker)}</li>
+            {blockerGroups.map((group) => (
+              <li key={group.text} title={group.codes.join(", ")}>
+                {procurementBlockerText(group)}
+              </li>
             ))}
           </ul>
         </section>
@@ -279,8 +271,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                 <th>Товар</th>
                 <th>Классификация</th>
                 <th>Рекомендация</th>
-                <th>Количество</th>
-                <th>Закупочная цена</th>
+                <th>Кол-во</th>
+                <th>Цена закупки</th>
                 <th>Сумма</th>
                 <th></th>
               </tr>
@@ -304,7 +296,10 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <strong>{line.effective_assortment_status_label || "Не задана"}</strong>
-                      {line.lifecycle_status && <small>Жизненный статус: {line.lifecycle_status}</small>}
+                      {line.lifecycle_status &&
+                        line.lifecycle_status !== line.effective_assortment_status_label && (
+                          <small>Жизненный статус: {line.lifecycle_status}</small>
+                        )}
                       {line.procurement_profile && <small>Профиль: {line.procurement_profile}</small>}
                       {proposal && <small>Предложение: {proposal.proposed_status_label} · {proposal.status}</small>}
                       <button
@@ -463,9 +458,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           )}
                         </div>
                       )}
-                      {line.risk_codes.map((risk) => (
-                        <small key={risk} title={risk}>
-                          Сигнал: {procurementRiskLabel(risk)}
+                      {groupProcurementRiskCodes(line.risk_codes).map((signal) => (
+                        <small key={signal.text} title={signal.codes.join(", ")}>
+                          Сигнал: {signal.text}
                         </small>
                       ))}
                     </td>

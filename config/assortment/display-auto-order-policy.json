@@ -150,7 +150,7 @@
         "cadence": "weekly_with_stockout_guard",
         "batch_basis": "median_to_p75",
         "minimum_batch_qty": 20,
-        "max_automatic_excess_coverage_days": 7
+        "max_automatic_excess_coverage_days": 30
       },
       {
         "speed_tier": "super_fast",
@@ -172,7 +172,7 @@
         "cadence": "biweekly",
         "batch_basis": "median_to_p75",
         "minimum_batch_qty": 12,
-        "max_automatic_excess_coverage_days": 14
+        "max_automatic_excess_coverage_days": 30
       },
       {
         "speed_tier": "fast",
@@ -194,7 +194,7 @@
         "cadence": "every_3_weeks",
         "batch_basis": "median_to_p75",
         "minimum_batch_qty": 10,
-        "max_automatic_excess_coverage_days": 21
+        "max_automatic_excess_coverage_days": 30
       },
       {
         "speed_tier": "normal",
@@ -268,18 +268,40 @@
     },
     "order_rounding_rules": [
       {
-        "threshold_gt": 2000,
+        "threshold_gt": 1999,
         "round_to": 100
       },
       {
-        "threshold_gt": 1000,
+        "threshold_gt": 999,
         "round_to": 50
       },
       {
-        "threshold_gt": 100,
+        "threshold_gt": 49,
         "round_to": 10
+      },
+      {
+        "threshold_gt": 0,
+        "round_to": 5
       }
     ],
+    "order_rounding_price_gate": {
+      "status": "approved",
+      "approved_at": "2026-08-19",
+      "implementation_status": "wired_in_dry_run",
+      "description": "Округление количества разрешено только карточкам, чья закупочная цена не выше медианы своей ценовой группы. Группа - бренд плюс класс устройства, определяется по свойствам и названию карточки, а не по папке каталога 1С.",
+      "group_basis": "brand_and_device_class",
+      "brand_source": "first_brand_in_name_then_brand_compatibility",
+      "device_classes": [
+        "планшет",
+        "часы",
+        "телефон"
+      ],
+      "min_group_size": 10,
+      "small_group_round_to": 10,
+      "min_group_size_note": "В группе меньше 10 карточек с известной ценой медиана не считается: округляем шагом 10 без условия по цене.",
+      "no_price_note": "Карточка без закупочной цены не округляется вообще.",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md"
+    },
     "speed_horizon_rules": [
       {
         "tier": "super_fast",

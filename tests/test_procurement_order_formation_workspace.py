@@ -351,6 +351,10 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
     newborn = next(card for card in dashboard["cards"] if card["status"] == "newborn")
     fruit = next(card for card in dashboard["cards"] if card["status"] == "fruit")
     working = next(card for card in dashboard["cards"] if card["status"] == "working")
+    # Витрина показывает действующее название, прежнее отдаётся отдельным полем
+    # и рисуется мелкой строкой под ним (решение пользователя 2026-08-19).
+    assert (fruit["label"], fruit["legacy_label"]) == ("Рассматриваем", "Плод")
+    assert (working["label"], working["legacy_label"]) == ("Поддерживаем", "Рабочий")
     assert newborn["total_count"] == 2
     assert newborn["action_count"] == 2
     assert newborn["action_breakdown"] == {"new_item": 1, "review": 1}
@@ -366,7 +370,7 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
         "nomenclature_code": "MATRIX-1",
         "product_name": "Дисплей матричный",
         "current_status": "matrix",
-        "current_status_label": "Матричный",
+        "current_status_label": "Держим всегда (Матричный)",
         "kind": "manual",
         "filter_status": "matrix",
         "action_label": "Проверить матрицу и минимальный запас",
@@ -427,7 +431,10 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
     )
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
-    assert transition["reason"].startswith("Рекомендуется переход Новорожденный → Новинка.")
+    # Подписи статусов на экранах действующие, прежние остаются в скобках.
+    assert transition["reason"].startswith(
+        "Рекомендуется переход Заказали (Новорожденный) → Завезли (Новинка)."
+    )
 
 
 def test_queue_filters_manual_reviews_and_opens_exact_proposal(

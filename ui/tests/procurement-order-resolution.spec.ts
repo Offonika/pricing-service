@@ -84,6 +84,17 @@ const safeLine = {
   blocker_details: [],
 };
 
+const removedLines = Array.from({ length: 35 }, (_, index) => ({
+  ...baseLine,
+  id: 100 + index,
+  line_number: 101 + index,
+  nomenclature_code: `REMOVED-${index + 1}`,
+  nomenclature_name: `Исключённая строка ${index + 1}`,
+  blockers: [],
+  blocker_details: [],
+  removed: true,
+}));
+
 const project94 = {
   id: 94,
   stable_key: "order-94",
@@ -120,13 +131,13 @@ const project94 = {
     updated_at: "2026-08-20",
     data_status: "ready",
   },
-  lines: [safeLine, ...blockedLines],
+  lines: [safeLine, ...blockedLines, ...removedLines],
 };
 
 const assistantResponse = {
   updated_at: "2026-08-20T10:00:00Z",
   summary: {
-    lines: 4,
+    lines: 39,
     ready_lines: 0,
     supplier_missing_lines: 0,
     price_changed_lines: 4,
@@ -196,7 +207,9 @@ test("blocked project explains resolution and stays usable at all target widths"
   const exactReason = (
     "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
   );
-  await expect(page.getByText(exactReason).first()).toBeVisible();
+  await expect(page.getByText(exactReason)).toHaveCount(1);
+  await expect(page.getByText("1 причина · 3 проблемные строки")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toHaveCount(0);
   const problem = page.getByText("Проблемная строка 23").first();
   const safe = page.getByText("Готовая строка").first();
   await expect(problem).toBeVisible();
@@ -205,7 +218,7 @@ test("blocked project explains resolution and stays usable at all target widths"
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+    const action = page.getByRole("button", { name: "Разобрать 3 проблемные строки" });
     await expect(action).toBeVisible();
     expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(40);
     if (viewport.width <= 820) {
@@ -220,7 +233,7 @@ test("blocked project explains resolution and stays usable at all target widths"
     });
   }
 
-  const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+  const action = page.getByRole("button", { name: "Разобрать 3 проблемные строки" });
   await action.focus();
   await expect(action).toBeFocused();
   await page.keyboard.press("Enter");
@@ -235,7 +248,7 @@ test("blocked project explains resolution and stays usable at all target widths"
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    if (viewport.width <= 820) {
+    if (viewport.width <= 1100) {
       await expect(page.locator(".order-formation__table thead")).toBeHidden();
     } else {
       await expect(page.locator(".order-formation__table thead")).toBeVisible();
@@ -246,6 +259,22 @@ test("blocked project explains resolution and stays usable at all target widths"
       fullPage: false,
     });
   }
+
+  await expect(page.getByRole("button", { name: /Исключённые строки: 35/ })).toBeVisible();
+  await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const removalTrigger = focusedRow.getByRole("button", { name: "Исключить строку" });
+  await removalTrigger.click();
+  const dialog = page.getByRole("dialog", { name: "Исключить строку 23" });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByPlaceholder("Обязательно укажите, почему строку исключают")).toBeFocused();
+  const dialogBox = await dialog.boundingBox();
+  expect(dialogBox!.width).toBeGreaterThanOrEqual(320);
+  expect(dialogBox!.width).toBeLessThanOrEqual(366);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(removalTrigger).toBeFocused();
 
   expect(browserErrors).toEqual([]);
 });

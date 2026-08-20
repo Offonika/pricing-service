@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
@@ -170,11 +170,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   >({});
   const [openedClassification, setOpenedClassification] = useState<number | null>(null);
   const [openedRemoval, setOpenedRemoval] = useState<number | null>(null);
+  const [showRemoved, setShowRemoved] = useState(false);
   const [removalReason, setRemovalReason] = useState("");
   const [removalReplacement, setRemovalReplacement] = useState("");
   const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
   const [loadingKey, setLoadingKey] = useState("");
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
+  const removalDialogRef = useRef<HTMLDivElement | null>(null);
+  const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
+  const removalTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!focusLineId || !focusedLineRef.current) return;
@@ -183,13 +187,18 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   }, [focusLineId]);
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
+  const removedLines = useMemo(() => order.lines.filter((line) => line.removed), [order.lines]);
   const visibleLines = useMemo(
     () => [...order.lines].sort((left, right) => {
-      const leftProblem = left.blockers.length > 0 || left.removed ? 1 : 0;
-      const rightProblem = right.blockers.length > 0 || right.removed ? 1 : 0;
-      return rightProblem - leftProblem || left.line_number - right.line_number;
+      const leftRank = left.removed ? 2 : left.blockers.length > 0 ? 0 : 1;
+      const rightRank = right.removed ? 2 : right.blockers.length > 0 ? 0 : 1;
+      return leftRank - rightRank || left.line_number - right.line_number;
     }),
     [order.lines]
+  );
+  const openedRemovalLine = useMemo(
+    () => order.lines.find((line) => line.id === openedRemoval) || null,
+    [openedRemoval, order.lines]
   );
   // Один и тот же блокер приходит по каждой проблемной строке отдельно, поэтому
   // без группировки экран показывал несколько одинаковых фраз подряд.
@@ -244,6 +253,41 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       },
     }));
     setOpenedClassification(line.id);
+  };
+
+  const closeRemoval = () => {
+    setOpenedRemoval(null);
+    setRemovalReason("");
+    setRemovalReplacement("");
+    setRemovalWithReplacement(false);
+    window.setTimeout(() => removalTriggerRef.current?.focus(), 0);
+  };
+
+  useEffect(() => {
+    if (!openedRemovalLine) return;
+    removalReasonRef.current?.focus();
+  }, [openedRemovalLine]);
+
+  const handleRemovalDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeRemoval();
+      return;
+    }
+    if (event.key !== "Tab" || !removalDialogRef.current) return;
+    const focusable = Array.from(removalDialogRef.current.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href]"
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
@@ -312,10 +356,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         })
       );
       setOrder(updated);
-      setOpenedRemoval(null);
-      setRemovalReason("");
-      setRemovalReplacement("");
-      setRemovalWithReplacement(false);
+      closeRemoval();
       toast.success("Строка исключена из проекта; причина сохранена в журнале");
     } catch (error: unknown) {
       toast.error(errorText(error));
@@ -443,7 +484,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
               </tr>
             </thead>
             <tbody>
-              {visibleLines.map((line) => {
+              {visibleLines.map((line, index) => {
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
@@ -454,9 +495,25 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                 const defectValue = payloadValue(line, "defect_share_pct")
                   ?? line.supplier_defect_pct
                   ?? line.product_defect_pct;
+                const firstRemoved = line.removed && (index === 0 || !visibleLines[index - 1].removed);
                 return (
+                  <Fragment key={line.id}>
+                  {firstRemoved && (
+                    <tr className="order-formation__removed-summary">
+                      <td colSpan={8}>
+                        <button
+                          aria-expanded={showRemoved}
+                          className="btn btn--ghost"
+                          onClick={() => setShowRemoved((current) => !current)}
+                          type="button"
+                        >
+                          Исключённые строки: {removedLines.length} · {showRemoved ? "Скрыть" : "Показать"}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                  {(!line.removed || showRemoved) && (
                   <tr
-                    key={line.id}
                     className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
                     ref={line.id === focusLineId ? focusedLineRef : undefined}
                     tabIndex={line.id === focusLineId ? -1 : undefined}
@@ -709,11 +766,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           Открыть карточку
                         </a>
                       )}
-                      {line.blockers.length > 0 && !line.removed && !locked && (
+                      {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
                         <button
                           className="btn btn--ghost btn--small"
+                          ref={(node) => {
+                            if (node && openedRemoval === null) removalTriggerRef.current = node;
+                          }}
                           onClick={() => {
-                            setOpenedRemoval(openedRemoval === line.id ? null : line.id);
+                            removalTriggerRef.current = document.activeElement as HTMLButtonElement;
+                            setOpenedRemoval(line.id);
                             setRemovalReason("");
                             setRemovalReplacement("");
                             setRemovalWithReplacement(false);
@@ -723,54 +784,89 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           Исключить строку
                         </button>
                       )}
-                      {openedRemoval === line.id && (
-                        <div className="order-formation__removal-form">
-                          <label>
-                            Причина исключения
-                            <textarea
-                              onChange={(event) => setRemovalReason(event.target.value)}
-                              placeholder="Обязательно укажите, почему строку исключают"
-                              value={removalReason}
-                            />
-                          </label>
-                          <label className="order-formation__no-replacement">
-                            <input
-                              checked={removalWithReplacement}
-                              onChange={(event) => setRemovalWithReplacement(event.target.checked)}
-                              type="checkbox"
-                            />
-                            Указать «Взамен ведём»
-                          </label>
-                          {removalWithReplacement && (
-                            <input
-                              aria-label={`Взамен ведём для ${line.nomenclature_name}`}
-                              onChange={(event) => setRemovalReplacement(event.target.value)}
-                              placeholder="Код 1С карточки (РБ...)"
-                              value={removalReplacement}
-                            />
-                          )}
-                          <button
-                            className="btn btn--small"
-                            disabled={
-                              !removalReason.trim() ||
-                              (removalWithReplacement && !removalReplacement.trim()) ||
-                              Boolean(loadingKey)
-                            }
-                            onClick={() => void removeLine(line)}
-                            type="button"
-                          >
-                            {loadingKey === `remove-${line.id}` ? "Исключаем..." : "Исключить из проекта"}
-                          </button>
-                        </div>
-                      )}
                     </td>
                   </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       </main>
+
+      {openedRemovalLine && (
+        <div
+          className="order-formation__dialog-overlay"
+          onKeyDown={handleRemovalDialogKeyDown}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeRemoval();
+          }}
+        >
+          <div
+            aria-describedby="order-removal-description"
+            aria-labelledby="order-removal-title"
+            aria-modal="true"
+            className="order-formation__removal-dialog"
+            ref={removalDialogRef}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <h2 id="order-removal-title">Исключить строку {openedRemovalLine.line_number}</h2>
+                <p id="order-removal-description">{openedRemovalLine.nomenclature_name}</p>
+              </div>
+              <button aria-label="Закрыть форму исключения" onClick={closeRemoval} type="button">×</button>
+            </header>
+            <form onSubmit={(event) => { event.preventDefault(); void removeLine(openedRemovalLine); }}>
+              <label>
+                Причина исключения <span aria-hidden="true">*</span>
+                <textarea
+                  ref={removalReasonRef}
+                  onChange={(event) => setRemovalReason(event.target.value)}
+                  placeholder="Обязательно укажите, почему строку исключают"
+                  required
+                  value={removalReason}
+                />
+              </label>
+              <label className="order-formation__no-replacement">
+                <input
+                  checked={removalWithReplacement}
+                  onChange={(event) => setRemovalWithReplacement(event.target.checked)}
+                  type="checkbox"
+                />
+                Указать «Взамен ведём»
+              </label>
+              {removalWithReplacement && (
+                <label>
+                  Взамен ведём
+                  <input
+                    aria-label={`Взамен ведём для ${openedRemovalLine.nomenclature_name}`}
+                    onChange={(event) => setRemovalReplacement(event.target.value)}
+                    placeholder="Код 1С карточки (РБ...)"
+                    required
+                    value={removalReplacement}
+                  />
+                </label>
+              )}
+              <footer>
+                <button className="btn btn--ghost" onClick={closeRemoval} type="button">Отмена</button>
+                <button
+                  className="btn"
+                  disabled={
+                    !removalReason.trim() ||
+                    (removalWithReplacement && !removalReplacement.trim()) ||
+                    Boolean(loadingKey)
+                  }
+                  type="submit"
+                >
+                  {loadingKey === `remove-${openedRemovalLine.id}` ? "Исключаем..." : "Исключить из проекта"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
 
       <footer className="order-formation__footer">
         <span>{activeLines.length} строк</span>

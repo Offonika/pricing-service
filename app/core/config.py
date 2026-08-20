@@ -193,6 +193,13 @@ class Settings(BaseSettings):
     order_fulfillment_artifact_dir: str = ".local/order-fulfillment-pilot"
     order_fulfillment_site_chat_dialog_id: str = "chat733"
     order_fulfillment_spb_courier_chat_dialog_id: str = "chat727"
+    order_fulfillment_chat_auto_apply_enabled: bool = False
+    order_fulfillment_site_chat_apply_author_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_courier_chat_apply_author_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
     order_fulfillment_ocr_enabled: bool = True
     order_fulfillment_ocr_model: str | None = None
     order_fulfillment_ocr_min_confidence: float = 0.75
@@ -655,6 +662,8 @@ class Settings(BaseSettings):
         "expertise_alarm_review_top_escalation_user_ids",
         "order_fulfillment_notify_business_user_ids",
         "order_fulfillment_notify_tech_user_ids",
+        "order_fulfillment_site_chat_apply_author_ids",
+        "order_fulfillment_courier_chat_apply_author_ids",
         mode="before",
     )
     @classmethod

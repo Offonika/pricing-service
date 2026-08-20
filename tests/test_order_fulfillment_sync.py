@@ -605,6 +605,36 @@ def test_apply_outbox_by_target_applies_only_allowed_targets() -> None:
     assert client.updates == [(1, "PICKUP_WAITING")]
 
 
+def test_apply_outbox_by_target_dry_runs_target_outside_chat_allowlist() -> None:
+    row = service.OrderFulfillmentStageOutboxRow(
+        idempotency_key="key-chat-won",
+        site_order_number="218003",
+        bitrix_deal_id=3,
+        current_stage="PICKUP_WAITING",
+        target_stage="WON",
+        operation="update_stage",
+        state="ready",
+        chat_event=service.EVENT_PICKUP_RECEIVED,
+        event_confidence="strong",
+        evidence_redacted=None,
+        payload_json="{}",
+        block_reason=None,
+    )
+    client = FakeBitrixClient(
+        {3: _deal(deal_id=3, order_number="218003", stage_id="PICKUP_WAITING")}
+    )
+
+    results = sync.apply_outbox_by_target(
+        [row],
+        client=client,
+        apply=True,
+        allowed_target_stages={service.CRM_STAGE_PICKUP_WAITING},
+    )
+
+    assert results[0].result == "dry_run_ready"
+    assert client.updates == []
+
+
 def test_build_operational_monitoring_rows_flags_stage_errors_and_rtu_gap() -> None:
     decisions = [
         sync.decide_new_deal_stage(
@@ -810,11 +840,16 @@ def test_order_fulfillment_notify_user_ids_parse_csv_and_json(tmp_path: Path) ->
         _env_file=None,
         order_fulfillment_notify_business_user_ids="10, 20",
         order_fulfillment_notify_tech_user_ids="[30, 40]",
+        order_fulfillment_site_chat_apply_author_ids="50, 60",
+        order_fulfillment_courier_chat_apply_author_ids="[70, 80]",
         order_fulfillment_notify_state_path=str(tmp_path / "state.json"),
     )
 
     assert settings.order_fulfillment_notify_business_user_ids == [10, 20]
     assert settings.order_fulfillment_notify_tech_user_ids == [30, 40]
+    assert settings.order_fulfillment_site_chat_apply_author_ids == [50, 60]
+    assert settings.order_fulfillment_courier_chat_apply_author_ids == [70, 80]
+    assert settings.order_fulfillment_chat_auto_apply_enabled is False
 
 
 def test_order_fulfillment_notifications_disabled_do_not_send(tmp_path: Path) -> None:

@@ -1053,12 +1053,12 @@ def run_chat_sync(
     )
     outbox_path = output_dir / f"chat-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
-    chat_apply_target_stages = {fulfillment.CRM_STAGE_PICKUP_WAITING}
+    chat_apply = apply and settings.order_fulfillment_chat_auto_apply_enabled
     apply_results = apply_outbox_by_target(
         outbox_rows,
         client=client,
-        apply=apply,
-        allowed_target_stages=chat_apply_target_stages,
+        apply=chat_apply,
+        allowed_target_stages=fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES,
     )
     apply_path = output_dir / f"chat-stage-apply-result-{stamp}.csv"
     fulfillment.write_stage_apply_result_csv(apply_path, apply_results)
@@ -1068,8 +1068,12 @@ def run_chat_sync(
         "review": str(review_path),
         "outbox": str(outbox_path),
         "apply_result": str(apply_path),
-        "dry_run": not apply,
-        "apply_target_stages": sorted(chat_apply_target_stages) if apply else [],
+        "dry_run": not chat_apply,
+        "apply_requested": apply,
+        "auto_apply_enabled": settings.order_fulfillment_chat_auto_apply_enabled,
+        "apply_target_stages": (
+            sorted(fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES) if chat_apply else []
+        ),
         "review_rows": len(review_rows),
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),

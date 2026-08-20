@@ -37,7 +37,19 @@ DEFAULT_CHAT_DIALOG_IDS = {
 }
 
 SOURCE_BITRIX_CHAT = "bitrix_chat"
-PARSER_VERSION = "bitrix-order-v1"
+PARSER_VERSION = "bitrix-order-v2"
+
+GENERATED_ORDER_REPORT_MARKERS = (
+    "master-mobile.ru: контроль интернет-заказов",
+    "master-mobile.ru: crm интернет-заказы",
+    "интернет-заказы: требуется действие",
+)
+NON_AUTHORITATIVE_CHAT_MARKERS = (
+    "[quote",
+    "[/quote]",
+    "пересланное сообщение",
+    "forwarded message",
+)
 
 EVENT_PICKUP_UNCLAIMED = "pickup_unclaimed_reported"
 EVENT_PICKUP_STORED = "pickup_stored_at_point"
@@ -48,6 +60,23 @@ EVENT_COURIER_DELIVERED_PAID = "courier_spb_delivered_paid"
 EVENT_COURIER_FAILED = "courier_spb_failed"
 EVENT_COURIER_RESCHEDULED = "courier_spb_rescheduled"
 EVENT_COURIER_IN_PROGRESS = "courier_spb_in_progress"
+
+STRICT_SITE_EVENT_PATTERNS = {
+    EVENT_PICKUP_UNCLAIMED: re.compile(
+        r"^(?:заказ\s+)?2\d{5}\s*(?:[-—:]\s*)?"
+        r"(?:клиент\s+)?не\s+(?:забрал(?:и)?|забран(?:а|ы)?)\s*[.!]?$"
+    ),
+    EVENT_PICKUP_RECEIVED: re.compile(
+        r"^(?:заказ\s+)?2\d{5}\s*(?:[-—:]\s*)?"
+        r"(?:выдан(?:ы|а)?(?:\s+клиенту)?|выдали(?:\s+клиенту)?|"
+        r"клиент\s+забрал|забрал(?:и)?(?:\s+клиент)?)\s*[.!]?$"
+    ),
+    EVENT_PICKUP_DISMANTLING: re.compile(
+        r"^(?:заказ\s+)?2\d{5}\s*(?:[-—:]\s*)?"
+        r"(?:расформирован|расформировали|разобран|разобрали|"
+        r"начато\s+расформирование)\s*[.!]?$"
+    ),
+}
 
 CRM_STAGE_MANUAL_REVIEW = "PREPARATION"
 CRM_STAGE_PICKUP_WAITING = "PICKUP_WAITING"
@@ -64,6 +93,23 @@ DERIVED_TO_CRM_STAGE = {
     EVENT_COURIER_FAILED: CRM_STAGE_MANUAL_REVIEW,
     EVENT_COURIER_RESCHEDULED: "IN_DELIVERY",
     EVENT_COURIER_IN_PROGRESS: "IN_DELIVERY",
+}
+
+CHAT_AUTO_APPLY_TARGET_STAGES = {
+    CRM_STAGE_PICKUP_WAITING,
+    "IN_DELIVERY",
+    "DISMANTLING",
+    "WON",
+}
+CHAT_AUTO_APPLY_CURRENT_STAGES = {
+    EVENT_PICKUP_UNCLAIMED: {"PREPARATION", "EXECUTING", "FINAL_INVOICE", "IN_DELIVERY"},
+    EVENT_PICKUP_STORED: {"PREPARATION", "EXECUTING", "FINAL_INVOICE", "IN_DELIVERY"},
+    EVENT_PICKUP_RECEIVED: {CRM_STAGE_PICKUP_WAITING},
+    EVENT_PICKUP_DISMANTLING: {CRM_STAGE_PICKUP_WAITING},
+    EVENT_COURIER_DELIVERED_PENDING: {"FINAL_INVOICE", "IN_DELIVERY"},
+    EVENT_COURIER_DELIVERED_PAID: {"IN_DELIVERY"},
+    EVENT_COURIER_RESCHEDULED: {"FINAL_INVOICE", "IN_DELIVERY"},
+    EVENT_COURIER_IN_PROGRESS: {"FINAL_INVOICE", "IN_DELIVERY"},
 }
 
 KNOWN_RAW_DELIVERY_METHODS = {
@@ -126,6 +172,9 @@ REVIEW_CSV_FIELDS = (
     "onec_courier",
     "onec_delivery_cost",
     "chat_event",
+    "chat_code",
+    "chat_author_id",
+    "chat_message_strict",
     "event_confidence",
     "evidence_redacted",
     "recommended_stage",
@@ -240,6 +289,9 @@ class OrderFulfillmentReviewRow:
     recommended_stage: str | None
     action: str
     manual_review_reason: str | None
+    chat_code: str | None = None
+    chat_author_id: str | None = None
+    chat_message_strict: bool = False
 
 
 @dataclass(slots=True)
@@ -515,12 +567,23 @@ def parse_bitrix_message(
 
 
 def parse_site_chat_text(text_value: str) -> list[ParsedOrderMention]:
+    normalized_text = _clean_text(text_value)
+    if any(marker in normalized_text for marker in GENERATED_ORDER_REPORT_MARKERS):
+        return []
     order_numbers = extract_order_numbers(text_value)
     if not order_numbers:
         return []
     event_type, confidence = classify_site_chat_event(text_value)
     if event_type is None:
         return []
+    strict_pattern = STRICT_SITE_EVENT_PATTERNS.get(event_type)
+    strict_match = bool(
+        len(order_numbers) == 1
+        and strict_pattern is not None
+        and not _contains_non_authoritative_chat_marker(text_value)
+        and strict_pattern.fullmatch(_strict_chat_text(text_value))
+    )
+    confidence = "strong" if strict_match else "medium"
     evidence = _redact_text(text_value)
     return [
         ParsedOrderMention(
@@ -528,7 +591,7 @@ def parse_site_chat_text(text_value: str) -> list[ParsedOrderMention]:
             event_type=event_type,
             confidence=confidence,
             evidence_text=evidence,
-            payload={"parser": "site_chat_text"},
+            payload={"parser": "site_chat_text", "strict_match": strict_match},
         )
         for order_number in order_numbers
     ]
@@ -545,6 +608,16 @@ def parse_courier_ocr_payload(payload: dict[str, Any]) -> list[ParsedOrderMentio
     )
     confidence_value = normalized.get("confidence")
     confidence = "strong" if confidence_value is not None and confidence_value >= 0.75 else "medium"
+    strict_match = bool(
+        len(order_numbers) == 1
+        and confidence_value is not None
+        and confidence_value >= 0.75
+        and normalized.get("delivery_status") in {"delivered", "rescheduled", "in_progress"}
+        and (
+            normalized.get("delivery_status") != "delivered"
+            or normalized.get("payment_collected") is not None
+        )
+    )
     evidence = _clean_string(normalized.get("comment")) or normalized.get("delivery_status")
     return [
         ParsedOrderMention(
@@ -552,7 +625,11 @@ def parse_courier_ocr_payload(payload: dict[str, Any]) -> list[ParsedOrderMentio
             event_type=event_type,
             confidence=confidence,
             evidence_text=evidence,
-            payload={**normalized, "parser": "courier_spb_ocr"},
+            payload={
+                **normalized,
+                "parser": "courier_spb_ocr",
+                "strict_match": strict_match,
+            },
         )
         for order_number in order_numbers
     ]
@@ -864,9 +941,19 @@ def build_review_row(
     event_type = event.event_type if event is not None else case.current_derived_status
     confidence = event.confidence if event is not None else case.confidence
     evidence = mention.evidence_text if mention is not None else None
+    raw_message = event.raw_message if event is not None else None
+    chat_code = raw_message.chat_code if raw_message is not None else None
+    chat_author_id = raw_message.author_id if raw_message is not None else None
+    message_strict = bool((mention.payload or {}).get("strict_match")) if mention else False
     deal = deals[0] if len(deals) == 1 else None
     recommended_stage, action, reasons = review_decision(
         event_type=event_type,
+        event_source=event.source if event is not None else None,
+        event_confidence=confidence,
+        chat_code=chat_code,
+        chat_author_id=chat_author_id,
+        chat_message_strict=message_strict,
+        allowed_chat_author_ids=_allowed_chat_author_ids(settings, chat_code),
         deal=deal,
         deal_count=len(deals),
         onec_order=onec_order,
@@ -885,6 +972,9 @@ def build_review_row(
         onec_courier=onec_order.courier if onec_order else None,
         onec_delivery_cost=onec_order.delivery_cost if onec_order else None,
         chat_event=event_type,
+        chat_code=chat_code,
+        chat_author_id=chat_author_id,
+        chat_message_strict=message_strict,
         event_confidence=confidence,
         evidence_redacted=evidence,
         recommended_stage=recommended_stage,
@@ -896,6 +986,12 @@ def build_review_row(
 def review_decision(
     *,
     event_type: str,
+    event_source: str | None = None,
+    event_confidence: str | None = None,
+    chat_code: str | None = None,
+    chat_author_id: str | None = None,
+    chat_message_strict: bool = False,
+    allowed_chat_author_ids: set[str] | None = None,
     deal: BitrixDealSnapshot | None,
     deal_count: int,
     onec_order: OneCOrderSnapshot | None,
@@ -943,8 +1039,87 @@ def review_decision(
     manual_review_event = (
         recommended_stage == CRM_STAGE_MANUAL_REVIEW and event_type == EVENT_COURIER_FAILED
     )
+    if not reasons and not manual_review_event and event_source == SOURCE_BITRIX_CHAT:
+        reasons.extend(
+            chat_auto_apply_guard_reasons(
+                event_type=event_type,
+                event_confidence=event_confidence,
+                chat_code=chat_code,
+                chat_author_id=chat_author_id,
+                chat_message_strict=chat_message_strict,
+                allowed_chat_author_ids=allowed_chat_author_ids or set(),
+                delivery_kind=_delivery_kind(deal.delivery if deal is not None else None)
+                or _delivery_kind(onec_order.raw_delivery if onec_order is not None else None),
+                current_stage=deal.stage_id if deal is not None else None,
+                target_stage=recommended_stage,
+            )
+        )
     action = "manual_review" if reasons or manual_review_event else "update_stage"
     return recommended_stage, action, reasons
+
+
+def chat_auto_apply_guard_reasons(
+    *,
+    event_type: str,
+    event_confidence: str | None,
+    chat_code: str | None,
+    chat_author_id: str | None,
+    chat_message_strict: bool,
+    allowed_chat_author_ids: set[str],
+    delivery_kind: str | None,
+    current_stage: str | None,
+    target_stage: str | None,
+) -> list[str]:
+    reasons: list[str] = []
+    expected_chat = (
+        CHAT_SITE_MASTER_MOBILE
+        if event_type.startswith("pickup_")
+        else CHAT_COURIER_SPB if event_type.startswith("courier_") else None
+    )
+    if expected_chat is None or event_type not in CHAT_AUTO_APPLY_CURRENT_STAGES:
+        reasons.append("chat_event_not_auto_applicable")
+    elif chat_code != expected_chat:
+        reasons.append("chat_event_wrong_chat")
+    expected_delivery_kind = (
+        "pickup"
+        if event_type.startswith("pickup_")
+        else "courier" if event_type.startswith("courier_") else None
+    )
+    if delivery_kind is None:
+        reasons.append("chat_delivery_unknown")
+    elif delivery_kind != expected_delivery_kind:
+        reasons.append("chat_delivery_mismatch")
+    if event_confidence != "strong":
+        reasons.append("chat_confidence_not_strong")
+    if not chat_message_strict:
+        reasons.append("chat_message_not_strict")
+    clean_author_id = _clean_string(chat_author_id)
+    if not allowed_chat_author_ids:
+        reasons.append("chat_author_allowlist_empty")
+    elif not clean_author_id:
+        reasons.append("chat_author_missing")
+    elif clean_author_id not in allowed_chat_author_ids:
+        reasons.append("chat_author_not_allowed")
+    clean_target_stage = _clean_string(target_stage)
+    if clean_target_stage not in CHAT_AUTO_APPLY_TARGET_STAGES:
+        reasons.append(f"chat_target_not_allowed:{clean_target_stage or '-'}")
+    allowed_current_stages = CHAT_AUTO_APPLY_CURRENT_STAGES.get(event_type, set())
+    clean_current_stage = _clean_string(current_stage)
+    if clean_current_stage not in allowed_current_stages:
+        reasons.append(
+            f"chat_transition_not_allowed:{clean_current_stage or '-'}->{clean_target_stage or '-'}"
+        )
+    return reasons
+
+
+def _allowed_chat_author_ids(settings: Settings, chat_code: str | None) -> set[str]:
+    if chat_code == CHAT_SITE_MASTER_MOBILE:
+        values = settings.order_fulfillment_site_chat_apply_author_ids
+    elif chat_code == CHAT_COURIER_SPB:
+        values = settings.order_fulfillment_courier_chat_apply_author_ids
+    else:
+        values = []
+    return {str(value) for value in values}
 
 
 def fetch_bitrix_deals_for_orders(
@@ -1046,6 +1221,9 @@ def review_row_to_dict(row: OrderFulfillmentReviewRow) -> dict[str, Any]:
             str(row.onec_delivery_cost) if row.onec_delivery_cost is not None else None
         ),
         "chat_event": row.chat_event,
+        "chat_code": row.chat_code,
+        "chat_author_id": row.chat_author_id,
+        "chat_message_strict": row.chat_message_strict,
         "event_confidence": row.event_confidence,
         "evidence_redacted": row.evidence_redacted,
         "recommended_stage": row.recommended_stage,
@@ -1914,6 +2092,17 @@ def _clean_text(value: str) -> str:
     text_value = USER_TAG_RE.sub("@user", value or "")
     text_value = TAG_RE.sub(" ", text_value)
     return _clean_string(unescape(text_value)).lower()
+
+
+def _strict_chat_text(value: str) -> str:
+    text_value = USER_TAG_RE.sub(" ", value or "")
+    text_value = TAG_RE.sub(" ", text_value)
+    return _clean_string(unescape(text_value)).lower()
+
+
+def _contains_non_authoritative_chat_marker(value: str) -> bool:
+    lowered = (value or "").lower()
+    return any(marker in lowered for marker in NON_AUTHORITATIVE_CHAT_MARKERS)
 
 
 def _redact_text(value: str) -> str:

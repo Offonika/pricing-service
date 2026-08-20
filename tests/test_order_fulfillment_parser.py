@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.core.config import Settings
 from app.models.site_order_fulfillment import (
     BitrixChatMention,
     BitrixChatMessage,
@@ -31,6 +32,7 @@ def test_site_chat_parser_extracts_many_orders_without_word_order() -> None:
     assert [mention.site_order_number for mention in mentions] == ["218014", "217624"]
     assert {mention.event_type for mention in mentions} == {service.EVENT_PICKUP_UNCLAIMED}
     assert {mention.confidence for mention in mentions} == {"medium"}
+    assert {mention.payload["strict_match"] for mention in mentions} == {False}
     assert "<order>" in mentions[0].evidence_text
     assert "218014" not in mentions[0].evidence_text
     assert "Ариф Рахманов" not in mentions[0].evidence_text
@@ -40,6 +42,26 @@ def test_site_chat_parser_does_not_infer_pickup_from_absence_in_list() -> None:
     mentions = service.parse_site_chat_text("218014\n217624\nспб садовая")
 
     assert mentions == []
+
+
+def test_site_chat_parser_marks_only_exact_single_order_command_as_strict() -> None:
+    strict = service.parse_site_chat_text("Заказ 218014 — выдан клиенту")
+    free_text = service.parse_site_chat_text("218014 выдан клиенту, проверьте оплату")
+
+    assert strict[0].confidence == "strong"
+    assert strict[0].payload["strict_match"] is True
+    assert free_text[0].confidence == "medium"
+    assert free_text[0].payload["strict_match"] is False
+
+
+def test_site_chat_parser_ignores_bot_reports_and_downgrades_quotes() -> None:
+    report = service.parse_site_chat_text(
+        "MASTER-MOBILE.RU: контроль интернет-заказов\nЗаказ 218014 — выдан клиенту"
+    )
+    quoted = service.parse_site_chat_text("[QUOTE]Заказ 218014 — выдан клиенту[/QUOTE]")
+
+    assert report == []
+    assert quoted[0].payload["strict_match"] is False
 
 
 def test_courier_ocr_classifier_distinguishes_payment_state() -> None:
@@ -69,11 +91,14 @@ def test_courier_ocr_classifier_distinguishes_payment_state() -> None:
     )
 
     assert pending[0].event_type == service.EVENT_COURIER_DELIVERED_PENDING
+    assert pending[0].payload["strict_match"] is True
     assert paid[0].event_type == service.EVENT_COURIER_DELIVERED_PAID
+    assert paid[0].payload["strict_match"] is True
     assert failed[0].event_type in {
         service.EVENT_COURIER_FAILED,
         service.EVENT_COURIER_RESCHEDULED,
     }
+    assert failed[0].payload["strict_match"] is False
 
 
 def test_delivery_method_report_flags_unknown_watch_and_empty_values() -> None:
@@ -178,7 +203,8 @@ def test_review_enrichment_merges_case_bitrix_and_onec() -> None:
             dialog_id="chat733",
             chat_id=733,
             message_id=2001,
-            text_value="218014 не забрали спб садовая",
+            author_id="7",
+            text_value="Заказ 218014 — не забрали",
         )
         rows = service.build_review_rows(
             session,
@@ -186,7 +212,7 @@ def test_review_enrichment_merges_case_bitrix_and_onec() -> None:
                 "218014": [
                     service.BitrixDealSnapshot(
                         deal_id=11412,
-                        stage_id="NEW",
+                        stage_id="FINAL_INVOICE",
                         delivery="Самовывоз",
                         payment_status="0",
                     )
@@ -201,12 +227,16 @@ def test_review_enrichment_merges_case_bitrix_and_onec() -> None:
                     delivery_cost=Decimal("0.00"),
                 )
             },
+            settings=Settings(
+                _env_file=None,
+                order_fulfillment_site_chat_apply_author_ids=[7],
+            ),
         )
 
     assert len(rows) == 1
     row = rows[0]
     assert row.bitrix_deal_id == 11412
-    assert row.crm_stage == "NEW"
+    assert row.crm_stage == "FINAL_INVOICE"
     assert row.crm_delivery == "Самовывоз"
     assert row.onec_raw_delivery == "Самовывоз"
     assert row.recommended_stage == "PICKUP_WAITING"
@@ -257,6 +287,7 @@ def test_review_courier_delivered_unpaid_is_not_won() -> None:
             dialog_id="chat727",
             chat_id=727,
             message_id=2003,
+            author_id="9",
             ocr_payloads=[
                 {
                     "orders": ["218530"],
@@ -272,7 +303,7 @@ def test_review_courier_delivered_unpaid_is_not_won() -> None:
                 "218530": [
                     service.BitrixDealSnapshot(
                         deal_id=11624,
-                        stage_id="NEW",
+                        stage_id="FINAL_INVOICE",
                         delivery="Доставка курьером",
                         payment_status="0",
                     )
@@ -284,6 +315,10 @@ def test_review_courier_delivered_unpaid_is_not_won() -> None:
                     raw_delivery="Доставка курьером",
                 )
             },
+            settings=Settings(
+                _env_file=None,
+                order_fulfillment_courier_chat_apply_author_ids=[9],
+            ),
         )
 
     assert rows[0].chat_event == service.EVENT_COURIER_DELIVERED_PENDING
@@ -303,7 +338,8 @@ def test_review_pickup_received_closes_internal_pickup_without_site_payment_flag
             dialog_id="chat733",
             chat_id=733,
             message_id=2004,
-            text_value="218016 забрали",
+            author_id="7",
+            text_value="Заказ 218016 — выдан клиенту",
         )
         rows = service.build_review_rows(
             session,
@@ -311,17 +347,77 @@ def test_review_pickup_received_closes_internal_pickup_without_site_payment_flag
                 "218016": [
                     service.BitrixDealSnapshot(
                         deal_id=3,
+                        stage_id="PICKUP_WAITING",
                         delivery="Самовывоз",
                         payment_status="0",
                     )
                 ]
             },
             onec_by_order={},
+            settings=Settings(
+                _env_file=None,
+                order_fulfillment_site_chat_apply_author_ids=[7],
+            ),
         )
 
     assert rows[0].action == "update_stage"
     assert rows[0].recommended_stage == "WON"
     assert rows[0].manual_review_reason is None
+
+
+def test_review_keeps_unauthorized_strict_chat_event_as_recommendation() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    for table in SITE_ORDER_TABLES:
+        table.create(engine)
+
+    with Session(engine) as session:
+        service.ingest_bitrix_message(
+            session,
+            chat_code=service.CHAT_SITE_MASTER_MOBILE,
+            dialog_id="chat733",
+            chat_id=733,
+            message_id=20041,
+            author_id="8",
+            text_value="Заказ 218041 — выдан клиенту",
+        )
+        rows = service.build_review_rows(
+            session,
+            deals_by_order={
+                "218041": [
+                    service.BitrixDealSnapshot(
+                        deal_id=41,
+                        stage_id="PICKUP_WAITING",
+                        delivery="Самовывоз",
+                    )
+                ]
+            },
+            onec_by_order={},
+            settings=Settings(
+                _env_file=None,
+                order_fulfillment_site_chat_apply_author_ids=[7],
+            ),
+        )
+
+    assert rows[0].recommended_stage == "WON"
+    assert rows[0].action == "manual_review"
+    assert rows[0].manual_review_reason == "chat_author_not_allowed"
+    assert service.build_stage_outbox_rows(rows, available_stage_ids={"WON"}) == []
+
+
+def test_review_blocks_strict_chat_event_from_wrong_current_stage() -> None:
+    reasons = service.chat_auto_apply_guard_reasons(
+        event_type=service.EVENT_PICKUP_RECEIVED,
+        event_confidence="strong",
+        chat_code=service.CHAT_SITE_MASTER_MOBILE,
+        chat_author_id="7",
+        chat_message_strict=True,
+        allowed_chat_author_ids={"7"},
+        delivery_kind="pickup",
+        current_stage="FINAL_INVOICE",
+        target_stage="WON",
+    )
+
+    assert reasons == ["chat_transition_not_allowed:FINAL_INVOICE->WON"]
 
 
 def test_review_pickup_received_for_non_pickup_requires_manual_review() -> None:

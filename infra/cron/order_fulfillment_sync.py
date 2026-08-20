@@ -1046,7 +1046,13 @@ def run_chat_sync(
     )
     outbox_path = output_dir / f"chat-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
-    apply_results = apply_outbox_by_target(outbox_rows, client=client, apply=apply)
+    chat_apply = apply and settings.order_fulfillment_chat_auto_apply_enabled
+    apply_results = apply_outbox_by_target(
+        outbox_rows,
+        client=client,
+        apply=chat_apply,
+        allowed_target_stages=fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES,
+    )
     apply_path = output_dir / f"chat-stage-apply-result-{stamp}.csv"
     fulfillment.write_stage_apply_result_csv(apply_path, apply_results)
     summary = {
@@ -1055,7 +1061,12 @@ def run_chat_sync(
         "review": str(review_path),
         "outbox": str(outbox_path),
         "apply_result": str(apply_path),
-        "dry_run": not apply,
+        "dry_run": not chat_apply,
+        "apply_requested": apply,
+        "auto_apply_enabled": settings.order_fulfillment_chat_auto_apply_enabled,
+        "apply_target_stages": (
+            sorted(fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES) if chat_apply else []
+        ),
         "review_rows": len(review_rows),
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),
@@ -1095,17 +1106,21 @@ def apply_outbox_by_target(
     *,
     client: fulfillment.BitrixChatClient,
     apply: bool,
+    allowed_target_stages: set[str] | None = None,
 ) -> list[fulfillment.OrderFulfillmentStageApplyResult]:
     grouped: dict[str, list[fulfillment.OrderFulfillmentStageOutboxRow]] = defaultdict(list)
     for row in rows:
         grouped[row.target_stage].append(row)
     results: list[fulfillment.OrderFulfillmentStageApplyResult] = []
     for target_stage, target_rows in grouped.items():
+        target_apply = apply and (
+            allowed_target_stages is None or target_stage in allowed_target_stages
+        )
         results.extend(
             fulfillment.apply_stage_outbox_rows(
                 target_rows,
                 client=client,
-                apply=apply,
+                apply=target_apply,
                 target_stage=target_stage,
             )
         )

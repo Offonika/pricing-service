@@ -90,6 +90,27 @@ class DisplayFamilyOrderRecommendationRead(BaseModel):
     registry_warning_codes: list[str] = Field(default_factory=list)
     conflict_codes: list[str] = Field(default_factory=list)
     reason_ru: str = ""
+    matching_review_confirmed: bool = False
+    matching_review_confirmed_at: datetime | None = None
+    matching_review_confirmed_by: str | None = None
+
+
+class ProcurementBlockerResolutionRead(BaseModel):
+    kind: str
+    label: str
+    requires_reason: bool = False
+    requires_replacement: bool = False
+
+
+class ProcurementBlockerDetailRead(BaseModel):
+    code: str
+    scope: str
+    severity: str
+    line_id: int | None = None
+    line_number: int | None = None
+    message: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    resolution_actions: list[ProcurementBlockerResolutionRead] = Field(default_factory=list)
 
 
 class ProcurementOrderFormationLineRead(BaseModel):
@@ -114,6 +135,7 @@ class ProcurementOrderFormationLineRead(BaseModel):
     risk_codes: list[str] = Field(default_factory=list)
     recommendation_reason: str | None = None
     blockers: list[str] = Field(default_factory=list)
+    blocker_details: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
     assortment_status: str | None = None
     lifecycle_status: str | None = None
     quality: str | None = None
@@ -235,6 +257,7 @@ class ProcurementOrderFormationRead(BaseModel):
     onec_document_date: date | None = None
     onec_error: str | None = None
     blockers: list[str] = Field(default_factory=list)
+    blocker_details: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
     total_amount: Decimal = Decimal("0")
     lines: list[ProcurementOrderFormationLineRead] = Field(default_factory=list)
     manual_status_options: dict[str, str] = Field(default_factory=dict)
@@ -289,6 +312,8 @@ class ProcurementOrderLineUpdateRequest(BaseModel):
     final_quantity: Decimal | None = Field(default=None, ge=0)
     purchase_price: Decimal | None = Field(default=None, ge=0)
     removed: bool | None = None
+    removal_reason: str | None = Field(default=None, max_length=1000)
+    replacement_sku_code: str | None = Field(default=None, max_length=64)
     explicit_demand: bool | None = None
 
     @model_validator(mode="after")
@@ -303,6 +328,12 @@ class ProcurementOrderLineUpdateRequest(BaseModel):
             )
         ):
             raise ValueError("at least one line field must be provided")
+        if self.removed is True and not str(self.removal_reason or "").strip():
+            raise ValueError("removal_reason is required when removing a line")
+        if self.removed is not True and (
+            self.removal_reason is not None or self.replacement_sku_code is not None
+        ):
+            raise ValueError("removal metadata requires removed=true")
         return self
 
 
@@ -457,6 +488,8 @@ class ProcurementLifecycleTransitionRead(BaseModel):
     responsible_bitrix_user_id: str | None = None
     responsible_name: str | None = None
     decision_state: str = "view"
+    actionability: str = "blocked"
+    suggested_manual_status: str | None = None
     ready: bool = False
     selectable: bool = False
     stale: bool = False
@@ -512,6 +545,49 @@ class ProcurementLifecycleTransitionApprovalResponse(BaseModel):
     written_path: str | None = None
     summary: ProcurementLifecycleTransitionApprovalSummary
     items: list[ProcurementLifecycleTransitionApprovalResult]
+
+
+class ProcurementLifecycleManualDecisionRequest(BaseModel):
+    decision: str = Field(pattern="^(pension|working)$")
+    reason: str = Field(min_length=1, max_length=4000)
+    replacement_sku_code: str | None = Field(default=None, max_length=64)
+    no_replacement: bool = False
+    expected_run_id: int = Field(ge=1)
+    facts_hash: str = Field(min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_replacement(self) -> ProcurementLifecycleManualDecisionRequest:
+        replacement = str(self.replacement_sku_code or "").strip()
+        if self.decision == "pension" and not replacement and not self.no_replacement:
+            raise ValueError("replacement_sku_code or no_replacement is required for pension")
+        if replacement and self.no_replacement:
+            raise ValueError("replacement_sku_code and no_replacement are mutually exclusive")
+        return self
+
+
+class ProcurementLifecycleManualDecisionResponse(BaseModel):
+    proposal_id: int
+    result: str
+    message: str
+    decision: str
+    approved_at: datetime
+
+
+class ProcurementMatchingReviewConfirmRequest(BaseModel):
+    expected_registry_version_number: int = Field(ge=1)
+    expected_registry_inventory_checksum: str = Field(min_length=64, max_length=64)
+
+
+class ProcurementMatchingReviewConfirmationRead(BaseModel):
+    order_id: int
+    line_id: int
+    family_id: int
+    nomenclature_code: str
+    registry_version_number: int
+    registry_inventory_checksum: str
+    confirmed_at: datetime
+    confirmed_by: str
+    idempotent: bool = False
 
 
 class ProcurementOrderListItem(BaseModel):

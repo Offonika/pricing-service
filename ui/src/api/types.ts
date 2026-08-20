@@ -397,6 +397,9 @@ export interface DisplayFamilyMember {
     [key: string]: unknown;
   };
   identity_evidence: Record<string, unknown>;
+  matching_review_confirmed?: boolean;
+  matching_review_confirmed_at?: string | null;
+  matching_review_confirmed_by?: string | null;
 }
 
 export interface DisplayFamilyDecisionEvent {

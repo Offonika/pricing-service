@@ -157,6 +157,27 @@ export interface DisplayFamilyOrderRecommendation {
   registry_warning_codes: string[];
   conflict_codes: string[];
   reason_ru: string;
+  matching_review_confirmed?: boolean;
+  matching_review_confirmed_at?: string | null;
+  matching_review_confirmed_by?: string | null;
+}
+
+export interface ProcurementBlockerResolution {
+  kind: string;
+  label: string;
+  requires_reason?: boolean;
+  requires_replacement?: boolean;
+}
+
+export interface ProcurementBlockerDetail {
+  code: string;
+  scope: "line" | "order" | string;
+  severity: "hard" | "technical" | string;
+  line_id?: number | null;
+  line_number?: number | null;
+  message: string;
+  evidence: Record<string, unknown>;
+  resolution_actions: ProcurementBlockerResolution[];
 }
 
 export interface ProcurementOrderFormationLine {
@@ -179,6 +200,7 @@ export interface ProcurementOrderFormationLine {
   risk_codes: string[];
   recommendation_reason?: string | null;
   blockers: string[];
+  blocker_details?: ProcurementBlockerDetail[];
   assortment_status?: string | null;
   lifecycle_status?: string | null;
   quality?: string | null;
@@ -286,6 +308,7 @@ export interface ProcurementOrderFormation {
   onec_document_number?: string | null;
   onec_error?: string | null;
   blockers: string[];
+  blocker_details?: ProcurementBlockerDetail[];
   total_amount: string;
   lines: ProcurementOrderFormationLine[];
   manual_status_options: Record<string, string>;
@@ -390,6 +413,8 @@ export interface ProcurementLifecycleTransition {
   responsible_bitrix_user_id?: string | null;
   responsible_name?: string | null;
   decision_state: string;
+  actionability?: "batch_approve" | "manual_decision" | "blocked" | string;
+  suggested_manual_status?: string | null;
   ready: boolean;
   selectable: boolean;
   stale: boolean;
@@ -551,6 +576,32 @@ export async function approveProcurementLifecycleTransitions(
   return data;
 }
 
+export async function decideProcurementLifecycleTransition(
+  item: ProcurementLifecycleTransition,
+  payload: {
+    decision: "pension" | "working";
+    reason: string;
+    replacement_sku_code?: string | null;
+    no_replacement?: boolean;
+  }
+) {
+  const { data } = await api.post<{
+    proposal_id: number;
+    result: string;
+    message: string;
+    decision: string;
+    approved_at: string;
+  }>(
+    `/procurement-order-formation/lifecycle/transitions/${item.proposal_id}/manual-decision`,
+    {
+      ...payload,
+      expected_run_id: item.run_id,
+      facts_hash: item.facts_hash,
+    }
+  );
+  return data;
+}
+
 export interface ProcurementOrderFilters {
   search?: string;
   status?: string;
@@ -642,11 +693,38 @@ export async function updateProcurementOrderLine(
     final_quantity?: string;
     purchase_price?: string;
     removed?: boolean;
+    removal_reason?: string;
+    replacement_sku_code?: string | null;
     explicit_demand?: boolean;
   }
 ) {
   const { data } = await api.patch<ProcurementOrderFormation>(
     `/procurement-order-formation/orders/${orderId}/lines/${lineId}`,
+    payload
+  );
+  return data;
+}
+
+export async function confirmProcurementMatchingReview(
+  orderId: number,
+  lineId: number,
+  payload: {
+    expected_registry_version_number: number;
+    expected_registry_inventory_checksum: string;
+  }
+) {
+  const { data } = await api.post<{
+    order_id: number;
+    line_id: number;
+    family_id: number;
+    nomenclature_code: string;
+    registry_version_number: number;
+    registry_inventory_checksum: string;
+    confirmed_at: string;
+    confirmed_by: string;
+    idempotent: boolean;
+  }>(
+    `/procurement-order-formation/orders/${orderId}/lines/${lineId}/matching-review/confirm`,
     payload
   );
   return data;

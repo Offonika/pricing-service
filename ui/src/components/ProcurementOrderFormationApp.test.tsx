@@ -9,6 +9,7 @@ import type {
 import {
   createProcurementClassification,
   fetchProcurementOrder,
+  updateProcurementOrderLine,
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
@@ -152,6 +153,12 @@ describe("ProcurementOrderFormationApp «Допродаём»", () => {
 });
 
 describe("ProcurementOrderFormationApp проблемные строки", () => {
+  beforeEach(() => {
+    vi.mocked(updateProcurementOrderLine).mockReset();
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.error).mockReset();
+  });
+
   afterEach(cleanup);
 
   it("поднимает проблемы вверх и показывает конкретные показатели и карточку товара", () => {
@@ -285,6 +292,68 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
       "line_3:batch_error_suspected",
       "line_4:batch_error_suspected",
     ])).toBe("2 блокера · 4 строки");
+  });
+
+  it("показывает доказательства блокера и исключает строку только с причиной", async () => {
+    const blockedLine = line({
+      blockers: ["batch_error_suspected"],
+      blocker_details: [{
+        code: "batch_error_suspected",
+        scope: "line",
+        severity: "hard",
+        line_id: 40,
+        line_number: 1,
+        message: "Подозрение на партийную ошибку: 8 возвратов качества «Новый», 44,4% от продаж за 90 дней (порог: 5 возвратов и 40%).",
+        evidence: {
+          return_qty: 8,
+          share_pct: 44.4,
+          minimum_return_qty: 5,
+          minimum_share_pct: 40,
+          window_days: 90,
+          suspected_batch: "Партия 2026-07-15",
+        },
+        resolution_actions: [
+          { kind: "remove_line", label: "Исключить строку", requires_reason: true },
+          { kind: "recalculate", label: "Дождаться нового расчёта" },
+        ],
+      }],
+      profitability_pct: "18.4",
+    });
+    const initial = order({
+      blockers: ["line_1:batch_error_suspected"],
+      blocker_details: [{ ...blockedLine.blocker_details![0], scope: "order" }],
+      lines: [blockedLine],
+    });
+    vi.mocked(updateProcurementOrderLine).mockResolvedValue(
+      order({ blockers: [], blocker_details: [], lines: [{ ...blockedLine, removed: true }] })
+    );
+
+    render(<ProcurementOrderFormationApp initialOrder={initial} />);
+
+    expect(screen.getAllByText(/44,4% от продаж за 90 дней/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Исключить строку" }));
+    const submit = screen.getByRole("button", { name: "Исключить из проекта" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("Обязательно укажите, почему строку исключают"), {
+      target: { value: "Проверяем пересорт отдельно" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Указать «Взамен ведём»" }));
+    fireEvent.change(screen.getByLabelText("Взамен ведём для Дисплей для Huawei P10 Lite"), {
+      target: { value: "РБ000057818" },
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(updateProcurementOrderLine).toHaveBeenCalledWith(12, 40, {
+      expected_order_version: 1,
+      expected_line_version: 1,
+      removed: true,
+      removal_reason: "Проверяем пересорт отдельно",
+      replacement_sku_code: "РБ000057818",
+    }));
+    expect(toast.success).toHaveBeenCalledWith(
+      "Строка исключена из проекта; причина сохранена в журнале"
+    );
   });
 });
 

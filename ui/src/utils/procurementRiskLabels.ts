@@ -66,8 +66,8 @@ const PROCUREMENT_RISK_LABELS: Record<string, string> = {
   availability_history_too_short: "Истории наличия мало — расчёт спроса приблизительный",
   display_family_manual_approval_required:
     "Распределение внутри семейства дисплеев подтверждает закупщик",
-  accepted_matching_review: "Сопоставление товара принято, нужна проверка",
-  manual_accepted_matching_review: "Сопоставление товара принято вручную",
+  accepted_matching_review: "Не блокирует заказ: проверьте рамку и качество сопоставленной карточки",
+  manual_accepted_matching_review: "Не блокирует заказ: ручное сопоставление нужно проверить",
   // Заказы покупателей и клиенты 3/4/5.
   active_customer_orders_added_to_need: "В потребность добавлены активные заказы покупателей",
   active_customer_orders_exceed_sellable_stock: "Заказов покупателей больше свободного остатка",

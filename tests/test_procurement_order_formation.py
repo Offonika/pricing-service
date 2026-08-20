@@ -5,15 +5,21 @@ from decimal import Decimal
 from xml.etree import ElementTree as ET
 
 import pytest
+from sqlalchemy import select
 
 import app.services.bitrix_order_formation as bitrix_order_service
+from app.api.procurement_order_formation import change_order_line
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
     ProcurementClassificationProposal,
     ProcurementOrderFormation,
+    ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
-from app.schemas.procurement_order_formation import ProcurementOrderAssistantResponse
+from app.schemas.procurement_order_formation import (
+    ProcurementOrderAssistantResponse,
+    ProcurementOrderLineUpdateRequest,
+)
 from app.services.bitrix_order_formation import BitrixCatalogProduct, build_bitrix_product_rows
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
@@ -37,9 +43,11 @@ from app.services.procurement_order_formation import (
     classification_blocks_line,
     create_classification_proposal,
     effective_assortment_status,
+    line_blocker_details,
     line_blockers,
     normalize_guid,
     onec_binary_ref_to_guid,
+    order_blocker_details,
     order_blockers,
     record_order_exchange_result,
     record_property_update_exchange_result,
@@ -730,6 +738,106 @@ def test_metric_blockers_use_only_agreed_thresholds(db_session) -> None:
         "supplier_defect_history_units": 100,
     }
     assert "supplier_defect_over_10_pct_reliable" in line_blockers(line)
+
+
+def test_batch_blocker_details_explain_numbers_and_project_lines(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.blockers = ["batch_error_suspected"]
+    line.payload = {
+        "batch_error_return_qty": "8",
+        "batch_error_share_pct": "44.4",
+    }
+    db_session.commit()
+
+    detail = line_blocker_details(line)[0]
+    assert detail["severity"] == "hard"
+    assert detail["evidence"]["return_qty"] == Decimal("8")
+    assert detail["evidence"]["share_pct"] == Decimal("44.4")
+    assert "8 возвратов" in detail["message"]
+    assert {item["kind"] for item in detail["resolution_actions"]} == {
+        "remove_line",
+        "remove_with_replacement",
+        "recalculate",
+    }
+
+    project_detail = next(
+        item for item in order_blocker_details(order) if item["code"] == "batch_error_suspected"
+    )
+    assert project_detail["scope"] == "order"
+    assert project_detail["line_id"] == line.id
+    assert project_detail["line_number"] == 1
+
+
+def test_batch_blocker_without_evidence_becomes_technical(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.blockers = ["batch_error_suspected"]
+    line.payload = {}
+
+    detail = line_blocker_details(line)[0]
+
+    assert detail["severity"] == "technical"
+    assert "повторный расчёт" in detail["message"]
+
+
+def test_removing_blocked_line_requires_reason_and_keeps_audit_metadata(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.blockers = ["batch_error_suspected"]
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="removal reason"):
+        update_order_line(db_session, order.id, line.id, {"removed": True})
+
+    updated = update_order_line(
+        db_session,
+        order.id,
+        line.id,
+        {
+            "removed": True,
+            "removal_reason": "Проверяем пересорт отдельно",
+            "replacement_sku_code": "РБ000057818",
+            "_removal_actor": "bitrix:member:42",
+            "_removal_actor_name": "Омар",
+        },
+    )
+    removed_line = next(item for item in updated.lines if item.id == line.id)
+    assert removed_line.removed is True
+    assert removed_line.payload["manual_removal"]["reason"] == "Проверяем пересорт отдельно"
+    assert removed_line.payload["manual_removal"]["replacement_sku_code"] == "РБ000057818"
+    assert all("line_1:batch_error_suspected" != item for item in order_blockers(updated))
+
+
+def test_removing_line_through_api_records_actor_reason_and_replacement(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.blockers = ["batch_error_suspected"]
+    db_session.commit()
+
+    change_order_line(
+        order.id,
+        line.id,
+        ProcurementOrderLineUpdateRequest(
+            expected_order_version=order.version,
+            expected_line_version=line.version,
+            removed=True,
+            removal_reason="Проверяем пересорт отдельно",
+            replacement_sku_code="РБ000057818",
+        ),
+        db_session,
+        _session(),
+    )
+
+    event = db_session.scalar(
+        select(ProcurementOrderFormationEvent).where(
+            ProcurementOrderFormationEvent.event_type == "order_line_removed"
+        )
+    )
+    assert event is not None
+    assert event.actor == "bitrix:member:42"
+    assert event.payload["removal_reason"] == "Проверяем пересорт отдельно"
+    assert event.payload["replacement_sku_code"] == "РБ000057818"
 
 
 def test_supplier_order_contract_has_one_header_and_multiple_draft_lines(db_session) -> None:

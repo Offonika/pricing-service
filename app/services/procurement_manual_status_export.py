@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Iterable
 
 from sqlalchemy import select
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.models.procurement_order_formation import (
     ProcurementClassificationProposal,
+    ProcurementLifecycleTransitionProposal,
     ProcurementOrderFormationLine,
 )
 from app.services.procurement_assortment_decisions import (
@@ -53,14 +55,40 @@ def collect_approved_overrides(db: Session) -> list[dict[str, Any]]:
         .order_by(ProcurementClassificationProposal.id)
     ).all()
 
-    latest: dict[str, dict[str, Any]] = {}
+    latest: dict[str, tuple[float, dict[str, Any]]] = {}
     for proposal, line in rows:
         code = clean_string(line.nomenclature_code)
         status = clean_string(proposal.proposed_status)
-        if not code or status not in EXPORTABLE_STATUSES:
+        if not code or status not in {*EXPORTABLE_STATUSES, "working"}:
             continue
-        latest[code] = _override_from_proposal(proposal, line, code, status)
-    return [latest[code] for code in sorted(latest)]
+        changed_at = proposal.approved_at or proposal.requested_at
+        latest[code] = (
+            _decision_timestamp(changed_at),
+            _override_from_proposal(proposal, line, code, status),
+        )
+
+    lifecycle_rows = db.scalars(
+        select(ProcurementLifecycleTransitionProposal)
+        .where(
+            ProcurementLifecycleTransitionProposal.status.in_(APPROVED_PROPOSAL_STATUSES),
+            ProcurementLifecycleTransitionProposal.action_kind == "manual_decision",
+        )
+        .order_by(ProcurementLifecycleTransitionProposal.id)
+    ).all()
+    for proposal in lifecycle_rows:
+        manual = dict((proposal.payload or {}).get("manual_decision") or {})
+        status = clean_string(manual.get("decision") or proposal.target_status)
+        code = clean_string(proposal.nomenclature_code)
+        if not code or status not in {"pension", "working"}:
+            continue
+        changed_at = proposal.approved_at or proposal.updated_at or proposal.created_at
+        candidate = (
+            _decision_timestamp(changed_at),
+            _override_from_lifecycle(proposal, code, status, manual),
+        )
+        if code not in latest or candidate[0] >= latest[code][0]:
+            latest[code] = candidate
+    return [latest[code][1] for code in sorted(latest)]
 
 
 def _override_from_proposal(
@@ -81,7 +109,6 @@ def _override_from_proposal(
 
     override: dict[str, Any] = {
         "nomenclature_code": code,
-        "manual_status": status,
         "approval_rule": SOURCE_RULE,
         "approval_rule_ru": SOURCE_RULE_RU,
         "approval_source": f"{SOURCE_PREFIX}{proposal.id}",
@@ -93,11 +120,61 @@ def _override_from_proposal(
         "source_nomenclature_name": clean_string(line.nomenclature_name),
         "sync_blockers": blockers,
     }
+    if status == "working":
+        override["working_confirmed_by_folder_responsible"] = True
+    else:
+        override["manual_status"] = status
     replacement_code = clean_string(proposal.replacement_sku_code)
     if replacement_code:
         override["replacement_sku_code"] = replacement_code
         override["replacement_sku_name"] = clean_string(proposal.replacement_sku_name)
     return override
+
+
+def _override_from_lifecycle(
+    proposal: ProcurementLifecycleTransitionProposal,
+    code: str,
+    status: str,
+    manual: dict[str, Any],
+) -> dict[str, Any]:
+    approved_by = clean_string(proposal.approved_by_name) or clean_string(
+        proposal.approved_by_actor
+    )
+    changed_at = proposal.approved_at or proposal.updated_at or proposal.created_at
+    blockers: list[str] = []
+    if not approved_by:
+        blockers.append("manual_approved_by_required")
+    if changed_at is None:
+        blockers.append("manual_changed_at_required")
+    override: dict[str, Any] = {
+        "nomenclature_code": code,
+        "approval_rule": SOURCE_RULE,
+        "approval_rule_ru": SOURCE_RULE_RU,
+        "approval_source": f"{SOURCE_PREFIX}lifecycle:{proposal.id}",
+        "manual_approved_by": approved_by,
+        "manual_changed_at": changed_at.date().isoformat() if changed_at else "",
+        "manual_reason": clean_string(manual.get("reason"))
+        or clean_string(proposal.reason)
+        or f"Ручное решение: {decision_label(status)}.",
+        "source_lifecycle_proposal_id": proposal.id,
+        "source_nomenclature_name": clean_string(proposal.product_name),
+        "sync_blockers": blockers,
+    }
+    if status == "working":
+        override["working_confirmed_by_folder_responsible"] = True
+    else:
+        override["manual_status"] = status
+    replacement_code = clean_string(manual.get("replacement_sku_code"))
+    if replacement_code:
+        override["replacement_sku_code"] = replacement_code
+    return override
+
+
+def _decision_timestamp(value: datetime | None) -> float:
+    if value is None:
+        return 0.0
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.timestamp()
 
 
 def export_manual_status_overrides(

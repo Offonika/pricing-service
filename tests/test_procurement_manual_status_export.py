@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.models.procurement_order_formation import (
+    ProcurementLifecycleTransitionProposal,
     ProcurementOrderFormation,
     ProcurementOrderFormationLine,
 )
@@ -168,3 +169,64 @@ def test_only_approved_decisions_are_exported(db_session) -> None:
 
     # «Матричный» ждёт второго согласования, поэтому в ночной расчёт не уходит.
     assert collect_approved_overrides(db_session) == []
+
+
+def test_lifecycle_manual_pension_and_working_decisions_are_exported(db_session) -> None:
+    approved_at = datetime(2026, 8, 20, 9, 30)
+    pension = ProcurementLifecycleTransitionProposal(
+        nomenclature_code="PENSION-1",
+        product_name="Дисплей на допродажу",
+        folder="Дисплеи",
+        action_kind="manual_decision",
+        current_status="working",
+        target_status="pension",
+        status="approved",
+        reason="Ведём другую карточку семьи",
+        facts={},
+        blockers=[],
+        risk_codes=[],
+        run_id=10,
+        run_key="display-run-10",
+        facts_hash="a" * 64,
+        idempotency_key="manual-pension-1",
+        approved_at=approved_at,
+        approved_by_actor="bitrix:member:130757",
+        approved_by_name="Омар",
+        payload={
+            "manual_decision": {
+                "decision": "pension",
+                "reason": "Ведём другую карточку семьи",
+                "replacement_sku_code": "REPLACEMENT-1",
+            }
+        },
+    )
+    working = ProcurementLifecycleTransitionProposal(
+        nomenclature_code="WORKING-2",
+        product_name="Дисплей остаётся рабочим",
+        folder="Дисплеи",
+        action_kind="manual_decision",
+        current_status="working",
+        target_status="working",
+        status="approved",
+        reason="Оставляем рабочим",
+        facts={},
+        blockers=[],
+        risk_codes=[],
+        run_id=10,
+        run_key="display-run-10",
+        facts_hash="b" * 64,
+        idempotency_key="manual-working-2",
+        approved_at=approved_at,
+        approved_by_actor="bitrix:member:130757",
+        approved_by_name="Омар",
+        payload={"manual_decision": {"decision": "working", "reason": "Оставляем рабочим"}},
+    )
+    db_session.add_all([pension, working])
+    db_session.commit()
+
+    decisions = {item["nomenclature_code"]: item for item in collect_approved_overrides(db_session)}
+
+    assert decisions["PENSION-1"]["manual_status"] == "pension"
+    assert decisions["PENSION-1"]["replacement_sku_code"] == "REPLACEMENT-1"
+    assert decisions["WORKING-2"]["working_confirmed_by_folder_responsible"] is True
+    assert "manual_status" not in decisions["WORKING-2"]

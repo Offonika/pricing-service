@@ -9,6 +9,7 @@ import {
 import {
   assembleProcurementOrderProjects,
   approveProcurementClassification,
+  confirmProcurementMatchingReview,
   fetchProcurementOrderAssistant,
   rejectProcurementClassification,
   updateProcurementSupplierProfile,
@@ -18,10 +19,11 @@ import {
   type ProcurementSupplierProfile,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import "../orderAssistant.css";
 
 interface Props {
-  onOpenOrder?: (orderId: number) => void;
+  onOpenOrder?: (orderId: number, lineId?: number) => void;
 }
 
 type QuickFilter =
@@ -129,6 +131,7 @@ function rowSelectable(row: AssistantRow) {
 function rowUnavailableReason(row: AssistantRow) {
   if (row.line.removed) return "Потребность исчезла в новом расчёте";
   if (supplierMissing(row.order)) return "Недоступно: не определён поставщик";
+  if (row.order.blockers.length > 0) return projectBlockerSummary(row.order);
   if (!row.line.product_card_url || !row.line.photo_original_url) {
     if (!row.line.product_card_url) return "Недоступно: не найдена точная карточка товара";
     return "Недоступно: в галерее карточки пока нет оригинального WebP-фото";
@@ -143,11 +146,33 @@ function rowUnavailableReason(row: AssistantRow) {
   if (blockers.some((value) => value.includes("classification_approval_pending"))) {
     return "Недоступно: ожидается решение по классификации";
   }
-  if (row.order.blockers.length || row.line.blockers.length) {
-    return "Недоступно: проект содержит блокирующие условия";
-  }
+  if (row.line.blockers.length) return row.line.blocker_details?.[0]?.message || "Строка заблокирована";
   if (!orderReady(row.order)) return "Недоступно: другая строка проекта ещё не готова";
   return "";
+}
+
+function blockingLineNumbers(order: ProcurementOrderFormation) {
+  const fromDetails = (order.blocker_details || [])
+    .map((detail) => detail.line_number)
+    .filter((value): value is number => typeof value === "number");
+  if (fromDetails.length > 0) return [...new Set(fromDetails)].sort((a, b) => a - b);
+  return order.lines.filter((line) => line.blockers.length > 0).map((line) => line.line_number);
+}
+
+function blockerShortLabel(code?: string) {
+  if (code === "batch_error_suspected") return "подозрение на партийную ошибку";
+  if (code === "defect_rate_suspected") return "подтверждённый высокий процент брака";
+  if (code === "supplier_defect_over_10_pct_reliable") return "брак поставщика выше порога";
+  if (code === "purchase_price_change_over_10_pct") return "изменение закупочной цены требует проверки";
+  return code ? procurementRiskLabel(code).toLocaleLowerCase("ru") : "есть блокирующие условия";
+}
+
+function projectBlockerSummary(order: ProcurementOrderFormation) {
+  const lineNumbers = blockingLineNumbers(order);
+  const first = (order.blocker_details || []).find((detail) => detail.line_number != null);
+  const reason = blockerShortLabel(first?.code);
+  const lines = lineNumbers.length > 0 ? ` — строки ${lineNumbers.join(", ")}` : "";
+  return `Проект №${order.id} заблокирован: ${reason}${lines}`;
 }
 
 function projectLabel(count: number) {
@@ -157,6 +182,15 @@ function projectLabel(count: number) {
   if (last === 1) return "проект заказа";
   if (last >= 2 && last <= 4) return "проекта заказов";
   return "проектов заказов";
+}
+
+function blockerLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} блокеров`;
+  if (last === 1) return `${count} блокер`;
+  if (last >= 2 && last <= 4) return `${count} блокера`;
+  return `${count} блокеров`;
 }
 
 function priceHistoryLabel(line: ProcurementOrderFormationLine) {
@@ -538,6 +572,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [matchingBusyKey, setMatchingBusyKey] = useState("");
   const [filter, setFilter] = useState<QuickFilter>("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -546,6 +581,17 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [panelOrderId, setPanelOrderId] = useState<number | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const compact = window.matchMedia("(max-width: 820px)");
+    const closeAutomaticPanel = () => {
+      if (compact.matches) setPanelOpen(false);
+    };
+    closeAutomaticPanel();
+    compact.addEventListener("change", closeAutomaticPanel);
+    return () => compact.removeEventListener("change", closeAutomaticPanel);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -572,8 +618,31 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const rows = useMemo<AssistantRow[]>(() => (data?.orders.flatMap((order) =>
     order.lines.map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
   ) || []).sort((left, right) =>
-    left.line.line_number - right.line.line_number || left.order.id - right.order.id
+    Number(right.line.blockers.length > 0) - Number(left.line.blockers.length > 0)
+      || left.order.id - right.order.id
+      || left.line.line_number - right.line.line_number
   ), [data]);
+
+  const confirmMatching = async (row: AssistantRow) => {
+    const recommendation = row.line.display_family_recommendation;
+    if (!recommendation?.registry_version_number || !recommendation.registry_inventory_checksum) {
+      toast.error("Версия сопоставления не определена. Обновите расчёт.");
+      return;
+    }
+    setMatchingBusyKey(row.key);
+    try {
+      const result = await confirmProcurementMatchingReview(row.order.id, row.line.id, {
+        expected_registry_version_number: recommendation.registry_version_number,
+        expected_registry_inventory_checksum: recommendation.registry_inventory_checksum,
+      });
+      toast.success(result.idempotent ? "Сопоставление уже было проверено" : "Проверка сопоставления сохранена");
+      await load();
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    } finally {
+      setMatchingBusyKey("");
+    }
+  };
 
   const suppliers = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_name))).sort(), [rows]);
   const classes = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_profile?.qualification_class).filter(Boolean) as string[])).sort(), [rows]);
@@ -667,7 +736,13 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     }
   };
 
-  if (loading) return <div className="order-workspace__state">Загрузка помощника заказов...</div>;
+  if (loading) return (
+    <div aria-busy="true" aria-label="Загрузка помощника заказов" className="order-assistant__skeleton">
+      <span />
+      <span />
+      <span />
+    </div>
+  );
   if (error) return (
     <div className="order-workspace__state order-workspace__state--error">
       <strong>Не удалось загрузить помощник</strong><span>{error}</span>
@@ -717,6 +792,14 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                   const isSelected = selected.has(row.key);
                   const selectable = rowSelectable(row);
                   const unavailableReason = rowUnavailableReason(row);
+                  const blockerLines = blockingLineNumbers(row.order);
+                  const firstBlocker = row.order.lines.find((line) => blockerLines.includes(line.line_number));
+                  const matchingReview = familyRecommendation?.conflict_codes.some((code) =>
+                    code === "accepted_matching_review" || code === "manual_accepted_matching_review"
+                  );
+                  const remainingFamilyWarnings = familyRecommendation?.conflict_codes.filter((code) =>
+                    code !== "accepted_matching_review" && code !== "manual_accepted_matching_review"
+                  ) || [];
                   return (
                     <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
@@ -732,7 +815,33 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                             <span>Пул семьи: {quantity(familyRecommendation.family_pool_order_qty)} шт. · сегмент: {familyRecommendation.quality_segment || "?"} / {familyRecommendation.construction_segment || "?"}</span>
                             <span>Уверенность: {familyRecommendation.confidence} · v{familyRecommendation.registry_version_number ?? "—"}</span>
                             {familyRecommendation.reason_ru && <span>{familyRecommendation.reason_ru}</span>}
-                            {familyRecommendation.conflict_codes.length > 0 && <span className="is-warning">Конфликты: {familyRecommendation.conflict_codes.join(", ")}</span>}
+                            {matchingReview && (
+                              <span className="is-warning">
+                                Не блокирует заказ. Сопоставление принято автоматически; проверьте рамку и качество.
+                              </span>
+                            )}
+                            {matchingReview && (
+                              <button
+                                disabled={matchingBusyKey === row.key}
+                                onClick={() => void confirmMatching(row)}
+                                type="button"
+                              >
+                                {matchingBusyKey === row.key ? "Сохраняем..." : "Сопоставление проверено"}
+                              </button>
+                            )}
+                            {familyRecommendation.matching_review_confirmed && (
+                              <span className="is-good">
+                                Проверено {familyRecommendation.matching_review_confirmed_by || "закупщиком"}
+                                {familyRecommendation.matching_review_confirmed_at
+                                  ? ` · ${dateLabel(familyRecommendation.matching_review_confirmed_at)}`
+                                  : ""}
+                              </span>
+                            )}
+                            {remainingFamilyWarnings.length > 0 && (
+                              <span className="is-warning">
+                                Предупреждения: {remainingFamilyWarnings.map(procurementRiskLabel).join(", ")}
+                              </span>
+                            )}
                           </details>
                         )}
                         {row.line.removed && <small className="is-warning">Потребность исчезла</small>}
@@ -743,7 +852,26 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
                       <td><strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{supplierDefectConfirmed ? "Брак поставщика подтверждён" : "Брак по товару — поставщик не подтверждён"}</small><small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small></td>
                       <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>
-                      <td><div className="order-assistant__decision"><button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>{unavailableReason && <small>{unavailableReason}</small>}</div></td>
+                      <td>
+                        <div className="order-assistant__decision">
+                          {row.order.blockers.length > 0 && onOpenOrder ? (
+                            <button
+                              onClick={() => onOpenOrder(row.order.id, firstBlocker?.id)}
+                              type="button"
+                            >
+                              Разобрать {blockerLabel(blockerLines.length || row.order.blockers.length)}
+                            </button>
+                          ) : (
+                            <button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>
+                          )}
+                          {unavailableReason && <small>{unavailableReason}</small>}
+                          {row.line.blocker_details?.[0] && (
+                            <small className={row.line.blocker_details[0].severity === "technical" ? "is-warning" : "is-danger"}>
+                              Эта строка: {row.line.blocker_details[0].message}
+                            </small>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}

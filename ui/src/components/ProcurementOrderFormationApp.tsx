@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
@@ -18,6 +18,7 @@ import {
 
 interface Props {
   bitrixUserName?: string | null;
+  focusLineId?: number;
   initialOrder: ProcurementOrderFormation;
   onBack?: () => void;
 }
@@ -78,6 +79,11 @@ function payloadValue(line: ProcurementOrderFormationLine, key: string) {
 }
 
 function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) {
+  if (line.blocker_details?.length) {
+    const messages = line.blocker_details.map((detail) => detail.message);
+    if (line.removed) messages.unshift("Потребность исчезла в новом расчёте.");
+    return [...new Set(messages)];
+  }
   const values = line.blockers.map((code) => {
     if (code === "batch_error_suspected") {
       const returned = payloadValue(line, "batch_error_return_qty") || "?";
@@ -156,14 +162,25 @@ function errorText(error: unknown) {
   return procurementErrorText(error);
 }
 
-export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onBack }: Props) {
+export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, initialOrder, onBack }: Props) {
   const [order, setOrder] = useState(initialOrder);
   const [lineEdits, setLineEdits] = useState<Record<number, LineEdit>>({});
   const [classificationEdits, setClassificationEdits] = useState<
     Record<number, ClassificationEdit>
   >({});
   const [openedClassification, setOpenedClassification] = useState<number | null>(null);
+  const [openedRemoval, setOpenedRemoval] = useState<number | null>(null);
+  const [removalReason, setRemovalReason] = useState("");
+  const [removalReplacement, setRemovalReplacement] = useState("");
+  const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
   const [loadingKey, setLoadingKey] = useState("");
+  const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
+
+  useEffect(() => {
+    if (!focusLineId || !focusedLineRef.current) return;
+    focusedLineRef.current.scrollIntoView({ behavior: "auto", block: "center" });
+    focusedLineRef.current.focus({ preventScroll: true });
+  }, [focusLineId]);
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
   const visibleLines = useMemo(
@@ -180,6 +197,18 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
     () => groupProcurementBlockers(order.blockers),
     [order.blockers]
   );
+  const blockerDetailGroups = useMemo(() => {
+    const grouped = new Map<string, { message: string; lines: number[]; severity: string }>();
+    (order.blocker_details || []).forEach((detail) => {
+      const key = `${detail.code}:${detail.message}`;
+      const current = grouped.get(key) || { message: detail.message, lines: [], severity: detail.severity };
+      if (detail.line_number != null && !current.lines.includes(detail.line_number)) {
+        current.lines.push(detail.line_number);
+      }
+      grouped.set(key, current);
+    });
+    return [...grouped.values()].map((item) => ({ ...item, lines: item.lines.sort((a, b) => a - b) }));
+  }, [order.blocker_details]);
   const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
@@ -260,6 +289,34 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         return next;
       });
       toast.success("Строка сохранена, согласование версии снято");
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const removeLine = async (line: ProcurementOrderFormationLine) => {
+    const reason = removalReason.trim();
+    const replacement = removalReplacement.trim();
+    if (!reason || (removalWithReplacement && !replacement)) return;
+    setLoadingKey(`remove-${line.id}`);
+    try {
+      const updated = await runVersioned(line, ({ orderVersion, lineVersion }) =>
+        updateProcurementOrderLine(order.id, line.id, {
+          expected_order_version: orderVersion,
+          expected_line_version: lineVersion,
+          removed: true,
+          removal_reason: reason,
+          replacement_sku_code: removalWithReplacement ? replacement : null,
+        })
+      );
+      setOrder(updated);
+      setOpenedRemoval(null);
+      setRemovalReason("");
+      setRemovalReplacement("");
+      setRemovalWithReplacement(false);
+      toast.success("Строка исключена из проекта; причина сохранена в журнале");
     } catch (error: unknown) {
       toast.error(errorText(error));
     } finally {
@@ -351,15 +408,21 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
 
-      {blockerGroups.length > 0 && (
+      {(blockerDetailGroups.length > 0 || blockerGroups.length > 0) && (
         <section className="order-formation__alert">
           <strong>Передача заблокирована</strong>
           <ul>
-            {blockerGroups.map((group) => (
-              <li key={group.text} title={group.codes.join(", ")}>
-                {procurementBlockerText(group)}
-              </li>
-            ))}
+            {blockerDetailGroups.length > 0
+              ? blockerDetailGroups.map((group) => (
+                  <li key={`${group.message}-${group.lines.join("-")}`}>
+                    {group.message}{group.lines.length ? ` — строки ${group.lines.join(", ")}` : ""}
+                  </li>
+                ))
+              : blockerGroups.map((group) => (
+                  <li key={group.text} title={group.codes.join(", ")}>
+                    {procurementBlockerText(group)}
+                  </li>
+                ))}
           </ul>
         </section>
       )}
@@ -395,6 +458,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                   <tr
                     key={line.id}
                     className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
+                    ref={line.id === focusLineId ? focusedLineRef : undefined}
+                    tabIndex={line.id === focusLineId ? -1 : undefined}
                   >
                     <td className="order-formation__line-number">{line.line_number}</td>
                     <td>
@@ -411,14 +476,28 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                         )}
                       {line.procurement_profile && <small>Профиль: {line.procurement_profile}</small>}
                       {proposal && <small>Предложение: {proposal.proposed_status_label} · {proposal.status}</small>}
-                      <button
-                        className="btn btn--ghost btn--small"
-                        disabled={locked || line.removed}
-                        onClick={() => setOpenedClassification(openedClassification === line.id ? null : line.id)}
-                        type="button"
-                      >
-                        Изменить классификацию
-                      </button>
+                      {openedClassification !== line.id && (
+                        <button
+                          className="btn btn--ghost btn--small"
+                          disabled={locked || line.removed}
+                          onClick={() => setOpenedClassification(line.id)}
+                          type="button"
+                        >
+                          Изменить классификацию
+                        </button>
+                      )}
+                      {openedClassification !== line.id &&
+                        line.display_family_recommendation?.manual_approval_required &&
+                        order.manual_status_options.replace_candidate && (
+                          <button
+                            className="btn btn--ghost btn--small"
+                            disabled={locked || line.removed}
+                            onClick={() => openReplacementDecision(line)}
+                            type="button"
+                          >
+                            Указать «Взамен ведём»
+                          </button>
+                        )}
                       {proposal?.status === "proposed" && (
                         <button
                           className="btn btn--small"
@@ -524,6 +603,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           >
                             {classification.status === "pension" ? "Перевести в Допродаём" : "На согласование"}
                           </button>
+                          <button
+                            className="btn btn--ghost btn--small"
+                            onClick={() => setOpenedClassification(null)}
+                            type="button"
+                          >
+                            Закрыть
+                          </button>
                         </div>
                       )}
                     </td>
@@ -546,20 +632,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                         </small>
                       )}
                       {recommendationReason && <small>Рекомендация: {recommendationReason}</small>}
-                      {line.display_family_recommendation?.manual_approval_required &&
-                        order.manual_status_options.replace_candidate && (
-                          <div className="order-formation__replacement-action">
-                            <small>Решили вести другую карточку из семьи?</small>
-                            <button
-                              className="btn btn--ghost btn--small"
-                              disabled={locked || line.removed}
-                              onClick={() => openReplacementDecision(line)}
-                              type="button"
-                            >
-                              Указать «Взамен ведём»
-                            </button>
-                          </div>
-                        )}
                       <small>Брак: {percent(defectValue)}</small>
                       <small>Рентабельность: {percent(line.profitability_pct)}</small>
                       {rounding && <small>{rounding}</small>}
@@ -605,6 +677,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <input
+                        aria-label={`Цена закупки ${line.nomenclature_name}`}
                         min="0"
                         disabled={locked || line.removed}
                         step="0.01"
@@ -635,6 +708,60 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                         >
                           Открыть карточку
                         </a>
+                      )}
+                      {line.blockers.length > 0 && !line.removed && !locked && (
+                        <button
+                          className="btn btn--ghost btn--small"
+                          onClick={() => {
+                            setOpenedRemoval(openedRemoval === line.id ? null : line.id);
+                            setRemovalReason("");
+                            setRemovalReplacement("");
+                            setRemovalWithReplacement(false);
+                          }}
+                          type="button"
+                        >
+                          Исключить строку
+                        </button>
+                      )}
+                      {openedRemoval === line.id && (
+                        <div className="order-formation__removal-form">
+                          <label>
+                            Причина исключения
+                            <textarea
+                              onChange={(event) => setRemovalReason(event.target.value)}
+                              placeholder="Обязательно укажите, почему строку исключают"
+                              value={removalReason}
+                            />
+                          </label>
+                          <label className="order-formation__no-replacement">
+                            <input
+                              checked={removalWithReplacement}
+                              onChange={(event) => setRemovalWithReplacement(event.target.checked)}
+                              type="checkbox"
+                            />
+                            Указать «Взамен ведём»
+                          </label>
+                          {removalWithReplacement && (
+                            <input
+                              aria-label={`Взамен ведём для ${line.nomenclature_name}`}
+                              onChange={(event) => setRemovalReplacement(event.target.value)}
+                              placeholder="Код 1С карточки (РБ...)"
+                              value={removalReplacement}
+                            />
+                          )}
+                          <button
+                            className="btn btn--small"
+                            disabled={
+                              !removalReason.trim() ||
+                              (removalWithReplacement && !removalReplacement.trim()) ||
+                              Boolean(loadingKey)
+                            }
+                            onClick={() => void removeLine(line)}
+                            type="button"
+                          >
+                            {loadingKey === `remove-${line.id}` ? "Исключаем..." : "Исключить из проекта"}
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>

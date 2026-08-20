@@ -6,6 +6,7 @@ import type { ProcurementOrderAssistant } from "../api/procurementAssortment";
 import {
   approveProcurementClassification,
   assembleProcurementOrderProjects,
+  confirmProcurementMatchingReview,
   fetchProcurementOrderAssistant,
   rejectProcurementClassification,
   updateProcurementSupplierProfile,
@@ -15,6 +16,7 @@ import { ProcurementOrderAssistant as ProcurementOrderAssistantView } from "./Pr
 vi.mock("../api/procurementAssortment", () => ({
   assembleProcurementOrderProjects: vi.fn(),
   approveProcurementClassification: vi.fn(),
+  confirmProcurementMatchingReview: vi.fn(),
   fetchProcurementOrderAssistant: vi.fn(),
   rejectProcurementClassification: vi.fn(),
   updateProcurementSupplierProfile: vi.fn(),
@@ -138,6 +140,7 @@ describe("ProcurementOrderAssistant", () => {
     vi.mocked(fetchProcurementOrderAssistant).mockReset();
     vi.mocked(assembleProcurementOrderProjects).mockReset();
     vi.mocked(approveProcurementClassification).mockReset();
+    vi.mocked(confirmProcurementMatchingReview).mockReset();
     vi.mocked(rejectProcurementClassification).mockReset();
     vi.mocked(updateProcurementSupplierProfile).mockReset();
     vi.mocked(toast.success).mockReset();
@@ -369,6 +372,89 @@ describe("ProcurementOrderAssistant", () => {
 
     await waitFor(() => expect(screen.queryByText("Дисплей снятый")).not.toBeInTheDocument());
     expect(screen.getByText("1 строк в текущем фильтре")).toBeInTheDocument();
+  });
+
+  it("поднимает проблемные строки, объясняет проект и открывает первый блокер", async () => {
+    const data = assistantData();
+    const base = data.orders[0].lines[0];
+    const safe = { ...structuredClone(base), id: 44, line_number: 1, nomenclature_name: "Готовая строка" };
+    const problemLines = [23, 31, 36].map((lineNumber, index) => ({
+      ...structuredClone(base),
+      id: 50 + index,
+      line_number: lineNumber,
+      nomenclature_name: `Проблемная строка ${lineNumber}`,
+      blockers: ["batch_error_suspected"],
+      blocker_details: [{
+        code: "batch_error_suspected",
+        scope: "line",
+        severity: "hard",
+        line_id: 50 + index,
+        line_number: lineNumber,
+        message: "Подозрение на партийную ошибку: 8 возвратов, 44,4% за 90 дней.",
+        evidence: { return_qty: 8, share_pct: 44.4, window_days: 90 },
+        resolution_actions: [{ kind: "remove_line", label: "Исключить строку", requires_reason: true }],
+      }],
+    }));
+    data.orders[0].id = 94;
+    data.orders[0].lines = [safe, ...problemLines];
+    data.orders[0].blockers = problemLines.map(
+      (item) => `line_${item.line_number}:batch_error_suspected`
+    );
+    data.orders[0].blocker_details = problemLines.map((item) => ({
+      ...item.blocker_details[0],
+      scope: "order",
+    }));
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    const onOpenOrder = vi.fn();
+
+    render(<ProcurementOrderAssistantView onOpenOrder={onOpenOrder} />);
+
+    const firstProblem = await screen.findByText("Проблемная строка 23");
+    const safeName = screen.getByText("Готовая строка");
+    expect(firstProblem.compareDocumentPosition(safeName) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(screen.getAllByText(
+      "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
+    ).length).toBeGreaterThan(0);
+    const actions = screen.getAllByRole("button", { name: "Разобрать 3 блокера" });
+    expect(actions[0]).toBeEnabled();
+    fireEvent.click(actions[0]);
+    expect(onOpenOrder).toHaveBeenCalledWith(94, 50);
+    expect(screen.queryByText("batch_error_suspected")).not.toBeInTheDocument();
+  });
+
+  it("сохраняет проверку сопоставления по версии реестра", async () => {
+    const data = assistantData();
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    vi.mocked(confirmProcurementMatchingReview).mockResolvedValue({
+      order_id: 12,
+      line_id: 40,
+      family_id: 10,
+      nomenclature_code: "MMI-15P-OLED-TM",
+      registry_version_number: 2,
+      registry_inventory_checksum: "a".repeat(64),
+      confirmed_at: "2026-08-20T10:00:00",
+      confirmed_by: "Омар",
+      idempotent: false,
+    });
+
+    render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Сопоставление проверено" }));
+
+    await waitFor(() => expect(confirmProcurementMatchingReview).toHaveBeenCalledWith(12, 40, {
+      expected_registry_version_number: 2,
+      expected_registry_inventory_checksum: "a".repeat(64),
+    }));
+    expect(toast.success).toHaveBeenCalledWith("Проверка сопоставления сохранена");
+    expect(screen.queryByText("Конфликты: accepted_matching_review")).not.toBeInTheDocument();
+  });
+
+  it("показывает skeleton с признаком занятости во время загрузки", () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockReturnValue(new Promise(() => undefined));
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(screen.getByLabelText("Загрузка помощника заказов")).toHaveAttribute("aria-busy", "true");
   });
 
 });

@@ -7074,6 +7074,34 @@
   background: #f8fafc;
 }
 
+.order-formation__removal-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff7f7;
+}
+
+.order-formation__removal-form label {
+  display: grid;
+  gap: 5px;
+  color: #7f1d1d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.order-formation__removal-form textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.order-formation__row--blocked:focus {
+  outline: 3px solid #f59e0b;
+  outline-offset: -3px;
+}
+
 .order-formation__replacement-action {
   display: grid;
   gap: 4px;
@@ -7727,6 +7755,28 @@
   color: #a52a35;
 }
 
+.order-workspace__state--loading {
+  display: grid;
+  align-content: center;
+  grid-template-columns: repeat(3, minmax(120px, 260px));
+  gap: 12px;
+  width: 100%;
+}
+
+.order-workspace__state--loading span {
+  width: 100%;
+  height: 92px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #e7ecf3 25%, #f6f8fb 50%, #e7ecf3 75%);
+  background-size: 200% 100%;
+  animation: order-workspace-loading 1.4s ease-in-out infinite;
+}
+
+@keyframes order-workspace-loading {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
 .order-workspace__footnote {
   padding: 12px 16px;
   border: 1px solid #dce4ee;
@@ -7851,7 +7901,7 @@
 }
 
 .lifecycle-queue__col-action {
-  width: 156px;
+  width: 270px;
 }
 
 .lifecycle-queue__table th:first-child,
@@ -7873,6 +7923,68 @@
   padding: 7px 10px;
   text-align: center;
   white-space: normal;
+}
+
+.lifecycle-manual-decision {
+  display: grid;
+  gap: 9px;
+  min-width: 238px;
+  padding: 10px;
+  border: 1px solid #c7d7ea;
+  border-radius: 9px;
+  background: #f7faff;
+}
+
+.lifecycle-manual-decision label {
+  display: grid;
+  gap: 4px;
+  color: #405169;
+  font-size: 11px;
+  font-weight: 750;
+  text-align: left;
+}
+
+.lifecycle-manual-decision input,
+.lifecycle-manual-decision select,
+.lifecycle-manual-decision textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 8px;
+  border: 1px solid #adbbce;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2c40;
+  font: inherit;
+}
+
+.lifecycle-manual-decision textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.lifecycle-manual-decision .lifecycle-manual-decision__check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.lifecycle-manual-decision__check input {
+  flex: 0 0 auto;
+  width: 18px;
+  min-height: 18px;
+  margin-top: 1px;
+}
+
+.lifecycle-manual-decision > div {
+  display: grid;
+  gap: 6px;
+}
+
+.lifecycle-queue .btn,
+.lifecycle-queue input:not([type="checkbox"]),
+.lifecycle-queue select {
+  min-height: 40px;
 }
 
 .queue-reason {

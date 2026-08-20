@@ -179,6 +179,7 @@
 
 .order-assistant__toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   min-height: 44px;
@@ -221,6 +222,12 @@
   margin-left: auto;
   border-color: transparent;
   color: #69778c;
+}
+
+.order-assistant__toolbar .order-assistant__removed-toggle {
+  min-height: 40px;
+  border-color: #b45309;
+  color: #92400e;
 }
 
 .order-assistant__advanced-filters {

@@ -1099,8 +1099,8 @@ def _blocker_detail(
         else:
             message = (
                 "Подозрение на партийную ошибку: "
-                f"{_decimal_text(returned)} возвратов качества «Новый», "
-                f"{_decimal_text(share)}% от продаж за 90 дней "
+                f"{_return_count_text(returned)} качества «Новый», "
+                f"{_decimal_text_ru(share)}% от продаж за 90 дней "
                 "(порог: 5 возвратов и 40%)."
             )
     elif code == "defect_rate_suspected":
@@ -1121,8 +1121,8 @@ def _blocker_detail(
             )
         else:
             message = (
-                f"Подтверждённый брак: {_decimal_text(share)}% "
-                f"({_decimal_text(returned)} возвратов за 90 дней)."
+                f"Подтверждённый брак: {_decimal_text_ru(share)}% "
+                f"({_return_count_text(returned)} за 90 дней)."
             )
     elif code == "supplier_defect_over_10_pct_reliable" and line is not None:
         defect_pct = _payload_decimal(payload, "supplier_defect_pct", "defect_pct")
@@ -1141,7 +1141,7 @@ def _blocker_detail(
             )
         else:
             message = (
-                f"Брак поставщика {_decimal_text(defect_pct)}% на базе "
+                f"Брак поставщика {_decimal_text_ru(defect_pct)}% на базе "
                 f"{history_units} шт. (порог: больше 10% на базе от 100 шт.)."
             )
     elif code == "purchase_price_change_over_10_pct" and line is not None:
@@ -1152,7 +1152,7 @@ def _blocker_detail(
             "history_count": _payload_int(payload, "price_history_count"),
         }
         message = (
-            f"Закупочная цена изменилась на {_decimal_text(price_change_pct)}% (порог: 10%)."
+            f"Закупочная цена изменилась на {_decimal_text_ru(price_change_pct)}% (порог: 10%)."
             if price_change_pct is not None
             else "Не хватает истории для проверки изменения закупочной цены."
         )
@@ -1205,6 +1205,28 @@ def _resolution_actions(code: str, *, has_line: bool) -> list[dict[str, Any]]:
 
 def _decimal_text(value: Decimal) -> str:
     return format(value.normalize(), "f")
+
+
+def _decimal_text_ru(value: Decimal) -> str:
+    return _decimal_text(value).replace(".", ",")
+
+
+def _return_count_text(value: Decimal) -> str:
+    text = _decimal_text_ru(value)
+    if value != value.to_integral_value():
+        return f"{text} возврата"
+    count = abs(int(value))
+    last_two = count % 100
+    last = count % 10
+    if 11 <= last_two <= 14:
+        word = "возвратов"
+    elif last == 1:
+        word = "возврат"
+    elif 2 <= last <= 4:
+        word = "возврата"
+    else:
+        word = "возвратов"
+    return f"{text} {word}"
 
 
 _BLOCKER_MESSAGES = {

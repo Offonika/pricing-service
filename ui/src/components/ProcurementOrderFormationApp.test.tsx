@@ -333,6 +333,10 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     expect(screen.getAllByText(/44,4% от продаж за 90 дней/).length).toBeGreaterThan(0);
     expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Исключить строку" }));
+    expect(screen.getByRole("dialog", { name: "Исключить строку 1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Исключить строку" })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Обязательно укажите, почему строку исключают"))
+      .toHaveFocus();
     const submit = screen.getByRole("button", { name: "Исключить из проекта" });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByPlaceholderText("Обязательно укажите, почему строку исключают"), {
@@ -449,6 +453,7 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /Исключённые строки: 1/ }));
     expect(screen.getByText(/Проблема: Потребность исчезла в новом расчёте/)).toBeInTheDocument();
     expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
     expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();

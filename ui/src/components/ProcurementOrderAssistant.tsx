@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import {
   ArrowTopRightOnSquareIcon,
@@ -184,13 +184,35 @@ function projectLabel(count: number) {
   return "проектов заказов";
 }
 
-function blockerLabel(count: number) {
+function reasonLabel(count: number) {
   const lastTwo = count % 100;
   const last = count % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return `${count} блокеров`;
-  if (last === 1) return `${count} блокер`;
-  if (last >= 2 && last <= 4) return `${count} блокера`;
-  return `${count} блокеров`;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} причин`;
+  if (last === 1) return `${count} причина`;
+  if (last >= 2 && last <= 4) return `${count} причины`;
+  return `${count} причин`;
+}
+
+function problemLineLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} проблемных строк`;
+  if (last === 1) return `${count} проблемная строка`;
+  if (last >= 2 && last <= 4) return `${count} проблемные строки`;
+  return `${count} проблемных строк`;
+}
+
+function blockerReasonCount(order: ProcurementOrderFormation) {
+  const detailCodes = (order.blocker_details || []).map((detail) => detail.code).filter(Boolean);
+  const rawCodes = order.blockers.map((value) => value.split(":").at(-1) || value);
+  return new Set(detailCodes.length > 0 ? detailCodes : rawCodes).size;
+}
+
+function firstBlockingLineId(order: ProcurementOrderFormation) {
+  const detailLineId = (order.blocker_details || []).find((detail) => detail.line_id != null)?.line_id;
+  if (detailLineId != null) return detailLineId;
+  const numbers = blockingLineNumbers(order);
+  return order.lines.find((line) => numbers.includes(line.line_number))?.id;
 }
 
 function priceHistoryLabel(line: ProcurementOrderFormationLine) {
@@ -580,18 +602,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [supplierClass, setSupplierClass] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [panelOrderId, setPanelOrderId] = useState<number | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const compact = window.matchMedia("(max-width: 820px)");
-    const closeAutomaticPanel = () => {
-      if (compact.matches) setPanelOpen(false);
-    };
-    closeAutomaticPanel();
-    compact.addEventListener("change", closeAutomaticPanel);
-    return () => compact.removeEventListener("change", closeAutomaticPanel);
-  }, []);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -617,11 +628,13 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
 
   const rows = useMemo<AssistantRow[]>(() => (data?.orders.flatMap((order) =>
     order.lines.map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
-  ) || []).sort((left, right) =>
-    Number(right.line.blockers.length > 0) - Number(left.line.blockers.length > 0)
+  ) || []).sort((left, right) => {
+    const leftRank = left.line.removed ? 2 : left.line.blockers.length > 0 ? 0 : 1;
+    const rightRank = right.line.removed ? 2 : right.line.blockers.length > 0 ? 0 : 1;
+    return leftRank - rightRank
       || left.order.id - right.order.id
-      || left.line.line_number - right.line.line_number
-  ), [data]);
+      || left.line.line_number - right.line.line_number;
+  }), [data]);
 
   const confirmMatching = async (row: AssistantRow) => {
     const recommendation = row.line.display_family_recommendation;
@@ -658,6 +671,15 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
         .includes(needle);
     });
   }, [filter, rows, search, supplier, supplierClass]);
+  const projectAlertKeys = useMemo(() => {
+    const result = new Map<number, string>();
+    visibleRows.forEach((row) => {
+      if (row.order.blockers.length > 0 && !result.has(row.order.id)) {
+        result.set(row.order.id, row.key);
+      }
+    });
+    return result;
+  }, [visibleRows]);
 
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.key)), [rows, selected]);
   const selectedOrders = useMemo(() => (data?.orders || []).filter((order) => {
@@ -793,7 +815,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                   const selectable = rowSelectable(row);
                   const unavailableReason = rowUnavailableReason(row);
                   const blockerLines = blockingLineNumbers(row.order);
-                  const firstBlocker = row.order.lines.find((line) => blockerLines.includes(line.line_number));
+                  const showProjectAlert = projectAlertKeys.get(row.order.id) === row.key;
                   const matchingReview = familyRecommendation?.conflict_codes.some((code) =>
                     code === "accepted_matching_review" || code === "manual_accepted_matching_review"
                   );
@@ -801,7 +823,30 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                     code !== "accepted_matching_review" && code !== "manual_accepted_matching_review"
                   ) || [];
                   return (
-                    <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
+                    <Fragment key={row.key}>
+                    {showProjectAlert && (
+                      <tr className="order-assistant__project-alert-row">
+                        <td colSpan={9}>
+                          <section aria-label={`Блокировка проекта №${row.order.id}`} className="order-assistant__project-alert">
+                            <div>
+                              <strong>{projectBlockerSummary(row.order)}</strong>
+                              <span>
+                                {reasonLabel(blockerReasonCount(row.order))} · {problemLineLabel(blockerLines.length)}
+                              </span>
+                            </div>
+                            {onOpenOrder && (
+                              <button
+                                onClick={() => onOpenOrder(row.order.id, firstBlockingLineId(row.order))}
+                                type="button"
+                              >
+                                Разобрать {problemLineLabel(blockerLines.length)}
+                              </button>
+                            )}
+                          </section>
+                        </td>
+                      </tr>
+                    )}
+                    <tr className={selectable ? "" : "is-unavailable"}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
                       <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
                       <td>
@@ -854,17 +899,12 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>
                       <td>
                         <div className="order-assistant__decision">
-                          {row.order.blockers.length > 0 && onOpenOrder ? (
-                            <button
-                              onClick={() => onOpenOrder(row.order.id, firstBlocker?.id)}
-                              type="button"
-                            >
-                              Разобрать {blockerLabel(blockerLines.length || row.order.blockers.length)}
-                            </button>
+                          {row.order.blockers.length > 0 ? (
+                            <span className="order-assistant__project-action-note">Разбор проекта доступен выше</span>
                           ) : (
                             <button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>
                           )}
-                          {unavailableReason && <small>{unavailableReason}</small>}
+                          {unavailableReason && row.order.blockers.length === 0 && <small>{unavailableReason}</small>}
                           {row.line.blocker_details?.[0] && (
                             <small className={row.line.blocker_details[0].severity === "technical" ? "is-warning" : "is-danger"}>
                               Эта строка: {row.line.blocker_details[0].message}
@@ -873,6 +913,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                         </div>
                       </td>
                     </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>

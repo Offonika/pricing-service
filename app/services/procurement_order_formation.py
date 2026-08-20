@@ -1124,7 +1124,9 @@ def status_screen_label(status: str | None) -> str | None:
 def manual_status_screen_options() -> dict[str, str]:
     """Варианты ручного статуса для выпадающего списка приложения."""
 
-    return {code: status_screen_label(code) or label for code, label in MANUAL_STATUS_LABELS.items()}
+    return {
+        code: status_screen_label(code) or label for code, label in MANUAL_STATUS_LABELS.items()
+    }
 
 
 def normalize_guid(value: str | None) -> str:

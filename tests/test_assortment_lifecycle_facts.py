@@ -429,7 +429,9 @@ def test_demand_method_accepts_sales_history_without_third_receipt() -> None:
             {"nomenclature_code": "РБ0001", "receipt_date": date(2026, 6, 28), "qty": 120},
         ],
         warehouse_policy=_warehouse_policy(),
-        sales_window_totals={"РБ0001": {30: Decimal("40"), 90: Decimal("136"), 180: Decimal("168")}},
+        sales_window_totals={
+            "РБ0001": {30: Decimal("40"), 90: Decimal("136"), 180: Decimal("168")}
+        },
         days_in_sale_totals={"РБ0001": {30: Decimal("21"), 90: Decimal("45"), 180: Decimal("57")}},
         as_of=date(2026, 8, 19),
     )

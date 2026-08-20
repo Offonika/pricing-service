@@ -7026,6 +7026,20 @@
   overflow-wrap: anywhere;
 }
 
+.order-formation__product-card-link {
+  display: block;
+  margin-top: 8px;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
+.order-formation__product-card-link:hover {
+  text-decoration: underline;
+}
+
 .order-formation__table td > strong,
 .order-formation__table td > small {
   display: block;

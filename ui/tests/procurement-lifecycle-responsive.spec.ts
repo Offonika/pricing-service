@@ -71,6 +71,10 @@ test("lifecycle keeps the product, reason and action usable at target widths", a
   await page.goto("/bitrix/procurement-order-formation/lifecycle/working?scope=action&readiness=review");
   await expect(page.getByText("Дисплей без напарников в сегменте")).toBeVisible();
   await expect(page.getByText("В сегменте нет второго доступного SKU")).toBeVisible();
+  await expect(page.getByText("Доступных SKU в сегменте")).toBeVisible();
+  await expect(page.getByText("family member count")).toHaveCount(0);
+  await expect(page.getByText("Отдельно")).toBeVisible();
+  await expect(page.getByText("Решение закупщика")).toBeVisible();
   await expect(page.getByRole("button", { name: "Принять решение" })).toBeEnabled();
 
   for (const viewport of viewports) {
@@ -94,6 +98,18 @@ test("lifecycle keeps the product, reason and action usable at target widths", a
       expect(cardWidth).toBeLessThanOrEqual(viewport.width - 24);
     } else {
       await expect(page.locator(".lifecycle-queue__table thead")).toBeVisible();
+    }
+    if (viewport.width <= 760) {
+      for (const control of [
+        page.locator(".queue-toolbar input"),
+        page.locator(".queue-toolbar select"),
+        page.locator(".queue-toolbar button"),
+      ]) {
+        const box = await control.boundingBox();
+        expect(box!.height).toBeGreaterThanOrEqual(40);
+        expect(box!.height).toBeLessThanOrEqual(48);
+      }
+      await expect(page.locator(".lifecycle-queue__footer")).toHaveCSS("position", "static");
     }
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])

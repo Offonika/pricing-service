@@ -8108,7 +8108,7 @@
 }
 
 .lifecycle-queue__col-select {
-  width: 56px;
+  width: 88px;
 }
 
 .lifecycle-queue__col-product {
@@ -8137,8 +8137,13 @@
 
 .lifecycle-queue__table th:first-child,
 .lifecycle-queue__table td:first-child {
-  width: 54px;
+  width: 86px;
   text-align: center;
+}
+
+.lifecycle-queue__table td:first-child .state-pill {
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 
 .lifecycle-queue__table input[type="checkbox"] {
@@ -9059,6 +9064,19 @@
   .lifecycle-queue__footer {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .queue-toolbar input,
+  .queue-toolbar select,
+  .queue-toolbar .btn {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 44px;
+    flex: 0 0 auto;
+  }
+
+  .lifecycle-queue__footer {
+    position: static;
   }
 
   .queue-explainer {

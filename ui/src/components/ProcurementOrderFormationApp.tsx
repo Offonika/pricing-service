@@ -854,7 +854,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                         onClick={() => saveLine(line)}
                         type="button"
                       >
-                        Сохранить
+                        Сохранить количество и цену
                       </button>
                       {line.product_card_url && (
                         <a
@@ -969,7 +969,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       )}
 
       <footer className="order-formation__footer">
-        <span>{activeLines.length} строк</span>
+        <span>{countLabel(activeLines.length, "строка", "строки", "строк")}</span>
         <strong>Итого: {money(String(draftTotal), order.currency)}</strong>
         <span>1С: {ONEC_STATUS_LABELS[order.onec_status] || "Статус не определён"}</span>
         {order.approved_by_name && <span>Согласовал: {order.approved_by_name}</span>}

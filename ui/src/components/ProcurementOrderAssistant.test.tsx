@@ -376,7 +376,7 @@ describe("ProcurementOrderAssistant", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Можно собрать/ }));
 
     await waitFor(() => expect(screen.queryByText("Дисплей снятый")).not.toBeInTheDocument());
-    expect(screen.getByText("1 строк в текущем фильтре")).toBeInTheDocument();
+    expect(screen.getByText("1 строка в текущем фильтре")).toBeInTheDocument();
   });
 
   it("поднимает проблемные строки, объясняет проект и открывает первый блокер", async () => {
@@ -427,6 +427,11 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getAllByText("Возвраты партии: 44,4%")).toHaveLength(3);
     expect(screen.getAllByText("24 возврата")).toHaveLength(3);
     expect(screen.getAllByText("Подтверждённый брак поставщика: данных нет")).toHaveLength(3);
+    expect(firstProblem.closest("tr")).toHaveClass("is-blocked");
+    expect(safeName.closest("tr")).toHaveClass("is-unavailable");
+    expect(safeName.closest("tr")).not.toHaveClass("is-blocked");
+    expect(screen.getByText("Проект заблокирован другой строкой")).toBeInTheDocument();
+    expect(screen.getAllByText("Причина: подозрение на партийную ошибку")).toHaveLength(3);
     expect(screen.queryByText(/24 возвратов/)).not.toBeInTheDocument();
     const action = screen.getByRole("button", { name: "Разобрать 3 проблемные строки" });
     expect(action).toBeEnabled();

@@ -44,7 +44,7 @@ interface AssistantRow {
 // Подсказка объясняет, что именно отбирает счётчик: без неё «Можно собрать 31»
 // читалось как непонятная кнопка.
 const QUICK_FILTERS: Array<{ key: QuickFilter; label: string; hint: string }> = [
-  { key: "all", label: "Все", hint: "Все строки очереди, включая снятые новым расчётом" },
+  { key: "all", label: "Все", hint: "Все активные строки очереди; исключённые строки скрыты" },
   {
     key: "ready",
     label: "Можно собрать",
@@ -56,6 +56,48 @@ const QUICK_FILTERS: Array<{ key: QuickFilter; label: string; hint: string }> = 
   { key: "high-defect", label: "Подтверждённый брак >10%", hint: "Подтверждённый брак поставщика выше 10% на достаточной истории" },
   { key: "photo-missing", label: "Без фото", hint: "Нет фото или карточки товара — строка не идёт в сборку" },
 ];
+
+const SOURCE_LEVEL_LABELS: Record<string, string> = {
+  sku: "Карточка товара",
+  supplier: "Поставщик",
+  route: "Маршрут",
+  category: "Категория",
+};
+
+const CONFIDENCE_LABELS: Record<string, string> = {
+  reliable: "Надёжная",
+  high: "Высокая",
+  medium: "Средняя",
+  low: "Низкая",
+};
+
+const QUALITY_SEGMENT_LABELS: Record<string, string> = {
+  new: "Новый",
+  original: "Оригинал",
+  service: "Сервисный",
+};
+
+const CONSTRUCTION_SEGMENT_LABELS: Record<string, string> = {
+  with_frame: "С рамкой",
+  without_frame: "Без рамки",
+  no_frame: "Без рамки",
+};
+
+function sourceLevelLabel(value?: string | null) {
+  return value ? SOURCE_LEVEL_LABELS[value] || "Другой источник" : "Источник не определён";
+}
+
+function confidenceLabel(value?: string | null) {
+  return value ? CONFIDENCE_LABELS[value] || "Не оценена" : "Не оценена";
+}
+
+function qualitySegmentLabel(value?: string | null) {
+  return value ? QUALITY_SEGMENT_LABELS[value] || "Не определён" : "Не определён";
+}
+
+function constructionSegmentLabel(value?: string | null) {
+  return value ? CONSTRUCTION_SEGMENT_LABELS[value] || "Не определён" : "Не определён";
+}
 
 function errorText(error: unknown) {
   return procurementErrorText(error);
@@ -482,7 +524,7 @@ function SupplierSummaryCard({ rows, onOpen }: { rows: AssistantRow[]; onOpen: (
       <p className="order-assistant__qualification">{profile.qualification_label || classMeta.description}</p>
       <dl className="order-assistant__supplier-metrics">
         <div><dt>Рентабельность</dt><dd className={profitability == null ? "is-missing" : ""}>{percent(profitability)}</dd><dd className="order-assistant__metric-note">{profile.profitability_pct != null ? "по истории" : "по подбору"}</dd></div>
-        <div><dt>Брак поставщика</dt><dd className={confirmedDefect ? "" : "is-missing"}>{confirmedDefect ? percent(profile.defect_pct) : "Связь с поставкой не подтверждена"}</dd><dd className="order-assistant__metric-note">{profile.defect_history_units ? `${profile.defect_history_units.toLocaleString("ru-RU")} шт. · ${profile.defect_confidence || "без оценки"}` : "нет подтверждённой базы"}</dd></div>
+        <div><dt>Брак поставщика</dt><dd className={confirmedDefect ? "" : "is-missing"}>{confirmedDefect ? percent(profile.defect_pct) : "Связь с поставкой не подтверждена"}</dd><dd className="order-assistant__metric-note">{profile.defect_history_units ? `${profile.defect_history_units.toLocaleString("ru-RU")} шт. · ${confidenceLabel(profile.defect_confidence)}` : "нет подтверждённой базы"}</dd></div>
         <div><dt>История заказов</dt><dd className={profile.history_order_count == null ? "is-missing" : ""}>{profile.history_order_count == null ? "Нет данных" : `${profile.history_order_count} заказов`}</dd><dd className="order-assistant__metric-note">ценовых наблюдений: {profile.price_history_count ?? "нет"}</dd></div>
       </dl>
       <dl className="order-assistant__terms">
@@ -594,8 +636,8 @@ function SupplierPanel({ rows, onClose, onOpenOrder, onRefresh }: { rows: Assist
             <dl><dt>Всего до поступления</dt><dd>{leadTimeDays == null ? "Нет данных" : `${leadTimeDays} дней`}</dd></dl>
           </div>
           <dl className="order-assistant__source-confidence">
-            <div><dt>Источник</dt><dd>{firstLine.lead_time_source_level || "Не определён"}</dd></div>
-            <div><dt>Уверенность</dt><dd className={firstLine.lead_time_confidence === "high" || firstLine.lead_time_confidence === "reliable" ? "is-good" : ""}>{firstLine.lead_time_confidence || profile.lead_time_confidence || "Не оценена"}</dd></div>
+            <div><dt>Источник</dt><dd>{sourceLevelLabel(firstLine.lead_time_source_level)}</dd></div>
+            <div><dt>Уверенность</dt><dd className={firstLine.lead_time_confidence === "high" || firstLine.lead_time_confidence === "reliable" ? "is-good" : ""}>{confidenceLabel(firstLine.lead_time_confidence || profile.lead_time_confidence)}</dd></div>
           </dl>
         </section>
 
@@ -611,7 +653,7 @@ function SupplierPanel({ rows, onClose, onOpenOrder, onRefresh }: { rows: Assist
         <section className="order-assistant__panel-section">
           <h3>Брак и качество</h3>
           <div className="order-assistant__quality-grid">
-            <div><span>Связь с поставкой</span><strong>{confirmedDefect ? percent(profile.defect_pct) : "Не подтверждена"}</strong><small>{profile.defect_history_units ? `${profile.defect_history_units.toLocaleString("ru-RU")} шт. · ${profile.defect_confidence || "без оценки"}` : "Нет подтверждённой базы"}</small></div>
+            <div><span>Связь с поставкой</span><strong>{confirmedDefect ? percent(profile.defect_pct) : "Не подтверждена"}</strong><small>{profile.defect_history_units ? `${profile.defect_history_units.toLocaleString("ru-RU")} шт. · ${confidenceLabel(profile.defect_confidence)}` : "Нет подтверждённой базы"}</small></div>
             <div><span>Брак по товару</span><strong>{percent(productDefect)}</strong><small>{productDefectBasis ? `база ${productDefectBasis.toLocaleString("ru-RU")} шт.` : "Нет истории"}</small></div>
           </div>
         </section>
@@ -630,6 +672,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [busy, setBusy] = useState(false);
   const [matchingBusyKey, setMatchingBusyKey] = useState("");
   const [filter, setFilter] = useState<QuickFilter>("all");
+  const [showRemoved, setShowRemoved] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -693,9 +736,11 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
 
   const suppliers = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_name))).sort(), [rows]);
   const classes = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_profile?.qualification_class).filter(Boolean) as string[])).sort(), [rows]);
+  const removedRowsCount = useMemo(() => rows.filter((row) => row.line.removed).length, [rows]);
   const visibleRows = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase("ru");
     return rows.filter((row) => {
+      if (row.line.removed && !showRemoved) return false;
       if (!filterMatches(row, filter)) return false;
       if (supplier && row.order.supplier_name !== supplier) return false;
       if (supplierClass && row.order.supplier_profile?.qualification_class !== supplierClass) return false;
@@ -704,7 +749,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
         .toLocaleLowerCase("ru")
         .includes(needle);
     });
-  }, [filter, rows, search, supplier, supplierClass]);
+  }, [filter, rows, search, showRemoved, supplier, supplierClass]);
   const projectAlertKeys = useMemo(() => {
     const result = new Map<number, string>();
     visibleRows.forEach((row) => {
@@ -736,10 +781,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     if (!data) return 0;
     const summary = data.summary;
     return {
-      // Сервер считает только активные строки, а список показывает ещё и
-      // снятые («Потребность исчезла») — их закупщик должен видеть. Поэтому
-      // счётчик «Все» берём по фактически показанным строкам.
-      all: rows.length,
+      all: rows.length - removedRowsCount,
       ready: summary.ready_lines,
       "supplier-missing": summary.supplier_missing_lines,
       "price-changed": summary.price_changed_lines,
@@ -824,7 +866,17 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
             <button className={filtersOpen ? "is-active" : ""} onClick={() => setFiltersOpen((value) => !value)} type="button">Все фильтры</button>
             <span>{visibleRows.length} строк в текущем фильтре</span>
             <span className="order-assistant__filter-hint">{QUICK_FILTERS.find((item) => item.key === filter)?.hint}</span>
-            <button className="order-assistant__reset" onClick={() => { setFilter("all"); setSearch(""); setSupplier(""); setSupplierClass(""); }} type="button">Сбросить</button>
+            {removedRowsCount > 0 && (
+              <button
+                aria-pressed={showRemoved}
+                className="order-assistant__removed-toggle"
+                onClick={() => setShowRemoved((value) => !value)}
+                type="button"
+              >
+                Исключённые: {removedRowsCount} · {showRemoved ? "Скрыть" : "Показать"}
+              </button>
+            )}
+            <button className="order-assistant__reset" onClick={() => { setFilter("all"); setSearch(""); setSupplier(""); setSupplierClass(""); setShowRemoved(false); }} type="button">Сбросить</button>
           </div>
           {filtersOpen && (
             <div className="order-assistant__advanced-filters">
@@ -901,8 +953,8 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                             <summary>Семья · только вручную</summary>
                             <span>{familyRecommendation.family_label || familyRecommendation.family_id || "членство не найдено"}</span>
                             <span>SKU: {quantity(familyRecommendation.baseline_order_qty)} → {quantity(familyRecommendation.allocated_order_qty)} шт.</span>
-                            <span>Пул семьи: {quantity(familyRecommendation.family_pool_order_qty)} шт. · сегмент: {familyRecommendation.quality_segment || "?"} / {familyRecommendation.construction_segment || "?"}</span>
-                            <span>Уверенность: {familyRecommendation.confidence} · v{familyRecommendation.registry_version_number ?? "—"}</span>
+                            <span>Пул семьи: {quantity(familyRecommendation.family_pool_order_qty)} шт. · сегмент: {qualitySegmentLabel(familyRecommendation.quality_segment)} / {constructionSegmentLabel(familyRecommendation.construction_segment)}</span>
+                            <span>Уверенность: {confidenceLabel(familyRecommendation.confidence)} · версия реестра {familyRecommendation.registry_version_number ?? "—"}</span>
                             {familyRecommendation.reason_ru && <span>{familyRecommendation.reason_ru}</span>}
                             {matchingReview && (
                               <span className="is-warning">
@@ -957,11 +1009,11 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                               {defect === null ? "Данных о браке нет" : percent(defect)}
                             </strong>
                             <small>{supplierDefectConfirmed ? "Подтверждённый брак поставщика" : productDefect !== null ? "Брак товара — поставщик не подтверждён" : "Атрибуция поставщика отсутствует"}</small>
-                            <small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small>
+                            <small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${confidenceLabel(defectConfidence)}` : "Нет истории"}</small>
                           </>
                         )}
                       </td>
-                      <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>
+                      <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{sourceLevelLabel(row.line.lead_time_source_level)} · {confidenceLabel(row.line.lead_time_confidence)}</small></td>
                       <td>
                         <div className="order-assistant__decision">
                           {row.order.blockers.length > 0 ? (

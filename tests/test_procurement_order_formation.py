@@ -755,6 +755,7 @@ def test_batch_blocker_details_explain_numbers_and_project_lines(db_session) -> 
     assert detail["evidence"]["return_qty"] == Decimal("8")
     assert detail["evidence"]["share_pct"] == Decimal("44.4")
     assert "8 возвратов" in detail["message"]
+    assert "44,4%" in detail["message"]
     assert {item["kind"] for item in detail["resolution_actions"]} == {
         "remove_line",
         "remove_with_replacement",
@@ -767,6 +768,14 @@ def test_batch_blocker_details_explain_numbers_and_project_lines(db_session) -> 
     assert project_detail["scope"] == "order"
     assert project_detail["line_id"] == line.id
     assert project_detail["line_number"] == 1
+
+    line.payload = {
+        "batch_error_return_qty": "24",
+        "batch_error_share_pct": "72.7",
+    }
+    detail = line_blocker_details(line)[0]
+    assert "24 возврата" in detail["message"]
+    assert "72,7%" in detail["message"]
 
 
 def test_batch_blocker_without_evidence_becomes_technical(db_session) -> None:

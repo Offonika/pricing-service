@@ -52,6 +52,20 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   error: "Ошибка передачи",
 };
 
+const ONEC_STATUS_LABELS: Record<string, string> = {
+  not_sent: "Не отправлен",
+  pending: "Ожидает передачи",
+  sent: "Отправлен",
+  accepted: "Принят в 1С",
+  error: "Ошибка передачи",
+};
+
+const ROUTE_LABELS: Record<string, string> = {
+  ordinary: "Обычная закупка",
+  urgent: "Срочная закупка",
+  direct: "Прямая поставка",
+};
+
 function money(value: string, currency: string) {
   const number = Number(value);
   if (!Number.isFinite(number)) return value;
@@ -103,6 +117,12 @@ function returnLabel(value: unknown) {
     : countLabel(count, "возврат", "возврата", "возвратов");
 }
 
+function batchName(value: unknown) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().replace(/^партия\s+/i, "")
+    : "не определена";
+}
+
 function blockerDetailMessage(detail: ProcurementBlockerDetail) {
   if (detail.code !== "batch_error_suspected") return detail.message;
   const evidence = detail.evidence;
@@ -110,10 +130,16 @@ function blockerDetailMessage(detail: ProcurementBlockerDetail) {
   const windowDays = numeric(evidence.window_days);
   const minimumReturns = numeric(evidence.minimum_return_qty);
   const minimumShare = numeric(evidence.minimum_share_pct);
-  const batch = typeof evidence.suspected_batch === "string" && evidence.suspected_batch.trim()
-    ? evidence.suspected_batch.trim()
-    : "не определена";
+  const batch = batchName(evidence.suspected_batch);
   return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)}, ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} (порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}). Партия: ${batch}.`;
+}
+
+function blockerSummaryMessage(detail: ProcurementBlockerDetail) {
+  if (detail.code === "batch_error_suspected") return "Подозрение на партийную ошибку";
+  if (detail.code === "defect_rate_suspected") return "Подтверждённый высокий процент брака";
+  if (detail.code === "supplier_defect_over_10_pct_reliable") return "Брак поставщика выше порога";
+  if (detail.code === "purchase_price_change_over_10_pct") return "Изменение закупочной цены требует проверки";
+  return detail.message;
 }
 
 function payloadValue(line: ProcurementOrderFormationLine, key: string) {
@@ -251,8 +277,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const blockerDetailGroups = useMemo(() => {
     const grouped = new Map<string, { message: string; lines: number[]; severity: string }>();
     (order.blocker_details || []).forEach((detail) => {
-      const message = blockerDetailMessage(detail);
-      const key = `${detail.code}:${message}`;
+      const message = blockerSummaryMessage(detail);
+      const key = detail.code;
       const current = grouped.get(key) || { message, lines: [], severity: detail.severity };
       if (detail.line_number != null && !current.lines.includes(detail.line_number)) {
         current.lines.push(detail.line_number);
@@ -261,6 +287,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     });
     return [...grouped.values()].map((item) => ({ ...item, lines: item.lines.sort((a, b) => a - b) }));
   }, [order.blocker_details]);
+  const blockingLineNumbers = useMemo(
+    () => [...new Set((order.blocker_details || [])
+      .map((detail) => detail.line_number)
+      .filter((lineNumber): lineNumber is number => typeof lineNumber === "number"))]
+      .sort((left, right) => left - right),
+    [order.blocker_details]
+  );
   const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
@@ -487,7 +520,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         <div><span>Поставщик</span><strong>{order.supplier_name}</strong></div>
         <div><span>Договор</span><strong>{order.contract_name}</strong></div>
         <div><span>Склад</span><strong>{order.warehouse_name}</strong></div>
-        <div><span>Маршрут</span><strong>{order.route}</strong></div>
+        <div><span>Маршрут</span><strong>{ROUTE_LABELS[order.route] || "Не определён"}</strong></div>
         <div><span>Партия</span><strong>{order.batch_id}</strong></div>
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
@@ -574,7 +607,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                     <td>
                       <strong>{line.nomenclature_name}</strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
-                      <small>Bitrix product: {line.bitrix_product_id || "не найден"}</small>
+                      <small>Товар Bitrix24: {line.bitrix_product_id || "не найден"}</small>
                       {line.quality && <small>Качество: {line.quality}</small>}
                     </td>
                     <td>
@@ -747,7 +780,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           <small>
                             {returnLabel(batchReturns)} · порог {batchMinimumReturns == null ? "—" : returnLabel(batchMinimumReturns)} и {percent(batchMinimumShare)}
                           </small>
-                          <small>Партия: {typeof suspectedBatch === "string" && suspectedBatch.trim() ? suspectedBatch : "не определена"}</small>
+                          <small>Партия: {batchName(suspectedBatch)}</small>
                           <small>Подтверждённый брак поставщика: {supplierDefect === null ? "данных нет" : percent(supplierDefect)}</small>
                         </div>
                       ) : supplierDefect !== null ? (
@@ -938,17 +971,27 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       <footer className="order-formation__footer">
         <span>{activeLines.length} строк</span>
         <strong>Итого: {money(String(draftTotal), order.currency)}</strong>
-        <span>1С: {order.onec_status}</span>
+        <span>1С: {ONEC_STATUS_LABELS[order.onec_status] || "Статус не определён"}</span>
         {order.approved_by_name && <span>Согласовал: {order.approved_by_name}</span>}
         {!locked && (
-          <button
-            className="btn"
-            disabled={Boolean(loadingKey) || order.blockers.length > 0}
-            onClick={submitOrder}
-            type="button"
-          >
-            {loadingKey === "submit-order" ? "Проверяем и передаём..." : "Проверил и создать черновик в 1С"}
-          </button>
+          <div className="order-formation__submit-action">
+            <button
+              aria-describedby={order.blockers.length > 0 ? "order-submit-blocked-hint" : undefined}
+              className="btn"
+              disabled={Boolean(loadingKey) || order.blockers.length > 0}
+              onClick={submitOrder}
+              type="button"
+            >
+              {loadingKey === "submit-order" ? "Проверяем и передаём..." : "Проверить и создать черновик в 1С"}
+            </button>
+            {order.blockers.length > 0 && (
+              <small id="order-submit-blocked-hint">
+                Сначала разберите {blockingLineNumbers.length > 0
+                  ? `строки ${blockingLineNumbers.join(", ")}`
+                  : "блокирующие условия выше"}.
+              </small>
+            )}
+          </div>
         )}
       </footer>
     </div>

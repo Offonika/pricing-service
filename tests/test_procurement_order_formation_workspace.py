@@ -30,6 +30,7 @@ from app.services.procurement_order_formation_workspace import (
     approve_lifecycle_transitions,
     build_dashboard,
     build_order_calculation_excel,
+    decide_lifecycle_transition,
     list_lifecycle_transitions,
     sync_lifecycle_transition_proposals,
 )
@@ -469,6 +470,143 @@ def test_queue_filters_manual_reviews_and_opens_exact_proposal(
 
     assert exact["total"] == 1
     assert exact["items"][0]["proposal_id"] == reviews["items"][0]["proposal_id"]
+
+
+def test_manual_review_ignores_export_only_blocker_and_saves_pension_decision(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=run_id,
+        settings=_settings(),
+    )
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.nomenclature_code == "WORKING-1"
+        )
+    )
+    assert proposal is not None
+    proposal.blockers = ["lifecycle_stage_not_exported"]
+    lifecycle_db.commit()
+
+    queue = list_lifecycle_transitions(
+        lifecycle_db,
+        status="working",
+        scope="action",
+    )
+    item = next(row for row in queue["items"] if row["proposal_id"] == proposal.id)
+    assert item["decision_state"] == "review"
+    assert item["actionability"] == "manual_decision"
+    assert item["selectable"] is False
+    assert item["blockers"] == []
+    assert "lifecycle_stage_not_exported" in item["risk_codes"]
+
+    response = decide_lifecycle_transition(
+        lifecycle_db,
+        proposal_id=proposal.id,
+        values={
+            "decision": "pension",
+            "reason": "Ведём другую карточку семьи",
+            "replacement_sku_code": "РБ000057818",
+            "expected_run_id": proposal.run_id,
+            "facts_hash": proposal.facts_hash,
+        },
+        session=_session("130757", "Омар"),
+        settings=_settings(),
+    )
+
+    assert response["decision"] == "pension"
+    lifecycle_db.refresh(proposal)
+    assert proposal.status == "approved"
+    assert proposal.action_kind == "manual_decision"
+    assert proposal.payload["manual_decision"]["replacement_sku_code"] == "РБ000057818"
+    event = lifecycle_db.scalar(
+        select(ProcurementOrderFormationEvent).where(
+            ProcurementOrderFormationEvent.event_type == "lifecycle_manual_decision"
+        )
+    )
+    assert event is not None
+
+    repeated = decide_lifecycle_transition(
+        lifecycle_db,
+        proposal_id=proposal.id,
+        values={
+            "decision": "pension",
+            "reason": "Ведём другую карточку семьи",
+            "replacement_sku_code": "РБ000057818",
+            "expected_run_id": proposal.run_id,
+            "facts_hash": proposal.facts_hash,
+        },
+        session=_session("130757", "Омар"),
+        settings=_settings(),
+    )
+    assert repeated["message"] == "Решение уже сохранено"
+
+
+def test_manual_lifecycle_decision_rejects_stale_facts_hash(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(lifecycle_db, run_id=run_id, settings=_settings())
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.nomenclature_code == "WORKING-1"
+        )
+    )
+    assert proposal is not None
+
+    with pytest.raises(ValueError, match="calculation is stale"):
+        decide_lifecycle_transition(
+            lifecycle_db,
+            proposal_id=proposal.id,
+            values={
+                "decision": "working",
+                "reason": "Оставляем рабочим",
+                "expected_run_id": proposal.run_id,
+                "facts_hash": "f" * 64,
+            },
+            session=_session("130757", "Омар"),
+            settings=_settings(),
+        )
+
+    lifecycle_db.refresh(proposal)
+    assert proposal.status == "stale"
+
+
+def test_manual_lifecycle_decision_cannot_bypass_hard_blocker(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(lifecycle_db, run_id=run_id, settings=_settings())
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.nomenclature_code == "WORKING-1"
+        )
+    )
+    assert proposal is not None
+    proposal.blockers = ["source_facts_missing"]
+    lifecycle_db.commit()
+
+    with pytest.raises(ValueError, match="has blockers"):
+        decide_lifecycle_transition(
+            lifecycle_db,
+            proposal_id=proposal.id,
+            values={
+                "decision": "working",
+                "reason": "Оставляем рабочим",
+                "expected_run_id": proposal.run_id,
+                "facts_hash": proposal.facts_hash,
+            },
+            session=_session("130757", "Омар"),
+            settings=_settings(),
+        )
+
+    lifecycle_db.refresh(proposal)
+    assert proposal.status == "pending"
 
 
 def test_action_queue_hides_stale_runs_until_archive_filter(

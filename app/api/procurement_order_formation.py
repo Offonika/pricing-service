@@ -16,9 +16,13 @@ from app.schemas.procurement_order_formation import (
     ProcurementClassificationRejectRequest,
     ProcurementClassificationRejectResponse,
     ProcurementDashboardResponse,
+    ProcurementLifecycleManualDecisionRequest,
+    ProcurementLifecycleManualDecisionResponse,
     ProcurementLifecycleTransitionApprovalRequest,
     ProcurementLifecycleTransitionApprovalResponse,
     ProcurementLifecycleTransitionList,
+    ProcurementMatchingReviewConfirmationRead,
+    ProcurementMatchingReviewConfirmRequest,
     ProcurementOrderAssistantAssembleRequest,
     ProcurementOrderAssistantAssembleResponse,
     ProcurementOrderAssistantResponse,
@@ -42,6 +46,7 @@ from app.services.bitrix_procurement_order_formation_auth import (
     load_bitrix_current_user,
     verify_procurement_order_formation_session,
 )
+from app.services.display_family_registry import confirm_display_family_matching_review
 from app.services.procurement_order_formation import (
     VersionConflictError,
     approve_classification_proposal,
@@ -62,6 +67,7 @@ from app.services.procurement_order_formation_workspace import (
     build_dashboard,
     build_order_assistant,
     build_order_calculation_excel,
+    decide_lifecycle_transition,
     list_classification_proposals,
     list_events,
     list_lifecycle_transitions,
@@ -210,6 +216,30 @@ def approve_lifecycle_transition_batch(
             )
         )
     except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/lifecycle/transitions/{proposal_id}/manual-decision",
+    response_model=ProcurementLifecycleManualDecisionResponse,
+)
+def decide_lifecycle_transition_manually(
+    proposal_id: int,
+    payload: ProcurementLifecycleManualDecisionRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementLifecycleManualDecisionResponse:
+    try:
+        return ProcurementLifecycleManualDecisionResponse.model_validate(
+            decide_lifecycle_transition(
+                db,
+                proposal_id=proposal_id,
+                values=payload.model_dump(),
+                session=session,
+            )
+        )
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 
@@ -494,27 +524,78 @@ def change_order_line(
     session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderFormationRead:
     try:
+        values = payload.model_dump(exclude_unset=True)
+        values["_removal_actor"] = session.actor
+        values["_removal_actor_name"] = session.user_name or session.actor
         before = serialize_order(get_order(db, order_id))
         order = update_order_line(
             db,
             order_id,
             line_id,
-            payload.model_dump(exclude_unset=True),
+            values,
         )
         after = serialize_order(order)
+        removed = payload.removed is True
         record_event(
             db,
             order_id=order_id,
             entity_type="order_line",
             entity_id=line_id,
-            event_type="order_line_changed",
+            event_type="order_line_removed" if removed else "order_line_changed",
             session=session,
             before=before,
             after=after,
+            payload=(
+                {
+                    "removal_reason": payload.removal_reason,
+                    "replacement_sku_code": payload.replacement_sku_code,
+                }
+                if removed
+                else {}
+            ),
         )
         db.commit()
         return ProcurementOrderFormationRead.model_validate(after)
     except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/orders/{order_id}/lines/{line_id}/matching-review/confirm",
+    response_model=ProcurementMatchingReviewConfirmationRead,
+)
+def confirm_order_line_matching_review(
+    order_id: int,
+    line_id: int,
+    payload: ProcurementMatchingReviewConfirmRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementMatchingReviewConfirmationRead:
+    try:
+        order = get_order(db, order_id)
+        line_payload = next(
+            (item for item in serialize_order(order)["lines"] if int(item["id"]) == line_id),
+            None,
+        )
+        if line_payload is None:
+            raise LookupError("order line was not found")
+        recommendation = line_payload.get("display_family_recommendation")
+        if not isinstance(recommendation, dict) or not recommendation.get("family_record_id"):
+            raise ValueError("display-family recommendation is missing for this line")
+        result = confirm_display_family_matching_review(
+            db,
+            family_id=int(recommendation["family_record_id"]),
+            nomenclature_code=str(line_payload.get("nomenclature_code") or ""),
+            expected_registry_version_number=payload.expected_registry_version_number,
+            expected_registry_inventory_checksum=payload.expected_registry_inventory_checksum,
+            actor=session.user_name or session.actor,
+        )
+        db.commit()
+        return ProcurementMatchingReviewConfirmationRead.model_validate(
+            {"order_id": order_id, "line_id": line_id, **result}
+        )
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 

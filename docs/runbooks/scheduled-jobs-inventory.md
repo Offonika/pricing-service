@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-08"
+updated_at: "2026-08-20"
 ---
 
 # Инвентарь заданий по расписанию
@@ -32,7 +32,7 @@ updated_at: "2026-08-08"
 | `pricing-assortment-lifecycle-classification` | ежечасно в :00 | рабочая папка |
 | `pricing-sku-result-sync-ut103` | ежечасно в :45 | рабочая папка |
 | `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
-| `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
+| `order_fulfillment_sync` | каждые 30 минут в :25/:55, чат в :10, сводка ежедневно 11:00 | active release |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
 | `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | рабочая папка |
 | `pricing-sku-generation-ut103` | ежедневно 02:30 | рабочая папка |

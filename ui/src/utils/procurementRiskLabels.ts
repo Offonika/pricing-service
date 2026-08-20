@@ -66,8 +66,8 @@ const PROCUREMENT_RISK_LABELS: Record<string, string> = {
   availability_history_too_short: "Истории наличия мало — расчёт спроса приблизительный",
   display_family_manual_approval_required:
     "Распределение внутри семейства дисплеев подтверждает закупщик",
-  accepted_matching_review: "Сопоставление товара принято, нужна проверка",
-  manual_accepted_matching_review: "Сопоставление товара принято вручную",
+  accepted_matching_review: "Не блокирует заказ: проверьте рамку и качество сопоставленной карточки",
+  manual_accepted_matching_review: "Не блокирует заказ: ручное сопоставление нужно проверить",
   // Заказы покупателей и клиенты 3/4/5.
   active_customer_orders_added_to_need: "В потребность добавлены активные заказы покупателей",
   active_customer_orders_exceed_sellable_stock: "Заказов покупателей больше свободного остатка",
@@ -153,6 +153,29 @@ export function procurementBlockerText(group: ProcurementBlockerGroup) {
   return group.lines.length === 1
     ? `${group.text} — строка ${numbers}`
     : `${group.text} — строки ${numbers}`;
+}
+
+function countedWord(count: number, one: string, few: string, many: string) {
+  const tail = count % 10;
+  const teen = count % 100;
+  if (tail === 1 && teen !== 11) return one;
+  if (tail >= 2 && tail <= 4 && (teen < 12 || teen > 14)) return few;
+  return many;
+}
+
+/** Короткая сводка для реестра: причины и затронутые строки — разные величины. */
+export function procurementBlockerSummaryLabel(blockers: string[]) {
+  const blockerCount = groupProcurementBlockers(blockers).length;
+  const lineCount = new Set(
+    blockers
+      .map((blocker) => LINE_PREFIX.exec(blocker))
+      .filter((match): match is RegExpExecArray => Boolean(match))
+      .map((match) => Number(match[1]))
+      .filter(Number.isFinite)
+  ).size;
+  const blockerLabel = `${blockerCount} ${countedWord(blockerCount, "блокер", "блокера", "блокеров")}`;
+  if (!lineCount) return blockerLabel;
+  return `${blockerLabel} · ${lineCount} ${countedWord(lineCount, "строка", "строки", "строк")}`;
 }
 
 /**

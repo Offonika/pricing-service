@@ -157,3 +157,33 @@ def test_supplier_profile_and_classification_rejection_endpoints_are_versioned()
     assert {"expected_order_version", "expected_line_version", "reason"}.issubset(
         reject_schema["required"]
     )
+
+
+def test_order_resolution_contract_is_exposed_in_openapi() -> None:
+    openapi = app.openapi()
+    paths = openapi["paths"]
+    schemas = openapi["components"]["schemas"]
+
+    manual_path = (
+        "/api/procurement-order-formation/lifecycle/transitions/{proposal_id}/manual-decision"
+    )
+    matching_path = (
+        "/api/procurement-order-formation/orders/{order_id}/lines/{line_id}/"
+        "matching-review/confirm"
+    )
+    assert "post" in paths[manual_path]
+    assert "post" in paths[matching_path]
+
+    order_properties = schemas["ProcurementOrderFormationRead"]["properties"]
+    line_properties = schemas["ProcurementOrderFormationLineRead"]["properties"]
+    lifecycle_properties = schemas["ProcurementLifecycleTransitionRead"]["properties"]
+    assert "blocker_details" in order_properties
+    assert "blocker_details" in line_properties
+    assert {"actionability", "suggested_manual_status"}.issubset(lifecycle_properties)
+
+    update_schema = schemas["ProcurementOrderLineUpdateRequest"]
+    assert {"removal_reason", "replacement_sku_code"}.issubset(update_schema["properties"])
+    manual_schema = schemas["ProcurementLifecycleManualDecisionRequest"]
+    assert {"decision", "reason", "expected_run_id", "facts_hash"}.issubset(
+        manual_schema["required"]
+    )

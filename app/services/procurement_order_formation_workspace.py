@@ -36,6 +36,7 @@ from app.services.assortment_lifecycle_classification_store import (
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
+from app.services.display_family_registry import matching_review_confirmations_by_code
 from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
@@ -108,6 +109,7 @@ MANUAL_STATUS_LABELS = {
     "pension": ASSORTMENT_STATUS_LABELS[AssortmentStatus.PENSION],
     "review": "Разбор",
 }
+MANUAL_DECISION_NONBLOCKING_CODES = frozenset({"lifecycle_stage_not_exported"})
 MANUAL_STATUS_LEGACY_LABELS = {
     "matrix": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.MATRIX],
     "on_demand": ASSORTMENT_STATUS_LEGACY_LABELS[AssortmentStatus.ON_DEMAND],
@@ -515,7 +517,7 @@ def list_lifecycle_transitions(
         "page_size": page_size,
         "ready_count": sum(1 for item in serialized if item["ready"]),
         "review_count": sum(1 for item in serialized if item["decision_state"] == "review"),
-        "blocked_count": sum(1 for item in serialized if item["blockers"]),
+        "blocked_count": sum(1 for item in serialized if item["decision_state"] == "blocked"),
         "stale_count": sum(1 for item in serialized if item["stale"]),
         "items": items,
     }
@@ -640,6 +642,120 @@ def approve_lifecycle_transitions(
     return response
 
 
+def decide_lifecycle_transition(
+    db: Session,
+    *,
+    proposal_id: int,
+    values: Mapping[str, Any],
+    session: ProcurementOrderFormationSession,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or get_settings()
+    ensure_lifecycle_approver(session.user_id, settings=settings)
+    proposal = db.get(ProcurementLifecycleTransitionProposal, proposal_id)
+    if proposal is None:
+        raise LookupError("lifecycle proposal was not found")
+
+    decision = normalize_status(values.get("decision"))
+    if decision not in {"pension", "working"}:
+        raise ValueError("manual lifecycle decision must be pension or working")
+    reason = str(values.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("manual lifecycle decision reason is required")
+    replacement_sku_code = str(values.get("replacement_sku_code") or "").strip()
+    no_replacement = bool(values.get("no_replacement"))
+    if decision == "pension" and not replacement_sku_code and not no_replacement:
+        raise ValueError("pension requires replacement_sku_code or no_replacement")
+
+    existing_decision = dict((proposal.payload or {}).get("manual_decision") or {})
+    if proposal.status != "pending":
+        if existing_decision.get("decision") == decision and proposal.facts_hash == str(
+            values.get("facts_hash") or ""
+        ):
+            approved_at = proposal.approved_at or proposal.updated_at or datetime.now(UTC)
+            return {
+                "proposal_id": proposal.id,
+                "result": "approved",
+                "message": "Решение уже сохранено",
+                "decision": decision,
+                "approved_at": approved_at,
+            }
+        raise ValueError("lifecycle proposal was already processed")
+
+    latest_run = _load_run(db, folder=DISPLAY_FOLDER)
+    latest_run_id = int(latest_run["id"]) if latest_run else 0
+    if (
+        proposal.run_id != int(values.get("expected_run_id") or 0)
+        or proposal.run_id != latest_run_id
+        or proposal.facts_hash != str(values.get("facts_hash") or "")
+    ):
+        proposal.status = "stale"
+        db.commit()
+        raise ValueError("lifecycle calculation is stale; refresh the queue")
+    if proposal.action_kind == "transition" and proposal.target_status:
+        raise ValueError("automatic transition must use batch approval")
+    actionable_blockers = _manual_decision_blockers(proposal)
+    if actionable_blockers:
+        raise ValueError(
+            "manual lifecycle decision has blockers: " + "; ".join(actionable_blockers)
+        )
+
+    approved_at = datetime.now(UTC).replace(tzinfo=None)
+    before = serialize_transition(proposal, latest_run_id=latest_run_id)
+    proposal.status = "approved"
+    proposal.action_kind = "manual_decision"
+    proposal.target_status = decision
+    proposal.reason = reason
+    proposal.approved_at = approved_at
+    proposal.approved_by_actor = session.actor
+    proposal.approved_by_bitrix_user_id = session.user_id
+    proposal.approved_by_name = session.user_name or session.actor
+    proposal.onec_status = "not_applicable"
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "storage": "pricing-service",
+        "legacy_onec_export_disabled": True,
+        "manual_decision": {
+            "decision": decision,
+            "reason": reason,
+            "replacement_sku_code": replacement_sku_code or None,
+            "no_replacement": no_replacement,
+            "approved_at": approved_at.isoformat(),
+            "approved_by": session.user_name or session.actor,
+        },
+    }
+    response = {
+        "proposal_id": proposal.id,
+        "result": "approved",
+        "message": (
+            "Карточка переведена в «Допродаём»"
+            if decision == "pension"
+            else "Карточка оставлена в статусе «Рабочий»"
+        ),
+        "decision": decision,
+        "approved_at": approved_at,
+    }
+    record_event(
+        db,
+        entity_type="lifecycle_transition",
+        entity_id=proposal.id,
+        event_type="lifecycle_manual_decision",
+        session=session,
+        idempotency_key=f"lifecycle-manual:{proposal.id}:{proposal.facts_hash}:{decision}",
+        before=before,
+        after={
+            "status": proposal.status,
+            "target_status": decision,
+            "reason": reason,
+            "replacement_sku_code": replacement_sku_code or None,
+            "no_replacement": no_replacement,
+        },
+        payload=response,
+    )
+    db.commit()
+    return response
+
+
 def list_orders(
     db: Session,
     *,
@@ -685,6 +801,7 @@ def build_order_assistant(
     ]
     orders.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
     profiles = supplier_profiles_by_ref(db, (order.supplier_ref for order in orders))
+    matching_confirmations = matching_review_confirmations_by_code(db)
     serialized_orders = []
     approver_ids = {
         str(value).strip()
@@ -718,6 +835,31 @@ def build_order_assistant(
             session and str(session.user_id) in approver_ids
         )
         for line in serialized["lines"]:
+            confirmation = matching_confirmations.get(
+                str(line.get("nomenclature_code") or "").strip()
+            )
+            recommendation = line.get("display_family_recommendation")
+            if (
+                confirmation
+                and isinstance(recommendation, dict)
+                and recommendation.get("registry_version_number")
+                == confirmation.get("registry_version_number")
+                and recommendation.get("registry_inventory_checksum")
+                == confirmation.get("registry_inventory_checksum")
+            ):
+                recommendation["conflict_codes"] = [
+                    code
+                    for code in recommendation.get("conflict_codes") or []
+                    if code not in {"accepted_matching_review", "manual_accepted_matching_review"}
+                ]
+                recommendation["matching_review_confirmed"] = True
+                recommendation["matching_review_confirmed_at"] = confirmation.get("confirmed_at")
+                recommendation["matching_review_confirmed_by"] = confirmation.get("confirmed_by")
+                line["risk_codes"] = [
+                    code
+                    for code in line.get("risk_codes") or []
+                    if code not in {"accepted_matching_review", "manual_accepted_matching_review"}
+                ]
             proposal = line.get("latest_classification")
             if not isinstance(proposal, dict):
                 continue
@@ -1174,6 +1316,15 @@ def serialize_transition(
     decision_state = _decision_state(proposal, latest_run_id=latest_run_id)
     stale = decision_state == "stale"
     ready = decision_state == "ready"
+    actionability = (
+        "batch_approve" if ready else "manual_decision" if decision_state == "review" else "blocked"
+    )
+    blockers = _manual_decision_blockers(proposal)
+    ignored_blockers = [
+        str(item)
+        for item in proposal.blockers or []
+        if str(item) in MANUAL_DECISION_NONBLOCKING_CODES
+    ]
     return {
         "proposal_id": proposal.id,
         "nomenclature_code": proposal.nomenclature_code,
@@ -1194,14 +1345,16 @@ def serialize_transition(
             reason=proposal.reason,
         ),
         "facts": dict(proposal.facts or {}),
-        "blockers": list(proposal.blockers or []),
-        "risk_codes": list(proposal.risk_codes or []),
+        "blockers": blockers,
+        "risk_codes": sorted({*list(proposal.risk_codes or []), *ignored_blockers}),
         "run_id": proposal.run_id,
         "run_key": proposal.run_key,
         "facts_hash": proposal.facts_hash,
         "responsible_bitrix_user_id": proposal.responsible_bitrix_user_id,
         "responsible_name": proposal.responsible_name,
         "decision_state": decision_state,
+        "actionability": actionability,
+        "suggested_manual_status": "pension" if actionability == "manual_decision" else None,
         "ready": ready,
         "selectable": ready,
         "stale": stale,
@@ -1653,11 +1806,18 @@ def _decision_state(
 ) -> str:
     if proposal.status == "stale" or proposal.run_id != latest_run_id:
         return "stale"
-    if proposal.blockers:
+    if _manual_decision_blockers(proposal):
         return "blocked"
     if proposal.action_kind != "transition" or not proposal.target_status:
         return "review"
     return "ready"
+
+
+def _manual_decision_blockers(proposal: ProcurementLifecycleTransitionProposal) -> list[str]:
+    blockers = [str(item) for item in proposal.blockers or []]
+    if proposal.action_kind != "transition" or not proposal.target_status:
+        return [item for item in blockers if item not in MANUAL_DECISION_NONBLOCKING_CODES]
+    return blockers
 
 
 def _attention_action_label(proposal: ProcurementLifecycleTransitionProposal) -> str:

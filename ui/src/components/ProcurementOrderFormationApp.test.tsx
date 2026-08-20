@@ -9,8 +9,10 @@ import type {
 import {
   createProcurementClassification,
   fetchProcurementOrder,
+  updateProcurementOrderLine,
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
+import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
 
 vi.mock("../api/procurementAssortment", () => ({
   approveProcurementClassification: vi.fn(),
@@ -150,6 +152,219 @@ describe("ProcurementOrderFormationApp «Допродаём»", () => {
   });
 });
 
+describe("ProcurementOrderFormationApp проблемные строки", () => {
+  beforeEach(() => {
+    vi.mocked(updateProcurementOrderLine).mockReset();
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.error).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("поднимает проблемы вверх и показывает конкретные показатели и карточку товара", () => {
+    const ready = line({ id: 41, line_number: 1, nomenclature_name: "Готовая строка" });
+    const blocked = line({
+      id: 42,
+      line_number: 7,
+      nomenclature_name: "Проблемная строка",
+      blockers: ["defect_rate_suspected"],
+      risk_codes: ["adaptive_lead_time_sync_ready", "speed_horizon_rule_applied"],
+      product_card_url: "https://master-mobile.ru/catalog/displei/40699/",
+      profitability_pct: "18.4",
+      payload: {
+        defect_share_pct: "12.6",
+        defect_return_qty: "6",
+        recommended_order_qty_raw: "14",
+        order_rounding_price_gate: "no_purchase_price",
+      },
+    });
+
+    render(<ProcurementOrderFormationApp initialOrder={order({ lines: [ready, blocked] })} />);
+
+    const problem = screen.getByText("Проблемная строка");
+    const readyName = screen.getByText("Готовая строка");
+    expect(problem.compareDocumentPosition(readyName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/Проблема: Высокий процент брака: 12,6%/)).toBeInTheDocument();
+    expect(screen.getByText("Брак товара: 12,6% · поставщик не подтверждён")).toBeInTheDocument();
+    expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
+    expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+      "href",
+      "https://master-mobile.ru/catalog/displei/40699/"
+    );
+  });
+
+  it("скрывает семейную фразу, если количество между SKU не перераспределялось", () => {
+    const familyReason = "В подтверждённом сегменте меньше двух доступных SKU; оставлено базовое количество.";
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          lines: [line({
+            recommendation_reason: familyReason,
+            display_family_recommendation: {
+              schema: "display_family_order_recommendation.v1",
+              mode: "shadow",
+              status: "identity_insufficient_eligible_skus",
+              registry_inventory_checksum: "a".repeat(64),
+              family_id: "family-1",
+              family_label: "Apple iPhone",
+              segment_id: "medium|incell",
+              quality_segment: "medium",
+              construction_segment: "incell",
+              baseline_order_qty: "14",
+              allocated_order_qty: "14",
+              family_pool_order_qty: "14",
+              segment_pool_order_qty: "14",
+              baseline_share_pct: "100",
+              target_share_pct: "100",
+              allocation_source: "base_sku_order_pool",
+              confidence: "low",
+              manual_approval_required: true,
+              registry_warning_codes: [],
+              conflict_codes: [],
+              reason_ru: familyReason,
+            },
+          })],
+        })}
+      />
+    );
+
+    expect(screen.queryByText(new RegExp(familyReason))).not.toBeInTheDocument();
+  });
+
+  it("открывает ручное поле «Взамен ведём» из семейного сигнала", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          manual_status_options: {
+            working: "Поддерживаем (Рабочий)",
+            replace_candidate: "Кандидат на замену",
+          },
+          lines: [line({
+            display_family_recommendation: {
+              schema: "display_family_order_recommendation.v1",
+              mode: "shadow",
+              status: "identity_insufficient_eligible_skus",
+              registry_inventory_checksum: "a".repeat(64),
+              family_id: "family-1",
+              family_label: "Apple iPhone",
+              segment_id: "medium|incell",
+              quality_segment: "medium",
+              construction_segment: "incell",
+              baseline_order_qty: "1",
+              allocated_order_qty: "1",
+              family_pool_order_qty: "1",
+              segment_pool_order_qty: "1",
+              baseline_share_pct: "100",
+              target_share_pct: "100",
+              allocation_source: "base_sku_order_pool",
+              confidence: "low",
+              manual_approval_required: true,
+              registry_warning_codes: [],
+              conflict_codes: [],
+              reason_ru: "В сегменте нет второго SKU.",
+            },
+          })],
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Указать «Взамен ведём»" }));
+
+    expect(screen.getByRole("combobox")).toHaveValue("replace_candidate");
+    expect(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)")).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Ручной минимум Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
+  it("изменяет количество заказа целыми штуками", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order()} />);
+
+    expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
+  it("считает отдельно типы блокеров и затронутые строки", () => {
+    expect(procurementBlockerSummaryLabel([
+      "line_1:defect_rate_suspected",
+      "line_2:defect_rate_suspected",
+      "line_3:batch_error_suspected",
+      "line_4:batch_error_suspected",
+    ])).toBe("2 блокера · 4 строки");
+  });
+
+  it("показывает доказательства блокера и исключает строку только с причиной", async () => {
+    const blockedLine = line({
+      blockers: ["batch_error_suspected"],
+      blocker_details: [{
+        code: "batch_error_suspected",
+        scope: "line",
+        severity: "hard",
+        line_id: 40,
+        line_number: 1,
+        message: "Подозрение на партийную ошибку: 8 возвратов качества «Новый», 44,4% от продаж за 90 дней (порог: 5 возвратов и 40%).",
+        evidence: {
+          return_qty: 8,
+          share_pct: 44.4,
+          minimum_return_qty: 5,
+          minimum_share_pct: 40,
+          window_days: 90,
+          suspected_batch: "Партия 2026-07-15",
+        },
+        resolution_actions: [
+          { kind: "remove_line", label: "Исключить строку", requires_reason: true },
+          { kind: "recalculate", label: "Дождаться нового расчёта" },
+        ],
+      }],
+      profitability_pct: "18.4",
+    });
+    const initial = order({
+      blockers: ["line_1:batch_error_suspected"],
+      blocker_details: [{ ...blockedLine.blocker_details![0], scope: "order" }],
+      lines: [blockedLine],
+    });
+    vi.mocked(updateProcurementOrderLine).mockResolvedValue(
+      order({ blockers: [], blocker_details: [], lines: [{ ...blockedLine, removed: true }] })
+    );
+
+    render(<ProcurementOrderFormationApp initialOrder={initial} />);
+
+    expect(screen.getAllByText(/44,4% за 90 дней/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Возвраты партии: 44,4%")).toBeInTheDocument();
+    expect(screen.getByText("8 возвратов · порог 5 возвратов и 40%")).toBeInTheDocument();
+    expect(screen.getByText("Партия: Партия 2026-07-15")).toBeInTheDocument();
+    expect(screen.getByText("Подтверждённый брак поставщика: данных нет")).toBeInTheDocument();
+    expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Исключить строку" }));
+    expect(screen.getByRole("dialog", { name: "Исключить строку 1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Исключить строку" })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Обязательно укажите, почему строку исключают"))
+      .toHaveFocus();
+    const submit = screen.getByRole("button", { name: "Исключить из проекта" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByPlaceholderText("Обязательно укажите, почему строку исключают"), {
+      target: { value: "Проверяем пересорт отдельно" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Указать «Взамен ведём»" }));
+    fireEvent.change(screen.getByLabelText("Взамен ведём для Дисплей для Huawei P10 Lite"), {
+      target: { value: "РБ000057818" },
+    });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(updateProcurementOrderLine).toHaveBeenCalledWith(12, 40, {
+      expected_order_version: 1,
+      expected_line_version: 1,
+      removed: true,
+      removal_reason: "Проверяем пересорт отдельно",
+      replacement_sku_code: "РБ000057818",
+    }));
+    expect(toast.success).toHaveBeenCalledWith(
+      "Строка исключена из проекта; причина сохранена в журнале"
+    );
+  });
+});
+
 describe("ProcurementOrderFormationApp version conflicts", () => {
   beforeEach(() => {
     vi.mocked(createProcurementClassification).mockReset();
@@ -242,9 +457,12 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
       />
     );
 
-    expect(screen.getByText("Потребность исчезла в новом расчёте")).toBeInTheDocument();
-    expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
-    expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Исключённые строки: 1/ }));
+    expect(screen.getByText(/Проблема: Потребность исчезла в новом расчёте/)).toBeInTheDocument();
+    expect(screen.getByText(/Решение человека: 7 · новый расчёт: 9/)).toBeInTheDocument();
+    expect(screen.getByText(/Цена человека: 90,00.*· новая цена: 110,00/)).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
+      .toHaveValue(7);
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
   });
 });

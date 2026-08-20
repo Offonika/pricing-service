@@ -3,6 +3,7 @@ import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
   approveProcurementLifecycleTransitions,
+  decideProcurementLifecycleTransition,
   fetchProcurementClassifications,
   fetchProcurementDashboard,
   fetchProcurementEvents,
@@ -20,7 +21,7 @@ import {
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
-import { groupProcurementBlockers, procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { procurementBlockerSummaryLabel, procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -41,7 +42,7 @@ type WorkspaceRoute =
       readiness: LifecycleReadiness;
       proposalId?: number;
     }
-  | { kind: "order"; orderId: number };
+  | { kind: "order"; orderId: number; focusLineId?: number };
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   dashboard: "Витрина",
@@ -144,32 +145,18 @@ function proposalStatusLabel(status: string) {
 const EVENT_LABELS: Record<string, string> = {
   order_conditions_changed: "Изменены условия заказа",
   order_line_changed: "Изменена строка заказа",
+  order_line_removed: "Строка исключена из заказа",
   order_checked_and_sent: "Заказ проверен и отправлен",
   classification_proposed: "Предложено изменение свойства",
   classification_approved: "Изменение свойства утверждено",
   lifecycle_transitions_approved: "Утверждён пакет переходов",
+  lifecycle_manual_decision: "Принято ручное решение по статусу",
   lifecycle_transition_auto_applied: "Жизненный статус изменён автоматически",
   assistant_order_assembled: "Проект заказа собран помощником",
 };
 
 function errorText(error: unknown) {
   return procurementErrorText(error);
-}
-
-// Один и тот же блокер приходит по каждой проблемной строке, поэтому в реестре
-// считаем причины, а не строки: иначе цифра не сходится с тем, что видно внутри
-// заказа.
-function blockerCountLabel(blockers: string[]) {
-  const count = groupProcurementBlockers(blockers).length;
-  const tail = count % 10;
-  const teen = count % 100;
-  const word =
-    tail === 1 && teen !== 11
-      ? "блокер"
-      : tail >= 2 && tail <= 4 && (teen < 12 || teen > 14)
-        ? "блокера"
-        : "блокеров";
-  return `${count} ${word}`;
 }
 
 function money(value: string | number, currency = "RUB") {
@@ -233,7 +220,14 @@ function routeFromLocation(): WorkspaceRoute {
     };
   }
   const orderMatch = relative.match(/^\/orders\/(\d+)$/);
-  if (orderMatch) return { kind: "order", orderId: Number(orderMatch[1]) };
+  if (orderMatch) {
+    const lineId = Number(new URLSearchParams(window.location.search).get("line"));
+    return {
+      kind: "order",
+      orderId: Number(orderMatch[1]),
+      focusLineId: Number.isInteger(lineId) && lineId > 0 ? lineId : undefined,
+    };
+  }
   if (relative === "/assistant") return { kind: "tab", tab: "assistant" };
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
@@ -249,7 +243,10 @@ function routeUrl(route: WorkspaceRoute) {
     if (route.proposalId) params.set("proposal", String(route.proposalId));
     return `${root}/lifecycle/${encodeURIComponent(route.status)}?${params}`;
   }
-  if (route.kind === "order") return `${root}/orders/${route.orderId}`;
+  if (route.kind === "order") {
+    const suffix = route.focusLineId ? `?line=${route.focusLineId}` : "";
+    return `${root}/orders/${route.orderId}${suffix}`;
+  }
   if (route.tab === "dashboard") return root;
   return `${root}/${route.tab}`;
 }
@@ -305,7 +302,13 @@ function AppShell({
 }
 
 function LoadingState({ message = "Загрузка..." }: { message?: string }) {
-  return <div className="order-workspace__state">{message}</div>;
+  return (
+    <div aria-busy="true" aria-label={message} className="order-workspace__state order-workspace__state--loading">
+      <span />
+      <span />
+      <span />
+    </div>
+  );
 }
 
 function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
@@ -526,7 +529,7 @@ function Dashboard({
   );
 }
 
-function LifecycleQueue({
+export function LifecycleQueue({
   status,
   scope,
   initialReadiness,
@@ -547,6 +550,11 @@ function LifecycleQueue({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<ProcurementLifecycleApprovalResponse | null>(null);
+  const [manualProposalId, setManualProposalId] = useState<number | null>(null);
+  const [manualDecision, setManualDecision] = useState<"pension" | "working">("pension");
+  const [manualReason, setManualReason] = useState("");
+  const [manualReplacement, setManualReplacement] = useState("");
+  const [manualNoReplacement, setManualNoReplacement] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -624,6 +632,30 @@ function LifecycleQueue({
       setResult(response);
       const approved = response.summary.approved;
       toast.success(`Обработано: ${approved}`);
+      await load();
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveManualDecision = async (item: ProcurementLifecycleTransition) => {
+    if (!manualReason.trim()) return;
+    if (manualDecision === "pension" && !manualReplacement.trim() && !manualNoReplacement) return;
+    setLoading(true);
+    try {
+      const response = await decideProcurementLifecycleTransition(item, {
+        decision: manualDecision,
+        reason: manualReason.trim(),
+        replacement_sku_code: manualDecision === "pension" ? manualReplacement.trim() || null : null,
+        no_replacement: manualDecision === "pension" && manualNoReplacement,
+      });
+      toast.success(response.message);
+      setManualProposalId(null);
+      setManualReason("");
+      setManualReplacement("");
+      setManualNoReplacement(false);
       await load();
     } catch (requestError) {
       toast.error(errorText(requestError));
@@ -725,23 +757,32 @@ function LifecycleQueue({
                 {data.items.map((item) => {
                   const proposalId = item.proposal_id || 0;
                   const facts = item.facts.evidence as Record<string, unknown> | undefined;
+                  const actionability = item.actionability || (
+                    item.selectable
+                      ? "batch_approve"
+                      : item.decision_state === "review"
+                        ? "manual_decision"
+                        : "blocked"
+                  );
                   return (
                     <tr className={!item.selectable && scope === "action" ? "is-blocked" : ""} key={`${proposalId}-${item.nomenclature_code}`}>
                       <td>
-                        <input
-                          aria-label={`Выбрать ${item.product_name}`}
-                          checked={proposalId > 0 && selected.has(proposalId)}
-                          disabled={!item.selectable || selected.size >= 100 && !selected.has(proposalId)}
-                          onChange={(event) => {
-                            setSelected((current) => {
-                              const next = new Set(current);
-                              if (event.target.checked) next.add(proposalId);
-                              else next.delete(proposalId);
-                              return next;
-                            });
-                          }}
-                          type="checkbox"
-                        />
+                        {actionability === "batch_approve" ? (
+                          <input
+                            aria-label={`Выбрать ${item.product_name}`}
+                            checked={proposalId > 0 && selected.has(proposalId)}
+                            disabled={!item.selectable || selected.size >= 100 && !selected.has(proposalId)}
+                            onChange={(event) => {
+                              setSelected((current) => {
+                                const next = new Set(current);
+                                if (event.target.checked) next.add(proposalId);
+                                else next.delete(proposalId);
+                                return next;
+                              });
+                            }}
+                            type="checkbox"
+                          />
+                        ) : <span className="state-pill state-pill--warning">Ручное</span>}
                       </td>
                       <td>
                         <strong>{item.product_name}</strong>
@@ -783,15 +824,102 @@ function LifecycleQueue({
                           ))
                         ) : item.stale ? (
                           <span className="state-pill state-pill--warning">данные изменились</span>
+                        ) : actionability === "manual_decision" ? (
+                          <span className="state-pill state-pill--warning">Нужно решение закупщика</span>
                         ) : (
                           <span className="state-pill state-pill--ready">Нет блокеров</span>
                         )}
                       </td>
                       <td>
-                        {item.selectable ? (
+                        {actionability === "batch_approve" && item.selectable ? (
                           <button className="btn btn--small" disabled={loading} onClick={() => void approve([item])} type="button">
                             Подтвердить
                           </button>
+                        ) : actionability === "manual_decision" ? (
+                          manualProposalId === proposalId ? (
+                            <div className="lifecycle-manual-decision">
+                              <label>
+                                Решение
+                                <select
+                                  onChange={(event) => {
+                                    setManualDecision(event.target.value as "pension" | "working");
+                                    setManualNoReplacement(false);
+                                    setManualReplacement("");
+                                  }}
+                                  value={manualDecision}
+                                >
+                                  <option value="pension">Перевести в Допродаём</option>
+                                  <option value="working">Оставить Рабочим</option>
+                                </select>
+                              </label>
+                              <label>
+                                Причина
+                                <textarea
+                                  onChange={(event) => setManualReason(event.target.value)}
+                                  placeholder="Обязательная причина решения"
+                                  value={manualReason}
+                                />
+                              </label>
+                              {manualDecision === "pension" && (
+                                <>
+                                  <label>
+                                    Взамен ведём
+                                    <input
+                                      disabled={manualNoReplacement}
+                                      onChange={(event) => setManualReplacement(event.target.value)}
+                                      placeholder="Код 1С (РБ...)"
+                                      value={manualReplacement}
+                                    />
+                                  </label>
+                                  <label className="lifecycle-manual-decision__check">
+                                    <input
+                                      checked={manualNoReplacement}
+                                      onChange={(event) => {
+                                        setManualNoReplacement(event.target.checked);
+                                        if (event.target.checked) setManualReplacement("");
+                                      }}
+                                      type="checkbox"
+                                    />
+                                    Замены нет: снято с производства
+                                  </label>
+                                </>
+                              )}
+                              <div>
+                                <button
+                                  className="btn btn--small"
+                                  disabled={
+                                    loading ||
+                                    !manualReason.trim() ||
+                                    (manualDecision === "pension" &&
+                                      !manualReplacement.trim() &&
+                                      !manualNoReplacement)
+                                  }
+                                  onClick={() => void saveManualDecision(item)}
+                                  type="button"
+                                >
+                                  Сохранить решение
+                                </button>
+                                <button className="btn btn--ghost btn--small" onClick={() => setManualProposalId(null)} type="button">
+                                  Отмена
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button
+                              className="btn btn--small"
+                              disabled={loading}
+                              onClick={() => {
+                                setManualProposalId(proposalId);
+                                setManualDecision((item.suggested_manual_status as "pension" | "working") || "pension");
+                                setManualReason("");
+                                setManualReplacement("");
+                                setManualNoReplacement(false);
+                              }}
+                              type="button"
+                            >
+                              Принять решение
+                            </button>
+                          )
                         ) : (
                           <button className="btn btn--ghost btn--small" disabled type="button">
                             {item.stale ? "Обновить расчёт" : "На разбор"}
@@ -928,7 +1056,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
                     <span className={`state-pill ${order.blockers.length ? "state-pill--blocked" : "state-pill--ready"}`}>
-                      {order.blockers.length ? blockerCountLabel(order.blockers) : "готов"}
+                      {order.blockers.length ? procurementBlockerSummaryLabel(order.blockers) : "готов"}
                     </span>
                   </td>
                   <td><button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button></td>
@@ -1150,7 +1278,7 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
   if (route.kind === "order") {
     if (orderError) return <ErrorState message={orderError} onRetry={() => navigate(route, true)} />;
     if (!order) return <LoadingState message="Загрузка карточки заказа..." />;
-    return <ProcurementOrderFormationApp bitrixUserName={bitrixUserName} initialOrder={order} onBack={() => navigate({ kind: "tab", tab: "orders" })} />;
+    return <ProcurementOrderFormationApp bitrixUserName={bitrixUserName} focusLineId={route.focusLineId} initialOrder={order} onBack={() => navigate({ kind: "tab", tab: "orders" })} />;
   }
 
   return (
@@ -1167,7 +1295,7 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
             : <LoadingState message="Загрузка витрины..." />
       )}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
-      {route.tab === "assistant" && <ProcurementOrderAssistant onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
+      {route.tab === "assistant" && <ProcurementOrderAssistant onOpenOrder={(orderId, focusLineId) => navigate({ kind: "order", orderId, focusLineId })} />}
       {route.tab === "properties" && <ClassificationQueue />}
       {route.tab === "history" && <EventHistory />}
     </AppShell>

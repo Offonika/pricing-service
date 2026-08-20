@@ -2,7 +2,7 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
 
-# Quick contour moves safe "Новые" deals to the operational stages.
-*/30 * * * * root ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=quick ORDER_FULFILLMENT_SYNC_APPLY=true ORDER_FULFILLMENT_SYNC_NEW_LIMIT=200 /opt/MM/pricing-service/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
-5 * * * * root ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=chat /opt/MM/pricing-service/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
-0 11 * * * root ORDER_FULFILLMENT_SYNC_MODE=all /opt/MM/pricing-service/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
+# Frequent contours refresh state silently before the 11:00 daily digest.
+25,55 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=quick ORDER_FULFILLMENT_SYNC_APPLY=true ORDER_FULFILLMENT_SYNC_NEW_LIMIT=200 /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
+10 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=chat ORDER_FULFILLMENT_SYNC_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
+0 11 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_SYNC_MODE=daily /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1

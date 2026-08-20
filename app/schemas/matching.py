@@ -438,6 +438,9 @@ class DisplayFamilyMemberSchema(BaseModel):
     product: dict[str, Any] = Field(default_factory=dict)
     matching_evidence: dict[str, Any] = Field(default_factory=dict)
     identity_evidence: dict[str, Any] = Field(default_factory=dict)
+    matching_review_confirmed: bool = False
+    matching_review_confirmed_at: datetime | None = None
+    matching_review_confirmed_by: str | None = None
 
 
 class DisplayFamilyDecisionEventSchema(BaseModel):

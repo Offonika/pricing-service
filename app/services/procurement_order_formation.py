@@ -145,6 +145,7 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "onec_document_date": order.onec_document_date,
         "onec_error": order.onec_error,
         "blockers": order_blockers(order),
+        "blocker_details": order_blocker_details(order),
         "total_amount": total_amount,
         "lines": line_payloads,
         "manual_status_options": manual_status_screen_options(),
@@ -177,6 +178,7 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "risk_codes": list(line.risk_codes or []),
         "recommendation_reason": line.recommendation_reason,
         "blockers": line_blockers(line),
+        "blocker_details": line_blocker_details(line),
         "assortment_status": line.assortment_status,
         "lifecycle_status": line.lifecycle_status,
         "quality": line.quality,
@@ -395,6 +397,10 @@ def update_order_line(
     line = _line_from_order(order, line_id)
     expected_order_version = values.pop("expected_order_version", None)
     expected_line_version = values.pop("expected_line_version", None)
+    removal_reason = str(values.pop("removal_reason", "") or "").strip()
+    replacement_sku_code = str(values.pop("replacement_sku_code", "") or "").strip()
+    removal_actor = str(values.pop("_removal_actor", "") or "").strip()
+    removal_actor_name = str(values.pop("_removal_actor_name", "") or "").strip()
     if expected_order_version is not None and order.version != int(expected_order_version):
         raise VersionConflictError("order version changed; refresh the order")
     if expected_line_version is not None and line.version != int(expected_line_version):
@@ -415,11 +421,30 @@ def update_order_line(
     for field_name in ("removed", "explicit_demand"):
         value = values.get(field_name)
         if value is not None and getattr(line, field_name) != bool(value):
+            if field_name == "removed" and bool(value) and not removal_reason:
+                raise ValueError("removal reason is required")
             setattr(line, field_name, bool(value))
             changed = True
     if changed:
+        payload = dict(line.payload or {})
+        if values.get("removed") is True:
+            payload["manual_removal"] = {
+                "reason": removal_reason,
+                "replacement_sku_code": replacement_sku_code or None,
+                "actor": removal_actor or None,
+                "actor_name": removal_actor_name or None,
+                "removed_at": datetime.now(UTC).isoformat(),
+            }
+        elif values.get("removed") is False:
+            previous_removal = dict(payload.get("manual_removal") or {})
+            payload["manual_removal"] = {
+                **previous_removal,
+                "restored_at": datetime.now(UTC).isoformat(),
+                "restored_by": removal_actor or None,
+                "restored_by_name": removal_actor_name or None,
+            }
         line.payload = {
-            **(line.payload or {}),
+            **payload,
             "manual_overrides": manual_overrides,
         }
         line.amount = _money(line.final_quantity * line.purchase_price)
@@ -1005,6 +1030,195 @@ def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
     if classification_blocks_line(effective_status, explicit_demand=line.explicit_demand):
         blockers.append(f"classification_blocks_order:{effective_status}")
     return _unique(blockers)
+
+
+def line_blocker_details(line: ProcurementOrderFormationLine) -> list[dict[str, Any]]:
+    return [
+        _blocker_detail(
+            code,
+            line=line,
+            scope="line",
+        )
+        for code in line_blockers(line)
+    ]
+
+
+def order_blocker_details(order: ProcurementOrderFormation) -> list[dict[str, Any]]:
+    by_number = {line.line_number: line for line in order.lines if not line.removed}
+    details: list[dict[str, Any]] = []
+    for raw_code in order_blockers(order):
+        line_number: int | None = None
+        code = raw_code
+        if raw_code.startswith("line_") and ":" in raw_code:
+            prefix, code = raw_code.split(":", 1)
+            try:
+                line_number = int(prefix.removeprefix("line_"))
+            except ValueError:
+                line_number = None
+        details.append(
+            _blocker_detail(
+                code,
+                line=by_number.get(line_number) if line_number is not None else None,
+                scope="order",
+                line_number=line_number,
+            )
+        )
+    return details
+
+
+def _blocker_detail(
+    code: str,
+    *,
+    line: ProcurementOrderFormationLine | None,
+    scope: str,
+    line_number: int | None = None,
+) -> dict[str, Any]:
+    payload = dict(line.payload or {}) if line is not None else {}
+    evidence: dict[str, Any] = {}
+    severity = "hard"
+    message = _BLOCKER_MESSAGES.get(code, code.replace("_", " "))
+    actions = _resolution_actions(code, has_line=line is not None)
+
+    if code == "batch_error_suspected":
+        returned = _payload_decimal(payload, "batch_error_return_qty")
+        share = _payload_decimal(payload, "batch_error_share_pct")
+        evidence = {
+            "return_qty": returned,
+            "share_pct": share,
+            "minimum_return_qty": Decimal("5"),
+            "minimum_share_pct": Decimal("40"),
+            "window_days": 90,
+            "suspected_batch": _payload_text(payload, "suspected_batch") or None,
+        }
+        if returned is None or share is None:
+            severity = "technical"
+            message = (
+                "Не хватает данных для подтверждения подозрения на партийную ошибку. "
+                "Выполните повторный расчёт."
+            )
+        else:
+            message = (
+                "Подозрение на партийную ошибку: "
+                f"{_decimal_text(returned)} возвратов качества «Новый», "
+                f"{_decimal_text(share)}% от продаж за 90 дней "
+                "(порог: 5 возвратов и 40%)."
+            )
+    elif code == "defect_rate_suspected":
+        returned = _payload_decimal(payload, "defect_return_qty")
+        share = _payload_decimal(payload, "defect_share_pct")
+        evidence = {
+            "return_qty": returned,
+            "share_pct": share,
+            "minimum_return_qty": Decimal("5"),
+            "minimum_share_pct": Decimal("5"),
+            "window_days": 90,
+        }
+        if returned is None or share is None:
+            severity = "technical"
+            message = (
+                "Не хватает данных для подтверждения высокого процента брака. "
+                "Выполните повторный расчёт."
+            )
+        else:
+            message = (
+                f"Подтверждённый брак: {_decimal_text(share)}% "
+                f"({_decimal_text(returned)} возвратов за 90 дней)."
+            )
+    elif code == "supplier_defect_over_10_pct_reliable" and line is not None:
+        defect_pct = _payload_decimal(payload, "supplier_defect_pct", "defect_pct")
+        history_units = _payload_int(payload, "supplier_defect_history_units")
+        evidence = {
+            "defect_pct": defect_pct,
+            "history_units": history_units,
+            "minimum_defect_pct": Decimal("10"),
+            "minimum_history_units": 100,
+        }
+        if defect_pct is None or history_units is None:
+            severity = "technical"
+            message = (
+                "Не хватает данных для подтверждения брака поставщика. "
+                "Выполните повторный расчёт."
+            )
+        else:
+            message = (
+                f"Брак поставщика {_decimal_text(defect_pct)}% на базе "
+                f"{history_units} шт. (порог: больше 10% на базе от 100 шт.)."
+            )
+    elif code == "purchase_price_change_over_10_pct" and line is not None:
+        price_change_pct = _payload_decimal(payload, "price_change_pct")
+        evidence = {
+            "price_change_pct": price_change_pct,
+            "maximum_change_pct": Decimal("10"),
+            "history_count": _payload_int(payload, "price_history_count"),
+        }
+        message = (
+            f"Закупочная цена изменилась на {_decimal_text(price_change_pct)}% (порог: 10%)."
+            if price_change_pct is not None
+            else "Не хватает истории для проверки изменения закупочной цены."
+        )
+
+    return {
+        "code": code,
+        "scope": scope,
+        "severity": severity,
+        "line_id": line.id if line is not None else None,
+        "line_number": line.line_number if line is not None else line_number,
+        "message": message,
+        "evidence": evidence,
+        "resolution_actions": actions,
+    }
+
+
+def _resolution_actions(code: str, *, has_line: bool) -> list[dict[str, Any]]:
+    if (
+        code
+        in {
+            "batch_error_suspected",
+            "defect_rate_suspected",
+            "supplier_defect_over_10_pct_reliable",
+        }
+        and has_line
+    ):
+        return [
+            {"kind": "remove_line", "label": "Исключить строку", "requires_reason": True},
+            {
+                "kind": "remove_with_replacement",
+                "label": "Исключить и указать «Взамен ведём»",
+                "requires_reason": True,
+                "requires_replacement": True,
+            },
+            {"kind": "recalculate", "label": "Дождаться нового расчёта"},
+        ]
+    if code.startswith("classification_") and has_line:
+        return [{"kind": "review_classification", "label": "Принять решение по классификации"}]
+    if code in {"quantity_must_be_positive", "purchase_price_must_be_positive"} and has_line:
+        return [{"kind": "update_line", "label": "Исправить строку"}]
+    if code == "purchase_price_change_over_10_pct" and has_line:
+        return [
+            {"kind": "update_line", "label": "Проверить цену"},
+            {"kind": "recalculate", "label": "Обновить расчёт"},
+        ]
+    if code.endswith("_1c_reference_missing") or code == "currency_missing":
+        return [{"kind": "update_order", "label": "Заполнить условия проекта"}]
+    return [{"kind": "recalculate", "label": "Обновить расчёт"}]
+
+
+def _decimal_text(value: Decimal) -> str:
+    return format(value.normalize(), "f")
+
+
+_BLOCKER_MESSAGES = {
+    "supplier_1c_reference_missing": "Не указан поставщик 1С.",
+    "contract_1c_reference_missing": "Не указан договор поставщика.",
+    "warehouse_1c_reference_missing": "Не указан склад получения.",
+    "currency_missing": "Не указана валюта заказа.",
+    "order_has_no_active_lines": "В проекте не осталось активных строк.",
+    "catalog_product_missing": "Не найдена точная карточка товара.",
+    "catalog_xml_id_mismatch": "Карточка товара не совпадает с номенклатурой 1С.",
+    "quantity_must_be_positive": "Количество должно быть больше нуля.",
+    "purchase_price_must_be_positive": "Закупочная цена должна быть больше нуля.",
+    "classification_approval_pending": "Ожидается решение по классификации.",
+}
 
 
 def classification_blocks_line(status: str | None, *, explicit_demand: bool) -> bool:

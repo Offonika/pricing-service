@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import {
   ArrowTopRightOnSquareIcon,
@@ -9,6 +9,7 @@ import {
 import {
   assembleProcurementOrderProjects,
   approveProcurementClassification,
+  confirmProcurementMatchingReview,
   fetchProcurementOrderAssistant,
   rejectProcurementClassification,
   updateProcurementSupplierProfile,
@@ -18,10 +19,11 @@ import {
   type ProcurementSupplierProfile,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import "../orderAssistant.css";
 
 interface Props {
-  onOpenOrder?: (orderId: number) => void;
+  onOpenOrder?: (orderId: number, lineId?: number) => void;
 }
 
 type QuickFilter =
@@ -80,6 +82,40 @@ function percent(value?: string | number | null) {
   return parsed === null ? "Нет данных" : `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
+function countLabel(count: number, one: string, few: string, many: string) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} ${many}`;
+  if (last === 1) return `${count} ${one}`;
+  if (last >= 2 && last <= 4) return `${count} ${few}`;
+  return `${count} ${many}`;
+}
+
+function returnLabel(value: unknown) {
+  const count = numeric(value as string | number | null);
+  return count === null
+    ? "Количество возвратов не определено"
+    : countLabel(count, "возврат", "возврата", "возвратов");
+}
+
+function batchEvidence(line: ProcurementOrderFormationLine) {
+  return line.blocker_details?.find((detail) => detail.code === "batch_error_suspected")?.evidence;
+}
+
+function blockerDetailText(line: ProcurementOrderFormationLine) {
+  const detail = line.blocker_details?.[0];
+  if (!detail || detail.code !== "batch_error_suspected") return detail?.message;
+  const evidence = detail.evidence;
+  const share = numeric(evidence.share_pct as string | number | null);
+  const windowDays = numeric(evidence.window_days as string | number | null);
+  const minimumReturns = numeric(evidence.minimum_return_qty as string | number | null);
+  const minimumShare = numeric(evidence.minimum_share_pct as string | number | null);
+  const threshold = minimumReturns === null && minimumShare === null
+    ? "порог не указан"
+    : `порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}`;
+  return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)} · ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} · ${threshold}.`;
+}
+
 function quantity(value: string) {
   const parsed = numeric(value);
   return parsed === null
@@ -129,6 +165,7 @@ function rowSelectable(row: AssistantRow) {
 function rowUnavailableReason(row: AssistantRow) {
   if (row.line.removed) return "Потребность исчезла в новом расчёте";
   if (supplierMissing(row.order)) return "Недоступно: не определён поставщик";
+  if (row.order.blockers.length > 0) return projectBlockerSummary(row.order);
   if (!row.line.product_card_url || !row.line.photo_original_url) {
     if (!row.line.product_card_url) return "Недоступно: не найдена точная карточка товара";
     return "Недоступно: в галерее карточки пока нет оригинального WebP-фото";
@@ -143,11 +180,33 @@ function rowUnavailableReason(row: AssistantRow) {
   if (blockers.some((value) => value.includes("classification_approval_pending"))) {
     return "Недоступно: ожидается решение по классификации";
   }
-  if (row.order.blockers.length || row.line.blockers.length) {
-    return "Недоступно: проект содержит блокирующие условия";
-  }
+  if (row.line.blockers.length) return row.line.blocker_details?.[0]?.message || "Строка заблокирована";
   if (!orderReady(row.order)) return "Недоступно: другая строка проекта ещё не готова";
   return "";
+}
+
+function blockingLineNumbers(order: ProcurementOrderFormation) {
+  const fromDetails = (order.blocker_details || [])
+    .map((detail) => detail.line_number)
+    .filter((value): value is number => typeof value === "number");
+  if (fromDetails.length > 0) return [...new Set(fromDetails)].sort((a, b) => a - b);
+  return order.lines.filter((line) => line.blockers.length > 0).map((line) => line.line_number);
+}
+
+function blockerShortLabel(code?: string) {
+  if (code === "batch_error_suspected") return "подозрение на партийную ошибку";
+  if (code === "defect_rate_suspected") return "подтверждённый высокий процент брака";
+  if (code === "supplier_defect_over_10_pct_reliable") return "брак поставщика выше порога";
+  if (code === "purchase_price_change_over_10_pct") return "изменение закупочной цены требует проверки";
+  return code ? procurementRiskLabel(code).toLocaleLowerCase("ru") : "есть блокирующие условия";
+}
+
+function projectBlockerSummary(order: ProcurementOrderFormation) {
+  const lineNumbers = blockingLineNumbers(order);
+  const first = (order.blocker_details || []).find((detail) => detail.line_number != null);
+  const reason = blockerShortLabel(first?.code);
+  const lines = lineNumbers.length > 0 ? ` — строки ${lineNumbers.join(", ")}` : "";
+  return `Проект №${order.id} заблокирован: ${reason}${lines}`;
 }
 
 function projectLabel(count: number) {
@@ -157,6 +216,37 @@ function projectLabel(count: number) {
   if (last === 1) return "проект заказа";
   if (last >= 2 && last <= 4) return "проекта заказов";
   return "проектов заказов";
+}
+
+function reasonLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} причин`;
+  if (last === 1) return `${count} причина`;
+  if (last >= 2 && last <= 4) return `${count} причины`;
+  return `${count} причин`;
+}
+
+function problemLineLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} проблемных строк`;
+  if (last === 1) return `${count} проблемная строка`;
+  if (last >= 2 && last <= 4) return `${count} проблемные строки`;
+  return `${count} проблемных строк`;
+}
+
+function blockerReasonCount(order: ProcurementOrderFormation) {
+  const detailCodes = (order.blocker_details || []).map((detail) => detail.code).filter(Boolean);
+  const rawCodes = order.blockers.map((value) => value.split(":").at(-1) || value);
+  return new Set(detailCodes.length > 0 ? detailCodes : rawCodes).size;
+}
+
+function firstBlockingLineId(order: ProcurementOrderFormation) {
+  const detailLineId = (order.blocker_details || []).find((detail) => detail.line_id != null)?.line_id;
+  if (detailLineId != null) return detailLineId;
+  const numbers = blockingLineNumbers(order);
+  return order.lines.find((line) => numbers.includes(line.line_number))?.id;
 }
 
 function priceHistoryLabel(line: ProcurementOrderFormationLine) {
@@ -538,6 +628,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [matchingBusyKey, setMatchingBusyKey] = useState("");
   const [filter, setFilter] = useState<QuickFilter>("all");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -545,7 +636,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   const [supplierClass, setSupplierClass] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [panelOrderId, setPanelOrderId] = useState<number | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -571,9 +662,34 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
 
   const rows = useMemo<AssistantRow[]>(() => (data?.orders.flatMap((order) =>
     order.lines.map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
-  ) || []).sort((left, right) =>
-    left.line.line_number - right.line.line_number || left.order.id - right.order.id
-  ), [data]);
+  ) || []).sort((left, right) => {
+    const leftRank = left.line.removed ? 2 : left.line.blockers.length > 0 ? 0 : 1;
+    const rightRank = right.line.removed ? 2 : right.line.blockers.length > 0 ? 0 : 1;
+    return leftRank - rightRank
+      || left.order.id - right.order.id
+      || left.line.line_number - right.line.line_number;
+  }), [data]);
+
+  const confirmMatching = async (row: AssistantRow) => {
+    const recommendation = row.line.display_family_recommendation;
+    if (!recommendation?.registry_version_number || !recommendation.registry_inventory_checksum) {
+      toast.error("Версия сопоставления не определена. Обновите расчёт.");
+      return;
+    }
+    setMatchingBusyKey(row.key);
+    try {
+      const result = await confirmProcurementMatchingReview(row.order.id, row.line.id, {
+        expected_registry_version_number: recommendation.registry_version_number,
+        expected_registry_inventory_checksum: recommendation.registry_inventory_checksum,
+      });
+      toast.success(result.idempotent ? "Сопоставление уже было проверено" : "Проверка сопоставления сохранена");
+      await load();
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    } finally {
+      setMatchingBusyKey("");
+    }
+  };
 
   const suppliers = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_name))).sort(), [rows]);
   const classes = useMemo(() => Array.from(new Set(rows.map((row) => row.order.supplier_profile?.qualification_class).filter(Boolean) as string[])).sort(), [rows]);
@@ -589,6 +705,15 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
         .includes(needle);
     });
   }, [filter, rows, search, supplier, supplierClass]);
+  const projectAlertKeys = useMemo(() => {
+    const result = new Map<number, string>();
+    visibleRows.forEach((row) => {
+      if (row.order.blockers.length > 0 && !result.has(row.order.id)) {
+        result.set(row.order.id, row.key);
+      }
+    });
+    return result;
+  }, [visibleRows]);
 
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.key)), [rows, selected]);
   const selectedOrders = useMemo(() => (data?.orders || []).filter((order) => {
@@ -667,7 +792,13 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     }
   };
 
-  if (loading) return <div className="order-workspace__state">Загрузка помощника заказов...</div>;
+  if (loading) return (
+    <div aria-busy="true" aria-label="Загрузка помощника заказов" className="order-assistant__skeleton">
+      <span />
+      <span />
+      <span />
+    </div>
+  );
   if (error) return (
     <div className="order-workspace__state order-workspace__state--error">
       <strong>Не удалось загрузить помощник</strong><span>{error}</span>
@@ -709,16 +840,57 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                 {visibleRows.map((row) => {
                   const profitability = numeric(row.line.profitability_pct);
                   const supplierDefectConfirmed = row.line.supplier_defect_attribution === "supplier_exact";
+                  const supplierDefect = numeric(row.line.supplier_defect_pct);
+                  const productDefect = numeric(row.line.product_defect_pct);
                   const defect = numeric(supplierDefectConfirmed ? row.line.supplier_defect_pct : row.line.product_defect_pct);
                   const defectBasis = supplierDefectConfirmed ? row.line.supplier_defect_history_units : row.line.product_defect_history_units;
                   const defectConfidence = supplierDefectConfirmed ? row.line.supplier_defect_confidence : row.line.product_defect_confidence;
+                  const batch = batchEvidence(row.line);
+                  const hasBatchBlocker = Boolean(batch || row.line.blockers.includes("batch_error_suspected"));
+                  const batchShare = hasBatchBlocker
+                    ? numeric((batch?.share_pct ?? row.line.payload?.batch_error_share_pct) as string | number | null)
+                    : null;
+                  const batchReturns = batch?.return_qty ?? row.line.payload?.batch_error_return_qty;
+                  const batchMinimumShare = numeric(batch?.minimum_share_pct as string | number | null);
+                  const batchMinimumReturns = numeric(batch?.minimum_return_qty as string | number | null);
                   const priceChange = numeric(row.line.price_change_pct);
                   const familyRecommendation = row.line.display_family_recommendation;
                   const isSelected = selected.has(row.key);
                   const selectable = rowSelectable(row);
                   const unavailableReason = rowUnavailableReason(row);
+                  const blockerLines = blockingLineNumbers(row.order);
+                  const showProjectAlert = projectAlertKeys.get(row.order.id) === row.key;
+                  const matchingReview = familyRecommendation?.conflict_codes.some((code) =>
+                    code === "accepted_matching_review" || code === "manual_accepted_matching_review"
+                  );
+                  const remainingFamilyWarnings = familyRecommendation?.conflict_codes.filter((code) =>
+                    code !== "accepted_matching_review" && code !== "manual_accepted_matching_review"
+                  ) || [];
                   return (
-                    <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
+                    <Fragment key={row.key}>
+                    {showProjectAlert && (
+                      <tr className="order-assistant__project-alert-row">
+                        <td colSpan={9}>
+                          <section aria-label={`Блокировка проекта №${row.order.id}`} className="order-assistant__project-alert">
+                            <div>
+                              <strong>{projectBlockerSummary(row.order)}</strong>
+                              <span>
+                                {reasonLabel(blockerReasonCount(row.order))} · {problemLineLabel(blockerLines.length)}
+                              </span>
+                            </div>
+                            {onOpenOrder && (
+                              <button
+                                onClick={() => onOpenOrder(row.order.id, firstBlockingLineId(row.order))}
+                                type="button"
+                              >
+                                Разобрать {problemLineLabel(blockerLines.length)}
+                              </button>
+                            )}
+                          </section>
+                        </td>
+                      </tr>
+                    )}
+                    <tr className={selectable ? "" : "is-unavailable"}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
                       <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
                       <td>
@@ -732,7 +904,33 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                             <span>Пул семьи: {quantity(familyRecommendation.family_pool_order_qty)} шт. · сегмент: {familyRecommendation.quality_segment || "?"} / {familyRecommendation.construction_segment || "?"}</span>
                             <span>Уверенность: {familyRecommendation.confidence} · v{familyRecommendation.registry_version_number ?? "—"}</span>
                             {familyRecommendation.reason_ru && <span>{familyRecommendation.reason_ru}</span>}
-                            {familyRecommendation.conflict_codes.length > 0 && <span className="is-warning">Конфликты: {familyRecommendation.conflict_codes.join(", ")}</span>}
+                            {matchingReview && (
+                              <span className="is-warning">
+                                Не блокирует заказ. Сопоставление принято автоматически; проверьте рамку и качество.
+                              </span>
+                            )}
+                            {matchingReview && (
+                              <button
+                                disabled={matchingBusyKey === row.key}
+                                onClick={() => void confirmMatching(row)}
+                                type="button"
+                              >
+                                {matchingBusyKey === row.key ? "Сохраняем..." : "Сопоставление проверено"}
+                              </button>
+                            )}
+                            {familyRecommendation.matching_review_confirmed && (
+                              <span className="is-good">
+                                Проверено {familyRecommendation.matching_review_confirmed_by || "закупщиком"}
+                                {familyRecommendation.matching_review_confirmed_at
+                                  ? ` · ${dateLabel(familyRecommendation.matching_review_confirmed_at)}`
+                                  : ""}
+                              </span>
+                            )}
+                            {remainingFamilyWarnings.length > 0 && (
+                              <span className="is-warning">
+                                Предупреждения: {remainingFamilyWarnings.map(procurementRiskLabel).join(", ")}
+                              </span>
+                            )}
                           </details>
                         )}
                         {row.line.removed && <small className="is-warning">Потребность исчезла</small>}
@@ -740,11 +938,47 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       </td>
                       <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} title={`${row.order.supplier_name || "Нет поставщика"} — открыть карточку строки справа`} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
-                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
-                      <td><strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{supplierDefectConfirmed ? "Брак поставщика подтверждён" : "Брак по товару — поставщик не подтверждён"}</small><small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small></td>
+                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{profitability === null ? "Не рассчитана" : percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
+                      <td>
+                        {batchShare !== null ? (
+                          <>
+                            <strong className="is-danger">Возвраты партии: {percent(batchShare)}</strong>
+                            <small>{returnLabel(batchReturns)}</small>
+                            <small>
+                              Порог: {batchMinimumReturns === null ? "—" : returnLabel(batchMinimumReturns)} · {percent(batchMinimumShare)}
+                            </small>
+                            <small>
+                              Подтверждённый брак поставщика: {supplierDefectConfirmed && supplierDefect !== null ? percent(supplierDefect) : "данных нет"}
+                            </small>
+                          </>
+                        ) : (
+                          <>
+                            <strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>
+                              {defect === null ? "Данных о браке нет" : percent(defect)}
+                            </strong>
+                            <small>{supplierDefectConfirmed ? "Подтверждённый брак поставщика" : productDefect !== null ? "Брак товара — поставщик не подтверждён" : "Атрибуция поставщика отсутствует"}</small>
+                            <small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small>
+                          </>
+                        )}
+                      </td>
                       <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>
-                      <td><div className="order-assistant__decision"><button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>{unavailableReason && <small>{unavailableReason}</small>}</div></td>
+                      <td>
+                        <div className="order-assistant__decision">
+                          {row.order.blockers.length > 0 ? (
+                            <span className="order-assistant__project-action-note">Разбор проекта доступен выше</span>
+                          ) : (
+                            <button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>
+                          )}
+                          {unavailableReason && row.order.blockers.length === 0 && <small>{unavailableReason}</small>}
+                          {row.line.blocker_details?.[0] && (
+                            <small className={row.line.blocker_details[0].severity === "technical" ? "is-warning" : "is-danger"}>
+                              Эта строка: {blockerDetailText(row.line)}
+                            </small>
+                          )}
+                        </div>
+                      </td>
                     </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>

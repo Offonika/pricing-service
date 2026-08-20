@@ -248,7 +248,15 @@ export function DisplayFamilyRegistryPanel() {
                     ) : null}
                     {member.matching_evidence.requires_review && (
                       <span className="compatibility-badge compatibility-badge--warn">
-                        конфликт evidence
+                        Сопоставление нужно проверить
+                      </span>
+                    )}
+                    {member.matching_review_confirmed && (
+                      <span className="compatibility-badge compatibility-badge--ok">
+                        Проверено {member.matching_review_confirmed_by || "закупщиком"}
+                        {member.matching_review_confirmed_at
+                          ? ` · ${formatDate(member.matching_review_confirmed_at)}`
+                          : ""}
                       </span>
                     )}
                     {member.requires_manual_review && <span className="compatibility-badge compatibility-badge--warn">evidence сохранён</span>}

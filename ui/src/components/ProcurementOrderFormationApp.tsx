@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
@@ -8,16 +8,18 @@ import {
   updateProcurementOrderLine,
   type ProcurementOrderFormation,
   type ProcurementOrderFormationLine,
+  type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
-  groupProcurementRiskCodes,
   procurementBlockerText,
+  procurementRiskLabel,
 } from "../utils/procurementRiskLabels";
 
 interface Props {
   bitrixUserName?: string | null;
+  focusLineId?: number;
   initialOrder: ProcurementOrderFormation;
   onBack?: () => void;
 }
@@ -60,6 +62,136 @@ function money(value: string, currency: string) {
   }).format(number);
 }
 
+function numeric(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function percent(value: unknown) {
+  const parsed = numeric(value);
+  return parsed === null
+    ? "нет данных"
+    : `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
+}
+
+function quantity(value: unknown) {
+  const parsed = numeric(value);
+  return parsed === null
+    ? String(value ?? "—")
+    : parsed.toLocaleString("ru-RU", { maximumFractionDigits: 3 });
+}
+
+function inputNumber(value: string) {
+  const parsed = numeric(value);
+  return parsed === null ? value : String(parsed);
+}
+
+function countLabel(count: number, one: string, few: string, many: string) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} ${many}`;
+  if (last === 1) return `${count} ${one}`;
+  if (last >= 2 && last <= 4) return `${count} ${few}`;
+  return `${count} ${many}`;
+}
+
+function returnLabel(value: unknown) {
+  const count = numeric(value);
+  return count === null
+    ? "количество возвратов не определено"
+    : countLabel(count, "возврат", "возврата", "возвратов");
+}
+
+function blockerDetailMessage(detail: ProcurementBlockerDetail) {
+  if (detail.code !== "batch_error_suspected") return detail.message;
+  const evidence = detail.evidence;
+  const share = numeric(evidence.share_pct);
+  const windowDays = numeric(evidence.window_days);
+  const minimumReturns = numeric(evidence.minimum_return_qty);
+  const minimumShare = numeric(evidence.minimum_share_pct);
+  const batch = typeof evidence.suspected_batch === "string" && evidence.suspected_batch.trim()
+    ? evidence.suspected_batch.trim()
+    : "не определена";
+  return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)}, ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} (порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}). Партия: ${batch}.`;
+}
+
+function payloadValue(line: ProcurementOrderFormationLine, key: string) {
+  return line.payload?.[key];
+}
+
+function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) {
+  if (line.blocker_details?.length) {
+    const messages = line.blocker_details.map(blockerDetailMessage);
+    if (line.removed) messages.unshift("Потребность исчезла в новом расчёте.");
+    return [...new Set(messages)];
+  }
+  const values = line.blockers.map((code) => {
+    if (code === "batch_error_suspected") {
+      const returned = payloadValue(line, "batch_error_return_qty") || "?";
+      const share = percent(payloadValue(line, "batch_error_share_pct"));
+      return `Подозрение на пересорт: ${returnLabel(returned)} (${share} продаж). Точная партия поставки в источнике не определена; расчёт ${batchId}.`;
+    }
+    if (code === "defect_rate_suspected") {
+      const returned = payloadValue(line, "defect_return_qty") || "?";
+      const share = percent(payloadValue(line, "defect_share_pct"));
+      return `Высокий процент брака: ${share} (${returnLabel(returned)}); автозаказ остановлен.`;
+    }
+    if (code === "supplier_defect_over_10_pct_reliable") {
+      const basis = line.supplier_defect_history_units
+        ? ` на базе ${line.supplier_defect_history_units.toLocaleString("ru-RU")} шт.`
+        : "";
+      return `У выбранного поставщика подтверждённый брак ${percent(line.supplier_defect_pct)}${basis}`;
+    }
+    if (code === "purchase_price_change_over_10_pct") {
+      return `Закупочная цена изменилась на ${percent(line.price_change_pct)} — нужна проверка.`;
+    }
+    return procurementRiskLabel(code);
+  });
+  if (line.removed) values.unshift("Потребность исчезла в новом расчёте.");
+  return [...new Set(values)];
+}
+
+function familyQuantityChanged(line: ProcurementOrderFormationLine) {
+  const recommendation = line.display_family_recommendation;
+  if (!recommendation) return false;
+  const baseline = numeric(recommendation.baseline_order_qty);
+  const allocated = numeric(recommendation.allocated_order_qty);
+  return baseline !== null && allocated !== null && baseline !== allocated;
+}
+
+function visibleRecommendationReason(line: ProcurementOrderFormationLine) {
+  if (!line.recommendation_reason) return null;
+  const family = line.display_family_recommendation;
+  if (family && line.recommendation_reason === family.reason_ru && !familyQuantityChanged(line)) {
+    return null;
+  }
+  return line.recommendation_reason;
+}
+
+function roundingExplanation(line: ProcurementOrderFormationLine) {
+  const family = line.display_family_recommendation;
+  if (family && familyQuantityChanged(line)) {
+    return `Семейное перераспределение: базово ${quantity(family.baseline_order_qty)} шт., итог ${quantity(family.allocated_order_qty)} шт.; после распределения применяется целое количество, а не кратность SKU.`;
+  }
+  const raw = payloadValue(line, "recommended_order_qty_raw");
+  const multiple = payloadValue(line, "order_rounding_multiple");
+  const gate = String(payloadValue(line, "order_rounding_price_gate") || "");
+  const gateText = String(payloadValue(line, "order_rounding_price_gate_ru") || "");
+  const median = payloadValue(line, "order_rounding_group_median_price");
+  if (gate === "above_median") {
+    return `Округление не применено: цена карточки выше медианы группы${median ? ` (${median})` : ""}.`;
+  }
+  if (gate === "no_purchase_price") {
+    return "Округление не применено: нет подтверждённой закупочной цены.";
+  }
+  if (raw && multiple && numeric(raw) !== numeric(line.recommended_quantity)) {
+    return `Округление: ${quantity(raw)} → ${quantity(line.recommended_quantity)} шт., кратность ${quantity(multiple)}.`;
+  }
+  if (gateText) return `Округление: ${gateText}.`;
+  return null;
+}
+
 
 const LINE_CHANGED_MESSAGE =
   "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.";
@@ -72,19 +204,43 @@ function errorText(error: unknown) {
   return procurementErrorText(error);
 }
 
-export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onBack }: Props) {
+export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, initialOrder, onBack }: Props) {
   const [order, setOrder] = useState(initialOrder);
   const [lineEdits, setLineEdits] = useState<Record<number, LineEdit>>({});
   const [classificationEdits, setClassificationEdits] = useState<
     Record<number, ClassificationEdit>
   >({});
   const [openedClassification, setOpenedClassification] = useState<number | null>(null);
+  const [openedRemoval, setOpenedRemoval] = useState<number | null>(null);
+  const [showRemoved, setShowRemoved] = useState(false);
+  const [removalReason, setRemovalReason] = useState("");
+  const [removalReplacement, setRemovalReplacement] = useState("");
+  const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
   const [loadingKey, setLoadingKey] = useState("");
+  const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
+  const removalDialogRef = useRef<HTMLDivElement | null>(null);
+  const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
+  const removalTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!focusLineId || !focusedLineRef.current) return;
+    focusedLineRef.current.scrollIntoView({ behavior: "auto", block: "center" });
+    focusedLineRef.current.focus({ preventScroll: true });
+  }, [focusLineId]);
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
+  const removedLines = useMemo(() => order.lines.filter((line) => line.removed), [order.lines]);
   const visibleLines = useMemo(
-    () => [...order.lines].sort((left, right) => left.line_number - right.line_number),
+    () => [...order.lines].sort((left, right) => {
+      const leftRank = left.removed ? 2 : left.blockers.length > 0 ? 0 : 1;
+      const rightRank = right.removed ? 2 : right.blockers.length > 0 ? 0 : 1;
+      return leftRank - rightRank || left.line_number - right.line_number;
+    }),
     [order.lines]
+  );
+  const openedRemovalLine = useMemo(
+    () => order.lines.find((line) => line.id === openedRemoval) || null,
+    [openedRemoval, order.lines]
   );
   // Один и тот же блокер приходит по каждой проблемной строке отдельно, поэтому
   // без группировки экран показывал несколько одинаковых фраз подряд.
@@ -92,6 +248,19 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
     () => groupProcurementBlockers(order.blockers),
     [order.blockers]
   );
+  const blockerDetailGroups = useMemo(() => {
+    const grouped = new Map<string, { message: string; lines: number[]; severity: string }>();
+    (order.blocker_details || []).forEach((detail) => {
+      const message = blockerDetailMessage(detail);
+      const key = `${detail.code}:${message}`;
+      const current = grouped.get(key) || { message, lines: [], severity: detail.severity };
+      if (detail.line_number != null && !current.lines.includes(detail.line_number)) {
+        current.lines.push(detail.line_number);
+      }
+      grouped.set(key, current);
+    });
+    return [...grouped.values()].map((item) => ({ ...item, lines: item.lines.sort((a, b) => a - b) }));
+  }, [order.blocker_details]);
   const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
@@ -104,17 +273,65 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
   );
 
   const lineEdit = (line: ProcurementOrderFormationLine): LineEdit =>
-    lineEdits[line.id] || { quantity: line.final_quantity, price: line.purchase_price };
+    lineEdits[line.id] || { quantity: inputNumber(line.final_quantity), price: inputNumber(line.purchase_price) };
 
   const classificationEdit = (line: ProcurementOrderFormationLine): ClassificationEdit =>
     classificationEdits[line.id] || {
       status: line.effective_assortment_status || "working",
       reason: "",
-      manualMinimum: line.manual_minimum || "",
+      manualMinimum: line.manual_minimum ? inputNumber(line.manual_minimum) : "",
       reviewDate: "",
       replacementSkuCode: "",
       noReplacement: false,
     };
+
+  const openReplacementDecision = (line: ProcurementOrderFormationLine) => {
+    const current = classificationEdit(line);
+    setClassificationEdits((edits) => ({
+      ...edits,
+      [line.id]: {
+        ...current,
+        status: "replace_candidate",
+        noReplacement: false,
+      },
+    }));
+    setOpenedClassification(line.id);
+  };
+
+  const closeRemoval = () => {
+    setOpenedRemoval(null);
+    setRemovalReason("");
+    setRemovalReplacement("");
+    setRemovalWithReplacement(false);
+    window.setTimeout(() => removalTriggerRef.current?.focus(), 0);
+  };
+
+  useEffect(() => {
+    if (!openedRemovalLine) return;
+    removalReasonRef.current?.focus();
+  }, [openedRemovalLine]);
+
+  const handleRemovalDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeRemoval();
+      return;
+    }
+    if (event.key !== "Tab" || !removalDialogRef.current) return;
+    const focusable = Array.from(removalDialogRef.current.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href]"
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
 
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
   // закупщика. Поэтому на 409 перезагружаем карточку и повторяем действие, если сама
@@ -159,6 +376,31 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         return next;
       });
       toast.success("Строка сохранена, согласование версии снято");
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const removeLine = async (line: ProcurementOrderFormationLine) => {
+    const reason = removalReason.trim();
+    const replacement = removalReplacement.trim();
+    if (!reason || (removalWithReplacement && !replacement)) return;
+    setLoadingKey(`remove-${line.id}`);
+    try {
+      const updated = await runVersioned(line, ({ orderVersion, lineVersion }) =>
+        updateProcurementOrderLine(order.id, line.id, {
+          expected_order_version: orderVersion,
+          expected_line_version: lineVersion,
+          removed: true,
+          removal_reason: reason,
+          replacement_sku_code: removalWithReplacement ? replacement : null,
+        })
+      );
+      setOrder(updated);
+      closeRemoval();
+      toast.success("Строка исключена из проекта; причина сохранена в журнале");
     } catch (error: unknown) {
       toast.error(errorText(error));
     } finally {
@@ -250,15 +492,21 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
 
-      {blockerGroups.length > 0 && (
+      {(blockerDetailGroups.length > 0 || blockerGroups.length > 0) && (
         <section className="order-formation__alert">
           <strong>Передача заблокирована</strong>
           <ul>
-            {blockerGroups.map((group) => (
-              <li key={group.text} title={group.codes.join(", ")}>
-                {procurementBlockerText(group)}
-              </li>
-            ))}
+            {blockerDetailGroups.length > 0
+              ? blockerDetailGroups.map((group) => (
+                  <li key={`${group.message}-${group.lines.join("-")}`}>
+                    {group.message}{group.lines.length ? ` — строки ${group.lines.join(", ")}` : ""}
+                  </li>
+                ))
+              : blockerGroups.map((group) => (
+                  <li key={group.text} title={group.codes.join(", ")}>
+                    {procurementBlockerText(group)}
+                  </li>
+                ))}
           </ul>
         </section>
       )}
@@ -268,9 +516,10 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
           <table className="order-formation__table">
             <thead>
               <tr>
+                <th>№</th>
                 <th>Товар</th>
                 <th>Классификация</th>
-                <th>Рекомендация</th>
+                <th>Проблема / рекомендация</th>
                 <th>Кол-во</th>
                 <th>Цена закупки</th>
                 <th>Сумма</th>
@@ -278,16 +527,50 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
               </tr>
             </thead>
             <tbody>
-              {visibleLines.map((line) => {
+              {visibleLines.map((line, index) => {
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
                 const b2bDemand = line.payload?.b2b_customer_demand;
+                const problems = lineProblemTexts(line, order.batch_id);
+                const recommendationReason = visibleRecommendationReason(line);
+                const rounding = roundingExplanation(line);
+                const batchDetail = line.blocker_details?.find((detail) => detail.code === "batch_error_suspected");
+                const hasBatchBlocker = Boolean(batchDetail || line.blockers.includes("batch_error_suspected"));
+                const batchShare = hasBatchBlocker
+                  ? batchDetail?.evidence.share_pct ?? payloadValue(line, "batch_error_share_pct")
+                  : null;
+                const batchReturns = batchDetail?.evidence.return_qty ?? payloadValue(line, "batch_error_return_qty");
+                const batchMinimumShare = batchDetail?.evidence.minimum_share_pct;
+                const batchMinimumReturns = batchDetail?.evidence.minimum_return_qty;
+                const suspectedBatch = batchDetail?.evidence.suspected_batch ?? payloadValue(line, "suspected_batch");
+                const supplierDefectConfirmed = line.supplier_defect_attribution === "supplier_exact";
+                const supplierDefect = supplierDefectConfirmed ? numeric(line.supplier_defect_pct) : null;
+                const productDefect = numeric(line.product_defect_pct ?? payloadValue(line, "defect_share_pct"));
+                const firstRemoved = line.removed && (index === 0 || !visibleLines[index - 1].removed);
                 return (
+                  <Fragment key={line.id}>
+                  {firstRemoved && (
+                    <tr className="order-formation__removed-summary">
+                      <td colSpan={8}>
+                        <button
+                          aria-expanded={showRemoved}
+                          className="btn btn--ghost"
+                          onClick={() => setShowRemoved((current) => !current)}
+                          type="button"
+                        >
+                          Исключённые строки: {removedLines.length} · {showRemoved ? "Скрыть" : "Показать"}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                  {(!line.removed || showRemoved) && (
                   <tr
-                    key={line.id}
                     className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
+                    ref={line.id === focusLineId ? focusedLineRef : undefined}
+                    tabIndex={line.id === focusLineId ? -1 : undefined}
                   >
+                    <td className="order-formation__line-number">{line.line_number}</td>
                     <td>
                       <strong>{line.nomenclature_name}</strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
@@ -302,14 +585,28 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                         )}
                       {line.procurement_profile && <small>Профиль: {line.procurement_profile}</small>}
                       {proposal && <small>Предложение: {proposal.proposed_status_label} · {proposal.status}</small>}
-                      <button
-                        className="btn btn--ghost btn--small"
-                        disabled={locked || line.removed}
-                        onClick={() => setOpenedClassification(openedClassification === line.id ? null : line.id)}
-                        type="button"
-                      >
-                        Изменить классификацию
-                      </button>
+                      {openedClassification !== line.id && (
+                        <button
+                          className="btn btn--ghost btn--small"
+                          disabled={locked || line.removed}
+                          onClick={() => setOpenedClassification(line.id)}
+                          type="button"
+                        >
+                          Изменить классификацию
+                        </button>
+                      )}
+                      {openedClassification !== line.id &&
+                        line.display_family_recommendation?.manual_approval_required &&
+                        order.manual_status_options.replace_candidate && (
+                          <button
+                            className="btn btn--ghost btn--small"
+                            disabled={locked || line.removed}
+                            onClick={() => openReplacementDecision(line)}
+                            type="button"
+                          >
+                            Указать «Взамен ведём»
+                          </button>
+                        )}
                       {proposal?.status === "proposed" && (
                         <button
                           className="btn btn--small"
@@ -344,10 +641,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             }))}
                           />
                           <input
+                            aria-label={`Ручной минимум ${line.nomenclature_name}`}
                             disabled={locked || line.removed}
                             min="0"
                             placeholder="Ручной минимум"
-                            step="0.001"
+                            step="1"
                             type="number"
                             value={classification.manualMinimum}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -414,25 +712,53 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           >
                             {classification.status === "pension" ? "Перевести в Допродаём" : "На согласование"}
                           </button>
+                          <button
+                            className="btn btn--ghost btn--small"
+                            onClick={() => setOpenedClassification(null)}
+                            type="button"
+                          >
+                            Закрыть
+                          </button>
                         </div>
                       )}
                     </td>
                     <td>
-                      <strong>{line.recommended_quantity}</strong>
-                      {line.removed && (
-                        <small className="is-warning">Потребность исчезла в новом расчёте</small>
+                      <strong>{quantity(line.recommended_quantity)} шт.</strong>
+                      {problems.length > 0 && (
+                        <strong className="is-warning">Проблема: {problems[0]}</strong>
                       )}
+                      {problems.slice(1).map((problem) => (
+                        <small className="is-warning" key={problem}>Также: {problem}</small>
+                      ))}
                       {line.payload?.recommendation_discrepancy?.final_quantity && (
                         <small className="is-warning">
-                          Решение человека: {line.payload.recommendation_discrepancy.final_quantity.manual} · новый расчёт: {line.payload.recommendation_discrepancy.final_quantity.recommended}
+                          Решение человека: {quantity(line.payload.recommendation_discrepancy.final_quantity.manual)} · новый расчёт: {quantity(line.payload.recommendation_discrepancy.final_quantity.recommended)}
                         </small>
                       )}
                       {line.payload?.recommendation_discrepancy?.purchase_price && (
                         <small className="is-warning">
-                          Цена человека: {line.payload.recommendation_discrepancy.purchase_price.manual} · новая цена: {line.payload.recommendation_discrepancy.purchase_price.recommended}
+                          Цена человека: {money(line.payload.recommendation_discrepancy.purchase_price.manual, line.currency)} · новая цена: {money(line.payload.recommendation_discrepancy.purchase_price.recommended, line.currency)}
                         </small>
                       )}
-                      {line.recommendation_reason && <small>{line.recommendation_reason}</small>}
+                      {recommendationReason && <small>Рекомендация: {recommendationReason}</small>}
+                      {numeric(batchShare) !== null ? (
+                        <div className="order-formation__evidence">
+                          <strong>Возвраты партии: {percent(batchShare)}</strong>
+                          <small>
+                            {returnLabel(batchReturns)} · порог {batchMinimumReturns == null ? "—" : returnLabel(batchMinimumReturns)} и {percent(batchMinimumShare)}
+                          </small>
+                          <small>Партия: {typeof suspectedBatch === "string" && suspectedBatch.trim() ? suspectedBatch : "не определена"}</small>
+                          <small>Подтверждённый брак поставщика: {supplierDefect === null ? "данных нет" : percent(supplierDefect)}</small>
+                        </div>
+                      ) : supplierDefect !== null ? (
+                        <small>Подтверждённый брак поставщика: {percent(supplierDefect)}</small>
+                      ) : productDefect !== null ? (
+                        <small>Брак товара: {percent(productDefect)} · поставщик не подтверждён</small>
+                      ) : (
+                        <small>Данных о браке нет</small>
+                      )}
+                      <small>Рентабельность: {numeric(line.profitability_pct) === null ? "не рассчитана" : percent(line.profitability_pct)}</small>
+                      {rounding && <small>{rounding}</small>}
                       {b2bDemand && (
                         <div className="order-formation__b2b-advisory">
                           <strong>
@@ -458,17 +784,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           )}
                         </div>
                       )}
-                      {groupProcurementRiskCodes(line.risk_codes).map((signal) => (
-                        <small key={signal.text} title={signal.codes.join(", ")}>
-                          Сигнал: {signal.text}
-                        </small>
-                      ))}
                     </td>
                     <td>
                       <input
+                        aria-label={`Количество ${line.nomenclature_name}`}
                         min="0"
                         disabled={locked || line.removed}
-                        step="0.001"
+                        step="1"
                         type="number"
                         value={edit.quantity}
                         onChange={(event) => setLineEdits((current) => ({
@@ -479,6 +801,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <input
+                        aria-label={`Цена закупки ${line.nomenclature_name}`}
                         min="0"
                         disabled={locked || line.removed}
                         step="0.01"
@@ -500,14 +823,117 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       >
                         Сохранить
                       </button>
+                      {line.product_card_url && (
+                        <a
+                          className="order-formation__product-card-link"
+                          href={line.product_card_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Открыть карточку
+                        </a>
+                      )}
+                      {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
+                        <button
+                          className="btn btn--ghost btn--small"
+                          ref={(node) => {
+                            if (node && openedRemoval === null) removalTriggerRef.current = node;
+                          }}
+                          onClick={() => {
+                            removalTriggerRef.current = document.activeElement as HTMLButtonElement;
+                            setOpenedRemoval(line.id);
+                            setRemovalReason("");
+                            setRemovalReplacement("");
+                            setRemovalWithReplacement(false);
+                          }}
+                          type="button"
+                        >
+                          Исключить строку
+                        </button>
+                      )}
                     </td>
                   </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       </main>
+
+      {openedRemovalLine && (
+        <div
+          className="order-formation__dialog-overlay"
+          onKeyDown={handleRemovalDialogKeyDown}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeRemoval();
+          }}
+        >
+          <div
+            aria-describedby="order-removal-description"
+            aria-labelledby="order-removal-title"
+            aria-modal="true"
+            className="order-formation__removal-dialog"
+            ref={removalDialogRef}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <h2 id="order-removal-title">Исключить строку {openedRemovalLine.line_number}</h2>
+                <p id="order-removal-description">{openedRemovalLine.nomenclature_name}</p>
+              </div>
+              <button aria-label="Закрыть форму исключения" onClick={closeRemoval} type="button">×</button>
+            </header>
+            <form onSubmit={(event) => { event.preventDefault(); void removeLine(openedRemovalLine); }}>
+              <label>
+                Причина исключения <span aria-hidden="true">*</span>
+                <textarea
+                  ref={removalReasonRef}
+                  onChange={(event) => setRemovalReason(event.target.value)}
+                  placeholder="Обязательно укажите, почему строку исключают"
+                  required
+                  value={removalReason}
+                />
+              </label>
+              <label className="order-formation__no-replacement">
+                <input
+                  checked={removalWithReplacement}
+                  onChange={(event) => setRemovalWithReplacement(event.target.checked)}
+                  type="checkbox"
+                />
+                Указать «Взамен ведём»
+              </label>
+              {removalWithReplacement && (
+                <label>
+                  Взамен ведём
+                  <input
+                    aria-label={`Взамен ведём для ${openedRemovalLine.nomenclature_name}`}
+                    onChange={(event) => setRemovalReplacement(event.target.value)}
+                    placeholder="Код 1С карточки (РБ...)"
+                    required
+                    value={removalReplacement}
+                  />
+                </label>
+              )}
+              <footer>
+                <button className="btn btn--ghost" onClick={closeRemoval} type="button">Отмена</button>
+                <button
+                  className="btn"
+                  disabled={
+                    !removalReason.trim() ||
+                    (removalWithReplacement && !removalReplacement.trim()) ||
+                    Boolean(loadingKey)
+                  }
+                  type="submit"
+                >
+                  {loadingKey === `remove-${openedRemovalLine.id}` ? "Исключаем..." : "Исключить из проекта"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
 
       <footer className="order-formation__footer">
         <span>{activeLines.length} строк</span>

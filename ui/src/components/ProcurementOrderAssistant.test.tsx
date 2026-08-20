@@ -6,6 +6,7 @@ import type { ProcurementOrderAssistant } from "../api/procurementAssortment";
 import {
   approveProcurementClassification,
   assembleProcurementOrderProjects,
+  confirmProcurementMatchingReview,
   fetchProcurementOrderAssistant,
   rejectProcurementClassification,
   updateProcurementSupplierProfile,
@@ -15,6 +16,7 @@ import { ProcurementOrderAssistant as ProcurementOrderAssistantView } from "./Pr
 vi.mock("../api/procurementAssortment", () => ({
   assembleProcurementOrderProjects: vi.fn(),
   approveProcurementClassification: vi.fn(),
+  confirmProcurementMatchingReview: vi.fn(),
   fetchProcurementOrderAssistant: vi.fn(),
   rejectProcurementClassification: vi.fn(),
   updateProcurementSupplierProfile: vi.fn(),
@@ -138,6 +140,7 @@ describe("ProcurementOrderAssistant", () => {
     vi.mocked(fetchProcurementOrderAssistant).mockReset();
     vi.mocked(assembleProcurementOrderProjects).mockReset();
     vi.mocked(approveProcurementClassification).mockReset();
+    vi.mocked(confirmProcurementMatchingReview).mockReset();
     vi.mocked(rejectProcurementClassification).mockReset();
     vi.mocked(updateProcurementSupplierProfile).mockReset();
     vi.mocked(toast.success).mockReset();
@@ -286,6 +289,7 @@ describe("ProcurementOrderAssistant", () => {
     });
 
     render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
     expect(await screen.findByText("working → Матричный")).toBeInTheDocument();
     expect(screen.getByText("Автор предложения")).toBeInTheDocument();
     expect(screen.getByText("Товар нужен в постоянной матрице")).toBeInTheDocument();
@@ -314,11 +318,11 @@ describe("ProcurementOrderAssistant", () => {
     vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
 
     render(<ProcurementOrderAssistantView />);
-    expect(await screen.findByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
+    expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Закрыть панель поставщика" }));
     expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Tianma" }));
-    expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
   });
 
   it("сохраняет ручной класс поставщика с ожидаемой версией", async () => {
@@ -334,6 +338,7 @@ describe("ProcurementOrderAssistant", () => {
     });
 
     render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
     fireEvent.click(await screen.findByRole("button", { name: "Изменить профиль" }));
     fireEvent.change(screen.getByLabelText("Класс"), { target: { value: "B" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить профиль" }));
@@ -369,6 +374,96 @@ describe("ProcurementOrderAssistant", () => {
 
     await waitFor(() => expect(screen.queryByText("Дисплей снятый")).not.toBeInTheDocument());
     expect(screen.getByText("1 строк в текущем фильтре")).toBeInTheDocument();
+  });
+
+  it("поднимает проблемные строки, объясняет проект и открывает первый блокер", async () => {
+    const data = assistantData();
+    const base = data.orders[0].lines[0];
+    const safe = { ...structuredClone(base), id: 44, line_number: 1, nomenclature_name: "Готовая строка" };
+    const problemLines = [23, 31, 36].map((lineNumber, index) => ({
+      ...structuredClone(base),
+      id: 50 + index,
+      line_number: lineNumber,
+      nomenclature_name: `Проблемная строка ${lineNumber}`,
+      blockers: ["batch_error_suspected"],
+      supplier_defect_attribution: null,
+      supplier_defect_pct: "0",
+      blocker_details: [{
+        code: "batch_error_suspected",
+        scope: "line",
+        severity: "hard",
+        line_id: 50 + index,
+        line_number: lineNumber,
+        message: "Подозрение на партийную ошибку: 24 возвратов, 44,4% за 90 дней.",
+        evidence: { return_qty: 24, share_pct: 44.4, minimum_return_qty: 5, minimum_share_pct: 40, window_days: 90 },
+        resolution_actions: [{ kind: "remove_line", label: "Исключить строку", requires_reason: true }],
+      }],
+    }));
+    data.orders[0].id = 94;
+    data.orders[0].lines = [safe, ...problemLines];
+    data.orders[0].blockers = problemLines.map(
+      (item) => `line_${item.line_number}:batch_error_suspected`
+    );
+    data.orders[0].blocker_details = problemLines.map((item) => ({
+      ...item.blocker_details[0],
+      scope: "order",
+    }));
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    const onOpenOrder = vi.fn();
+
+    render(<ProcurementOrderAssistantView onOpenOrder={onOpenOrder} />);
+
+    const firstProblem = await screen.findByText("Проблемная строка 23");
+    const safeName = screen.getByText("Готовая строка");
+    expect(firstProblem.compareDocumentPosition(safeName) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(screen.getAllByText(
+      "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
+    )).toHaveLength(1);
+    expect(screen.getByText("1 причина · 3 проблемные строки")).toBeInTheDocument();
+    expect(screen.getAllByText("Возвраты партии: 44,4%")).toHaveLength(3);
+    expect(screen.getAllByText("24 возврата")).toHaveLength(3);
+    expect(screen.getAllByText("Подтверждённый брак поставщика: данных нет")).toHaveLength(3);
+    expect(screen.queryByText(/24 возвратов/)).not.toBeInTheDocument();
+    const action = screen.getByRole("button", { name: "Разобрать 3 проблемные строки" });
+    expect(action).toBeEnabled();
+    fireEvent.click(action);
+    expect(onOpenOrder).toHaveBeenCalledWith(94, 50);
+    expect(screen.queryByText("batch_error_suspected")).not.toBeInTheDocument();
+  });
+
+  it("сохраняет проверку сопоставления по версии реестра", async () => {
+    const data = assistantData();
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    vi.mocked(confirmProcurementMatchingReview).mockResolvedValue({
+      order_id: 12,
+      line_id: 40,
+      family_id: 10,
+      nomenclature_code: "MMI-15P-OLED-TM",
+      registry_version_number: 2,
+      registry_inventory_checksum: "a".repeat(64),
+      confirmed_at: "2026-08-20T10:00:00",
+      confirmed_by: "Омар",
+      idempotent: false,
+    });
+
+    render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Сопоставление проверено" }));
+
+    await waitFor(() => expect(confirmProcurementMatchingReview).toHaveBeenCalledWith(12, 40, {
+      expected_registry_version_number: 2,
+      expected_registry_inventory_checksum: "a".repeat(64),
+    }));
+    expect(toast.success).toHaveBeenCalledWith("Проверка сопоставления сохранена");
+    expect(screen.queryByText("Конфликты: accepted_matching_review")).not.toBeInTheDocument();
+  });
+
+  it("показывает skeleton с признаком занятости во время загрузки", () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockReturnValue(new Promise(() => undefined));
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(screen.getByLabelText("Загрузка помощника заказов")).toHaveAttribute("aria-busy", "true");
   });
 
 });

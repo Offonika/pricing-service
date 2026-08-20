@@ -82,6 +82,40 @@ function percent(value?: string | number | null) {
   return parsed === null ? "Нет данных" : `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
+function countLabel(count: number, one: string, few: string, many: string) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} ${many}`;
+  if (last === 1) return `${count} ${one}`;
+  if (last >= 2 && last <= 4) return `${count} ${few}`;
+  return `${count} ${many}`;
+}
+
+function returnLabel(value: unknown) {
+  const count = numeric(value as string | number | null);
+  return count === null
+    ? "Количество возвратов не определено"
+    : countLabel(count, "возврат", "возврата", "возвратов");
+}
+
+function batchEvidence(line: ProcurementOrderFormationLine) {
+  return line.blocker_details?.find((detail) => detail.code === "batch_error_suspected")?.evidence;
+}
+
+function blockerDetailText(line: ProcurementOrderFormationLine) {
+  const detail = line.blocker_details?.[0];
+  if (!detail || detail.code !== "batch_error_suspected") return detail?.message;
+  const evidence = detail.evidence;
+  const share = numeric(evidence.share_pct as string | number | null);
+  const windowDays = numeric(evidence.window_days as string | number | null);
+  const minimumReturns = numeric(evidence.minimum_return_qty as string | number | null);
+  const minimumShare = numeric(evidence.minimum_share_pct as string | number | null);
+  const threshold = minimumReturns === null && minimumShare === null
+    ? "порог не указан"
+    : `порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}`;
+  return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)} · ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} · ${threshold}.`;
+}
+
 function quantity(value: string) {
   const parsed = numeric(value);
   return parsed === null
@@ -806,9 +840,19 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                 {visibleRows.map((row) => {
                   const profitability = numeric(row.line.profitability_pct);
                   const supplierDefectConfirmed = row.line.supplier_defect_attribution === "supplier_exact";
+                  const supplierDefect = numeric(row.line.supplier_defect_pct);
+                  const productDefect = numeric(row.line.product_defect_pct);
                   const defect = numeric(supplierDefectConfirmed ? row.line.supplier_defect_pct : row.line.product_defect_pct);
                   const defectBasis = supplierDefectConfirmed ? row.line.supplier_defect_history_units : row.line.product_defect_history_units;
                   const defectConfidence = supplierDefectConfirmed ? row.line.supplier_defect_confidence : row.line.product_defect_confidence;
+                  const batch = batchEvidence(row.line);
+                  const hasBatchBlocker = Boolean(batch || row.line.blockers.includes("batch_error_suspected"));
+                  const batchShare = hasBatchBlocker
+                    ? numeric((batch?.share_pct ?? row.line.payload?.batch_error_share_pct) as string | number | null)
+                    : null;
+                  const batchReturns = batch?.return_qty ?? row.line.payload?.batch_error_return_qty;
+                  const batchMinimumShare = numeric(batch?.minimum_share_pct as string | number | null);
+                  const batchMinimumReturns = numeric(batch?.minimum_return_qty as string | number | null);
                   const priceChange = numeric(row.line.price_change_pct);
                   const familyRecommendation = row.line.display_family_recommendation;
                   const isSelected = selected.has(row.key);
@@ -894,8 +938,29 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       </td>
                       <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} title={`${row.order.supplier_name || "Нет поставщика"} — открыть карточку строки справа`} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
-                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
-                      <td><strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{supplierDefectConfirmed ? "Брак поставщика подтверждён" : "Брак по товару — поставщик не подтверждён"}</small><small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small></td>
+                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{profitability === null ? "Не рассчитана" : percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
+                      <td>
+                        {batchShare !== null ? (
+                          <>
+                            <strong className="is-danger">Возвраты партии: {percent(batchShare)}</strong>
+                            <small>{returnLabel(batchReturns)}</small>
+                            <small>
+                              Порог: {batchMinimumReturns === null ? "—" : returnLabel(batchMinimumReturns)} · {percent(batchMinimumShare)}
+                            </small>
+                            <small>
+                              Подтверждённый брак поставщика: {supplierDefectConfirmed && supplierDefect !== null ? percent(supplierDefect) : "данных нет"}
+                            </small>
+                          </>
+                        ) : (
+                          <>
+                            <strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>
+                              {defect === null ? "Данных о браке нет" : percent(defect)}
+                            </strong>
+                            <small>{supplierDefectConfirmed ? "Подтверждённый брак поставщика" : productDefect !== null ? "Брак товара — поставщик не подтверждён" : "Атрибуция поставщика отсутствует"}</small>
+                            <small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small>
+                          </>
+                        )}
+                      </td>
                       <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>
                       <td>
                         <div className="order-assistant__decision">
@@ -907,7 +972,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                           {unavailableReason && row.order.blockers.length === 0 && <small>{unavailableReason}</small>}
                           {row.line.blocker_details?.[0] && (
                             <small className={row.line.blocker_details[0].severity === "technical" ? "is-warning" : "is-danger"}>
-                              Эта строка: {row.line.blocker_details[0].message}
+                              Эта строка: {blockerDetailText(row.line)}
                             </small>
                           )}
                         </div>

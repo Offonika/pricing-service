@@ -386,14 +386,16 @@ describe("ProcurementOrderAssistant", () => {
       line_number: lineNumber,
       nomenclature_name: `Проблемная строка ${lineNumber}`,
       blockers: ["batch_error_suspected"],
+      supplier_defect_attribution: null,
+      supplier_defect_pct: "0",
       blocker_details: [{
         code: "batch_error_suspected",
         scope: "line",
         severity: "hard",
         line_id: 50 + index,
         line_number: lineNumber,
-        message: "Подозрение на партийную ошибку: 8 возвратов, 44,4% за 90 дней.",
-        evidence: { return_qty: 8, share_pct: 44.4, window_days: 90 },
+        message: "Подозрение на партийную ошибку: 24 возвратов, 44,4% за 90 дней.",
+        evidence: { return_qty: 24, share_pct: 44.4, minimum_return_qty: 5, minimum_share_pct: 40, window_days: 90 },
         resolution_actions: [{ kind: "remove_line", label: "Исключить строку", requires_reason: true }],
       }],
     }));
@@ -419,6 +421,10 @@ describe("ProcurementOrderAssistant", () => {
       "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
     )).toHaveLength(1);
     expect(screen.getByText("1 причина · 3 проблемные строки")).toBeInTheDocument();
+    expect(screen.getAllByText("Возвраты партии: 44,4%")).toHaveLength(3);
+    expect(screen.getAllByText("24 возврата")).toHaveLength(3);
+    expect(screen.getAllByText("Подтверждённый брак поставщика: данных нет")).toHaveLength(3);
+    expect(screen.queryByText(/24 возвратов/)).not.toBeInTheDocument();
     const action = screen.getByRole("button", { name: "Разобрать 3 проблемные строки" });
     expect(action).toBeEnabled();
     fireEvent.click(action);

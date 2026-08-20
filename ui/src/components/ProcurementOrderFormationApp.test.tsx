@@ -185,7 +185,7 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     const readyName = screen.getByText("Готовая строка");
     expect(problem.compareDocumentPosition(readyName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText(/Проблема: Высокий процент брака: 12,6%/)).toBeInTheDocument();
-    expect(screen.getByText("Брак: 12,6%")).toBeInTheDocument();
+    expect(screen.getByText("Брак товара: 12,6% · поставщик не подтверждён")).toBeInTheDocument();
     expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
     expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
     expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
@@ -330,7 +330,11 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
 
     render(<ProcurementOrderFormationApp initialOrder={initial} />);
 
-    expect(screen.getAllByText(/44,4% от продаж за 90 дней/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/44,4% за 90 дней/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Возвраты партии: 44,4%")).toBeInTheDocument();
+    expect(screen.getByText("8 возвратов · порог 5 возвратов и 40%")).toBeInTheDocument();
+    expect(screen.getByText("Партия: Партия 2026-07-15")).toBeInTheDocument();
+    expect(screen.getByText("Подтверждённый брак поставщика: данных нет")).toBeInTheDocument();
     expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Исключить строку" }));
     expect(screen.getByRole("dialog", { name: "Исключить строку 1" })).toBeInTheDocument();
@@ -455,8 +459,10 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Исключённые строки: 1/ }));
     expect(screen.getByText(/Проблема: Потребность исчезла в новом расчёте/)).toBeInTheDocument();
-    expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
-    expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();
+    expect(screen.getByText(/Решение человека: 7 · новый расчёт: 9/)).toBeInTheDocument();
+    expect(screen.getByText(/Цена человека: 90,00.*· новая цена: 110,00/)).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
+      .toHaveValue(7);
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
   });
 });

@@ -97,9 +97,6 @@ test("lifecycle keeps the product, reason and action usable at target widths", a
     }
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-      // Контраст lifecycle исправляется отдельным вторым релизом; здесь гейт
-      // фиксирует структуру карточек, labels и клавиатурную доступность.
-      .disableRules(["color-contrast"])
       .analyze();
     expect(results.violations).toEqual([]);
     await page.screenshot({

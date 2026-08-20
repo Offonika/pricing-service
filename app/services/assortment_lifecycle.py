@@ -175,6 +175,7 @@ def status_display_label(status: AssortmentStatus | str | None) -> str:
     legacy = ASSORTMENT_STATUS_LEGACY_LABELS.get(normalized, "")
     return f"{label} ({legacy})" if legacy and legacy != label else label
 
+
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
 # человеческих названий: обмен сломается, если отправить в справочник 1С
 # незнакомую строку.

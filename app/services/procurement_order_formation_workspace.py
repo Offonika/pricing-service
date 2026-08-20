@@ -1059,8 +1059,7 @@ def list_classification_proposals(
         order = line.order
         serialized_proposal = serialize_proposal(proposal)
         self_proposed = bool(
-            session
-            and str(proposal.requested_by_bitrix_user_id or "") == str(session.user_id)
+            session and str(proposal.requested_by_bitrix_user_id or "") == str(session.user_id)
         )
         can_decide = bool(
             session
@@ -1769,9 +1768,7 @@ def _pending_decision_reason(
     text = str(reason or "").strip()
     if action_kind != "transition" or not target_status:
         return text or "Требуется ручной разбор"
-    prefix = (
-        f"Рекомендуется переход {_status_screen_label(current_status)} → {_status_screen_label(target_status)}."
-    )
+    prefix = f"Рекомендуется переход {_status_screen_label(current_status)} → {_status_screen_label(target_status)}."
     lowered = text.casefold()
     fact_marker = "по твердым фактам 1с:"
     marker_index = lowered.find(fact_marker)

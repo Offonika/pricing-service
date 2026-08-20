@@ -378,9 +378,7 @@ def read_classification_proposals(
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementClassificationQueueResponse:
     try:
         return ProcurementClassificationQueueResponse.model_validate(

@@ -390,10 +390,7 @@ def build_row_comparison(
     adaptive_qty_raw = _ceil(
         max(
             Decimal("0"),
-            adaptive_target_stock
-            + margin_flow_customer_orders
-            - order_available_stock
-            - incoming,
+            adaptive_target_stock + margin_flow_customer_orders - order_available_stock - incoming,
         )
     )
     if minimum_representation_applied:

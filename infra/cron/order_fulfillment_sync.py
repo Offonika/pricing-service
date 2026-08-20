@@ -11,8 +11,10 @@ import argparse
 import csv
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -143,6 +145,8 @@ RTU_SIGNAL_CSV_FIELDS = (
     "latest_rtu_date",
     "assembled_rtu_count",
 )
+DEFAULT_ONEC_ASSEMBLY_CRM_STATE_PATH = REPO_ROOT / ".local/onec_assembly_crm_reconciler.sqlite3"
+BITRIX_READ_RETRY_DELAYS = (0.5, 1.5)
 
 
 @dataclass(slots=True)
@@ -959,6 +963,9 @@ def run_quick_sync(
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),
         "stage_summary_counts": stage_summary_counts(stage_summary),
+        "stage_summary_error_count": sum(
+            1 for row in stage_summary if clean_csv_value(row.get("error"))
+        ),
         "rtu_without_assembled_rows": len(rtu_signal_rows),
     }
     enrich_summary_item_from_artifacts(summary)
@@ -1046,7 +1053,13 @@ def run_chat_sync(
     )
     outbox_path = output_dir / f"chat-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
-    apply_results = apply_outbox_by_target(outbox_rows, client=client, apply=apply)
+    chat_apply_target_stages = {fulfillment.CRM_STAGE_PICKUP_WAITING}
+    apply_results = apply_outbox_by_target(
+        outbox_rows,
+        client=client,
+        apply=apply,
+        allowed_target_stages=chat_apply_target_stages,
+    )
     apply_path = output_dir / f"chat-stage-apply-result-{stamp}.csv"
     fulfillment.write_stage_apply_result_csv(apply_path, apply_results)
     summary = {
@@ -1056,6 +1069,7 @@ def run_chat_sync(
         "outbox": str(outbox_path),
         "apply_result": str(apply_path),
         "dry_run": not apply,
+        "apply_target_stages": sorted(chat_apply_target_stages) if apply else [],
         "review_rows": len(review_rows),
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),
@@ -1087,6 +1101,9 @@ def run_daily_sync(
         "unknown_delivery_rows": len(unknown_rows),
         "stage_summary": str(stage_path),
         "stage_summary_rows": len(stage_summary),
+        "stage_summary_error_count": sum(
+            1 for row in stage_summary if clean_csv_value(row.get("error"))
+        ),
     }
 
 
@@ -1095,17 +1112,21 @@ def apply_outbox_by_target(
     *,
     client: fulfillment.BitrixChatClient,
     apply: bool,
+    allowed_target_stages: set[str] | None = None,
 ) -> list[fulfillment.OrderFulfillmentStageApplyResult]:
     grouped: dict[str, list[fulfillment.OrderFulfillmentStageOutboxRow]] = defaultdict(list)
     for row in rows:
         grouped[row.target_stage].append(row)
     results: list[fulfillment.OrderFulfillmentStageApplyResult] = []
     for target_stage, target_rows in grouped.items():
+        target_apply = apply and (
+            allowed_target_stages is None or target_stage in allowed_target_stages
+        )
         results.extend(
             fulfillment.apply_stage_outbox_rows(
                 target_rows,
                 client=client,
-                apply=apply,
+                apply=target_apply,
                 target_stage=target_stage,
             )
         )
@@ -1115,33 +1136,50 @@ def apply_outbox_by_target(
 def fetch_stage_summary(client: fulfillment.BitrixChatClient) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for stage_id in PROCESS_STAGES:
-        total = _bitrix_list_total(client, {"STAGE_ID": stage_id})
-        internet_orders = _bitrix_list_total(
-            client,
-            {
-                "STAGE_ID": stage_id,
-                f"!{fulfillment.CRM_ORDER_NUMBER_FIELD}": "",
-            },
-        )
+        try:
+            total = _bitrix_list_total(client, {"STAGE_ID": stage_id})
+            internet_orders = _bitrix_list_total(
+                client,
+                {
+                    "STAGE_ID": stage_id,
+                    f"!{fulfillment.CRM_ORDER_NUMBER_FIELD}": "",
+                },
+            )
+            error = ""
+        except fulfillment.BitrixChatError as exc:
+            # Stage counters are useful diagnostics, but they must not prevent
+            # the daily operational digest from being delivered.
+            total = None
+            internet_orders = None
+            error = fulfillment._safe_error_reason(str(exc))  # noqa: SLF001
         rows.append(
             {
                 "stage_id": stage_id,
                 "deal_count": total,
                 "internet_order_count": internet_orders,
+                "error": error,
             }
         )
     return rows
 
 
 def _bitrix_list_total(client: fulfillment.BitrixChatClient, filter_payload: dict[str, Any]) -> int:
-    response = client.call(
-        "crm.deal.list",
-        {
-            "filter": filter_payload,
-            "select": ["ID"],
-            "start": 0,
-        },
-    )
+    payload = {
+        "filter": filter_payload,
+        "select": ["ID"],
+        "start": 0,
+    }
+    response: dict[str, Any] | None = None
+    for attempt in range(len(BITRIX_READ_RETRY_DELAYS) + 1):
+        try:
+            response = client.call("crm.deal.list", payload)
+            break
+        except fulfillment.BitrixChatError:
+            if attempt >= len(BITRIX_READ_RETRY_DELAYS):
+                raise
+            time.sleep(BITRIX_READ_RETRY_DELAYS[attempt])
+    if response is None:
+        raise fulfillment.BitrixChatError("crm.deal.list returned no response")
     total = response.get("total")
     if total is not None:
         return int(total)
@@ -1213,7 +1251,7 @@ def stage_summary_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {
         clean_csv_value(row.get("stage_id")): int(row.get("internet_order_count") or 0)
         for row in rows
-        if clean_csv_value(row.get("stage_id"))
+        if clean_csv_value(row.get("stage_id")) and not clean_csv_value(row.get("error"))
     }
 
 
@@ -2306,7 +2344,10 @@ def deliver_daily_digest(
     if state.get("last_daily_digest_date") == daily_date:
         result["skipped"].append("daily_digest_already_sent")
         return result
-    if not config.business_user_ids:
+    if not has_notification_recipient(
+        user_ids=config.business_user_ids,
+        dialog_id=config.site_dialog_id,
+    ):
         result["skipped"].append("daily_digest_no_recipients")
         return result
 
@@ -2315,12 +2356,15 @@ def deliver_daily_digest(
         client=client,
         config=config,
         user_ids=config.business_user_ids,
-        dialog_id=None,
+        dialog_id=config.site_dialog_id,
         tag=f"order-fulfillment|daily|{daily_date}",
         message=digest["message"],
     )
     result["errors"].extend(delivery["errors"])
-    if delivery_reached_required_target(delivery, required_dialog_id=None):
+    if delivery_reached_required_target(
+        delivery,
+        required_dialog_id=config.site_dialog_id,
+    ):
         result["sent"].append({"kind": "daily_digest", "count": 1})
         state["last_daily_digest_date"] = daily_date
         state["last_daily_digest_stamp"] = current_stamp
@@ -2342,59 +2386,204 @@ def build_daily_digest(
         current_summary_path=current_summary_path,
         last_stamp=clean_csv_value(state.get("last_daily_digest_stamp")),
     )
-    deal_keys: set[str] = set()
-    ready_keys: set[str] = set()
-    manual_keys: set[str] = set()
-    technical_keys: set[str] = set()
-    operational_keys: set[str] = set()
-    manual_reason_counts: Counter = Counter()
-    technical_result_counts: Counter = Counter()
-    operational_alert_counts: Counter = Counter()
-    latest_unknown: dict[str, Any] | None = None
+    current_stamp = clean_csv_value(current_summary.get("stamp"))
+    current_dt = parse_summary_stamp(current_stamp) or datetime.now()
+    last_dt = parse_summary_stamp(clean_csv_value(state.get("last_daily_digest_stamp")))
+    period_start = last_dt or (current_dt - timedelta(hours=24))
+    onec_activity = load_onec_assembly_crm_activity(
+        period_start=period_start,
+        period_end=current_dt,
+    )
+    applied_transitions = daily_applied_crm_transitions(summaries)
+    crm_transitions = set(applied_transitions)
+    crm_transitions.update(onec_activity["crm_transitions"])
 
+    latest_quick = latest_applied_quick_item(summaries)
+    operational_keys = set(latest_quick.get("operational_alert_keys") or [])
+    overdue_orders = daily_overdue_payment_orders(operational_keys)
+    technical_errors = daily_current_technical_errors(latest_quick)
+    action_count = len(overdue_orders) + len(technical_errors)
+    stage_summary_error_count = sum(
+        int(item.get("stage_summary_error_count") or 0)
+        for item in current_summary.get("items") or []
+        if item.get("mode") == "daily"
+    )
+
+    lines = [
+        "MASTER-MOBILE.RU: контроль интернет-заказов",
+        "Автоматически обработано за период:",
+        "- подтверждена сборка: "
+        f"{format_ru_count(len(onec_activity['assembled_orders']), 'заказ', 'заказа', 'заказов')};",
+        "- подтверждена выдача: "
+        f"{format_ru_count(len(onec_activity['issued_orders']), 'заказ', 'заказа', 'заказов')};",
+        "- выполнено переходов CRM: "
+        f"{format_ru_count(len(crm_transitions), 'переход', 'перехода', 'переходов')}.",
+    ]
+    if not action_count:
+        lines.append("Ручных действий сегодня не требуется.")
+    else:
+        lines.append(
+            "Требуется вмешательство: "
+            f"{format_ru_count(action_count, 'заказ', 'заказа', 'заказов')}."
+        )
+        action_lines: list[str] = []
+        for order_number, deal_id in overdue_orders:
+            action_lines.append(
+                f"- заказ {order_number} / сделка {deal_id}: проверить просроченную оплату."
+            )
+        for error in technical_errors:
+            action_lines.append(daily_technical_error_line(error))
+        lines.extend(action_lines[:5])
+        if len(action_lines) > 5:
+            lines.append(f"- ещё {len(action_lines) - 5}")
+    if stage_summary_error_count:
+        lines.append(
+            "Техническое примечание: Bitrix временно не отдал статистику по части стадий; "
+            "операционная сводка сформирована по сохранённым результатам проверок."
+        )
+    return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+
+def load_onec_assembly_crm_activity(
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    state_path: Path | None = None,
+) -> dict[str, set[Any]]:
+    path = state_path or Path(
+        os.environ.get("ONEC_ASSEMBLY_CRM_STATE_PATH") or DEFAULT_ONEC_ASSEMBLY_CRM_STATE_PATH
+    )
+    result: dict[str, set[Any]] = {
+        "assembled_orders": set(),
+        "issued_orders": set(),
+        "crm_transitions": set(),
+    }
+    if not path.exists():
+        return result
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        rows = connection.execute(
+            """
+            SELECT event_key, site_order_number, crm_response
+            FROM processed_events
+            WHERE processed_at > ? AND processed_at <= ?
+            """,
+            (
+                period_start.strftime("%Y-%m-%d %H:%M:%S"),
+                period_end.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        ).fetchall()
+        connection.close()
+    except (OSError, sqlite3.Error):
+        return result
+    for event_key, order_number, raw_response in rows:
+        order = clean_csv_value(order_number)
+        if not order:
+            continue
+        event = clean_csv_value(event_key)
+        if event.startswith("assembled:"):
+            result["assembled_orders"].add(order)
+        elif event.startswith("issued-scan:"):
+            result["issued_orders"].add(order)
+        try:
+            response = json.loads(raw_response or "{}")
+        except (TypeError, json.JSONDecodeError):
+            response = {}
+        stage_from = clean_csv_value(response.get("stage_from"))
+        stage_to = clean_csv_value(response.get("stage_to"))
+        deal_id = clean_csv_value(response.get("deal_id"))
+        if (
+            stage_to
+            and stage_to != stage_from
+            and clean_csv_value(response.get("action")).startswith("moved_to_")
+        ):
+            result["crm_transitions"].add((order, deal_id, stage_to))
+    return result
+
+
+def daily_applied_crm_transitions(
+    summaries: list[tuple[Path, dict[str, Any]]],
+) -> set[tuple[str, str, str]]:
+    transitions: set[tuple[str, str, str]] = set()
     for _, summary in summaries:
         for item in summary.get("items") or []:
-            deal_keys.update(unique_values(item.get("deal_keys") or []))
-            ready_keys.update(unique_values(item.get("ready_keys") or []))
-            manual_keys.update(unique_values(item.get("manual_review_keys") or []))
-            technical_keys.update(unique_values(item.get("technical_review_keys") or []))
-            operational_keys.update(unique_values(item.get("operational_alert_keys") or []))
-            manual_reason_counts.update(item.get("manual_review_reason_counts") or {})
-            technical_result_counts.update(item.get("technical_review_result_counts") or {})
-            operational_alert_counts.update(item.get("operational_alert_counts") or {})
-            if item.get("mode") == "daily":
-                latest_unknown = {
-                    "rows": int(item.get("unknown_delivery_rows") or 0),
-                    "path": clean_csv_value(item.get("unknown_delivery")) or "-",
-                }
+            for row in read_csv_dicts(item.get("apply_result")):
+                if clean_csv_value(row.get("applied")) != "1":
+                    continue
+                order_number = clean_csv_value(row.get("site_order_number"))
+                deal_id = clean_csv_value(row.get("bitrix_deal_id"))
+                target_stage = clean_csv_value(row.get("target_stage"))
+                if order_number and deal_id and target_stage:
+                    transitions.add((order_number, deal_id, target_stage))
+    return transitions
 
-    unknown_rows = int((latest_unknown or {}).get("rows") or 0)
-    unknown_path = clean_csv_value((latest_unknown or {}).get("path")) or "-"
-    lines = [
-        "MASTER-MOBILE.RU: CRM интернет-заказы, дневной dry-run дайджест",
-        f"Проверено уникальных сделок: {len(deal_keys)}",
-        f"Готово к dry-run/apply: {len(ready_keys)}",
-        f"Ручной разбор: {len(manual_keys)}",
-        f"Технические ошибки: {len(technical_keys)}",
-        f"Операционные сигналы: {len(operational_keys)}",
-        f"Неизвестные доставки: {unknown_rows}",
-    ]
-    if manual_reason_counts:
-        lines.append(f"Причины ручного разбора: {format_top_counts(manual_reason_counts)}")
-    if technical_result_counts:
-        lines.append(f"Техрезультаты: {format_top_counts(technical_result_counts)}")
-    if operational_alert_counts:
-        lines.append(
-            "Операционные сигналы: " f"{format_operational_alert_counts(operational_alert_counts)}"
-        )
-    lines.extend(
-        [
-            f"Отчет по неизвестным доставкам: {unknown_path}",
-            f"Служебная сводка: {current_summary_path}",
-            f"Автоизменение CRM: {auto_apply_label_ru(current_summary)}",
-        ]
+
+def latest_applied_quick_item(
+    summaries: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for _, summary in summaries:
+        stamp = clean_csv_value(summary.get("stamp"))
+        for item in summary.get("items") or []:
+            if item.get("mode") == "quick" and not bool(item.get("dry_run", True)):
+                candidates.append((stamp, item))
+    return max(candidates, key=lambda entry: entry[0])[1] if candidates else {}
+
+
+def daily_current_technical_errors(item: dict[str, Any]) -> list[dict[str, str]]:
+    errors: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in read_csv_dicts(item.get("apply_result")):
+        if clean_csv_value(row.get("result")) not in TECHNICAL_APPLY_RESULTS:
+            continue
+        order_number = clean_csv_value(row.get("site_order_number"))
+        deal_id = clean_csv_value(row.get("bitrix_deal_id"))
+        target_stage = clean_csv_value(row.get("target_stage"))
+        if not order_number or not deal_id:
+            continue
+        errors[(order_number, deal_id, target_stage)] = {
+            "site_order_number": order_number,
+            "bitrix_deal_id": deal_id,
+            "target_stage": target_stage,
+            "reason": clean_csv_value(row.get("reason")),
+        }
+    return sorted(
+        errors.values(),
+        key=lambda row: (
+            len(row["site_order_number"]),
+            row["site_order_number"],
+            len(row["bitrix_deal_id"]),
+            row["bitrix_deal_id"],
+        ),
     )
-    return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+
+def daily_technical_error_line(error: dict[str, str]) -> str:
+    target_stage = clean_csv_value(error.get("target_stage"))
+    stage_label = STAGE_RU_LABELS.get(target_stage, target_stage or "следующую стадию")
+    reason = clean_csv_value(error.get("reason")).lower()
+    explanation = (
+        "конфликт количества товаров в заказе и отгрузках"
+        if "распределен по отгрузкам" in reason or "распределён по отгрузкам" in reason
+        else "CRM не приняла автоматическое обновление"
+    )
+    return (
+        f"- заказ {error['site_order_number']} / сделка {error['bitrix_deal_id']}: "
+        f"не выполнен переход в «{stage_label}» — {explanation}."
+    )
+
+
+def daily_overdue_payment_orders(operational_keys: set[str]) -> list[tuple[str, str]]:
+    orders: set[tuple[str, str]] = set()
+    for key in operational_keys:
+        parts = key.split("|")
+        if len(parts) < 3 or parts[0] != "overdue_prepayment":
+            continue
+        order_number = clean_csv_value(parts[1])
+        deal_id = clean_csv_value(parts[2])
+        if not order_number or order_number == "-" or not deal_id or deal_id == "-":
+            continue
+        orders.add((order_number, deal_id))
+    return sorted(orders, key=lambda item: (len(item[0]), item[0], len(item[1]), item[1]))
 
 
 def load_daily_digest_summaries(
@@ -2417,6 +2606,8 @@ def load_daily_digest_summaries(
         stamp = clean_csv_value(payload.get("stamp"))
         stamp_dt = parse_summary_stamp(stamp)
         if last_dt and stamp_dt and stamp_dt <= last_dt:
+            continue
+        if current_dt and stamp_dt and stamp_dt > current_dt:
             continue
         if cutoff_dt and stamp_dt and stamp_dt < cutoff_dt:
             continue

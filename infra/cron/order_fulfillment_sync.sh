@@ -15,6 +15,7 @@ SITE_CHAT_LIMIT="${ORDER_FULFILLMENT_SYNC_SITE_CHAT_LIMIT:-50}"
 COURIER_CHAT_LIMIT="${ORDER_FULFILLMENT_SYNC_COURIER_CHAT_LIMIT:-10}"
 REVIEW_LIMIT="${ORDER_FULFILLMENT_SYNC_REVIEW_LIMIT:-100}"
 OUTPUT_DIR="${ORDER_FULFILLMENT_ARTIFACT_DIR:-${REPO_DIR}/.local/order-fulfillment-pilot}"
+LOCK_FILE="${ORDER_FULFILLMENT_SYNC_LOCK_FILE:-/var/lock/order_fulfillment_sync.lock}"
 
 # Explicit cron overrides must win over defaults loaded from .env. Quick/chat
 # runs set notifications to false and must stay silent even when the daily digest
@@ -24,6 +25,17 @@ NOTIFY_ENABLED_OVERRIDE="${ORDER_FULFILLMENT_NOTIFY_ENABLED:-}"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
+
+exec 9>"${LOCK_FILE}"
+if [[ "${MODE}" == "daily" || "${MODE}" == "all" ]]; then
+  if ! flock -w 600 9; then
+    echo "[$(date -Iseconds)] order_fulfillment_sync mode=${MODE} lock timeout" >> "${LOG_FILE}"
+    exit 1
+  fi
+elif ! flock -n 9; then
+  echo "[$(date -Iseconds)] order_fulfillment_sync mode=${MODE} skipped: another run is active" >> "${LOG_FILE}"
+  exit 0
+fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090

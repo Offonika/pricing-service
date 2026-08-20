@@ -1,11 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-const blockerMessage = (
-  "Подозрение на партийную ошибку: 8 возвратов качества «Новый», "
-  + "44,4% от продаж за 90 дней (порог: 5 возвратов и 40%)."
-);
-
 const baseLine = {
   version: 1,
   bitrix_product_id: "40699",
@@ -45,23 +40,29 @@ const baseLine = {
   lead_time_confidence: "high",
 };
 
-const blockedLines = [23, 31, 36].map((lineNumber, index) => ({
+const blockedLines = [
+  { lineNumber: 20, returnQty: 24, sharePct: 72.7 },
+  { lineNumber: 30, returnQty: 8, sharePct: 44.4 },
+].map(({ lineNumber, returnQty, sharePct }, index) => ({
   ...baseLine,
   id: 50 + index,
   line_number: lineNumber,
   nomenclature_code: `РБ00003760${7 + index}`,
   nomenclature_name: `Проблемная строка ${lineNumber}`,
   blockers: ["batch_error_suspected"],
+  profitability_pct: null,
+  supplier_defect_pct: "0",
+  supplier_defect_attribution: null,
   blocker_details: [{
     code: "batch_error_suspected",
     scope: "line",
     severity: "hard",
     line_id: 50 + index,
     line_number: lineNumber,
-    message: blockerMessage,
+    message: `Подозрение на партийную ошибку: ${returnQty} возвратов, ${sharePct}% за 90 дней.`,
     evidence: {
-      return_qty: 8,
-      share_pct: 44.4,
+      return_qty: returnQty,
+      share_pct: sharePct,
       minimum_return_qty: 5,
       minimum_share_pct: 40,
       window_days: 90,
@@ -83,6 +84,17 @@ const safeLine = {
   blockers: [],
   blocker_details: [],
 };
+
+const removedLines = Array.from({ length: 35 }, (_, index) => ({
+  ...baseLine,
+  id: 100 + index,
+  line_number: 101 + index,
+  nomenclature_code: `REMOVED-${index + 1}`,
+  nomenclature_name: `Исключённая строка ${index + 1}`,
+  blockers: [],
+  blocker_details: [],
+  removed: true,
+}));
 
 const project94 = {
   id: 94,
@@ -120,18 +132,18 @@ const project94 = {
     updated_at: "2026-08-20",
     data_status: "ready",
   },
-  lines: [safeLine, ...blockedLines],
+  lines: [safeLine, ...blockedLines, ...removedLines],
 };
 
 const assistantResponse = {
   updated_at: "2026-08-20T10:00:00Z",
   summary: {
-    lines: 4,
+    lines: 38,
     ready_lines: 0,
     supplier_missing_lines: 0,
     price_changed_lines: 4,
-    low_profitability_lines: 4,
-    high_defect_lines: 3,
+    low_profitability_lines: 1,
+    high_defect_lines: 0,
     photo_missing_lines: 0,
     orders: 1,
   },
@@ -194,18 +206,25 @@ test("blocked project explains resolution and stays usable at all target widths"
 
   await page.goto("/bitrix/procurement-order-formation/assistant");
   const exactReason = (
-    "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
+    "Проект №94 заблокирован: подозрение на партийную ошибку — строки 20, 30"
   );
-  await expect(page.getByText(exactReason).first()).toBeVisible();
-  const problem = page.getByText("Проблемная строка 23").first();
+  await expect(page.getByText(exactReason)).toHaveCount(1);
+  await expect(page.getByText("1 причина · 2 проблемные строки")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toHaveCount(0);
+  const problem = page.getByText("Проблемная строка 20").first();
   const safe = page.getByText("Готовая строка").first();
   await expect(problem).toBeVisible();
   expect((await problem.boundingBox())!.y).toBeLessThan((await safe.boundingBox())!.y);
+  await expect(page.getByText(/Возвраты партии:/)).toHaveCount(2);
+  await expect(page.getByText("Возвраты партии: 72,7%").first()).toBeVisible();
+  await expect(page.getByText("24 возврата").first()).toBeVisible();
+  await expect(page.getByText("Подтверждённый брак поставщика: данных нет").first()).toBeVisible();
+  await expect(page.locator(".order-assistant__table tr").filter({ hasText: "Готовая строка" }).getByText(/Возвраты партии:/)).toHaveCount(0);
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+    const action = page.getByRole("button", { name: "Разобрать 2 проблемные строки" });
     await expect(action).toBeVisible();
     expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(40);
     if (viewport.width <= 820) {
@@ -220,22 +239,27 @@ test("blocked project explains resolution and stays usable at all target widths"
     });
   }
 
-  const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+  const action = page.getByRole("button", { name: "Разобрать 2 проблемные строки" });
   await action.focus();
   await expect(action).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/orders\/94\?line=50$/);
   const focusedRow = page.locator(".order-formation__row--blocked").filter({
-    hasText: "Проблемная строка 23",
+    hasText: "Проблемная строка 20",
   });
   await expect(focusedRow).toBeFocused();
-  await expect(page.getByText(blockerMessage).first()).toBeVisible();
-  await expect(page.getByText("Рентабельность: 18,4%").first()).toBeVisible();
+  await expect(page.getByText(/Подозрение на партийную ошибку: 24 возврата, 72,7% за 90 дней/).first()).toBeVisible();
+  await expect(page.getByText("Возвраты партии: 72,7%")).toBeVisible();
+  await expect(page.getByText("24 возврата · порог 5 возвратов и 40%")).toBeVisible();
+  await expect(page.getByText("Подтверждённый брак поставщика: данных нет").first()).toBeVisible();
+  await expect(page.getByText("Рентабельность: не рассчитана").first()).toBeVisible();
+  await expect(page.getByText(/24 возвратов/)).toHaveCount(0);
+  await expect(page.getByText("Брак: 0%")).toHaveCount(0);
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     await expectNoPageOverflow(page);
-    if (viewport.width <= 820) {
+    if (viewport.width <= 1100) {
       await expect(page.locator(".order-formation__table thead")).toBeHidden();
     } else {
       await expect(page.locator(".order-formation__table thead")).toBeVisible();
@@ -246,6 +270,22 @@ test("blocked project explains resolution and stays usable at all target widths"
       fullPage: false,
     });
   }
+
+  await expect(page.getByRole("button", { name: /Исключённые строки: 35/ })).toBeVisible();
+  await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const removalTrigger = focusedRow.getByRole("button", { name: "Исключить строку" });
+  await removalTrigger.click();
+  const dialog = page.getByRole("dialog", { name: "Исключить строку 20" });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByPlaceholder("Обязательно укажите, почему строку исключают")).toBeFocused();
+  const dialogBox = await dialog.boundingBox();
+  expect(dialogBox!.width).toBeGreaterThanOrEqual(320);
+  expect(dialogBox!.width).toBeLessThanOrEqual(366);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(removalTrigger).toBeFocused();
 
   expect(browserErrors).toEqual([]);
 });

@@ -289,6 +289,7 @@ describe("ProcurementOrderAssistant", () => {
     });
 
     render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
     expect(await screen.findByText("working → Матричный")).toBeInTheDocument();
     expect(screen.getByText("Автор предложения")).toBeInTheDocument();
     expect(screen.getByText("Товар нужен в постоянной матрице")).toBeInTheDocument();
@@ -317,11 +318,11 @@ describe("ProcurementOrderAssistant", () => {
     vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
 
     render(<ProcurementOrderAssistantView />);
-    expect(await screen.findByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
+    expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Закрыть панель поставщика" }));
     expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Tianma" }));
-    expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
   });
 
   it("сохраняет ручной класс поставщика с ожидаемой версией", async () => {
@@ -337,6 +338,7 @@ describe("ProcurementOrderAssistant", () => {
     });
 
     render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
     fireEvent.click(await screen.findByRole("button", { name: "Изменить профиль" }));
     fireEvent.change(screen.getByLabelText("Класс"), { target: { value: "B" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить профиль" }));
@@ -384,14 +386,16 @@ describe("ProcurementOrderAssistant", () => {
       line_number: lineNumber,
       nomenclature_name: `Проблемная строка ${lineNumber}`,
       blockers: ["batch_error_suspected"],
+      supplier_defect_attribution: null,
+      supplier_defect_pct: "0",
       blocker_details: [{
         code: "batch_error_suspected",
         scope: "line",
         severity: "hard",
         line_id: 50 + index,
         line_number: lineNumber,
-        message: "Подозрение на партийную ошибку: 8 возвратов, 44,4% за 90 дней.",
-        evidence: { return_qty: 8, share_pct: 44.4, window_days: 90 },
+        message: "Подозрение на партийную ошибку: 24 возвратов, 44,4% за 90 дней.",
+        evidence: { return_qty: 24, share_pct: 44.4, minimum_return_qty: 5, minimum_share_pct: 40, window_days: 90 },
         resolution_actions: [{ kind: "remove_line", label: "Исключить строку", requires_reason: true }],
       }],
     }));
@@ -415,10 +419,15 @@ describe("ProcurementOrderAssistant", () => {
       .toBeTruthy();
     expect(screen.getAllByText(
       "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
-    ).length).toBeGreaterThan(0);
-    const actions = screen.getAllByRole("button", { name: "Разобрать 3 блокера" });
-    expect(actions[0]).toBeEnabled();
-    fireEvent.click(actions[0]);
+    )).toHaveLength(1);
+    expect(screen.getByText("1 причина · 3 проблемные строки")).toBeInTheDocument();
+    expect(screen.getAllByText("Возвраты партии: 44,4%")).toHaveLength(3);
+    expect(screen.getAllByText("24 возврата")).toHaveLength(3);
+    expect(screen.getAllByText("Подтверждённый брак поставщика: данных нет")).toHaveLength(3);
+    expect(screen.queryByText(/24 возвратов/)).not.toBeInTheDocument();
+    const action = screen.getByRole("button", { name: "Разобрать 3 проблемные строки" });
+    expect(action).toBeEnabled();
+    fireEvent.click(action);
     expect(onOpenOrder).toHaveBeenCalledWith(94, 50);
     expect(screen.queryByText("batch_error_suspected")).not.toBeInTheDocument();
   });

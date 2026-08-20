@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
@@ -8,6 +8,7 @@ import {
   updateProcurementOrderLine,
   type ProcurementOrderFormation,
   type ProcurementOrderFormationLine,
+  type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
@@ -74,13 +75,54 @@ function percent(value: unknown) {
     : `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
+function quantity(value: unknown) {
+  const parsed = numeric(value);
+  return parsed === null
+    ? String(value ?? "—")
+    : parsed.toLocaleString("ru-RU", { maximumFractionDigits: 3 });
+}
+
+function inputNumber(value: string) {
+  const parsed = numeric(value);
+  return parsed === null ? value : String(parsed);
+}
+
+function countLabel(count: number, one: string, few: string, many: string) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} ${many}`;
+  if (last === 1) return `${count} ${one}`;
+  if (last >= 2 && last <= 4) return `${count} ${few}`;
+  return `${count} ${many}`;
+}
+
+function returnLabel(value: unknown) {
+  const count = numeric(value);
+  return count === null
+    ? "количество возвратов не определено"
+    : countLabel(count, "возврат", "возврата", "возвратов");
+}
+
+function blockerDetailMessage(detail: ProcurementBlockerDetail) {
+  if (detail.code !== "batch_error_suspected") return detail.message;
+  const evidence = detail.evidence;
+  const share = numeric(evidence.share_pct);
+  const windowDays = numeric(evidence.window_days);
+  const minimumReturns = numeric(evidence.minimum_return_qty);
+  const minimumShare = numeric(evidence.minimum_share_pct);
+  const batch = typeof evidence.suspected_batch === "string" && evidence.suspected_batch.trim()
+    ? evidence.suspected_batch.trim()
+    : "не определена";
+  return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)}, ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} (порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}). Партия: ${batch}.`;
+}
+
 function payloadValue(line: ProcurementOrderFormationLine, key: string) {
   return line.payload?.[key];
 }
 
 function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) {
   if (line.blocker_details?.length) {
-    const messages = line.blocker_details.map((detail) => detail.message);
+    const messages = line.blocker_details.map(blockerDetailMessage);
     if (line.removed) messages.unshift("Потребность исчезла в новом расчёте.");
     return [...new Set(messages)];
   }
@@ -88,12 +130,12 @@ function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) 
     if (code === "batch_error_suspected") {
       const returned = payloadValue(line, "batch_error_return_qty") || "?";
       const share = percent(payloadValue(line, "batch_error_share_pct"));
-      return `Подозрение на пересорт: ${returned} возвратов (${share} продаж). Точная партия поставки в источнике не определена; расчёт ${batchId}.`;
+      return `Подозрение на пересорт: ${returnLabel(returned)} (${share} продаж). Точная партия поставки в источнике не определена; расчёт ${batchId}.`;
     }
     if (code === "defect_rate_suspected") {
       const returned = payloadValue(line, "defect_return_qty") || "?";
       const share = percent(payloadValue(line, "defect_share_pct"));
-      return `Высокий процент брака: ${share} (${returned} возвратов); автозаказ остановлен.`;
+      return `Высокий процент брака: ${share} (${returnLabel(returned)}); автозаказ остановлен.`;
     }
     if (code === "supplier_defect_over_10_pct_reliable") {
       const basis = line.supplier_defect_history_units
@@ -130,7 +172,7 @@ function visibleRecommendationReason(line: ProcurementOrderFormationLine) {
 function roundingExplanation(line: ProcurementOrderFormationLine) {
   const family = line.display_family_recommendation;
   if (family && familyQuantityChanged(line)) {
-    return `Семейное перераспределение: базово ${family.baseline_order_qty} шт., итог ${family.allocated_order_qty} шт.; после распределения применяется целое количество, а не кратность SKU.`;
+    return `Семейное перераспределение: базово ${quantity(family.baseline_order_qty)} шт., итог ${quantity(family.allocated_order_qty)} шт.; после распределения применяется целое количество, а не кратность SKU.`;
   }
   const raw = payloadValue(line, "recommended_order_qty_raw");
   const multiple = payloadValue(line, "order_rounding_multiple");
@@ -144,7 +186,7 @@ function roundingExplanation(line: ProcurementOrderFormationLine) {
     return "Округление не применено: нет подтверждённой закупочной цены.";
   }
   if (raw && multiple && numeric(raw) !== numeric(line.recommended_quantity)) {
-    return `Округление: ${raw} → ${line.recommended_quantity} шт., кратность ${multiple}.`;
+    return `Округление: ${quantity(raw)} → ${quantity(line.recommended_quantity)} шт., кратность ${quantity(multiple)}.`;
   }
   if (gateText) return `Округление: ${gateText}.`;
   return null;
@@ -170,11 +212,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   >({});
   const [openedClassification, setOpenedClassification] = useState<number | null>(null);
   const [openedRemoval, setOpenedRemoval] = useState<number | null>(null);
+  const [showRemoved, setShowRemoved] = useState(false);
   const [removalReason, setRemovalReason] = useState("");
   const [removalReplacement, setRemovalReplacement] = useState("");
   const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
   const [loadingKey, setLoadingKey] = useState("");
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
+  const removalDialogRef = useRef<HTMLDivElement | null>(null);
+  const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
+  const removalTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!focusLineId || !focusedLineRef.current) return;
@@ -183,13 +229,18 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   }, [focusLineId]);
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
+  const removedLines = useMemo(() => order.lines.filter((line) => line.removed), [order.lines]);
   const visibleLines = useMemo(
     () => [...order.lines].sort((left, right) => {
-      const leftProblem = left.blockers.length > 0 || left.removed ? 1 : 0;
-      const rightProblem = right.blockers.length > 0 || right.removed ? 1 : 0;
-      return rightProblem - leftProblem || left.line_number - right.line_number;
+      const leftRank = left.removed ? 2 : left.blockers.length > 0 ? 0 : 1;
+      const rightRank = right.removed ? 2 : right.blockers.length > 0 ? 0 : 1;
+      return leftRank - rightRank || left.line_number - right.line_number;
     }),
     [order.lines]
+  );
+  const openedRemovalLine = useMemo(
+    () => order.lines.find((line) => line.id === openedRemoval) || null,
+    [openedRemoval, order.lines]
   );
   // Один и тот же блокер приходит по каждой проблемной строке отдельно, поэтому
   // без группировки экран показывал несколько одинаковых фраз подряд.
@@ -200,8 +251,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const blockerDetailGroups = useMemo(() => {
     const grouped = new Map<string, { message: string; lines: number[]; severity: string }>();
     (order.blocker_details || []).forEach((detail) => {
-      const key = `${detail.code}:${detail.message}`;
-      const current = grouped.get(key) || { message: detail.message, lines: [], severity: detail.severity };
+      const message = blockerDetailMessage(detail);
+      const key = `${detail.code}:${message}`;
+      const current = grouped.get(key) || { message, lines: [], severity: detail.severity };
       if (detail.line_number != null && !current.lines.includes(detail.line_number)) {
         current.lines.push(detail.line_number);
       }
@@ -221,13 +273,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   );
 
   const lineEdit = (line: ProcurementOrderFormationLine): LineEdit =>
-    lineEdits[line.id] || { quantity: line.final_quantity, price: line.purchase_price };
+    lineEdits[line.id] || { quantity: inputNumber(line.final_quantity), price: inputNumber(line.purchase_price) };
 
   const classificationEdit = (line: ProcurementOrderFormationLine): ClassificationEdit =>
     classificationEdits[line.id] || {
       status: line.effective_assortment_status || "working",
       reason: "",
-      manualMinimum: line.manual_minimum || "",
+      manualMinimum: line.manual_minimum ? inputNumber(line.manual_minimum) : "",
       reviewDate: "",
       replacementSkuCode: "",
       noReplacement: false,
@@ -244,6 +296,41 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       },
     }));
     setOpenedClassification(line.id);
+  };
+
+  const closeRemoval = () => {
+    setOpenedRemoval(null);
+    setRemovalReason("");
+    setRemovalReplacement("");
+    setRemovalWithReplacement(false);
+    window.setTimeout(() => removalTriggerRef.current?.focus(), 0);
+  };
+
+  useEffect(() => {
+    if (!openedRemovalLine) return;
+    removalReasonRef.current?.focus();
+  }, [openedRemovalLine]);
+
+  const handleRemovalDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeRemoval();
+      return;
+    }
+    if (event.key !== "Tab" || !removalDialogRef.current) return;
+    const focusable = Array.from(removalDialogRef.current.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href]"
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
@@ -312,10 +399,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         })
       );
       setOrder(updated);
-      setOpenedRemoval(null);
-      setRemovalReason("");
-      setRemovalReplacement("");
-      setRemovalWithReplacement(false);
+      closeRemoval();
       toast.success("Строка исключена из проекта; причина сохранена в журнале");
     } catch (error: unknown) {
       toast.error(errorText(error));
@@ -443,7 +527,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
               </tr>
             </thead>
             <tbody>
-              {visibleLines.map((line) => {
+              {visibleLines.map((line, index) => {
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
@@ -451,12 +535,37 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                 const problems = lineProblemTexts(line, order.batch_id);
                 const recommendationReason = visibleRecommendationReason(line);
                 const rounding = roundingExplanation(line);
-                const defectValue = payloadValue(line, "defect_share_pct")
-                  ?? line.supplier_defect_pct
-                  ?? line.product_defect_pct;
+                const batchDetail = line.blocker_details?.find((detail) => detail.code === "batch_error_suspected");
+                const hasBatchBlocker = Boolean(batchDetail || line.blockers.includes("batch_error_suspected"));
+                const batchShare = hasBatchBlocker
+                  ? batchDetail?.evidence.share_pct ?? payloadValue(line, "batch_error_share_pct")
+                  : null;
+                const batchReturns = batchDetail?.evidence.return_qty ?? payloadValue(line, "batch_error_return_qty");
+                const batchMinimumShare = batchDetail?.evidence.minimum_share_pct;
+                const batchMinimumReturns = batchDetail?.evidence.minimum_return_qty;
+                const suspectedBatch = batchDetail?.evidence.suspected_batch ?? payloadValue(line, "suspected_batch");
+                const supplierDefectConfirmed = line.supplier_defect_attribution === "supplier_exact";
+                const supplierDefect = supplierDefectConfirmed ? numeric(line.supplier_defect_pct) : null;
+                const productDefect = numeric(line.product_defect_pct ?? payloadValue(line, "defect_share_pct"));
+                const firstRemoved = line.removed && (index === 0 || !visibleLines[index - 1].removed);
                 return (
+                  <Fragment key={line.id}>
+                  {firstRemoved && (
+                    <tr className="order-formation__removed-summary">
+                      <td colSpan={8}>
+                        <button
+                          aria-expanded={showRemoved}
+                          className="btn btn--ghost"
+                          onClick={() => setShowRemoved((current) => !current)}
+                          type="button"
+                        >
+                          Исключённые строки: {removedLines.length} · {showRemoved ? "Скрыть" : "Показать"}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
+                  {(!line.removed || showRemoved) && (
                   <tr
-                    key={line.id}
                     className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
                     ref={line.id === focusLineId ? focusedLineRef : undefined}
                     tabIndex={line.id === focusLineId ? -1 : undefined}
@@ -614,7 +723,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       )}
                     </td>
                     <td>
-                      <strong>{line.recommended_quantity}</strong>
+                      <strong>{quantity(line.recommended_quantity)} шт.</strong>
                       {problems.length > 0 && (
                         <strong className="is-warning">Проблема: {problems[0]}</strong>
                       )}
@@ -623,17 +732,32 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       ))}
                       {line.payload?.recommendation_discrepancy?.final_quantity && (
                         <small className="is-warning">
-                          Решение человека: {line.payload.recommendation_discrepancy.final_quantity.manual} · новый расчёт: {line.payload.recommendation_discrepancy.final_quantity.recommended}
+                          Решение человека: {quantity(line.payload.recommendation_discrepancy.final_quantity.manual)} · новый расчёт: {quantity(line.payload.recommendation_discrepancy.final_quantity.recommended)}
                         </small>
                       )}
                       {line.payload?.recommendation_discrepancy?.purchase_price && (
                         <small className="is-warning">
-                          Цена человека: {line.payload.recommendation_discrepancy.purchase_price.manual} · новая цена: {line.payload.recommendation_discrepancy.purchase_price.recommended}
+                          Цена человека: {money(line.payload.recommendation_discrepancy.purchase_price.manual, line.currency)} · новая цена: {money(line.payload.recommendation_discrepancy.purchase_price.recommended, line.currency)}
                         </small>
                       )}
                       {recommendationReason && <small>Рекомендация: {recommendationReason}</small>}
-                      <small>Брак: {percent(defectValue)}</small>
-                      <small>Рентабельность: {percent(line.profitability_pct)}</small>
+                      {numeric(batchShare) !== null ? (
+                        <div className="order-formation__evidence">
+                          <strong>Возвраты партии: {percent(batchShare)}</strong>
+                          <small>
+                            {returnLabel(batchReturns)} · порог {batchMinimumReturns == null ? "—" : returnLabel(batchMinimumReturns)} и {percent(batchMinimumShare)}
+                          </small>
+                          <small>Партия: {typeof suspectedBatch === "string" && suspectedBatch.trim() ? suspectedBatch : "не определена"}</small>
+                          <small>Подтверждённый брак поставщика: {supplierDefect === null ? "данных нет" : percent(supplierDefect)}</small>
+                        </div>
+                      ) : supplierDefect !== null ? (
+                        <small>Подтверждённый брак поставщика: {percent(supplierDefect)}</small>
+                      ) : productDefect !== null ? (
+                        <small>Брак товара: {percent(productDefect)} · поставщик не подтверждён</small>
+                      ) : (
+                        <small>Данных о браке нет</small>
+                      )}
+                      <small>Рентабельность: {numeric(line.profitability_pct) === null ? "не рассчитана" : percent(line.profitability_pct)}</small>
                       {rounding && <small>{rounding}</small>}
                       {b2bDemand && (
                         <div className="order-formation__b2b-advisory">
@@ -709,11 +833,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           Открыть карточку
                         </a>
                       )}
-                      {line.blockers.length > 0 && !line.removed && !locked && (
+                      {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
                         <button
                           className="btn btn--ghost btn--small"
+                          ref={(node) => {
+                            if (node && openedRemoval === null) removalTriggerRef.current = node;
+                          }}
                           onClick={() => {
-                            setOpenedRemoval(openedRemoval === line.id ? null : line.id);
+                            removalTriggerRef.current = document.activeElement as HTMLButtonElement;
+                            setOpenedRemoval(line.id);
                             setRemovalReason("");
                             setRemovalReplacement("");
                             setRemovalWithReplacement(false);
@@ -723,54 +851,89 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           Исключить строку
                         </button>
                       )}
-                      {openedRemoval === line.id && (
-                        <div className="order-formation__removal-form">
-                          <label>
-                            Причина исключения
-                            <textarea
-                              onChange={(event) => setRemovalReason(event.target.value)}
-                              placeholder="Обязательно укажите, почему строку исключают"
-                              value={removalReason}
-                            />
-                          </label>
-                          <label className="order-formation__no-replacement">
-                            <input
-                              checked={removalWithReplacement}
-                              onChange={(event) => setRemovalWithReplacement(event.target.checked)}
-                              type="checkbox"
-                            />
-                            Указать «Взамен ведём»
-                          </label>
-                          {removalWithReplacement && (
-                            <input
-                              aria-label={`Взамен ведём для ${line.nomenclature_name}`}
-                              onChange={(event) => setRemovalReplacement(event.target.value)}
-                              placeholder="Код 1С карточки (РБ...)"
-                              value={removalReplacement}
-                            />
-                          )}
-                          <button
-                            className="btn btn--small"
-                            disabled={
-                              !removalReason.trim() ||
-                              (removalWithReplacement && !removalReplacement.trim()) ||
-                              Boolean(loadingKey)
-                            }
-                            onClick={() => void removeLine(line)}
-                            type="button"
-                          >
-                            {loadingKey === `remove-${line.id}` ? "Исключаем..." : "Исключить из проекта"}
-                          </button>
-                        </div>
-                      )}
                     </td>
                   </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
       </main>
+
+      {openedRemovalLine && (
+        <div
+          className="order-formation__dialog-overlay"
+          onKeyDown={handleRemovalDialogKeyDown}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeRemoval();
+          }}
+        >
+          <div
+            aria-describedby="order-removal-description"
+            aria-labelledby="order-removal-title"
+            aria-modal="true"
+            className="order-formation__removal-dialog"
+            ref={removalDialogRef}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <h2 id="order-removal-title">Исключить строку {openedRemovalLine.line_number}</h2>
+                <p id="order-removal-description">{openedRemovalLine.nomenclature_name}</p>
+              </div>
+              <button aria-label="Закрыть форму исключения" onClick={closeRemoval} type="button">×</button>
+            </header>
+            <form onSubmit={(event) => { event.preventDefault(); void removeLine(openedRemovalLine); }}>
+              <label>
+                Причина исключения <span aria-hidden="true">*</span>
+                <textarea
+                  ref={removalReasonRef}
+                  onChange={(event) => setRemovalReason(event.target.value)}
+                  placeholder="Обязательно укажите, почему строку исключают"
+                  required
+                  value={removalReason}
+                />
+              </label>
+              <label className="order-formation__no-replacement">
+                <input
+                  checked={removalWithReplacement}
+                  onChange={(event) => setRemovalWithReplacement(event.target.checked)}
+                  type="checkbox"
+                />
+                Указать «Взамен ведём»
+              </label>
+              {removalWithReplacement && (
+                <label>
+                  Взамен ведём
+                  <input
+                    aria-label={`Взамен ведём для ${openedRemovalLine.nomenclature_name}`}
+                    onChange={(event) => setRemovalReplacement(event.target.value)}
+                    placeholder="Код 1С карточки (РБ...)"
+                    required
+                    value={removalReplacement}
+                  />
+                </label>
+              )}
+              <footer>
+                <button className="btn btn--ghost" onClick={closeRemoval} type="button">Отмена</button>
+                <button
+                  className="btn"
+                  disabled={
+                    !removalReason.trim() ||
+                    (removalWithReplacement && !removalReplacement.trim()) ||
+                    Boolean(loadingKey)
+                  }
+                  type="submit"
+                >
+                  {loadingKey === `remove-${openedRemovalLine.id}` ? "Исключаем..." : "Исключить из проекта"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
 
       <footer className="order-formation__footer">
         <span>{activeLines.length} строк</span>

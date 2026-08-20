@@ -173,7 +173,7 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByText(/SKU: 14 → 12 шт/)).toBeInTheDocument();
   });
 
-  it("не скрывает исчезнувшую потребность и показывает новую рекомендацию", async () => {
+  it("показывает исчезнувшую потребность после явного раскрытия", async () => {
     const data = assistantData();
     data.orders[0].lines[0].removed = true;
     data.orders[0].lines[0].final_quantity = "7";
@@ -188,6 +188,7 @@ describe("ProcurementOrderAssistant", () => {
 
     render(<ProcurementOrderAssistantView />);
 
+    fireEvent.click(await screen.findByRole("button", { name: "Исключённые: 1 · Показать" }));
     expect(await screen.findAllByText("Потребность исчезла")).not.toHaveLength(0);
     expect(screen.getByText("Новый расчёт: 9 шт.")).toBeInTheDocument();
     expect(screen.getByText(/Новая цена:/)).toBeInTheDocument();
@@ -349,9 +350,7 @@ describe("ProcurementOrderAssistant", () => {
     ));
   });
 
-  it("фильтр «Можно собрать» не показывает строки со снятой потребностью", async () => {
-    // Счётчик считал только живые строки, а таблица показывала ещё и снятые
-    // строки того же заказа: на кнопке было 31, в списке — 67.
+  it("скрывает снятую потребность до явного раскрытия", async () => {
     const data = assistantData();
     const gone = structuredClone(data.orders[0].lines[0]);
     gone.id = 41;
@@ -363,12 +362,16 @@ describe("ProcurementOrderAssistant", () => {
 
     render(<ProcurementOrderAssistantView />);
 
-    // «Все» показывает столько строк, сколько реально видно, включая снятые.
-    expect(await screen.findByText("Дисплей снятый")).toBeInTheDocument();
+    await screen.findByText("Дисплей iPhone 15 Pro OLED");
+    expect(screen.queryByText("Дисплей снятый")).not.toBeInTheDocument();
     const allButton = screen
       .getAllByRole("button")
       .find((button) => button.textContent?.startsWith("Все"));
-    expect(allButton?.textContent).toBe("Все2");
+    expect(allButton?.textContent).toBe("Все1");
+
+    fireEvent.click(screen.getByRole("button", { name: "Исключённые: 1 · Показать" }));
+    expect(await screen.findByText("Дисплей снятый")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Исключённые: 1 · Скрыть" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /^Можно собрать/ }));
 

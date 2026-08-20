@@ -220,6 +220,9 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(page.getByText("24 возврата").first()).toBeVisible();
   await expect(page.getByText("Подтверждённый брак поставщика: данных нет").first()).toBeVisible();
   await expect(page.locator(".order-assistant__table tr").filter({ hasText: "Готовая строка" }).getByText(/Возвраты партии:/)).toHaveCount(0);
+  await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Исключённые: 35 · Показать" })).toBeVisible();
+  await expect(page.getByText(/sku · high|reliable/)).toHaveCount(0);
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
@@ -239,6 +242,12 @@ test("blocked project explains resolution and stays usable at all target widths"
     });
   }
 
+  const removedToggle = page.getByRole("button", { name: "Исключённые: 35 · Показать" });
+  await removedToggle.click();
+  await expect(page.getByText("Исключённая строка 1").first()).toBeVisible();
+  await page.getByRole("button", { name: "Исключённые: 35 · Скрыть" }).click();
+  await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
+
   const action = page.getByRole("button", { name: "Разобрать 2 проблемные строки" });
   await action.focus();
   await expect(action).toBeFocused();
@@ -255,6 +264,15 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(page.getByText("Рентабельность: не рассчитана").first()).toBeVisible();
   await expect(page.getByText(/24 возвратов/)).toHaveCount(0);
   await expect(page.getByText("Брак: 0%")).toHaveCount(0);
+  const transferAlert = page.locator(".order-formation__alert");
+  await expect(transferAlert).toContainText("Подозрение на партийную ошибку — строки 20, 30");
+  await expect(transferAlert).not.toContainText("24 возврата");
+  await expect(page.getByText("Обычная закупка")).toBeVisible();
+  await expect(page.getByText("1С: Не отправлен")).toBeVisible();
+  await expect(page.getByText("Товар Bitrix24: 40699").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Проверить и создать черновик в 1С" })).toBeDisabled();
+  await expect(page.getByText("Сначала разберите строки 20, 30.")).toBeVisible();
+  await expect(page.getByText(/not_sent|ordinary|Bitrix product/)).toHaveCount(0);
 
   for (const viewport of viewports) {
     await page.setViewportSize(viewport);
@@ -271,10 +289,15 @@ test("blocked project explains resolution and stays usable at all target widths"
     });
   }
 
+  await page.setViewportSize({ width: 390, height: 844 });
+  const orderFooter = page.locator(".order-formation__footer");
+  await orderFooter.scrollIntoViewIfNeeded();
+  await expect(page.getByText("Сначала разберите строки 20, 30.")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("order-footer-390.png"), fullPage: false });
+
   await expect(page.getByRole("button", { name: /Исключённые строки: 35/ })).toBeVisible();
   await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
 
-  await page.setViewportSize({ width: 390, height: 844 });
   const removalTrigger = focusedRow.getByRole("button", { name: "Исключить строку" });
   await removalTrigger.click();
   const dialog = page.getByRole("dialog", { name: "Исключить строку 20" });

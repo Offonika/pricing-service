@@ -333,9 +333,15 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     expect(screen.getAllByText(/44,4% за 90 дней/).length).toBeGreaterThan(0);
     expect(screen.getByText("Возвраты партии: 44,4%")).toBeInTheDocument();
     expect(screen.getByText("8 возвратов · порог 5 возвратов и 40%")).toBeInTheDocument();
-    expect(screen.getByText("Партия: Партия 2026-07-15")).toBeInTheDocument();
+    expect(screen.getByText("Партия: 2026-07-15")).toBeInTheDocument();
     expect(screen.getByText("Подтверждённый брак поставщика: данных нет")).toBeInTheDocument();
     expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    expect(screen.getByText("Подозрение на партийную ошибку — строки 1")).toBeInTheDocument();
+    expect(screen.getByText("1С: Не отправлен")).toBeInTheDocument();
+    expect(screen.getByText("Обычная закупка")).toBeInTheDocument();
+    expect(screen.getByText("Товар Bitrix24: 2695")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Проверить и создать черновик в 1С" })).toBeDisabled();
+    expect(screen.getByText("Сначала разберите строки 1.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Исключить строку" }));
     expect(screen.getByRole("dialog", { name: "Исключить строку 1" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Исключить строку" })).not.toBeInTheDocument();

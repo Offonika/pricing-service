@@ -226,6 +226,58 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     expect(screen.queryByText(new RegExp(familyReason))).not.toBeInTheDocument();
   });
 
+  it("открывает ручное поле «Взамен ведём» из семейного сигнала", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          manual_status_options: {
+            working: "Поддерживаем (Рабочий)",
+            replace_candidate: "Кандидат на замену",
+          },
+          lines: [line({
+            display_family_recommendation: {
+              schema: "display_family_order_recommendation.v1",
+              mode: "shadow",
+              status: "identity_insufficient_eligible_skus",
+              registry_inventory_checksum: "a".repeat(64),
+              family_id: "family-1",
+              family_label: "Apple iPhone",
+              segment_id: "medium|incell",
+              quality_segment: "medium",
+              construction_segment: "incell",
+              baseline_order_qty: "1",
+              allocated_order_qty: "1",
+              family_pool_order_qty: "1",
+              segment_pool_order_qty: "1",
+              baseline_share_pct: "100",
+              target_share_pct: "100",
+              allocation_source: "base_sku_order_pool",
+              confidence: "low",
+              manual_approval_required: true,
+              registry_warning_codes: [],
+              conflict_codes: [],
+              reason_ru: "В сегменте нет второго SKU.",
+            },
+          })],
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Указать «Взамен ведём»" }));
+
+    expect(screen.getByRole("combobox")).toHaveValue("replace_candidate");
+    expect(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)")).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Ручной минимум Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
+  it("изменяет количество заказа целыми штуками", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order()} />);
+
+    expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
   it("считает отдельно типы блокеров и затронутые строки", () => {
     expect(procurementBlockerSummaryLabel([
       "line_1:defect_rate_suspected",

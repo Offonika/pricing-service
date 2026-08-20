@@ -155,6 +155,29 @@ export function procurementBlockerText(group: ProcurementBlockerGroup) {
     : `${group.text} — строки ${numbers}`;
 }
 
+function countedWord(count: number, one: string, few: string, many: string) {
+  const tail = count % 10;
+  const teen = count % 100;
+  if (tail === 1 && teen !== 11) return one;
+  if (tail >= 2 && tail <= 4 && (teen < 12 || teen > 14)) return few;
+  return many;
+}
+
+/** Короткая сводка для реестра: причины и затронутые строки — разные величины. */
+export function procurementBlockerSummaryLabel(blockers: string[]) {
+  const blockerCount = groupProcurementBlockers(blockers).length;
+  const lineCount = new Set(
+    blockers
+      .map((blocker) => LINE_PREFIX.exec(blocker))
+      .filter((match): match is RegExpExecArray => Boolean(match))
+      .map((match) => Number(match[1]))
+      .filter(Number.isFinite)
+  ).size;
+  const blockerLabel = `${blockerCount} ${countedWord(blockerCount, "блокер", "блокера", "блокеров")}`;
+  if (!lineCount) return blockerLabel;
+  return `${blockerLabel} · ${lineCount} ${countedWord(lineCount, "строка", "строки", "строк")}`;
+}
+
 /**
  * Схлопывает сигналы строки по подписи: разные коды с одинаковым текстом (в том
  * числе несколько неизвестных) печатались подряд одной и той же фразой.

@@ -446,7 +446,7 @@ def build_grouped_orders(
                 ),
                 "recommendation_reason": (
                     _clean(row.get("display_family_reason_ru"))
-                    if family_recommendation
+                    if family_recommendation and _family_quantity_changed(row)
                     else _clean(row.get("reason_ru"))
                 ),
                 "blockers": list(dict.fromkeys(blockers)),
@@ -1184,6 +1184,12 @@ def _family_recommended_quantity(row: Mapping[str, Any]) -> Decimal:
     return max(Decimal("0"), _decimal(row.get("recommended_order_qty")) or Decimal("0"))
 
 
+def _family_quantity_changed(row: Mapping[str, Any]) -> bool:
+    baseline = _decimal(row.get("display_family_baseline_order_qty"))
+    allocated = _decimal(row.get("display_family_allocated_order_qty"))
+    return baseline is not None and allocated is not None and baseline != allocated
+
+
 def _display_family_recommendation_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     status = _clean(row.get("display_family_recommendation_status"))
     if not status:
@@ -1263,6 +1269,17 @@ def procurement_assistant_line_payload(
         "lead_time_days": lead_time_days,
         "lead_time_confidence": _clean(lead_candidate.get("lead_time_confidence")),
         "lead_time_source_level": lead_source_level,
+        "batch_error_return_qty": _clean(row.get("batch_error_return_qty")),
+        "batch_error_share_pct": _clean(row.get("batch_error_share_pct")),
+        "defect_return_qty": _clean(row.get("defect_return_qty")),
+        "defect_share_pct": _clean(row.get("defect_share_pct")),
+        "recommended_order_qty_raw": _clean(row.get("recommended_order_qty_raw")),
+        "order_rounding_rule": _clean(row.get("order_rounding_rule")),
+        "order_rounding_multiple": _clean(row.get("order_rounding_multiple")),
+        "order_rounding_price_gate": _clean(row.get("order_rounding_price_gate")),
+        "order_rounding_price_gate_ru": _clean(row.get("order_rounding_price_gate_ru")),
+        "order_rounding_price_group": _clean(row.get("order_rounding_price_group")),
+        "order_rounding_group_median_price": _clean(row.get("order_rounding_group_median_price")),
     }
     payload.update({key: value for key, value in optional_values.items() if value})
     return payload

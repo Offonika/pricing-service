@@ -11,6 +11,7 @@ import {
   fetchProcurementOrder,
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
+import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
 
 vi.mock("../api/procurementAssortment", () => ({
   approveProcurementClassification: vi.fn(),
@@ -150,6 +151,143 @@ describe("ProcurementOrderFormationApp «Допродаём»", () => {
   });
 });
 
+describe("ProcurementOrderFormationApp проблемные строки", () => {
+  afterEach(cleanup);
+
+  it("поднимает проблемы вверх и показывает конкретные показатели и карточку товара", () => {
+    const ready = line({ id: 41, line_number: 1, nomenclature_name: "Готовая строка" });
+    const blocked = line({
+      id: 42,
+      line_number: 7,
+      nomenclature_name: "Проблемная строка",
+      blockers: ["defect_rate_suspected"],
+      risk_codes: ["adaptive_lead_time_sync_ready", "speed_horizon_rule_applied"],
+      product_card_url: "https://master-mobile.ru/catalog/displei/40699/",
+      profitability_pct: "18.4",
+      payload: {
+        defect_share_pct: "12.6",
+        defect_return_qty: "6",
+        recommended_order_qty_raw: "14",
+        order_rounding_price_gate: "no_purchase_price",
+      },
+    });
+
+    render(<ProcurementOrderFormationApp initialOrder={order({ lines: [ready, blocked] })} />);
+
+    const problem = screen.getByText("Проблемная строка");
+    const readyName = screen.getByText("Готовая строка");
+    expect(problem.compareDocumentPosition(readyName) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/Проблема: Высокий процент брака: 12,6%/)).toBeInTheDocument();
+    expect(screen.getByText("Брак: 12,6%")).toBeInTheDocument();
+    expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
+    expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+      "href",
+      "https://master-mobile.ru/catalog/displei/40699/"
+    );
+  });
+
+  it("скрывает семейную фразу, если количество между SKU не перераспределялось", () => {
+    const familyReason = "В подтверждённом сегменте меньше двух доступных SKU; оставлено базовое количество.";
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          lines: [line({
+            recommendation_reason: familyReason,
+            display_family_recommendation: {
+              schema: "display_family_order_recommendation.v1",
+              mode: "shadow",
+              status: "identity_insufficient_eligible_skus",
+              registry_inventory_checksum: "a".repeat(64),
+              family_id: "family-1",
+              family_label: "Apple iPhone",
+              segment_id: "medium|incell",
+              quality_segment: "medium",
+              construction_segment: "incell",
+              baseline_order_qty: "14",
+              allocated_order_qty: "14",
+              family_pool_order_qty: "14",
+              segment_pool_order_qty: "14",
+              baseline_share_pct: "100",
+              target_share_pct: "100",
+              allocation_source: "base_sku_order_pool",
+              confidence: "low",
+              manual_approval_required: true,
+              registry_warning_codes: [],
+              conflict_codes: [],
+              reason_ru: familyReason,
+            },
+          })],
+        })}
+      />
+    );
+
+    expect(screen.queryByText(new RegExp(familyReason))).not.toBeInTheDocument();
+  });
+
+  it("открывает ручное поле «Взамен ведём» из семейного сигнала", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          manual_status_options: {
+            working: "Поддерживаем (Рабочий)",
+            replace_candidate: "Кандидат на замену",
+          },
+          lines: [line({
+            display_family_recommendation: {
+              schema: "display_family_order_recommendation.v1",
+              mode: "shadow",
+              status: "identity_insufficient_eligible_skus",
+              registry_inventory_checksum: "a".repeat(64),
+              family_id: "family-1",
+              family_label: "Apple iPhone",
+              segment_id: "medium|incell",
+              quality_segment: "medium",
+              construction_segment: "incell",
+              baseline_order_qty: "1",
+              allocated_order_qty: "1",
+              family_pool_order_qty: "1",
+              segment_pool_order_qty: "1",
+              baseline_share_pct: "100",
+              target_share_pct: "100",
+              allocation_source: "base_sku_order_pool",
+              confidence: "low",
+              manual_approval_required: true,
+              registry_warning_codes: [],
+              conflict_codes: [],
+              reason_ru: "В сегменте нет второго SKU.",
+            },
+          })],
+        })}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Указать «Взамен ведём»" }));
+
+    expect(screen.getByRole("combobox")).toHaveValue("replace_candidate");
+    expect(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)")).toBeInTheDocument();
+    expect(screen.getByRole("spinbutton", { name: "Ручной минимум Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
+  it("изменяет количество заказа целыми штуками", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order()} />);
+
+    expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
+      .toHaveAttribute("step", "1");
+  });
+
+  it("считает отдельно типы блокеров и затронутые строки", () => {
+    expect(procurementBlockerSummaryLabel([
+      "line_1:defect_rate_suspected",
+      "line_2:defect_rate_suspected",
+      "line_3:batch_error_suspected",
+      "line_4:batch_error_suspected",
+    ])).toBe("2 блокера · 4 строки");
+  });
+});
+
 describe("ProcurementOrderFormationApp version conflicts", () => {
   beforeEach(() => {
     vi.mocked(createProcurementClassification).mockReset();
@@ -242,7 +380,7 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
       />
     );
 
-    expect(screen.getByText("Потребность исчезла в новом расчёте")).toBeInTheDocument();
+    expect(screen.getByText(/Проблема: Потребность исчезла в новом расчёте/)).toBeInTheDocument();
     expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
     expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();

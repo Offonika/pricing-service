@@ -7026,6 +7026,20 @@
   overflow-wrap: anywhere;
 }
 
+.order-formation__product-card-link {
+  display: block;
+  margin-top: 8px;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+}
+
+.order-formation__product-card-link:hover {
+  text-decoration: underline;
+}
+
 .order-formation__table td > strong,
 .order-formation__table td > small {
   display: block;
@@ -7058,6 +7072,21 @@
   padding: 10px;
   border-radius: 10px;
   background: #f8fafc;
+}
+
+.order-formation__replacement-action {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.order-formation__replacement-action .btn {
+  margin: 0;
+  width: 100%;
 }
 
 .order-formation__b2b-advisory {

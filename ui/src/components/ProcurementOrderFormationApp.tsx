@@ -12,8 +12,8 @@ import {
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
-  groupProcurementRiskCodes,
   procurementBlockerText,
+  procurementRiskLabel,
 } from "../utils/procurementRiskLabels";
 
 interface Props {
@@ -60,6 +60,90 @@ function money(value: string, currency: string) {
   }).format(number);
 }
 
+function numeric(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function percent(value: unknown) {
+  const parsed = numeric(value);
+  return parsed === null
+    ? "нет данных"
+    : `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
+}
+
+function payloadValue(line: ProcurementOrderFormationLine, key: string) {
+  return line.payload?.[key];
+}
+
+function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) {
+  const values = line.blockers.map((code) => {
+    if (code === "batch_error_suspected") {
+      const returned = payloadValue(line, "batch_error_return_qty") || "?";
+      const share = percent(payloadValue(line, "batch_error_share_pct"));
+      return `Подозрение на пересорт: ${returned} возвратов (${share} продаж). Точная партия поставки в источнике не определена; расчёт ${batchId}.`;
+    }
+    if (code === "defect_rate_suspected") {
+      const returned = payloadValue(line, "defect_return_qty") || "?";
+      const share = percent(payloadValue(line, "defect_share_pct"));
+      return `Высокий процент брака: ${share} (${returned} возвратов); автозаказ остановлен.`;
+    }
+    if (code === "supplier_defect_over_10_pct_reliable") {
+      const basis = line.supplier_defect_history_units
+        ? ` на базе ${line.supplier_defect_history_units.toLocaleString("ru-RU")} шт.`
+        : "";
+      return `У выбранного поставщика подтверждённый брак ${percent(line.supplier_defect_pct)}${basis}`;
+    }
+    if (code === "purchase_price_change_over_10_pct") {
+      return `Закупочная цена изменилась на ${percent(line.price_change_pct)} — нужна проверка.`;
+    }
+    return procurementRiskLabel(code);
+  });
+  if (line.removed) values.unshift("Потребность исчезла в новом расчёте.");
+  return [...new Set(values)];
+}
+
+function familyQuantityChanged(line: ProcurementOrderFormationLine) {
+  const recommendation = line.display_family_recommendation;
+  if (!recommendation) return false;
+  const baseline = numeric(recommendation.baseline_order_qty);
+  const allocated = numeric(recommendation.allocated_order_qty);
+  return baseline !== null && allocated !== null && baseline !== allocated;
+}
+
+function visibleRecommendationReason(line: ProcurementOrderFormationLine) {
+  if (!line.recommendation_reason) return null;
+  const family = line.display_family_recommendation;
+  if (family && line.recommendation_reason === family.reason_ru && !familyQuantityChanged(line)) {
+    return null;
+  }
+  return line.recommendation_reason;
+}
+
+function roundingExplanation(line: ProcurementOrderFormationLine) {
+  const family = line.display_family_recommendation;
+  if (family && familyQuantityChanged(line)) {
+    return `Семейное перераспределение: базово ${family.baseline_order_qty} шт., итог ${family.allocated_order_qty} шт.; после распределения применяется целое количество, а не кратность SKU.`;
+  }
+  const raw = payloadValue(line, "recommended_order_qty_raw");
+  const multiple = payloadValue(line, "order_rounding_multiple");
+  const gate = String(payloadValue(line, "order_rounding_price_gate") || "");
+  const gateText = String(payloadValue(line, "order_rounding_price_gate_ru") || "");
+  const median = payloadValue(line, "order_rounding_group_median_price");
+  if (gate === "above_median") {
+    return `Округление не применено: цена карточки выше медианы группы${median ? ` (${median})` : ""}.`;
+  }
+  if (gate === "no_purchase_price") {
+    return "Округление не применено: нет подтверждённой закупочной цены.";
+  }
+  if (raw && multiple && numeric(raw) !== numeric(line.recommended_quantity)) {
+    return `Округление: ${raw} → ${line.recommended_quantity} шт., кратность ${multiple}.`;
+  }
+  if (gateText) return `Округление: ${gateText}.`;
+  return null;
+}
+
 
 const LINE_CHANGED_MESSAGE =
   "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.";
@@ -83,7 +167,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
   const visibleLines = useMemo(
-    () => [...order.lines].sort((left, right) => left.line_number - right.line_number),
+    () => [...order.lines].sort((left, right) => {
+      const leftProblem = left.blockers.length > 0 || left.removed ? 1 : 0;
+      const rightProblem = right.blockers.length > 0 || right.removed ? 1 : 0;
+      return rightProblem - leftProblem || left.line_number - right.line_number;
+    }),
     [order.lines]
   );
   // Один и тот же блокер приходит по каждой проблемной строке отдельно, поэтому
@@ -115,6 +203,19 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
       replacementSkuCode: "",
       noReplacement: false,
     };
+
+  const openReplacementDecision = (line: ProcurementOrderFormationLine) => {
+    const current = classificationEdit(line);
+    setClassificationEdits((edits) => ({
+      ...edits,
+      [line.id]: {
+        ...current,
+        status: "replace_candidate",
+        noReplacement: false,
+      },
+    }));
+    setOpenedClassification(line.id);
+  };
 
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
   // закупщика. Поэтому на 409 перезагружаем карточку и повторяем действие, если сама
@@ -271,7 +372,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                 <th>№</th>
                 <th>Товар</th>
                 <th>Классификация</th>
-                <th>Рекомендация</th>
+                <th>Проблема / рекомендация</th>
                 <th>Кол-во</th>
                 <th>Цена закупки</th>
                 <th>Сумма</th>
@@ -284,6 +385,12 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
                 const b2bDemand = line.payload?.b2b_customer_demand;
+                const problems = lineProblemTexts(line, order.batch_id);
+                const recommendationReason = visibleRecommendationReason(line);
+                const rounding = roundingExplanation(line);
+                const defectValue = payloadValue(line, "defect_share_pct")
+                  ?? line.supplier_defect_pct
+                  ?? line.product_defect_pct;
                 return (
                   <tr
                     key={line.id}
@@ -346,10 +453,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             }))}
                           />
                           <input
+                            aria-label={`Ручной минимум ${line.nomenclature_name}`}
                             disabled={locked || line.removed}
                             min="0"
                             placeholder="Ручной минимум"
-                            step="0.001"
+                            step="1"
                             type="number"
                             value={classification.manualMinimum}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -421,9 +529,12 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <strong>{line.recommended_quantity}</strong>
-                      {line.removed && (
-                        <small className="is-warning">Потребность исчезла в новом расчёте</small>
+                      {problems.length > 0 && (
+                        <strong className="is-warning">Проблема: {problems[0]}</strong>
                       )}
+                      {problems.slice(1).map((problem) => (
+                        <small className="is-warning" key={problem}>Также: {problem}</small>
+                      ))}
                       {line.payload?.recommendation_discrepancy?.final_quantity && (
                         <small className="is-warning">
                           Решение человека: {line.payload.recommendation_discrepancy.final_quantity.manual} · новый расчёт: {line.payload.recommendation_discrepancy.final_quantity.recommended}
@@ -434,7 +545,24 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           Цена человека: {line.payload.recommendation_discrepancy.purchase_price.manual} · новая цена: {line.payload.recommendation_discrepancy.purchase_price.recommended}
                         </small>
                       )}
-                      {line.recommendation_reason && <small>{line.recommendation_reason}</small>}
+                      {recommendationReason && <small>Рекомендация: {recommendationReason}</small>}
+                      {line.display_family_recommendation?.manual_approval_required &&
+                        order.manual_status_options.replace_candidate && (
+                          <div className="order-formation__replacement-action">
+                            <small>Решили вести другую карточку из семьи?</small>
+                            <button
+                              className="btn btn--ghost btn--small"
+                              disabled={locked || line.removed}
+                              onClick={() => openReplacementDecision(line)}
+                              type="button"
+                            >
+                              Указать «Взамен ведём»
+                            </button>
+                          </div>
+                        )}
+                      <small>Брак: {percent(defectValue)}</small>
+                      <small>Рентабельность: {percent(line.profitability_pct)}</small>
+                      {rounding && <small>{rounding}</small>}
                       {b2bDemand && (
                         <div className="order-formation__b2b-advisory">
                           <strong>
@@ -460,17 +588,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                           )}
                         </div>
                       )}
-                      {groupProcurementRiskCodes(line.risk_codes).map((signal) => (
-                        <small key={signal.text} title={signal.codes.join(", ")}>
-                          Сигнал: {signal.text}
-                        </small>
-                      ))}
                     </td>
                     <td>
                       <input
+                        aria-label={`Количество ${line.nomenclature_name}`}
                         min="0"
                         disabled={locked || line.removed}
-                        step="0.001"
+                        step="1"
                         type="number"
                         value={edit.quantity}
                         onChange={(event) => setLineEdits((current) => ({
@@ -502,6 +626,16 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       >
                         Сохранить
                       </button>
+                      {line.product_card_url && (
+                        <a
+                          className="order-formation__product-card-link"
+                          href={line.product_card_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Открыть карточку
+                        </a>
+                      )}
                     </td>
                   </tr>
                 );

@@ -22200,6 +22200,10 @@ components:
           type: boolean
           title: Can Reject
           default: false
+        self_proposed:
+          type: boolean
+          title: Self Proposed
+          default: false
         onec_status:
           type: string
           title: Onec Status
@@ -22422,6 +22426,10 @@ components:
         label:
           type: string
           title: Label
+        legacy_label:
+          type: string
+          title: Legacy Label
+          default: ''
         total_count:
           type: integer
           title: Total Count

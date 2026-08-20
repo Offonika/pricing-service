@@ -7074,6 +7074,21 @@
   background: #f8fafc;
 }
 
+.order-formation__replacement-action {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.order-formation__replacement-action .btn {
+  margin: 0;
+  width: 100%;
+}
+
 .order-formation__b2b-advisory {
   display: grid;
   gap: 4px;

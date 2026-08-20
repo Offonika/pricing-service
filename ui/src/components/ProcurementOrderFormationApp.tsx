@@ -204,6 +204,19 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
       noReplacement: false,
     };
 
+  const openReplacementDecision = (line: ProcurementOrderFormationLine) => {
+    const current = classificationEdit(line);
+    setClassificationEdits((edits) => ({
+      ...edits,
+      [line.id]: {
+        ...current,
+        status: "replace_candidate",
+        noReplacement: false,
+      },
+    }));
+    setOpenedClassification(line.id);
+  };
+
   // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
   // закупщика. Поэтому на 409 перезагружаем карточку и повторяем действие, если сама
   // строка не менялась; иначе просим проверить обновлённые данные вручную.
@@ -440,10 +453,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             }))}
                           />
                           <input
+                            aria-label={`Ручной минимум ${line.nomenclature_name}`}
                             disabled={locked || line.removed}
                             min="0"
                             placeholder="Ручной минимум"
-                            step="0.001"
+                            step="1"
                             type="number"
                             value={classification.manualMinimum}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -532,6 +546,20 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                         </small>
                       )}
                       {recommendationReason && <small>Рекомендация: {recommendationReason}</small>}
+                      {line.display_family_recommendation?.manual_approval_required &&
+                        order.manual_status_options.replace_candidate && (
+                          <div className="order-formation__replacement-action">
+                            <small>Решили вести другую карточку из семьи?</small>
+                            <button
+                              className="btn btn--ghost btn--small"
+                              disabled={locked || line.removed}
+                              onClick={() => openReplacementDecision(line)}
+                              type="button"
+                            >
+                              Указать «Взамен ведём»
+                            </button>
+                          </div>
+                        )}
                       <small>Брак: {percent(defectValue)}</small>
                       <small>Рентабельность: {percent(line.profitability_pct)}</small>
                       {rounding && <small>{rounding}</small>}
@@ -563,9 +591,10 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <input
+                        aria-label={`Количество ${line.nomenclature_name}`}
                         min="0"
                         disabled={locked || line.removed}
-                        step="0.001"
+                        step="1"
                         type="number"
                         value={edit.quantity}
                         onChange={(event) => setLineEdits((current) => ({

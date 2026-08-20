@@ -124,6 +124,7 @@ const LIFECYCLE_FACT_LABELS: Record<string, string> = {
   cargo_handoff_count_1c: "Передач в груз",
   card_created_at_1c: "Карточка создана",
   model_birth_date: "Модель на рынке с",
+  family_member_count: "Доступных SKU в сегменте",
 };
 
 // Статусы предложения приходят кодом; на экране закупщику нужен русский текст.
@@ -782,7 +783,7 @@ export function LifecycleQueue({
                             }}
                             type="checkbox"
                           />
-                        ) : <span className="state-pill state-pill--warning">Ручное</span>}
+                        ) : <span className="state-pill state-pill--warning">Отдельно</span>}
                       </td>
                       <td>
                         <strong>{item.product_name}</strong>
@@ -825,7 +826,7 @@ export function LifecycleQueue({
                         ) : item.stale ? (
                           <span className="state-pill state-pill--warning">данные изменились</span>
                         ) : actionability === "manual_decision" ? (
-                          <span className="state-pill state-pill--warning">Нужно решение закупщика</span>
+                          <span className="state-pill state-pill--warning">Решение закупщика</span>
                         ) : (
                           <span className="state-pill state-pill--ready">Нет блокеров</span>
                         )}

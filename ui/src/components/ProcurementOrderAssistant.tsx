@@ -144,20 +144,6 @@ function batchEvidence(line: ProcurementOrderFormationLine) {
   return line.blocker_details?.find((detail) => detail.code === "batch_error_suspected")?.evidence;
 }
 
-function blockerDetailText(line: ProcurementOrderFormationLine) {
-  const detail = line.blocker_details?.[0];
-  if (!detail || detail.code !== "batch_error_suspected") return detail?.message;
-  const evidence = detail.evidence;
-  const share = numeric(evidence.share_pct as string | number | null);
-  const windowDays = numeric(evidence.window_days as string | number | null);
-  const minimumReturns = numeric(evidence.minimum_return_qty as string | number | null);
-  const minimumShare = numeric(evidence.minimum_share_pct as string | number | null);
-  const threshold = minimumReturns === null && minimumShare === null
-    ? "порог не указан"
-    : `порог: ${minimumReturns === null ? "—" : returnLabel(minimumReturns)} и ${percent(minimumShare)}`;
-  return `Подозрение на партийную ошибку: ${returnLabel(evidence.return_qty)} · ${percent(share)}${windowDays === null ? "" : ` за ${windowDays} дней`} · ${threshold}.`;
-}
-
 function quantity(value: string) {
   const parsed = numeric(value);
   return parsed === null
@@ -761,6 +747,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   }, [visibleRows]);
 
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.key)), [rows, selected]);
+  const hasResettableFilters = filter !== "all" || Boolean(search || supplier || supplierClass || showRemoved);
   const selectedOrders = useMemo(() => (data?.orders || []).filter((order) => {
     const orderRows = activeOrderRows(order);
     return orderReady(order) && orderRows.every((row) => selected.has(row.key));
@@ -864,7 +851,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
         <div className="order-assistant__table-card">
           <div className="order-assistant__toolbar">
             <button className={filtersOpen ? "is-active" : ""} onClick={() => setFiltersOpen((value) => !value)} type="button">Все фильтры</button>
-            <span>{visibleRows.length} строк в текущем фильтре</span>
+            <span>{countLabel(visibleRows.length, "строка", "строки", "строк")} в текущем фильтре</span>
             <span className="order-assistant__filter-hint">{QUICK_FILTERS.find((item) => item.key === filter)?.hint}</span>
             {removedRowsCount > 0 && (
               <button
@@ -876,7 +863,9 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                 Исключённые: {removedRowsCount} · {showRemoved ? "Скрыть" : "Показать"}
               </button>
             )}
-            <button className="order-assistant__reset" onClick={() => { setFilter("all"); setSearch(""); setSupplier(""); setSupplierClass(""); setShowRemoved(false); }} type="button">Сбросить</button>
+            {hasResettableFilters && (
+              <button className="order-assistant__reset" onClick={() => { setFilter("all"); setSearch(""); setSupplier(""); setSupplierClass(""); setShowRemoved(false); }} type="button">Сбросить</button>
+            )}
           </div>
           {filtersOpen && (
             <div className="order-assistant__advanced-filters">
@@ -942,7 +931,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                         </td>
                       </tr>
                     )}
-                    <tr className={selectable ? "" : "is-unavailable"}>
+                    <tr className={row.line.blockers.length > 0 ? "is-blocked" : selectable ? "" : "is-unavailable"}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
                       <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
                       <td>
@@ -1017,14 +1006,18 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       <td>
                         <div className="order-assistant__decision">
                           {row.order.blockers.length > 0 ? (
-                            <span className="order-assistant__project-action-note">Разбор проекта доступен выше</span>
+                            <span className="order-assistant__project-action-note">
+                              {row.line.blockers.length > 0
+                                ? "Разбор этой строки доступен выше"
+                                : "Проект заблокирован другой строкой"}
+                            </span>
                           ) : (
                             <button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>
                           )}
                           {unavailableReason && row.order.blockers.length === 0 && <small>{unavailableReason}</small>}
                           {row.line.blocker_details?.[0] && (
                             <small className={row.line.blocker_details[0].severity === "technical" ? "is-warning" : "is-danger"}>
-                              Эта строка: {blockerDetailText(row.line)}
+                              Причина: {blockerShortLabel(row.line.blocker_details[0].code)}
                             </small>
                           )}
                         </div>
@@ -1037,11 +1030,11 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
             </table>
             {visibleRows.length === 0 && <div className="order-assistant__empty">По выбранным фильтрам строк нет.</div>}
           </div>
-          <footer className="order-assistant__table-footer"><span>Выбрано {selectedRows.length} строк</span><button onClick={() => setSelected(new Set())} type="button">Снять выбор</button></footer>
+          <footer className="order-assistant__table-footer"><span>Выбрано: {countLabel(selectedRows.length, "строка", "строки", "строк")}</span><button onClick={() => setSelected(new Set())} type="button">Снять выбор</button></footer>
         </div>
 
         <section className="order-assistant__selection">
-          <div className="order-assistant__selection-heading"><div><h2>Выбрано {selectedRows.length} строк</h2><p>Будут сгруппированы в проекты заказов поставщикам</p></div><button aria-label="Снять выбор" onClick={() => setSelected(new Set())} type="button">Снять выбор</button></div>
+          <div className="order-assistant__selection-heading"><div><h2>Выбрано: {countLabel(selectedRows.length, "строка", "строки", "строк")}</h2><p>Будут сгруппированы в проекты заказов поставщикам</p></div><button aria-label="Снять выбор" onClick={() => setSelected(new Set())} type="button">Снять выбор</button></div>
           <div className="order-assistant__supplier-list">
             {groupedRows.length ? groupedRows.map((group) => <SupplierSummaryCard key={group[0].order.id} onOpen={() => { setPanelOrderId(group[0].order.id); setPanelOpen(true); }} rows={group} />) : <div className="order-assistant__empty">Выберите строки для формирования проектов.</div>}
           </div>

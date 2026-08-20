@@ -469,6 +469,6 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
     expect(screen.getByText(/Цена человека: 90,00.*· новая цена: 110,00/)).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "Количество Дисплей для Huawei P10 Lite" }))
       .toHaveValue(7);
-    expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Сохранить количество и цену" })).toBeDisabled();
   });
 });

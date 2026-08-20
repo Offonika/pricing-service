@@ -14,10 +14,46 @@ from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
     build_grouped_orders,
     build_summary,
+    load_receiving_warehouse,
     parse_args,
     persist_grouped_orders,
     select_order_rows,
 )
+
+
+def test_receiving_warehouse_is_loaded_from_policy(tmp_path: Path) -> None:
+    policy = tmp_path / "warehouse-policy.json"
+    policy.write_text(
+        """{
+          "minimum_representation_policy": {"central_warehouse_code": "РБ0000010"},
+          "warehouses": [
+            {"warehouse_code": "РБ0000010", "name": "Сдэк Склад", "role": "central_transfer_stock"}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+
+    assert load_receiving_warehouse(policy) == {
+        "ref": "",
+        "code": "РБ0000010",
+        "name": "Сдэк Склад",
+    }
+
+
+def test_receiving_warehouse_policy_rejects_another_cli_code(tmp_path: Path) -> None:
+    policy = tmp_path / "warehouse-policy.json"
+    policy.write_text(
+        """{
+          "minimum_representation_policy": {"central_warehouse_code": "РБ0000010"},
+          "warehouses": [
+            {"warehouse_code": "РБ0000010", "name": "Сдэк Склад", "role": "central_transfer_stock"}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fixed by policy"):
+        load_receiving_warehouse(policy, warehouse_code="OTHER")
 
 
 def _source(code: str, qty: str, group: str) -> dict[str, str]:
@@ -390,6 +426,46 @@ def test_main_supplier_from_card_wins_over_purchase_history() -> None:
     )
     assert orders[0]["supplier"]["name"] == "Основной поставщик карточки"
     assert orders[0]["supplier"]["ref"] == "0xcard"
+
+
+def test_fresh_onec_card_wins_over_earlier_calculation_snapshot() -> None:
+    source = _source("A", "5", "A")
+    source.update(
+        {
+            "main_supplier_ref": "0xsnapshot",
+            "main_supplier_code": "S8",
+            "main_supplier_name": "Поставщик снимка расчёта",
+        }
+    )
+    orders = build_grouped_orders(
+        [source],
+        [_lead("A", "S8", "0xsnapshot")],
+        nomenclature_by_code={
+            "A": {
+                "nomenclature_ref": "0x00010025901E48EF11E1967C11111111",
+                "main_supplier_ref": "0xchanged",
+                "main_supplier_code": "S9",
+                "main_supplier_name": "Изменён после расчёта",
+            }
+        },
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id=1,
+            name="Каталожный товар",
+            xml_id=guid,
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Основной договор"}},
+        warehouse={"ref": "0xw", "code": "W1", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="display",
+        route="direct",
+        batch_id="2026-08-20",
+        order_date=date(2026, 8, 20),
+        calculation_id="calc",
+    )
+
+    assert orders[0]["supplier"]["ref"] == "0xchanged"
+    assert orders[0]["supplier"]["name"] == "Изменён после расчёта"
 
 
 def test_purchase_history_supplier_is_used_when_card_is_empty() -> None:

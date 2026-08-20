@@ -216,6 +216,42 @@ class ProcurementSupplierProfileRead(BaseModel):
     can_edit: bool = False
 
 
+class ProcurementSupplierOptionRead(BaseModel):
+    ref: str
+    code: str = ""
+    name: str
+
+
+class ProcurementLineSupplierSelectionRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+    expected_line_version: int = Field(ge=1)
+    supplier_ref: str = Field(min_length=1, max_length=64)
+    supplier_code: str = Field(default="", max_length=64)
+    supplier_name: str = Field(min_length=1, max_length=500)
+
+
+class ProcurementSupplierDistributionGroupRead(BaseModel):
+    supplier_ref: str
+    supplier_code: str = ""
+    supplier_name: str
+    line_ids: list[int] = Field(default_factory=list)
+    line_numbers: list[int] = Field(default_factory=list)
+    nomenclature_codes: list[str] = Field(default_factory=list)
+    target_order_id: int | None = None
+    target_order_status: str = "new"
+
+
+class ProcurementSupplierDistributionPreviewRead(BaseModel):
+    source_order_id: int
+    source_order_version: int
+    groups: list[ProcurementSupplierDistributionGroupRead] = Field(default_factory=list)
+    unresolved_line_numbers: list[int] = Field(default_factory=list)
+
+
+class ProcurementSupplierDistributionApplyRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+
+
 class ProcurementOrderFormationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -264,6 +300,12 @@ class ProcurementOrderFormationRead(BaseModel):
     supplier_profile: ProcurementSupplierProfileRead = Field(
         default_factory=ProcurementSupplierProfileRead
     )
+
+
+class ProcurementSupplierDistributionApplyResponse(BaseModel):
+    source_order: ProcurementOrderFormationRead
+    target_order_ids: list[int] = Field(default_factory=list)
+    moved_line_count: int = 0
 
 
 class ProcurementOrderAssistantSummary(BaseModel):

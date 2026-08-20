@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 import app.services.bitrix_order_formation as bitrix_order_service
+import app.services.procurement_order_formation as order_service
 from app.api.procurement_order_formation import change_order_line
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
@@ -42,6 +43,7 @@ from app.services.procurement_order_formation import (
     build_order_message,
     classification_blocks_line,
     create_classification_proposal,
+    distribute_lines_by_suppliers,
     effective_assortment_status,
     line_blocker_details,
     line_blockers,
@@ -49,9 +51,11 @@ from app.services.procurement_order_formation import (
     onec_binary_ref_to_guid,
     order_blocker_details,
     order_blockers,
+    preview_supplier_distribution,
     record_order_exchange_result,
     record_property_update_exchange_result,
     reject_classification_proposal,
+    select_line_main_supplier,
     transmit_order,
     update_order_line,
 )
@@ -290,6 +294,144 @@ def test_line_change_rejects_stale_expected_version(db_session) -> None:
                 "final_quantity": Decimal("7"),
             },
         )
+
+
+def test_in_app_supplier_selection_stays_pending_until_onec_confirms(
+    db_session,
+    monkeypatch,
+) -> None:
+    order = _order(db_session)
+    order.supplier_ref = None
+    order.supplier_code = None
+    order.supplier_name = "Не определён"
+    db_session.commit()
+
+    class DummyEngine:
+        def dispose(self) -> None:
+            pass
+
+    monkeypatch.setattr(order_service, "build_engine", lambda *_args, **_kwargs: DummyEngine())
+    monkeypatch.setattr(
+        order_service,
+        "fetch_onec_supplier_by_ref",
+        lambda *_args, **_kwargs: {"ref": "0xnew", "code": "S9", "name": "Samsung display"},
+    )
+    monkeypatch.setattr(
+        order_service,
+        "fetch_onec_nomenclature_by_codes",
+        lambda *_args, **_kwargs: {
+            "РБ000006737": {
+                "nomenclature_code": "РБ000006737",
+                "main_supplier_ref": "",
+            }
+        },
+    )
+
+    updated = select_line_main_supplier(
+        db_session,
+        order.id,
+        order.lines[0].id,
+        {
+            "expected_order_version": 1,
+            "expected_line_version": 1,
+            "supplier_ref": "0xnew",
+            "supplier_code": "S9",
+            "supplier_name": "Samsung display",
+        },
+        _session(),
+        settings=Settings(onec_database_url="mssql+pyodbc://test"),
+    )
+
+    selection = updated.lines[0].payload["main_supplier_selection"]
+    assert selection["ref"] == "0xnew"
+    assert selection["status"] == "pending_onec_write"
+    assert updated.version == 2
+
+
+def test_onec_main_supplier_wins_over_in_app_selection(db_session, monkeypatch) -> None:
+    order = _order(db_session)
+    order.supplier_ref = None
+    order.supplier_code = None
+    order.supplier_name = "Не определён"
+    db_session.commit()
+
+    class DummyEngine:
+        def dispose(self) -> None:
+            pass
+
+    monkeypatch.setattr(order_service, "build_engine", lambda *_args, **_kwargs: DummyEngine())
+    monkeypatch.setattr(
+        order_service,
+        "fetch_onec_supplier_by_ref",
+        lambda *_args, **_kwargs: {"ref": "0xnew", "code": "S9", "name": "Samsung display"},
+    )
+    monkeypatch.setattr(
+        order_service,
+        "fetch_onec_nomenclature_by_codes",
+        lambda *_args, **_kwargs: {
+            "РБ000006737": {
+                "main_supplier_ref": "0xmanual",
+                "main_supplier_code": "S1",
+                "main_supplier_name": "Изменён вручную в 1С",
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="changed in 1C"):
+        select_line_main_supplier(
+            db_session,
+            order.id,
+            order.lines[0].id,
+            {
+                "expected_order_version": 1,
+                "expected_line_version": 1,
+                "supplier_ref": "0xnew",
+                "supplier_code": "S9",
+                "supplier_name": "Samsung display",
+            },
+            _session(),
+            settings=Settings(onec_database_url="mssql+pyodbc://test"),
+        )
+
+
+def test_supplier_review_room_previews_and_moves_resolved_lines(db_session, monkeypatch) -> None:
+    source = _order(db_session)
+    source.supplier_ref = None
+    source.supplier_code = None
+    source.supplier_name = "Не определён"
+    source.lines[0].blockers = ["supplier_1c_reference_missing"]
+    supplier = {"ref": "0xnew", "code": "S9", "name": "Samsung display"}
+    db_session.commit()
+
+    def resolved(order, *, settings=None):
+        del settings
+        line = next(item for item in order.lines if item.nomenclature_code == "РБ000006737")
+        unresolved = [item for item in order.lines if item is not line]
+        return {"0xnew": [(line, supplier, "pending_onec_write")]}, unresolved
+
+    monkeypatch.setattr(order_service, "_resolved_line_suppliers", resolved)
+
+    preview = preview_supplier_distribution(db_session, source.id)
+    assert preview["groups"][0]["supplier_name"] == "Samsung display"
+    assert preview["groups"][0]["line_numbers"] == [1]
+    assert preview["unresolved_line_numbers"] == [2]
+
+    updated_source, target_ids, moved = distribute_lines_by_suppliers(
+        db_session,
+        source.id,
+        expected_order_version=1,
+        session=_session(),
+    )
+
+    assert moved == 1
+    assert len(target_ids) == 1
+    target = db_session.get(ProcurementOrderFormation, target_ids[0])
+    assert target is not None
+    assert target.supplier_ref == "0xnew"
+    assert [line.nomenclature_code for line in target.lines] == ["РБ000006737"]
+    assert "supplier_1c_reference_missing" not in target.lines[0].blockers
+    assert target.lines[0].payload["main_supplier_selection"]["status"] == "pending_onec_write"
+    assert [line.nomenclature_code for line in updated_source.lines] == ["РБ000006738"]
 
 
 def test_order_does_not_require_legacy_bitrix_card_url(db_session) -> None:

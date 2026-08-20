@@ -21,6 +21,7 @@ from app.schemas.procurement_order_formation import (
     ProcurementLifecycleTransitionApprovalRequest,
     ProcurementLifecycleTransitionApprovalResponse,
     ProcurementLifecycleTransitionList,
+    ProcurementLineSupplierSelectionRequest,
     ProcurementMatchingReviewConfirmationRead,
     ProcurementMatchingReviewConfirmRequest,
     ProcurementOrderAssistantAssembleRequest,
@@ -35,6 +36,10 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderLineUpdateRequest,
     ProcurementOrderListResponse,
     ProcurementOrderTransmissionResponse,
+    ProcurementSupplierDistributionApplyRequest,
+    ProcurementSupplierDistributionApplyResponse,
+    ProcurementSupplierDistributionPreviewRead,
+    ProcurementSupplierOptionRead,
     ProcurementSupplierProfileRead,
     ProcurementSupplierProfileUpdateRequest,
 )
@@ -52,9 +57,13 @@ from app.services.procurement_order_formation import (
     approve_classification_proposal,
     approve_order,
     create_classification_proposal,
+    distribute_lines_by_suppliers,
     get_order,
     get_order_by_bitrix_item,
+    list_supplier_options,
+    preview_supplier_distribution,
     reject_classification_proposal,
+    select_line_main_supplier,
     serialize_order,
     serialize_proposal,
     transmit_order,
@@ -281,6 +290,26 @@ def read_order_assistant(
         return ProcurementOrderAssistantResponse.model_validate(
             build_order_assistant(db, session=session)
         )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/suppliers/options",
+    response_model=list[ProcurementSupplierOptionRead],
+)
+def read_supplier_options(
+    search: str,
+    limit: int = 20,
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> list[ProcurementSupplierOptionRead]:
+    try:
+        return [
+            ProcurementSupplierOptionRead.model_validate(item)
+            for item in list_supplier_options(query=search, limit=limit)
+        ]
     except Exception as exc:
         raise _service_error(exc) from exc
 
@@ -557,6 +586,79 @@ def change_order_line(
         db.commit()
         return ProcurementOrderFormationRead.model_validate(after)
     except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.patch(
+    "/orders/{order_id}/lines/{line_id}/main-supplier",
+    response_model=ProcurementOrderFormationRead,
+)
+def change_line_main_supplier(
+    order_id: int,
+    line_id: int,
+    payload: ProcurementLineSupplierSelectionRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementOrderFormationRead:
+    try:
+        order = select_line_main_supplier(
+            db,
+            order_id,
+            line_id,
+            payload.model_dump(),
+            session,
+        )
+        return ProcurementOrderFormationRead.model_validate(serialize_order(order))
+    except Exception as exc:
+        db.rollback()
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/orders/{order_id}/distribute-by-suppliers/preview",
+    response_model=ProcurementSupplierDistributionPreviewRead,
+)
+def preview_order_supplier_distribution(
+    order_id: int,
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementSupplierDistributionPreviewRead:
+    try:
+        return ProcurementSupplierDistributionPreviewRead.model_validate(
+            preview_supplier_distribution(db, order_id)
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/orders/{order_id}/distribute-by-suppliers",
+    response_model=ProcurementSupplierDistributionApplyResponse,
+)
+def apply_order_supplier_distribution(
+    order_id: int,
+    payload: ProcurementSupplierDistributionApplyRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementSupplierDistributionApplyResponse:
+    try:
+        source, target_ids, moved = distribute_lines_by_suppliers(
+            db,
+            order_id,
+            expected_order_version=payload.expected_order_version,
+            session=session,
+        )
+        return ProcurementSupplierDistributionApplyResponse.model_validate(
+            {
+                "source_order": serialize_order(source),
+                "target_order_ids": target_ids,
+                "moved_line_count": moved,
+            }
+        )
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 

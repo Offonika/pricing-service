@@ -159,6 +159,31 @@ def test_supplier_profile_and_classification_rejection_endpoints_are_versioned()
     )
 
 
+def test_supplier_review_room_endpoints_are_exposed() -> None:
+    openapi = app.openapi()
+    paths = openapi["paths"]
+    schemas = openapi["components"]["schemas"]
+
+    assert "get" in paths["/api/procurement-order-formation/suppliers/options"]
+    assert (
+        "patch"
+        in paths["/api/procurement-order-formation/orders/{order_id}/lines/{line_id}/main-supplier"]
+    )
+    assert (
+        "post"
+        in paths[
+            "/api/procurement-order-formation/orders/{order_id}/distribute-by-suppliers/preview"
+        ]
+    )
+    assert (
+        "post"
+        in paths["/api/procurement-order-formation/orders/{order_id}/distribute-by-suppliers"]
+    )
+    assert {"expected_order_version", "expected_line_version", "supplier_ref"}.issubset(
+        schemas["ProcurementLineSupplierSelectionRequest"]["required"]
+    )
+
+
 def test_order_resolution_contract_is_exposed_in_openapi() -> None:
     openapi = app.openapi()
     paths = openapi["paths"]

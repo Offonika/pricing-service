@@ -44,6 +44,10 @@ DEFAULT_SYNC_READY_CSV = (
 CSV_COLUMNS = [
     "nomenclature_code",
     "name",
+    "main_supplier_ref",
+    "main_supplier_name",
+    "main_supplier_source_status",
+    "distribution_to_shelf_days",
     "analog_group_id",
     "analog_role",
     "speed_tier",
@@ -226,11 +230,15 @@ def build_comparison_rows(
         row = dict(dry_row)
         code = _clean(row.get("nomenclature_code"))
         group_key = display_group_key(row)
+        main_supplier_ref = _clean(row.get("main_supplier_ref"))
+        main_supplier_source_status = _clean(row.get("main_supplier_source_status"))
         lead_candidate, source_level = choose_lead_time_candidate(
             code,
             group_key,
             code_index=code_index,
             group_index=group_index,
+            supplier_ref=main_supplier_ref,
+            supplier_source_unavailable=(main_supplier_source_status == "unavailable"),
         )
         lead_applied = bool(
             lead_candidate
@@ -253,9 +261,21 @@ def build_comparison_rows(
             )
             warnings.append("adaptive_lead_time_applied")
         elif lead_candidate:
-            warnings.append("lead_time_low_confidence_fallback")
+            warnings.append(
+                "main_supplier_lead_time_low_confidence_fallback"
+                if main_supplier_ref
+                else "lead_time_low_confidence_fallback"
+            )
         else:
-            warnings.append("lead_time_missing_fallback")
+            warnings.append(
+                "main_supplier_source_unavailable_fallback"
+                if main_supplier_source_status == "unavailable"
+                else (
+                    "main_supplier_lead_time_missing_fallback"
+                    if main_supplier_ref
+                    else "lead_time_missing_fallback"
+                )
+            )
 
         seasonality_adjustment = seasonality_adjustment_for_candidate(
             lead_candidate,
@@ -318,6 +338,7 @@ def build_row_comparison(
     cadence_days = _int_or_none(row.get("order_cadence_days")) or 0
     delay_buffer_days = _int_or_none(row.get("supplier_delay_buffer_days")) or 0
     receiving_days = _int_or_none(row.get("receiving_buffer_days")) or 0
+    distribution_days = _int_or_none(row.get("distribution_to_shelf_days")) or 0
     adaptive_lead_days = adaptive_prepare + adaptive_logistics
     adaptive_uncapped_effective_days = (
         target_days
@@ -325,11 +346,15 @@ def build_row_comparison(
         + adaptive_lead_days
         + delay_buffer_days
         + receiving_days
+        + distribution_days
         + adaptive_safety_days
     )
     adaptive_effective_days = adaptive_uncapped_effective_days
     if max_effective_days is not None and not margin_flow_applied:
-        adaptive_effective_days = min(adaptive_effective_days, max_effective_days)
+        adaptive_effective_days = min(
+            adaptive_effective_days,
+            max_effective_days + distribution_days,
+        )
     forecast_days = max(0, adaptive_effective_days - adaptive_safety_days)
 
     blockers = set(_split_codes(row.get("blockers")))
@@ -468,6 +493,10 @@ def build_row_comparison(
     return {
         "nomenclature_code": _clean(row.get("nomenclature_code")),
         "name": _clean(row.get("name")),
+        "main_supplier_ref": _clean(row.get("main_supplier_ref")),
+        "main_supplier_name": _clean(row.get("main_supplier_name")),
+        "main_supplier_source_status": _clean(row.get("main_supplier_source_status")),
+        "distribution_to_shelf_days": distribution_days,
         "analog_group_id": _clean(row.get("analog_group_id")),
         "analog_role": role,
         "speed_tier": _clean(row.get("speed_tier")),
@@ -591,6 +620,20 @@ def build_sync_ready_rows(
 
         warnings = set(_split_codes(row.get("warnings")))
         warnings.update(_split_codes(comparison_row.get("warnings")))
+        # Adaptive overlay полностью заменяет количество, поэтому сигнал
+        # минимальной партии нельзя наследовать с предыдущего этапа. Он
+        # пересчитывается по финальным raw/итоговым значениям так же, как
+        # сигналы округления и ограничения количества в основном dry-run.
+        warnings.discard("price_batch_minimum_applied")
+        price_batch_min_qty = _decimal(row.get("price_batch_min_qty")) or Decimal("0")
+        adaptive_qty_decimal = _decimal(adaptive_qty) or Decimal("0")
+        adaptive_qty_raw_decimal = _decimal(adaptive_qty_raw) or Decimal("0")
+        if (
+            _clean(row.get("dry_run_decision")) == "order"
+            and Decimal("0") < adaptive_qty_raw_decimal < price_batch_min_qty
+            and adaptive_qty_decimal >= price_batch_min_qty
+        ):
+            warnings.add("price_batch_minimum_applied")
         if _clean(comparison_row.get("lead_time_applied")) in {"1", "true", "True"}:
             warnings.add("adaptive_lead_time_sync_ready")
         row["warnings"] = "; ".join(sorted(warnings))
@@ -654,9 +697,30 @@ def choose_lead_time_candidate(
     *,
     code_index: Mapping[str, Sequence[Mapping[str, Any]]],
     group_index: Mapping[str, Sequence[Mapping[str, Any]]],
+    supplier_ref: str = "",
+    supplier_source_unavailable: bool = False,
 ) -> tuple[Mapping[str, Any] | None, str]:
+    if supplier_source_unavailable:
+        return None, "main_supplier_source_unavailable"
     exact = tuple(code_index.get(code, ()))
     group = tuple(group_index.get(group_key, ()))
+    normalized_supplier_ref = _clean(supplier_ref).casefold()
+    if normalized_supplier_ref:
+        exact = tuple(
+            row
+            for row in exact
+            if _clean(row.get("supplier_ref")).casefold() == normalized_supplier_ref
+        )
+        group = tuple(
+            row
+            for row in group
+            if _clean(row.get("supplier_ref")).casefold() == normalized_supplier_ref
+        )
+        level_suffix = "_main_supplier"
+        missing_level = "main_supplier_history_missing"
+    else:
+        level_suffix = ""
+        missing_level = "fallback_default"
     for rows, level in (
         (eligible_lead_time_rows(exact), "sku"),
         (eligible_lead_time_rows(group), "display_group"),
@@ -665,8 +729,8 @@ def choose_lead_time_candidate(
     ):
         candidate = best_lead_time_row(rows)
         if candidate:
-            return candidate, level
-    return None, "fallback_default"
+            return candidate, f"{level}{level_suffix}"
+    return None, missing_level
 
 
 def eligible_lead_time_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
@@ -775,7 +839,7 @@ def build_summary(
         row for row in rows if (_decimal(row.get("qty_delta")) or Decimal("0")) < 0
     ]
     return {
-        "schema": "display_auto_order_adaptive_lead_time_comparison.v1",
+        "schema": "display_auto_order_adaptive_lead_time_comparison.v2",
         "as_of": as_of.isoformat(),
         "input_dry_run_csv": str(dry_run_csv),
         "input_lead_time_csv": str(lead_time_csv),
@@ -803,6 +867,25 @@ def build_summary(
         "lead_time_source_counts": dict(
             sorted(Counter(_clean(row.get("lead_time_source_level")) for row in rows).items())
         ),
+        "main_supplier_source_counts": dict(
+            sorted(
+                Counter(
+                    _clean(row.get("main_supplier_source_status")) or "legacy_unknown"
+                    for row in rows
+                ).items()
+            )
+        ),
+        "main_supplier_history_missing_rows": sum(
+            _clean(row.get("lead_time_source_level")) == "main_supplier_history_missing"
+            for row in rows
+        ),
+        "distribution_to_shelf_days_counts": dict(
+            sorted(
+                Counter(
+                    _int_or_none(row.get("distribution_to_shelf_days")) or 0 for row in rows
+                ).items()
+            )
+        ),
         "lead_time_confidence_counts": dict(
             sorted(
                 Counter(
@@ -823,8 +906,10 @@ def build_summary(
             _summary_change_row(row) for row in top_qty_changes(qty_decrease_rows, reverse=False)
         ],
         "notes": [
-            "high/medium lead-time confidence applies live supplier history",
+            "high/medium lead-time confidence applies live history of the card's main supplier",
+            "another supplier is never substituted when the card's main supplier is configured",
             "low/missing lead-time confidence keeps current dry-run lead time as fallback",
+            "distribution_to_shelf_days is included in the uncapped horizon and speed-tier cap",
             "recent seasonality is applied only for signals in the lookback window, not historical spikes",
         ],
     }
@@ -865,16 +950,17 @@ def adaptive_reason(
     seasonality_adjustment: Mapping[str, Any],
 ) -> str:
     if adaptive_qty > current_qty:
-        direction = "адаптивный расчет увеличил заказ"
+        quantity_change = f"количество {current_qty} -> {adaptive_qty} шт. (увеличено)"
     elif adaptive_qty < current_qty:
-        direction = "адаптивный расчет уменьшил заказ"
+        quantity_change = f"количество {current_qty} -> {adaptive_qty} шт. (уменьшено)"
     else:
-        direction = "количество не изменилось"
+        quantity_change = f"количество не изменилось ({adaptive_qty} шт.)"
     source = "живой срок применен" if lead_applied else "оставлен fallback по текущему dry-run"
     supplier = _clean(lead_candidate.get("supplier_name")) if lead_candidate else ""
     responsible = _clean(lead_candidate.get("responsible_name")) if lead_candidate else ""
     parts = [
-        f"{direction}: горизонт {current_effective_days} -> {adaptive_effective_days} дней",
+        f"адаптивный расчет: {quantity_change}",
+        f"горизонт {current_effective_days} -> {adaptive_effective_days} дней",
         source,
     ]
     if supplier:

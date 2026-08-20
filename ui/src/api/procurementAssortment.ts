@@ -128,6 +128,15 @@ export interface ProcurementLineSyncPayload {
   };
   need_status?: "disappeared" | string;
   disappeared_in_calculation_id?: string;
+  main_supplier_selection?: {
+    ref: string;
+    code?: string;
+    name: string;
+    status: "pending_onec_write" | "confirmed_in_1c" | string;
+    selected_at?: string;
+    selected_by_name?: string;
+    distributed_at?: string;
+  };
   [key: string]: unknown;
 }
 
@@ -279,6 +288,28 @@ export interface ProcurementSupplierProfile {
   updated_at?: string | null;
   data_status: "ready" | "partial" | "missing" | string;
   can_edit?: boolean;
+}
+
+export interface ProcurementSupplierOption {
+  ref: string;
+  code: string;
+  name: string;
+}
+
+export interface ProcurementSupplierDistributionPreview {
+  source_order_id: number;
+  source_order_version: number;
+  groups: Array<{
+    supplier_ref: string;
+    supplier_code: string;
+    supplier_name: string;
+    line_ids: number[];
+    line_numbers: number[];
+    nomenclature_codes: string[];
+    target_order_id?: number | null;
+    target_order_status: string;
+  }>;
+  unresolved_line_numbers: number[];
 }
 
 export interface ProcurementOrderFormation {
@@ -702,6 +733,54 @@ export async function updateProcurementOrderLine(
     `/procurement-order-formation/orders/${orderId}/lines/${lineId}`,
     payload
   );
+  return data;
+}
+
+export async function searchProcurementSupplierOptions(search: string) {
+  const { data } = await api.get<ProcurementSupplierOption[]>(
+    "/procurement-order-formation/suppliers/options",
+    { params: { search, limit: 20 } }
+  );
+  return data;
+}
+
+export async function selectProcurementLineMainSupplier(
+  orderId: number,
+  lineId: number,
+  payload: {
+    expected_order_version: number;
+    expected_line_version: number;
+    supplier_ref: string;
+    supplier_code: string;
+    supplier_name: string;
+  }
+) {
+  const { data } = await api.patch<ProcurementOrderFormation>(
+    `/procurement-order-formation/orders/${orderId}/lines/${lineId}/main-supplier`,
+    payload
+  );
+  return data;
+}
+
+export async function previewProcurementSupplierDistribution(orderId: number) {
+  const { data } = await api.post<ProcurementSupplierDistributionPreview>(
+    `/procurement-order-formation/orders/${orderId}/distribute-by-suppliers/preview`,
+    {}
+  );
+  return data;
+}
+
+export async function applyProcurementSupplierDistribution(
+  orderId: number,
+  expectedOrderVersion: number
+) {
+  const { data } = await api.post<{
+    source_order: ProcurementOrderFormation;
+    target_order_ids: number[];
+    moved_line_count: number;
+  }>(`/procurement-order-formation/orders/${orderId}/distribute-by-suppliers`, {
+    expected_order_version: expectedOrderVersion,
+  });
   return data;
 }
 

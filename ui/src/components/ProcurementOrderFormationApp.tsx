@@ -1,11 +1,17 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import toast from "react-hot-toast";
 import {
+  applyProcurementSupplierDistribution,
   approveProcurementClassification,
   createProcurementClassification,
   fetchProcurementOrder,
+  previewProcurementSupplierDistribution,
+  searchProcurementSupplierOptions,
+  selectProcurementLineMainSupplier,
   submitProcurementOrder,
   updateProcurementOrderLine,
+  type ProcurementSupplierDistributionPreview,
+  type ProcurementSupplierOption,
   type ProcurementOrderFormation,
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
@@ -243,6 +249,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const [removalReplacement, setRemovalReplacement] = useState("");
   const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
   const [loadingKey, setLoadingKey] = useState("");
+  const [supplierQueries, setSupplierQueries] = useState<Record<number, string>>({});
+  const [supplierOptions, setSupplierOptions] = useState<Record<number, ProcurementSupplierOption[]>>({});
+  const [distributionPreview, setDistributionPreview] = useState<ProcurementSupplierDistributionPreview | null>(null);
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
   const removalDialogRef = useRef<HTMLDivElement | null>(null);
   const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
@@ -295,6 +304,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     [order.blocker_details]
   );
   const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
+  const supplierReviewRoom = !order.supplier_ref && !order.supplier_code;
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
       const edit = lineEdits[line.id];
@@ -503,6 +513,72 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     }
   };
 
+  const findSuppliers = async (line: ProcurementOrderFormationLine) => {
+    const query = (supplierQueries[line.id] || "").trim();
+    if (query.length < 2) {
+      toast.error("Введите минимум два символа названия или кода поставщика");
+      return;
+    }
+    setLoadingKey(`supplier-search-${line.id}`);
+    try {
+      const options = await searchProcurementSupplierOptions(query);
+      setSupplierOptions((current) => ({ ...current, [line.id]: options }));
+      if (options.length === 0) toast.error("Поставщик не найден в 1С");
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const chooseSupplier = async (
+    line: ProcurementOrderFormationLine,
+    supplier: ProcurementSupplierOption
+  ) => {
+    setLoadingKey(`supplier-select-${line.id}`);
+    try {
+      const updated = await selectProcurementLineMainSupplier(order.id, line.id, {
+        expected_order_version: order.version,
+        expected_line_version: line.version,
+        supplier_ref: supplier.ref,
+        supplier_code: supplier.code,
+        supplier_name: supplier.name,
+      });
+      setOrder(updated);
+      setSupplierOptions((current) => ({ ...current, [line.id]: [] }));
+      toast.success("Поставщик выбран; до подтверждения 1С строка остаётся с пометкой");
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const openDistributionPreview = async () => {
+    setLoadingKey("supplier-distribution-preview");
+    try {
+      setDistributionPreview(await previewProcurementSupplierDistribution(order.id));
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const distributeBySuppliers = async () => {
+    setLoadingKey("supplier-distribution-apply");
+    try {
+      const result = await applyProcurementSupplierDistribution(order.id, order.version);
+      setOrder(result.source_order);
+      setDistributionPreview(null);
+      toast.success(`Разнесено строк: ${result.moved_line_count}`);
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
   return (
     <div className="app order-formation">
       <header className="app__header order-formation__header">
@@ -524,6 +600,59 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         <div><span>Партия</span><strong>{order.batch_id}</strong></div>
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
+
+      {supplierReviewRoom && !locked && (
+        <section className="order-formation__supplier-room">
+          <div>
+            <strong>Комната разбора поставщиков</strong>
+            <span>Назначьте поставщика в строках, затем проверьте будущие проекты.</span>
+          </div>
+          <button
+            className="btn"
+            disabled={Boolean(loadingKey)}
+            onClick={() => void openDistributionPreview()}
+            type="button"
+          >
+            {loadingKey === "supplier-distribution-preview" ? "Готовим предпросмотр..." : "Разнести по поставщикам"}
+          </button>
+        </section>
+      )}
+
+      {distributionPreview && (
+        <section className="order-formation__distribution-preview">
+          <header>
+            <div>
+              <strong>Предпросмотр разнесения</strong>
+              <span>В 1С ничего не отправляется.</span>
+            </div>
+            <button aria-label="Закрыть предпросмотр" onClick={() => setDistributionPreview(null)} type="button">×</button>
+          </header>
+          {distributionPreview.groups.length > 0 ? (
+            <ul>
+              {distributionPreview.groups.map((group) => (
+                <li key={group.supplier_ref}>
+                  <strong>{group.supplier_name}</strong>
+                  <span>строки {group.line_numbers.join(", ")} · {group.target_order_id ? `добавятся в проект #${group.target_order_id}` : "будет создан новый проект"}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <p>Нет строк с выбранным поставщиком.</p>}
+          {distributionPreview.unresolved_line_numbers.length > 0 && (
+            <p className="is-warning">Останутся в комнате: строки {distributionPreview.unresolved_line_numbers.join(", ")}.</p>
+          )}
+          <footer>
+            <button className="btn btn--ghost" onClick={() => setDistributionPreview(null)} type="button">Отмена</button>
+            <button
+              className="btn"
+              disabled={distributionPreview.groups.length === 0 || Boolean(loadingKey)}
+              onClick={() => void distributeBySuppliers()}
+              type="button"
+            >
+              {loadingKey === "supplier-distribution-apply" ? "Разносим..." : "Подтвердить разнесение"}
+            </button>
+          </footer>
+        </section>
+      )}
 
       {(blockerDetailGroups.length > 0 || blockerGroups.length > 0) && (
         <section className="order-formation__alert">
@@ -609,6 +738,45 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
                       <small>Товар Bitrix24: {line.bitrix_product_id || "не найден"}</small>
                       {line.quality && <small>Качество: {line.quality}</small>}
+                      {supplierReviewRoom && !line.removed && (
+                        <div className="order-formation__supplier-picker">
+                          {line.payload?.main_supplier_selection && (
+                            <span className="order-formation__supplier-selection">
+                              {line.payload.main_supplier_selection.name} · {line.payload.main_supplier_selection.status === "confirmed_in_1c"
+                                ? "подтверждён карточкой 1С"
+                                : "выбран, в карточке ещё не записан"}
+                            </span>
+                          )}
+                          <div>
+                            <input
+                              aria-label={`Поставщик ${line.nomenclature_name}`}
+                              disabled={locked}
+                              onChange={(event) => setSupplierQueries((current) => ({ ...current, [line.id]: event.target.value }))}
+                              placeholder="Название или код поставщика"
+                              value={supplierQueries[line.id] || ""}
+                            />
+                            <button
+                              className="btn btn--ghost btn--small"
+                              disabled={Boolean(loadingKey)}
+                              onClick={() => void findSuppliers(line)}
+                              type="button"
+                            >
+                              Найти
+                            </button>
+                          </div>
+                          {(supplierOptions[line.id] || []).map((supplier) => (
+                            <button
+                              className="order-formation__supplier-option"
+                              disabled={Boolean(loadingKey)}
+                              key={supplier.ref}
+                              onClick={() => void chooseSupplier(line, supplier)}
+                              type="button"
+                            >
+                              <strong>{supplier.name}</strong><small>{supplier.code}</small>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td>
                       <strong>{line.effective_assortment_status_label || "Не задана"}</strong>

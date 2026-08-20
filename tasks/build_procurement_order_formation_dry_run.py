@@ -34,11 +34,15 @@ from app.services.master_mobile_catalog import (
     MasterMobileCatalogResolver,
     ProductMediaResolution,
 )
+from app.services.onec_nomenclature_snapshot import (
+    fetch_onec_nomenclature_by_codes,
+    main_supplier_payload,
+)
 from app.services.procurement_order_formation import (
     ensure_order_editable,
     invalidate_order_approval,
 )
-from app.services.query_batching import load_text_mapping_in_batches, normalized_text_batches
+from app.services.query_batching import normalized_text_batches
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     build_lead_time_indexes,
     choose_lead_time_candidate,
@@ -51,6 +55,7 @@ DEFAULT_INPUT = DEFAULT_REPORT_DIR / "display-auto-order-adaptive-sync-ready.csv
 DEFAULT_LEAD_TIME = DEFAULT_REPORT_DIR / "display-supplier-lead-time-history.csv"
 DEFAULT_OUTPUT_JSON = DEFAULT_REPORT_DIR / "procurement-order-formation-dry-run.json"
 DEFAULT_OUTPUT_CSV = DEFAULT_REPORT_DIR / "procurement-order-formation-lines-dry-run.csv"
+DEFAULT_WAREHOUSE_POLICY = REPO_ROOT / "config/assortment/display-warehouse-policy.json"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -65,7 +70,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--contract-name", default="Основной договор")
     parser.add_argument("--warehouse-ref", default="")
     parser.add_argument("--warehouse-code", default="")
-    parser.add_argument("--warehouse-name", default="Центральный склад")
+    parser.add_argument("--warehouse-name", default="")
+    parser.add_argument(
+        "--warehouse-policy-json",
+        type=Path,
+        default=DEFAULT_WAREHOUSE_POLICY,
+    )
     parser.add_argument("--currency", default="RUB")
     parser.add_argument("--procurement-contour", default="ordinary")
     parser.add_argument("--route", default="ordinary")
@@ -138,6 +148,12 @@ def main() -> int:
         [str(row.get("nomenclature_code") or "") for row in selected_rows],
     )
     contracts = load_contracts(args)
+    warehouse = load_receiving_warehouse(
+        args.warehouse_policy_json,
+        warehouse_ref=args.warehouse_ref,
+        warehouse_code=args.warehouse_code,
+        warehouse_name=args.warehouse_name,
+    )
     selected_supplier_refs = choose_selected_supplier_refs(
         selected_rows, lead_time_rows, nomenclature
     )
@@ -204,11 +220,7 @@ def main() -> int:
         skip_catalog=args.skip_bitrix_catalog,
         contracts=contracts,
         order_dimensions=order_dimensions,
-        warehouse={
-            "ref": args.warehouse_ref,
-            "code": args.warehouse_code,
-            "name": args.warehouse_name,
-        },
+        warehouse=warehouse,
         currency=args.currency,
         procurement_contour=args.procurement_contour,
         route=args.route,
@@ -310,16 +322,21 @@ def build_grouped_orders(
         nomenclature = nomenclature_by_code.get(code) or {}
         ref_hex = _clean(nomenclature.get("nomenclature_ref"))
         xml_id = _onec_binary_ref_to_guid_or_empty(ref_hex)
+        # Перед группировкой читается свежая карточка 1С. Она имеет приоритет
+        # над снимком раннего этапа расчёта: ручную правку в 1С приложение не
+        # должно возвращать назад старым значением из CSV.
+        card = main_supplier_payload(nomenclature)
         lead_candidate, _source_level = choose_lead_time_candidate(
             code,
             display_group_key(row),
             code_index=code_index,
             group_index=group_index,
+            supplier_ref=_clean((card or {}).get("ref")),
         )
         # Основной поставщик карточки 1С — источник правды (решение 2026-08-19).
         # История закупок остаётся запасным вариантом: она показывает, кто возил
         # товар последним, но не то, у кого его положено заказывать сейчас.
-        supplier = card_supplier(nomenclature) or {
+        supplier = card or {
             "ref": _clean((lead_candidate or {}).get("supplier_ref")),
             "code": _clean((lead_candidate or {}).get("supplier_code")),
             "name": _clean((lead_candidate or {}).get("supplier_name")),
@@ -531,21 +548,54 @@ def load_contracts(args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def load_receiving_warehouse(
+    policy_path: Path,
+    *,
+    warehouse_ref: str = "",
+    warehouse_code: str = "",
+    warehouse_name: str = "",
+) -> dict[str, str]:
+    """Resolve the fixed receiving warehouse from the warehouse policy.
+
+    The latest supplier order remains only a fallback inside
+    ``build_grouped_orders`` for legacy/direct callers. The scheduled contour
+    always enters it with this policy-backed value, so history cannot leave the
+    warehouse empty or silently select another receiving point.
+    """
+
+    payload = json.loads(policy_path.read_text(encoding="utf-8-sig"))
+    minimum_policy = payload.get("minimum_representation_policy") or {}
+    policy_code = _clean(minimum_policy.get("central_warehouse_code"))
+    if not policy_code:
+        raise ValueError("warehouse policy has no central_warehouse_code")
+    policy_row = next(
+        (
+            row
+            for row in payload.get("warehouses") or []
+            if isinstance(row, Mapping)
+            and _clean(row.get("warehouse_code") or row.get("code")) == policy_code
+        ),
+        None,
+    )
+    if policy_row is None:
+        raise ValueError(f"receiving warehouse {policy_code} is missing from warehouse policy")
+    if _clean(policy_row.get("role")) != "central_transfer_stock":
+        raise ValueError(f"receiving warehouse {policy_code} must have central_transfer_stock role")
+    requested_code = _clean(warehouse_code)
+    if requested_code and requested_code != policy_code:
+        raise ValueError(
+            f"receiving warehouse is fixed by policy: expected {policy_code}, got {requested_code}"
+        )
+    return {
+        "ref": _clean(warehouse_ref),
+        "code": policy_code,
+        "name": _clean(policy_row.get("name")) or _clean(warehouse_name) or "Сдэк Склад",
+    }
+
+
 # Закупочную цену в проекте держим равной 1 рублю (решение владельца 2026-08-19):
 # цена из истории вводила закупщика в заблуждение, фактическую он проставляет сам.
 PROJECT_PURCHASE_PRICE = Decimal("1")
-
-
-def card_supplier(nomenclature: Mapping[str, Any]) -> dict[str, str] | None:
-    """Основной поставщик из карточки номенклатуры 1С."""
-    ref = _clean(nomenclature.get("main_supplier_ref"))
-    if not ref:
-        return None
-    return {
-        "ref": ref,
-        "code": _clean(nomenclature.get("main_supplier_code")),
-        "name": _clean(nomenclature.get("main_supplier_name")),
-    }
 
 
 def choose_selected_supplier_refs(
@@ -557,7 +607,11 @@ def choose_selected_supplier_refs(
     refs: set[str] = set()
     for row in selected_rows:
         code = _clean(row.get("nomenclature_code"))
-        card = card_supplier((nomenclature_by_code or {}).get(code) or {})
+        card = (
+            main_supplier_payload((nomenclature_by_code or {}).get(code) or {})
+            if nomenclature_by_code is not None
+            else main_supplier_payload(row)
+        )
         if card:
             refs.add(card["ref"])
         candidate, _level = choose_lead_time_candidate(
@@ -565,6 +619,7 @@ def choose_selected_supplier_refs(
             display_group_key(row),
             code_index=code_index,
             group_index=group_index,
+            supplier_ref=_clean((card or {}).get("ref")),
         )
         ref = _clean((candidate or {}).get("supplier_ref"))
         if ref:
@@ -686,31 +741,11 @@ def fetch_nomenclature_by_codes(
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
     if not clean_codes:
         return {}
-    if len(normalized_text_batches(clean_codes)) > 1:
-        return load_text_mapping_in_batches(
-            clean_codes,
-            lambda batch: fetch_nomenclature_by_codes(database_url, batch),
-        )
-    query = text("""
-        SELECT
-            CONVERT(varchar(34), item._IDRRef, 1) AS nomenclature_ref,
-            NULLIF(LTRIM(RTRIM(item._Code)), N'') AS nomenclature_code,
-            NULLIF(LTRIM(RTRIM(item._Description)), N'') AS nomenclature_name,
-            NULLIF(LTRIM(RTRIM(CAST(item._Fld836 AS nvarchar(max)))), N'') AS article,
-            CONVERT(varchar(34), NULLIF(item._Fld851RRef, 0x00000000000000000000000000000000), 1)
-                AS main_supplier_ref,
-            NULLIF(LTRIM(RTRIM(main_supplier._Code)), N'') AS main_supplier_code,
-            NULLIF(LTRIM(RTRIM(main_supplier._Description)), N'') AS main_supplier_name
-        FROM dbo._Reference62 AS item WITH (NOLOCK)
-        LEFT JOIN dbo._Reference54 AS main_supplier WITH (NOLOCK)
-            ON main_supplier._IDRRef = item._Fld851RRef
-        WHERE item._Marked = 0x00
-          AND LTRIM(RTRIM(item._Code)) IN :codes
-    """).bindparams(bindparam("codes", expanding=True))
     engine = build_engine(database_url, pool_pre_ping=True)
-    with engine.connect() as connection:
-        rows = [dict(row) for row in connection.execute(query, {"codes": clean_codes}).mappings()]
-    return {_clean(row.get("nomenclature_code")): row for row in rows}
+    try:
+        return fetch_onec_nomenclature_by_codes(engine, codes=clean_codes)
+    finally:
+        engine.dispose()
 
 
 def build_summary(

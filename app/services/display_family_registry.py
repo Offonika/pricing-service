@@ -1217,6 +1217,20 @@ def get_active_display_family_detail(session: Session, family_id: int) -> dict[s
         )
         .limit(100)
     ).all()
+    member_evidence_checksums = {
+        member.product_id: _mapping_checksum(dict(member.matching_evidence_json or {}))
+        for member in family.members
+    }
+    matching_confirmations: dict[int, DisplayFamilyDecisionEvent] = {}
+    for event in reversed(events):
+        if event.action != "matching_review_confirmed" or event.product_id is None:
+            continue
+        expected_checksum = member_evidence_checksums.get(event.product_id)
+        stored_checksum = str(
+            (event.evidence_snapshot_json or {}).get("matching_evidence_checksum") or ""
+        )
+        if expected_checksum and stored_checksum == expected_checksum:
+            matching_confirmations[int(event.product_id)] = event
     payload = _family_payload(family)
     payload.update(
         {
@@ -1239,6 +1253,17 @@ def get_active_display_family_detail(session: Session, family_id: int) -> dict[s
                     "product": dict(member.product_snapshot_json or {}),
                     "matching_evidence": dict(member.matching_evidence_json or {}),
                     "identity_evidence": dict(member.identity_evidence_json or {}),
+                    "matching_review_confirmed": member.product_id in matching_confirmations,
+                    "matching_review_confirmed_at": (
+                        matching_confirmations[member.product_id].created_at
+                        if member.product_id in matching_confirmations
+                        else None
+                    ),
+                    "matching_review_confirmed_by": (
+                        matching_confirmations[member.product_id].actor
+                        if member.product_id in matching_confirmations
+                        else None
+                    ),
                 }
                 for member in family.members
             ],
@@ -1258,6 +1283,161 @@ def get_active_display_family_detail(session: Session, family_id: int) -> dict[s
         }
     )
     return payload
+
+
+def confirm_display_family_matching_review(
+    session: Session,
+    *,
+    family_id: int,
+    nomenclature_code: str,
+    expected_registry_version_number: int,
+    expected_registry_inventory_checksum: str,
+    actor: str,
+    reason: str = "Сопоставление проверено в помощнике заказов",
+) -> dict[str, Any]:
+    active = active_display_family_registry_version(session)
+    if active is None:
+        raise DisplayFamilyRegistryError("active display-family registry version is missing")
+    if (
+        active.version_number != int(expected_registry_version_number)
+        or active.inventory_checksum != str(expected_registry_inventory_checksum or "").strip()
+    ):
+        raise DisplayFamilyRegistryError("display-family registry changed; refresh the order")
+    code = str(nomenclature_code or "").strip()
+    member = session.scalar(
+        select(DisplayFamilyMember)
+        .join(Product, Product.id == DisplayFamilyMember.product_id)
+        .where(
+            DisplayFamilyMember.registry_version_id == active.id,
+            DisplayFamilyMember.family_id == family_id,
+            Product.code_1c == code,
+        )
+    )
+    if member is None:
+        raise DisplayFamilyRegistryError("display-family member was not found in active registry")
+    matching_evidence = dict(member.matching_evidence_json or {})
+    if not matching_evidence.get("requires_review"):
+        raise DisplayFamilyRegistryError("matching review is not required for this member")
+    evidence_checksum = _mapping_checksum(matching_evidence)
+    existing = session.scalar(
+        select(DisplayFamilyDecisionEvent)
+        .where(
+            DisplayFamilyDecisionEvent.registry_version_id == active.id,
+            DisplayFamilyDecisionEvent.family_id == family_id,
+            DisplayFamilyDecisionEvent.product_id == member.product_id,
+            DisplayFamilyDecisionEvent.action == "matching_review_confirmed",
+        )
+        .order_by(
+            DisplayFamilyDecisionEvent.created_at.desc(),
+            DisplayFamilyDecisionEvent.id.desc(),
+        )
+    )
+    if (
+        existing is not None
+        and str((existing.evidence_snapshot_json or {}).get("matching_evidence_checksum") or "")
+        == evidence_checksum
+    ):
+        return _matching_confirmation_payload(
+            existing,
+            active=active,
+            family_id=family_id,
+            nomenclature_code=code,
+            idempotent=True,
+        )
+    event = DisplayFamilyDecisionEvent(
+        registry_version_id=active.id,
+        family_id=family_id,
+        product_id=member.product_id,
+        action="matching_review_confirmed",
+        actor=str(actor or "").strip() or "unknown",
+        reason=str(reason or "").strip() or "Сопоставление проверено",
+        effective_at=date.today(),
+        evidence_snapshot_json={
+            "registry_version_number": active.version_number,
+            "registry_inventory_checksum": active.inventory_checksum,
+            "matching_evidence_checksum": evidence_checksum,
+            "matching_evidence": matching_evidence,
+            "nomenclature_code": code,
+        },
+    )
+    session.add(event)
+    session.flush()
+    return _matching_confirmation_payload(
+        event,
+        active=active,
+        family_id=family_id,
+        nomenclature_code=code,
+        idempotent=False,
+    )
+
+
+def matching_review_confirmations_by_code(session: Session) -> dict[str, dict[str, Any]]:
+    active = active_display_family_registry_version(session)
+    if active is None:
+        return {}
+    rows = session.execute(
+        select(
+            DisplayFamilyDecisionEvent,
+            Product.code_1c,
+            DisplayFamilyMember.matching_evidence_json,
+        )
+        .join(Product, Product.id == DisplayFamilyDecisionEvent.product_id)
+        .join(
+            DisplayFamilyMember,
+            (DisplayFamilyMember.registry_version_id == active.id)
+            & (DisplayFamilyMember.product_id == DisplayFamilyDecisionEvent.product_id)
+            & (DisplayFamilyMember.family_id == DisplayFamilyDecisionEvent.family_id),
+        )
+        .where(
+            DisplayFamilyDecisionEvent.registry_version_id == active.id,
+            DisplayFamilyDecisionEvent.action == "matching_review_confirmed",
+        )
+        .order_by(
+            DisplayFamilyDecisionEvent.created_at,
+            DisplayFamilyDecisionEvent.id,
+        )
+    ).all()
+    result: dict[str, dict[str, Any]] = {}
+    for event, code_1c, matching_evidence in rows:
+        code = str(code_1c or "").strip()
+        if not code:
+            continue
+        stored_checksum = str(
+            (event.evidence_snapshot_json or {}).get("matching_evidence_checksum") or ""
+        )
+        if stored_checksum != _mapping_checksum(dict(matching_evidence or {})):
+            continue
+        result[code] = {
+            "confirmed_at": event.created_at,
+            "confirmed_by": event.actor,
+            "registry_version_number": active.version_number,
+            "registry_inventory_checksum": active.inventory_checksum,
+        }
+    return result
+
+
+def _matching_confirmation_payload(
+    event: DisplayFamilyDecisionEvent,
+    *,
+    active: DisplayFamilyRegistryVersion,
+    family_id: int,
+    nomenclature_code: str,
+    idempotent: bool,
+) -> dict[str, Any]:
+    return {
+        "family_id": family_id,
+        "nomenclature_code": nomenclature_code,
+        "registry_version_number": active.version_number,
+        "registry_inventory_checksum": active.inventory_checksum,
+        "confirmed_at": event.created_at,
+        "confirmed_by": event.actor,
+        "idempotent": idempotent,
+    }
+
+
+def _mapping_checksum(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def list_display_family_registry_versions(

@@ -82,6 +82,12 @@
   font: inherit;
 }
 
+.order-assistant button,
+.order-assistant input:not([type="checkbox"]),
+.order-assistant select {
+  min-height: 40px;
+}
+
 .order-assistant__heading {
   display: flex;
   align-items: flex-end;
@@ -255,7 +261,7 @@
   min-width: 850px;
   border-collapse: collapse;
   table-layout: fixed;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .order-assistant__table th {
@@ -352,7 +358,7 @@
 .order-assistant__product small {
   margin-top: 4px;
   color: #5d6879;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.3;
 }
 
@@ -372,6 +378,17 @@
 .order-assistant__family-recommendation span {
   display: block;
   margin-top: 3px;
+}
+
+.order-assistant__family-recommendation button {
+  width: 100%;
+  margin-top: 5px;
+  padding: 6px 8px;
+  border: 1px solid #a96a00;
+  border-radius: 5px;
+  background: #fff8e8;
+  color: #744500;
+  cursor: pointer;
 }
 
 .order-assistant__product {
@@ -508,8 +525,39 @@
 
 .order-assistant__decision small {
   color: #8f261f;
-  font-size: 8px;
-  line-height: 1.25;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.order-assistant__skeleton {
+  display: grid;
+  gap: 14px;
+  min-height: calc(100vh - 54px);
+  padding: 28px;
+  background: #f6f8fb;
+}
+
+.order-assistant__skeleton span {
+  display: block;
+  height: 48px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #e8edf4 25%, #f6f8fb 50%, #e8edf4 75%);
+  background-size: 200% 100%;
+  animation: order-assistant-pulse 1.4s ease-in-out infinite;
+}
+
+.order-assistant__skeleton span:first-child {
+  width: min(420px, 70%);
+  height: 72px;
+}
+
+.order-assistant__skeleton span:last-child {
+  height: 360px;
+}
+
+@keyframes order-assistant-pulse {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 
 .order-assistant__classification {
@@ -985,7 +1033,7 @@ button.supplier-class {
 
 .order-assistant__empty {
   padding: 28px 18px;
-  color: #748196;
+  color: #5b687c;
   font-size: 12px;
   text-align: center;
 }
@@ -1440,9 +1488,90 @@ button.supplier-class {
     height: calc(100vh - 54px);
     box-shadow: -18px 0 50px rgba(28, 46, 73, 0.18);
   }
+
+  .order-assistant__table-scroll {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .order-assistant__table {
+    min-width: 0;
+  }
+
+  .order-assistant__table thead {
+    display: none;
+  }
+
+  .order-assistant__table,
+  .order-assistant__table tbody {
+    display: block;
+  }
+
+  .order-assistant__table tr {
+    display: grid;
+    gap: 0;
+    margin: 10px;
+    overflow: hidden;
+    border: 1px solid #dce4ee;
+    border-radius: 12px;
+    background: #ffffff;
+  }
+
+  .order-assistant__table td,
+  .order-assistant__table td:last-child {
+    position: static;
+    display: block;
+    width: auto;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid #edf1f6;
+    border-left: 0;
+    background: transparent;
+    text-align: left;
+  }
+
+  .order-assistant__table td::before {
+    display: block;
+    margin-bottom: 7px;
+    color: #536176;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .order-assistant__table td:nth-child(1)::before { content: "Выбор"; }
+  .order-assistant__table td:nth-child(2)::before { content: "Товар"; }
+  .order-assistant__table td:nth-child(3)::before { content: "Потребность"; }
+  .order-assistant__table td:nth-child(4)::before { content: "Поставщик"; }
+  .order-assistant__table td:nth-child(5)::before { content: "Цена"; }
+  .order-assistant__table td:nth-child(6)::before { content: "Рентабельность"; }
+  .order-assistant__table td:nth-child(7)::before { content: "Брак"; }
+  .order-assistant__table td:nth-child(8)::before { content: "Срок"; }
+  .order-assistant__table td:nth-child(9)::before { content: "Решение"; }
+
+  .order-assistant__table td:first-child {
+    width: auto;
+    text-align: left;
+  }
+
+  .order-assistant__product {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 700px) {
+  .order-workspace__header--assistant .order-workspace__tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .order-workspace__header--assistant .order-workspace__tabs button {
+    flex: 1 1 30%;
+    height: 44px;
+    min-height: 44px;
+  }
+
   .order-assistant__heading {
     align-items: flex-start;
     flex-direction: column;

@@ -22,11 +22,13 @@ from app.services.display_family_registry import (
     active_display_family_registry_version,
     apply_display_family_bootstrap,
     build_display_family_bootstrap_plan,
+    confirm_display_family_matching_review,
     display_family_registry_summary,
     get_active_display_family_detail,
     list_active_display_families,
     load_active_display_family_member_contexts,
     load_approved_display_family_bundle,
+    matching_review_confirmations_by_code,
     readback_display_family_registry_version,
     rollback_display_family_registry,
 )
@@ -241,6 +243,96 @@ def test_bootstrap_is_atomic_idempotent_and_queryable(tmp_path: Path, db_session
     assert len(db_session.scalars(select(DisplayFamilyRegistryVersion)).all()) == 1
 
 
+def test_matching_review_confirmation_is_versioned_idempotent_and_evidence_bound(
+    tmp_path: Path, db_session: Session
+) -> None:
+    products = _products(db_session, 1)
+    path, contract = _bundle(
+        tmp_path,
+        [_item(products[0].id, "display-family-review", review=True)],
+    )
+    bundle = load_approved_display_family_bundle(path, contract=contract)
+    db_session.rollback()
+    apply_display_family_bootstrap(db_session, bundle, actor="test-user")
+    version = active_display_family_registry_version(db_session)
+    family = list_active_display_families(db_session, page=1, page_size=20)["items"][0]
+    assert version is not None
+
+    confirmed = confirm_display_family_matching_review(
+        db_session,
+        family_id=family["id"],
+        nomenclature_code="CODE-1",
+        expected_registry_version_number=version.version_number,
+        expected_registry_inventory_checksum=version.inventory_checksum,
+        actor="Менеджер закупки",
+    )
+    repeated = confirm_display_family_matching_review(
+        db_session,
+        family_id=family["id"],
+        nomenclature_code="CODE-1",
+        expected_registry_version_number=version.version_number,
+        expected_registry_inventory_checksum=version.inventory_checksum,
+        actor="Менеджер закупки",
+    )
+
+    assert confirmed["idempotent"] is False
+    assert repeated["idempotent"] is True
+    assert "CODE-1" in matching_review_confirmations_by_code(db_session)
+    detail = get_active_display_family_detail(db_session, family["id"])
+    assert detail is not None
+    assert detail["members"][0]["matching_review_confirmed"] is True
+    assert detail["members"][0]["matching_review_confirmed_by"] == "Менеджер закупки"
+    assert (
+        len(
+            [
+                event
+                for event in db_session.scalars(select(DisplayFamilyDecisionEvent)).all()
+                if event.action == "matching_review_confirmed"
+            ]
+        )
+        == 1
+    )
+
+    member = db_session.scalar(select(DisplayFamilyMember))
+    assert member is not None
+    member.matching_evidence_json = {
+        **dict(member.matching_evidence_json),
+        "quality": "changed after confirmation",
+    }
+    db_session.flush()
+
+    assert "CODE-1" not in matching_review_confirmations_by_code(db_session)
+    changed_detail = get_active_display_family_detail(db_session, family["id"])
+    assert changed_detail is not None
+    assert changed_detail["members"][0]["matching_review_confirmed"] is False
+
+
+def test_matching_review_confirmation_rejects_stale_registry_version(
+    tmp_path: Path, db_session: Session
+) -> None:
+    products = _products(db_session, 1)
+    path, contract = _bundle(
+        tmp_path,
+        [_item(products[0].id, "display-family-review", review=True)],
+    )
+    bundle = load_approved_display_family_bundle(path, contract=contract)
+    db_session.rollback()
+    apply_display_family_bootstrap(db_session, bundle, actor="test-user")
+    version = active_display_family_registry_version(db_session)
+    family = list_active_display_families(db_session, page=1, page_size=20)["items"][0]
+    assert version is not None
+
+    with pytest.raises(DisplayFamilyRegistryError, match="registry changed"):
+        confirm_display_family_matching_review(
+            db_session,
+            family_id=family["id"],
+            nomenclature_code="CODE-1",
+            expected_registry_version_number=version.version_number + 1,
+            expected_registry_inventory_checksum=version.inventory_checksum,
+            actor="Менеджер закупки",
+        )
+
+
 def test_successor_activation_is_atomic_and_preserves_rollback(
     tmp_path: Path, db_session: Session
 ) -> None:
@@ -249,7 +341,7 @@ def test_successor_activation_is_atomic_and_preserves_rollback(
         tmp_path,
         [
             _item(products[0].id, "display-family-shared"),
-            _item(products[1].id, "display-family-shared"),
+            _item(products[1].id, "display-family-shared", review=True),
             _item(products[2].id, "display-family-excluded-later"),
         ],
         bundle_name="first-bundle",
@@ -258,13 +350,29 @@ def test_successor_activation_is_atomic_and_preserves_rollback(
     first_bundle = load_approved_display_family_bundle(first_path, contract=first_contract)
     db_session.rollback()
     apply_display_family_bootstrap(db_session, first_bundle, actor="test-user")
+    first_version = active_display_family_registry_version(db_session)
+    first_family = next(
+        item
+        for item in list_active_display_families(db_session, page=1, page_size=20)["items"]
+        if item["family_key"] == "display-family-shared"
+    )
+    assert first_version is not None
+    confirm_display_family_matching_review(
+        db_session,
+        family_id=first_family["id"],
+        nomenclature_code="CODE-2",
+        expected_registry_version_number=first_version.version_number,
+        expected_registry_inventory_checksum=first_version.inventory_checksum,
+        actor="Менеджер закупки",
+    )
+    assert "CODE-2" in matching_review_confirmations_by_code(db_session)
     db_session.commit()
 
     second_path, second_contract = _bundle(
         tmp_path,
         [
             _item(products[0].id, "display-family-shared"),
-            _item(products[1].id, "display-family-shared"),
+            _item(products[1].id, "display-family-shared", review=True),
         ],
         bundle_name="second-bundle",
         checksum_char="c",
@@ -286,6 +394,7 @@ def test_successor_activation_is_atomic_and_preserves_rollback(
 
     assert result["readback"]["version_number"] == 2
     assert result["readback"]["member_count"] == 2
+    assert "CODE-2" not in matching_review_confirmations_by_code(db_session)
     versions = db_session.scalars(
         select(DisplayFamilyRegistryVersion).order_by(DisplayFamilyRegistryVersion.version_number)
     ).all()
@@ -297,7 +406,11 @@ def test_successor_activation_is_atomic_and_preserves_rollback(
     events = db_session.scalars(
         select(DisplayFamilyDecisionEvent).order_by(DisplayFamilyDecisionEvent.id)
     ).all()
-    assert [event.action for event in events] == ["bootstrap_activate", "successor_activate"]
+    assert [event.action for event in events] == [
+        "bootstrap_activate",
+        "matching_review_confirmed",
+        "successor_activate",
+    ]
 
     db_session.commit()
     rollback = rollback_display_family_registry(

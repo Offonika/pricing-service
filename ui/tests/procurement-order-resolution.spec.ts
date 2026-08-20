@@ -1,0 +1,251 @@
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test } from "@playwright/test";
+
+const blockerMessage = (
+  "Подозрение на партийную ошибку: 8 возвратов качества «Новый», "
+  + "44,4% от продаж за 90 дней (порог: 5 возвратов и 40%)."
+);
+
+const baseLine = {
+  version: 1,
+  bitrix_product_id: "40699",
+  bitrix_product_xml_id: "11111111-2222-3333-4444-555555555555",
+  nomenclature_ref: "11111111-2222-3333-4444-555555555555",
+  nomenclature_code: "РБ000037607",
+  recommended_quantity: "12",
+  final_quantity: "12",
+  purchase_price: "750",
+  amount: "9000",
+  currency: "RUB",
+  source_kind: "automatic",
+  explicit_demand: false,
+  risk_codes: [],
+  payload: {
+    batch_error_return_qty: "8",
+    batch_error_share_pct: "44.4",
+    suspected_batch: "Партия 2026-07-15",
+  },
+  removed: false,
+  photo_thumbnail_url: "https://master-mobile.ru/upload/thumb/40699.webp",
+  photo_original_url: "https://master-mobile.ru/upload/original/40699.webp",
+  product_card_url: "https://master-mobile.ru/catalog/displei/40699/",
+  photo_source: "master_mobile_site",
+  photo_count: 1,
+  profitability_pct: "18.4",
+  supplier_defect_pct: "12.6",
+  supplier_defect_history_units: 1842,
+  supplier_defect_attribution: "supplier_exact",
+  supplier_defect_confidence: "reliable",
+  price_change_pct: "-2.1",
+  delivery_days: 12,
+  supplier_prepare_days: 5,
+  logistics_days: 7,
+  lead_time_days: 12,
+  lead_time_source_level: "sku",
+  lead_time_confidence: "high",
+};
+
+const blockedLines = [23, 31, 36].map((lineNumber, index) => ({
+  ...baseLine,
+  id: 50 + index,
+  line_number: lineNumber,
+  nomenclature_code: `РБ00003760${7 + index}`,
+  nomenclature_name: `Проблемная строка ${lineNumber}`,
+  blockers: ["batch_error_suspected"],
+  blocker_details: [{
+    code: "batch_error_suspected",
+    scope: "line",
+    severity: "hard",
+    line_id: 50 + index,
+    line_number: lineNumber,
+    message: blockerMessage,
+    evidence: {
+      return_qty: 8,
+      share_pct: 44.4,
+      minimum_return_qty: 5,
+      minimum_share_pct: 40,
+      window_days: 90,
+      suspected_batch: "Партия 2026-07-15",
+    },
+    resolution_actions: [
+      { kind: "remove_line", label: "Исключить строку", requires_reason: true },
+      { kind: "recalculate", label: "Дождаться нового расчёта" },
+    ],
+  }],
+}));
+
+const safeLine = {
+  ...baseLine,
+  id: 49,
+  line_number: 1,
+  nomenclature_code: "РБ000037600",
+  nomenclature_name: "Готовая строка",
+  blockers: [],
+  blocker_details: [],
+};
+
+const project94 = {
+  id: 94,
+  stable_key: "order-94",
+  status: "draft",
+  version: 1,
+  supplier_ref: "supplier-ref",
+  supplier_name: "Tianma",
+  contract_ref: "contract-ref",
+  contract_name: "Основной договор",
+  currency: "RUB",
+  warehouse_name: "Главный склад",
+  procurement_contour: "ordinary",
+  route: "ordinary",
+  batch_id: "2026-08-20",
+  order_date: "2026-08-20",
+  calculation_id: "calc-94",
+  onec_status: "not_sent",
+  blockers: blockedLines.map((line) => `line_${line.line_number}:batch_error_suspected`),
+  blocker_details: blockedLines.map((line) => ({ ...line.blocker_details[0], scope: "order" })),
+  total_amount: "36000",
+  manual_status_options: { pension: "Допродаём", working: "Рабочий" },
+  supplier_profile: {
+    qualification_class: "A",
+    qualification_label: "Лучшие условия",
+    profitability_pct: "18.4",
+    defect_pct: "12.6",
+    defect_history_units: 1842,
+    on_time_pct: "94",
+    payment_terms: "30/70",
+    credit_days: 45,
+    credit_limit: "250000",
+    advantages: ["Компенсация брака"],
+    history_order_count: 24,
+    updated_at: "2026-08-20",
+    data_status: "ready",
+  },
+  lines: [safeLine, ...blockedLines],
+};
+
+const assistantResponse = {
+  updated_at: "2026-08-20T10:00:00Z",
+  summary: {
+    lines: 4,
+    ready_lines: 0,
+    supplier_missing_lines: 0,
+    price_changed_lines: 4,
+    low_profitability_lines: 4,
+    high_defect_lines: 3,
+    photo_missing_lines: 0,
+    orders: 1,
+  },
+  orders: [project94],
+};
+
+const viewports = [
+  { width: 1440, height: 1024 },
+  { width: 1024, height: 900 },
+  { width: 820, height: 900 },
+  { width: 768, height: 900 },
+  { width: 390, height: 844 },
+];
+
+async function expectNoPageOverflow(page: import("@playwright/test").Page) {
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth
+  );
+  expect(overflow).toBe(false);
+}
+
+async function expectAxeClean(page: import("@playwright/test").Page) {
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+}
+
+test("blocked project explains resolution and stays usable at all target widths", async ({ page }, testInfo) => {
+  const browserErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("mm_procurement_order_formation_bitrix_session", JSON.stringify({
+      session_token: "test-session-placeholder",
+      expires_at: "2099-01-01T00:00:00Z",
+      expires_in: 3600,
+      cached_at: new Date().toISOString(),
+      user: { user_id: "130757", name: "Омар" },
+    }));
+    window.sessionStorage.setItem("mm_procurement_order_formation_left_menu_v3_bound", "1");
+  });
+  await page.route("https://master-mobile.ru/upload/**", (route) => route.fulfill({
+    status: 200,
+    contentType: "image/gif",
+    body: Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64"),
+  }));
+  await page.route("**/api/procurement-order-formation/assistant**", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(assistantResponse),
+  }));
+  await page.route("**/api/procurement-order-formation/orders/94", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify(project94),
+  }));
+
+  await page.goto("/bitrix/procurement-order-formation/assistant");
+  const exactReason = (
+    "Проект №94 заблокирован: подозрение на партийную ошибку — строки 23, 31, 36"
+  );
+  await expect(page.getByText(exactReason).first()).toBeVisible();
+  const problem = page.getByText("Проблемная строка 23").first();
+  const safe = page.getByText("Готовая строка").first();
+  await expect(problem).toBeVisible();
+  expect((await problem.boundingBox())!.y).toBeLessThan((await safe.boundingBox())!.y);
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await expectNoPageOverflow(page);
+    const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+    await expect(action).toBeVisible();
+    expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+    if (viewport.width <= 820) {
+      await expect(page.locator(".order-assistant__table thead")).toBeHidden();
+    } else {
+      await expect(page.locator(".order-assistant__table thead")).toBeVisible();
+    }
+    await expectAxeClean(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`assistant-${viewport.width}.png`),
+      fullPage: false,
+    });
+  }
+
+  const action = page.getByRole("button", { name: "Разобрать 3 блокера" }).first();
+  await action.focus();
+  await expect(action).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/orders\/94\?line=50$/);
+  const focusedRow = page.locator(".order-formation__row--blocked").filter({
+    hasText: "Проблемная строка 23",
+  });
+  await expect(focusedRow).toBeFocused();
+  await expect(page.getByText(blockerMessage).first()).toBeVisible();
+  await expect(page.getByText("Рентабельность: 18,4%").first()).toBeVisible();
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await expectNoPageOverflow(page);
+    if (viewport.width <= 820) {
+      await expect(page.locator(".order-formation__table thead")).toBeHidden();
+    } else {
+      await expect(page.locator(".order-formation__table thead")).toBeVisible();
+    }
+    await expectAxeClean(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`order-${viewport.width}.png`),
+      fullPage: false,
+    });
+  }
+
+  expect(browserErrors).toEqual([]);
+});

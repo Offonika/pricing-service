@@ -8656,6 +8656,38 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/procurement-order-formation/lifecycle/transitions/{proposal_id}/manual-decision:
+    post:
+      summary: Decide Lifecycle Transition Manually
+      operationId: decide_lifecycle_transition_manually_api_procurement_order_formation_lifecycle_transitions__proposal_id__manual_decision_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLifecycleManualDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLifecycleManualDecisionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders:
     get:
       summary: Read Orders
@@ -9038,6 +9070,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/matching-review/confirm:
+    post:
+      summary: Confirm Order Line Matching Review
+      operationId: confirm_order_line_matching_review_api_procurement_order_formation_orders__order_id__lines__line_id__matching_review_confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementMatchingReviewConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementMatchingReviewConfirmationRead'
         '422':
           description: Validation Error
           content:
@@ -15266,6 +15336,21 @@ components:
           additionalProperties: true
           type: object
           title: Identity Evidence
+        matching_review_confirmed:
+          type: boolean
+          title: Matching Review Confirmed
+          default: false
+        matching_review_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Matching Review Confirmed At
+        matching_review_confirmed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matching Review Confirmed By
       type: object
       required:
       - id
@@ -15380,6 +15465,21 @@ components:
           type: string
           title: Reason Ru
           default: ''
+        matching_review_confirmed:
+          type: boolean
+          title: Matching Review Confirmed
+          default: false
+        matching_review_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Matching Review Confirmed At
+        matching_review_confirmed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matching Review Confirmed By
       type: object
       required:
       - schema
@@ -22049,6 +22149,67 @@ components:
       required:
       - decision
       title: ProcurementAssortmentDecisionUpdateResponse
+    ProcurementBlockerDetailRead:
+      properties:
+        code:
+          type: string
+          title: Code
+        scope:
+          type: string
+          title: Scope
+        severity:
+          type: string
+          title: Severity
+        line_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Line Id
+        line_number:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Line Number
+        message:
+          type: string
+          title: Message
+        evidence:
+          additionalProperties: true
+          type: object
+          title: Evidence
+        resolution_actions:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerResolutionRead'
+          type: array
+          title: Resolution Actions
+      type: object
+      required:
+      - code
+      - scope
+      - severity
+      - message
+      title: ProcurementBlockerDetailRead
+    ProcurementBlockerResolutionRead:
+      properties:
+        kind:
+          type: string
+          title: Kind
+        label:
+          type: string
+          title: Label
+        requires_reason:
+          type: boolean
+          title: Requires Reason
+          default: false
+        requires_replacement:
+          type: boolean
+          title: Requires Replacement
+          default: false
+      type: object
+      required:
+      - kind
+      - label
+      title: ProcurementBlockerResolutionRead
     ProcurementCertificationDocsGenerateResponse:
       properties:
         preview:
@@ -22927,6 +23088,69 @@ components:
       required:
       - user_id
       title: ProcurementLabelsUser
+    ProcurementLifecycleManualDecisionRequest:
+      properties:
+        decision:
+          type: string
+          pattern: ^(pension|working)$
+          title: Decision
+        reason:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Reason
+        replacement_sku_code:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Replacement Sku Code
+        no_replacement:
+          type: boolean
+          title: No Replacement
+          default: false
+        expected_run_id:
+          type: integer
+          minimum: 1.0
+          title: Expected Run Id
+        facts_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          title: Facts Hash
+      type: object
+      required:
+      - decision
+      - reason
+      - expected_run_id
+      - facts_hash
+      title: ProcurementLifecycleManualDecisionRequest
+    ProcurementLifecycleManualDecisionResponse:
+      properties:
+        proposal_id:
+          type: integer
+          title: Proposal Id
+        result:
+          type: string
+          title: Result
+        message:
+          type: string
+          title: Message
+        decision:
+          type: string
+          title: Decision
+        approved_at:
+          type: string
+          format: date-time
+          title: Approved At
+      type: object
+      required:
+      - proposal_id
+      - result
+      - message
+      - decision
+      - approved_at
+      title: ProcurementLifecycleManualDecisionResponse
     ProcurementLifecycleTransitionApprovalItem:
       properties:
         proposal_id:
@@ -23176,6 +23400,15 @@ components:
           type: string
           title: Decision State
           default: view
+        actionability:
+          type: string
+          title: Actionability
+          default: blocked
+        suggested_manual_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Suggested Manual Status
         ready:
           type: boolean
           title: Ready
@@ -23208,6 +23441,64 @@ components:
       - run_key
       - facts_hash
       title: ProcurementLifecycleTransitionRead
+    ProcurementMatchingReviewConfirmRequest:
+      properties:
+        expected_registry_version_number:
+          type: integer
+          minimum: 1.0
+          title: Expected Registry Version Number
+        expected_registry_inventory_checksum:
+          type: string
+          maxLength: 64
+          minLength: 64
+          title: Expected Registry Inventory Checksum
+      type: object
+      required:
+      - expected_registry_version_number
+      - expected_registry_inventory_checksum
+      title: ProcurementMatchingReviewConfirmRequest
+    ProcurementMatchingReviewConfirmationRead:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        line_id:
+          type: integer
+          title: Line Id
+        family_id:
+          type: integer
+          title: Family Id
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        registry_version_number:
+          type: integer
+          title: Registry Version Number
+        registry_inventory_checksum:
+          type: string
+          title: Registry Inventory Checksum
+        confirmed_at:
+          type: string
+          format: date-time
+          title: Confirmed At
+        confirmed_by:
+          type: string
+          title: Confirmed By
+        idempotent:
+          type: boolean
+          title: Idempotent
+          default: false
+      type: object
+      required:
+      - order_id
+      - line_id
+      - family_id
+      - nomenclature_code
+      - registry_version_number
+      - registry_inventory_checksum
+      - confirmed_at
+      - confirmed_by
+      title: ProcurementMatchingReviewConfirmationRead
     ProcurementOrderAssistantAssembleItem:
       properties:
         order_id:
@@ -23579,6 +23870,11 @@ components:
             type: string
           type: array
           title: Blockers
+        blocker_details:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerDetailRead'
+          type: array
+          title: Blocker Details
         assortment_status:
           anyOf:
           - type: string
@@ -23978,6 +24274,11 @@ components:
             type: string
           type: array
           title: Blockers
+        blocker_details:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerDetailRead'
+          type: array
+          title: Blocker Details
         total_amount:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
@@ -24102,6 +24403,18 @@ components:
           - type: boolean
           - type: 'null'
           title: Removed
+        removal_reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Removal Reason
+        replacement_sku_code:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Replacement Sku Code
         explicit_demand:
           anyOf:
           - type: boolean

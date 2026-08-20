@@ -139,6 +139,59 @@ def test_grouped_dry_run_uses_family_quantity_and_carries_audit_payload() -> Non
     assert "display_family_manual_approval_required" in line["risk_codes"]
     assert line["payload"]["display_family_recommendation"]["family_id"] == "family-1"
     assert line["payload"]["display_family_recommendation"]["manual_approval_required"] is True
+    assert line["recommendation_reason"] == "Пул распределён внутри сегмента."
+
+
+def test_grouped_dry_run_hides_unchanged_family_reason_and_carries_precise_metrics() -> None:
+    source = _source("A", "14", "A")
+    source.update(
+        {
+            "display_family_recommendation_status": "identity_insufficient_eligible_skus",
+            "display_family_baseline_order_qty": "14",
+            "display_family_allocated_order_qty": "14",
+            "display_family_reason_ru": (
+                "В подтверждённом сегменте меньше двух доступных SKU; "
+                "оставлено базовое количество."
+            ),
+            "batch_error_return_qty": "5",
+            "batch_error_share_pct": "41.7",
+            "defect_return_qty": "7",
+            "defect_share_pct": "12.6",
+            "recommended_order_qty_raw": "14",
+            "order_rounding_price_gate": "no_purchase_price",
+            "order_rounding_price_gate_ru": "нет закупочной цены",
+        }
+    )
+    orders = build_grouped_orders(
+        [source],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10", name="Каталожный товар", xml_id=guid, assortment_status="Продажа"
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Основной договор"}},
+        warehouse={"code": "MAIN", "name": "Центральный склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id="2026-08-20",
+        order_date=date(2026, 8, 20),
+        calculation_id="family-identity-1",
+    )
+
+    line = orders[0]["lines"][0]
+    assert line["recommendation_reason"] == "Расчётная потребность"
+    expected_metrics = {
+        "batch_error_return_qty": "5",
+        "batch_error_share_pct": "41.7",
+        "defect_return_qty": "7",
+        "defect_share_pct": "12.6",
+        "recommended_order_qty_raw": "14",
+        "order_rounding_price_gate": "no_purchase_price",
+        "order_rounding_price_gate_ru": "нет закупочной цены",
+    }
+    assert {key: line["payload"][key] for key in expected_metrics} == expected_metrics
 
 
 def test_cron_shadow_ignores_truthy_persistence_env(tmp_path: Path) -> None:

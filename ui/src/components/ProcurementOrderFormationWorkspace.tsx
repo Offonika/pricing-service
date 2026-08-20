@@ -20,7 +20,7 @@ import {
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
-import { groupProcurementBlockers, procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { procurementBlockerSummaryLabel, procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -154,22 +154,6 @@ const EVENT_LABELS: Record<string, string> = {
 
 function errorText(error: unknown) {
   return procurementErrorText(error);
-}
-
-// Один и тот же блокер приходит по каждой проблемной строке, поэтому в реестре
-// считаем причины, а не строки: иначе цифра не сходится с тем, что видно внутри
-// заказа.
-function blockerCountLabel(blockers: string[]) {
-  const count = groupProcurementBlockers(blockers).length;
-  const tail = count % 10;
-  const teen = count % 100;
-  const word =
-    tail === 1 && teen !== 11
-      ? "блокер"
-      : tail >= 2 && tail <= 4 && (teen < 12 || teen > 14)
-        ? "блокера"
-        : "блокеров";
-  return `${count} ${word}`;
 }
 
 function money(value: string | number, currency = "RUB") {
@@ -928,7 +912,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
                     <span className={`state-pill ${order.blockers.length ? "state-pill--blocked" : "state-pill--ready"}`}>
-                      {order.blockers.length ? blockerCountLabel(order.blockers) : "готов"}
+                      {order.blockers.length ? procurementBlockerSummaryLabel(order.blockers) : "готов"}
                     </span>
                   </td>
                   <td><button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button></td>

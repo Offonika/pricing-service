@@ -8763,6 +8763,42 @@ paths:
                 $ref: '#/components/schemas/ProcurementOrderAssistantResponse'
       security:
       - HTTPBearer: []
+  /api/procurement-order-formation/suppliers/options:
+    get:
+      summary: Read Supplier Options
+      operationId: read_supplier_options_api_procurement_order_formation_suppliers_options_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProcurementSupplierOptionRead'
+                title: Response Read Supplier Options Api Procurement Order Formation Suppliers Options Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/suppliers/{supplier_ref}/profile:
     get:
       summary: Read Supplier Profile
@@ -9070,6 +9106,102 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/main-supplier:
+    patch:
+      summary: Change Line Main Supplier
+      operationId: change_line_main_supplier_api_procurement_order_formation_orders__order_id__lines__line_id__main_supplier_patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLineSupplierSelectionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/distribute-by-suppliers/preview:
+    post:
+      summary: Preview Order Supplier Distribution
+      operationId: preview_order_supplier_distribution_api_procurement_order_formation_orders__order_id__distribute_by_suppliers_preview_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierDistributionPreviewRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/distribute-by-suppliers:
+    post:
+      summary: Apply Order Supplier Distribution
+      operationId: apply_order_supplier_distribution_api_procurement_order_formation_orders__order_id__distribute_by_suppliers_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementSupplierDistributionApplyRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierDistributionApplyResponse'
         '422':
           description: Validation Error
           content:
@@ -23366,6 +23498,38 @@ components:
       - run_key
       - facts_hash
       title: ProcurementLifecycleTransitionRead
+    ProcurementLineSupplierSelectionRequest:
+      properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+        expected_line_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Line Version
+        supplier_ref:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Supplier Ref
+        supplier_code:
+          type: string
+          maxLength: 64
+          title: Supplier Code
+          default: ''
+        supplier_name:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Supplier Name
+      type: object
+      required:
+      - expected_order_version
+      - expected_line_version
+      - supplier_ref
+      - supplier_name
+      title: ProcurementLineSupplierSelectionRequest
     ProcurementMatchingReviewConfirmRequest:
       properties:
         expected_registry_version_number:
@@ -24520,6 +24684,114 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementSupplierDistributionApplyRequest:
+      properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+      type: object
+      required:
+      - expected_order_version
+      title: ProcurementSupplierDistributionApplyRequest
+    ProcurementSupplierDistributionApplyResponse:
+      properties:
+        source_order:
+          $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        target_order_ids:
+          items:
+            type: integer
+          type: array
+          title: Target Order Ids
+        moved_line_count:
+          type: integer
+          title: Moved Line Count
+          default: 0
+      type: object
+      required:
+      - source_order
+      title: ProcurementSupplierDistributionApplyResponse
+    ProcurementSupplierDistributionGroupRead:
+      properties:
+        supplier_ref:
+          type: string
+          title: Supplier Ref
+        supplier_code:
+          type: string
+          title: Supplier Code
+          default: ''
+        supplier_name:
+          type: string
+          title: Supplier Name
+        line_ids:
+          items:
+            type: integer
+          type: array
+          title: Line Ids
+        line_numbers:
+          items:
+            type: integer
+          type: array
+          title: Line Numbers
+        nomenclature_codes:
+          items:
+            type: string
+          type: array
+          title: Nomenclature Codes
+        target_order_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Target Order Id
+        target_order_status:
+          type: string
+          title: Target Order Status
+          default: new
+      type: object
+      required:
+      - supplier_ref
+      - supplier_name
+      title: ProcurementSupplierDistributionGroupRead
+    ProcurementSupplierDistributionPreviewRead:
+      properties:
+        source_order_id:
+          type: integer
+          title: Source Order Id
+        source_order_version:
+          type: integer
+          title: Source Order Version
+        groups:
+          items:
+            $ref: '#/components/schemas/ProcurementSupplierDistributionGroupRead'
+          type: array
+          title: Groups
+        unresolved_line_numbers:
+          items:
+            type: integer
+          type: array
+          title: Unresolved Line Numbers
+      type: object
+      required:
+      - source_order_id
+      - source_order_version
+      title: ProcurementSupplierDistributionPreviewRead
+    ProcurementSupplierOptionRead:
+      properties:
+        ref:
+          type: string
+          title: Ref
+        code:
+          type: string
+          title: Code
+          default: ''
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - ref
+      - name
+      title: ProcurementSupplierOptionRead
     ProcurementSupplierProfileRead:
       properties:
         supplier_ref:

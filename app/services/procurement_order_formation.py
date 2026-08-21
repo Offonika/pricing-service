@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -10,9 +11,11 @@ from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models.procurement_order_formation import (
     ProcurementClassificationProposal,
     ProcurementOrderFormation,
+    ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
 from app.services.assortment_lifecycle import (
@@ -39,6 +42,12 @@ from app.services.exporters.ut103_procurement_orders import (
     ProcurementSupplierOrderMessage,
     build_procurement_supplier_orders_xml,
     write_procurement_supplier_orders_message,
+)
+from app.services.onec_nomenclature_snapshot import (
+    fetch_onec_nomenclature_by_codes,
+    fetch_onec_supplier_by_ref,
+    main_supplier_payload,
+    search_onec_suppliers,
 )
 
 # ВАЖНО: значения этих двух словарей — названия статусов в 1С и Bitrix, а не
@@ -100,6 +109,307 @@ def get_order(db: Session, order_id: int) -> ProcurementOrderFormation:
     if order is None:
         raise LookupError("order formation card was not found")
     return order
+
+
+def list_supplier_options(
+    *,
+    query: str,
+    limit: int = 20,
+    settings: Settings | None = None,
+) -> list[dict[str, str]]:
+    settings = settings or get_settings()
+    if not settings.onec_database_url:
+        raise RuntimeError("ONEC_DATABASE_URL is not configured")
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+    try:
+        return search_onec_suppliers(engine, query=query, limit=limit)
+    finally:
+        engine.dispose()
+
+
+def select_line_main_supplier(
+    db: Session,
+    order_id: int,
+    line_id: int,
+    values: dict[str, Any],
+    session: ProcurementOrderFormationSession,
+    *,
+    settings: Settings | None = None,
+) -> ProcurementOrderFormation:
+    """Store an in-app supplier choice without writing to 1C."""
+
+    settings = settings or get_settings()
+    order = get_order(db, order_id)
+    ensure_order_editable(order)
+    if order.version != int(values["expected_order_version"]):
+        raise VersionConflictError("order version changed; refresh the order")
+    line = _line_from_order(order, line_id)
+    if line.version != int(values["expected_line_version"]):
+        raise VersionConflictError("order line version changed; refresh the order")
+    if not line.nomenclature_code:
+        raise ValueError("nomenclature code is required for supplier selection")
+    if not settings.onec_database_url:
+        raise RuntimeError("ONEC_DATABASE_URL is not configured")
+
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+    try:
+        supplier = fetch_onec_supplier_by_ref(
+            engine,
+            supplier_ref=str(values.get("supplier_ref") or ""),
+        )
+        if supplier is None:
+            raise ValueError("selected supplier was not found in 1C")
+        snapshot = fetch_onec_nomenclature_by_codes(engine, codes=[line.nomenclature_code])
+    finally:
+        engine.dispose()
+    card_supplier = main_supplier_payload(snapshot.get(line.nomenclature_code) or {})
+    if card_supplier and card_supplier["ref"].casefold() != supplier["ref"].casefold():
+        raise ValueError("main supplier changed in 1C; refresh the order and use the 1C value")
+
+    status = "confirmed_in_1c" if card_supplier else "pending_onec_write"
+    selected_supplier = card_supplier or supplier
+    before = dict(line.payload or {})
+    line.payload = {
+        **before,
+        "main_supplier_selection": {
+            **selected_supplier,
+            "status": status,
+            "selected_at": datetime.now(UTC).isoformat(),
+            "selected_by_bitrix_user_id": session.user_id,
+            "selected_by_name": session.user_name or session.actor,
+        },
+    }
+    line.version += 1
+    invalidate_order_approval(order)
+    db.add(
+        ProcurementOrderFormationEvent(
+            order=order,
+            entity_type="line",
+            entity_id=str(line.id),
+            event_type="line_main_supplier_selected",
+            actor=session.actor,
+            bitrix_user_id=session.user_id,
+            user_name=session.user_name,
+            before={"main_supplier_selection": before.get("main_supplier_selection")},
+            after={"main_supplier_selection": line.payload["main_supplier_selection"]},
+            payload={"onec_write": False},
+        )
+    )
+    db.commit()
+    return get_order(db, order_id)
+
+
+def preview_supplier_distribution(
+    db: Session,
+    order_id: int,
+    *,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    order = get_order(db, order_id)
+    ensure_order_editable(order)
+    if order.supplier_ref or order.supplier_code:
+        raise ValueError("only the supplier review room can be distributed")
+    resolved, unresolved = _resolved_line_suppliers(order, settings=settings)
+    groups: list[dict[str, Any]] = []
+    for supplier_ref, items in sorted(resolved.items(), key=lambda item: item[1][0][1]["name"]):
+        supplier = items[0][1]
+        target = _open_supplier_target(db, order, supplier_ref)
+        groups.append(
+            {
+                "supplier_ref": supplier["ref"],
+                "supplier_code": supplier["code"],
+                "supplier_name": supplier["name"],
+                "line_ids": [int(line.id) for line, _supplier, _status in items],
+                "line_numbers": [line.line_number for line, _supplier, _status in items],
+                "nomenclature_codes": [
+                    str(line.nomenclature_code or "") for line, _supplier, _status in items
+                ],
+                "target_order_id": target.id if target else None,
+                "target_order_status": "existing" if target else "new",
+            }
+        )
+    return {
+        "source_order_id": int(order.id),
+        "source_order_version": order.version,
+        "groups": groups,
+        "unresolved_line_numbers": sorted(line.line_number for line in unresolved),
+    }
+
+
+def distribute_lines_by_suppliers(
+    db: Session,
+    order_id: int,
+    *,
+    expected_order_version: int,
+    session: ProcurementOrderFormationSession,
+    settings: Settings | None = None,
+) -> tuple[ProcurementOrderFormation, list[int], int]:
+    source = get_order(db, order_id)
+    ensure_order_editable(source)
+    if source.version != expected_order_version:
+        raise VersionConflictError("order version changed; refresh the order")
+    if source.supplier_ref or source.supplier_code:
+        raise ValueError("only the supplier review room can be distributed")
+    resolved, _unresolved = _resolved_line_suppliers(source, settings=settings)
+    if not resolved:
+        raise ValueError("no lines with a selected supplier to distribute")
+
+    target_ids: list[int] = []
+    moved = 0
+    for supplier_ref, items in resolved.items():
+        supplier = items[0][1]
+        target = _open_supplier_target(db, source, supplier_ref)
+        if target is None:
+            target = _new_supplier_target(db, source, supplier)
+            db.flush()
+        ensure_order_editable(target)
+        next_number = max((line.line_number for line in target.lines), default=0) + 1
+        for line, effective_supplier, status in items:
+            payload = dict(line.payload or {})
+            payload["main_supplier_selection"] = {
+                **effective_supplier,
+                "status": status,
+                "distributed_at": datetime.now(UTC).isoformat(),
+                "distributed_by_bitrix_user_id": session.user_id,
+                "distributed_by_name": session.user_name or session.actor,
+            }
+            line.payload = payload
+            line.blockers = [
+                code
+                for code in list(line.blockers or [])
+                if code != "supplier_1c_reference_missing"
+            ]
+            line.line_number = next_number
+            next_number += 1
+            target.lines.append(line)
+            line.version += 1
+            moved += 1
+        invalidate_order_approval(target)
+        target_ids.append(int(target.id))
+
+    invalidate_order_approval(source)
+    if not any(not line.removed for line in source.lines):
+        source.status = "superseded"
+    db.add(
+        ProcurementOrderFormationEvent(
+            order=source,
+            entity_type="order",
+            entity_id=str(source.id),
+            event_type="supplier_review_room_distributed",
+            actor=session.actor,
+            bitrix_user_id=session.user_id,
+            user_name=session.user_name,
+            before={},
+            after={"target_order_ids": target_ids, "moved_line_count": moved},
+            payload={"onec_write": False},
+        )
+    )
+    db.commit()
+    return get_order(db, order_id), sorted(set(target_ids)), moved
+
+
+def _resolved_line_suppliers(
+    order: ProcurementOrderFormation,
+    *,
+    settings: Settings | None,
+) -> tuple[
+    dict[str, list[tuple[ProcurementOrderFormationLine, dict[str, str], str]]],
+    list[ProcurementOrderFormationLine],
+]:
+    settings = settings or get_settings()
+    active_lines = [line for line in order.lines if not line.removed]
+    codes = [line.nomenclature_code for line in active_lines if line.nomenclature_code]
+    if not settings.onec_database_url:
+        raise RuntimeError("ONEC_DATABASE_URL is not configured")
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+    try:
+        snapshots = fetch_onec_nomenclature_by_codes(engine, codes=codes)
+    finally:
+        engine.dispose()
+    resolved: dict[str, list[tuple[ProcurementOrderFormationLine, dict[str, str], str]]] = {}
+    unresolved: list[ProcurementOrderFormationLine] = []
+    for line in active_lines:
+        card_supplier = main_supplier_payload(
+            snapshots.get(str(line.nomenclature_code or "")) or {}
+        )
+        pending = (line.payload or {}).get("main_supplier_selection") or {}
+        supplier = card_supplier or (
+            {
+                "ref": str(pending.get("ref") or "").strip(),
+                "code": str(pending.get("code") or "").strip(),
+                "name": str(pending.get("name") or "").strip(),
+            }
+            if str(pending.get("ref") or "").strip()
+            else None
+        )
+        if not supplier:
+            unresolved.append(line)
+            continue
+        status = "confirmed_in_1c" if card_supplier else "pending_onec_write"
+        resolved.setdefault(supplier["ref"].casefold(), []).append((line, supplier, status))
+    return resolved, unresolved
+
+
+def _open_supplier_target(
+    db: Session,
+    source: ProcurementOrderFormation,
+    supplier_ref: str,
+) -> ProcurementOrderFormation | None:
+    return db.scalar(
+        _order_statement()
+        .where(
+            ProcurementOrderFormation.id != source.id,
+            ProcurementOrderFormation.batch_id == source.batch_id,
+            ProcurementOrderFormation.supplier_ref.ilike(supplier_ref),
+            ProcurementOrderFormation.status.in_(("draft", "review", "error")),
+            ProcurementOrderFormation.onec_status.notin_(("pending", "transmitted")),
+        )
+        .order_by(ProcurementOrderFormation.updated_at.desc(), ProcurementOrderFormation.id.desc())
+    )
+
+
+def _new_supplier_target(
+    db: Session,
+    source: ProcurementOrderFormation,
+    supplier: dict[str, str],
+) -> ProcurementOrderFormation:
+    previous = db.scalar(
+        select(ProcurementOrderFormation)
+        .where(ProcurementOrderFormation.supplier_ref.ilike(supplier["ref"]))
+        .order_by(ProcurementOrderFormation.updated_at.desc(), ProcurementOrderFormation.id.desc())
+    )
+    digest = hashlib.sha256(f"{source.stable_key}|{supplier['ref']}".encode()).hexdigest()[:20]
+    target = ProcurementOrderFormation(
+        stable_key=f"{source.stable_key}:supplier:{digest}:v{source.version}",
+        status="draft",
+        version=1,
+        supplier_ref=supplier["ref"],
+        supplier_code=supplier["code"] or None,
+        supplier_name=supplier["name"] or "Не определён",
+        contract_ref=previous.contract_ref if previous else source.contract_ref,
+        contract_code=previous.contract_code if previous else source.contract_code,
+        contract_name=previous.contract_name if previous else source.contract_name,
+        warehouse_ref=source.warehouse_ref,
+        warehouse_code=source.warehouse_code,
+        warehouse_name=source.warehouse_name,
+        currency=source.currency,
+        procurement_contour=source.procurement_contour,
+        route=source.route,
+        batch_id=source.batch_id,
+        order_date=source.order_date,
+        responsible_bitrix_user_id=source.responsible_bitrix_user_id,
+        responsible_name=source.responsible_name,
+        calculation_id=source.calculation_id,
+        source_run_id=source.source_run_id,
+        onec_status="not_sent",
+        payload={
+            **(source.payload or {}),
+            "distributed_from_order_id": source.id,
+            "main_supplier_write_status": "pending_onec_write",
+        },
+    )
+    db.add(target)
+    return target
 
 
 def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:

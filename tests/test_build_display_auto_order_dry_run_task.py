@@ -20,6 +20,7 @@ from tasks.build_display_auto_order_dry_run import (
     OrderRoundingRule,
     PriceBatchRule,
     SpeedHorizonRule,
+    _apply_allocations_and_price_batch,
     _price_batch_rule_for_row,
     auto_order_scope_gate_reasons,
     build_auto_order_scope_gate_audit,
@@ -210,6 +211,41 @@ def test_display_auto_order_excludes_bitok_before_quantity_calculation() -> None
     )
 
     assert [row["nomenclature_code"] for row in rows] == ["KEEP"]
+
+
+def test_display_auto_order_carries_main_supplier_snapshot() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB1",
+                "name": "Дисплей обычный",
+                "status_label": "Рабочий",
+            }
+        ],
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {},
+            "returns": {},
+            "nomenclature": {
+                "RB1": {
+                    "main_supplier_ref": "0xcard",
+                    "main_supplier_code": "S1",
+                    "main_supplier_name": "Поставщик карточки",
+                }
+            },
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    row = rows[0]
+    assert row["main_supplier_ref"] == "0xcard"
+    assert row["main_supplier_code"] == "S1"
+    assert row["main_supplier_name"] == "Поставщик карточки"
+    assert row["main_supplier_source_status"] == "configured"
 
 
 def test_display_auto_order_summary_carries_scope_policy_audit() -> None:
@@ -1424,6 +1460,82 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
     assert black["price_batch_decision"] == "rounded_to_price_minimum"
     assert white["dry_run_decision"] == "order"
     assert white["recommended_order_qty"] == "2"
+
+
+def test_price_batch_signal_is_not_set_for_plain_rounding_above_minimum() -> None:
+    row = {
+        "dry_run_decision": "order",
+        "_assortment_status": "working",
+        "analog_role": "single_sku",
+        "speed_tier": "normal",
+        "price_segment": "mid_low",
+        "_auto_order_allowed": True,
+        "warnings": "",
+    }
+
+    _apply_allocations_and_price_batch(
+        [row],
+        allocations={id(row): Decimal("31")},
+        supported_rows=[],
+        group_target_stock_qty=Decimal("31"),
+        group_free_stock_qty=Decimal("0"),
+        group_incoming_qty=Decimal("0"),
+        group_avg_daily_sales_qty=Decimal("1"),
+        price_batch_rules=(
+            PriceBatchRule(
+                speed_tier="normal",
+                price_segments=("mid_low",),
+                minimum_batch_qty=10,
+            ),
+        ),
+        price_batch_applies_to_statuses=("working",),
+        price_batch_applies_to_analog_roles=("single_sku",),
+        min_order_qty=0,
+        max_order_qty=None,
+        order_rounding_rules=(OrderRoundingRule(threshold_gt=0, round_to=5),),
+    )
+
+    assert row["recommended_order_qty_raw"] == "31"
+    assert row["recommended_order_qty"] == "35"
+    assert "price_batch_minimum_applied" not in row["warnings"]
+
+
+def test_price_batch_signal_is_set_for_actual_raise_to_minimum() -> None:
+    row = {
+        "dry_run_decision": "order",
+        "_assortment_status": "working",
+        "analog_role": "single_sku",
+        "speed_tier": "normal",
+        "price_segment": "mid_low",
+        "_auto_order_allowed": True,
+        "warnings": "",
+    }
+
+    _apply_allocations_and_price_batch(
+        [row],
+        allocations={id(row): Decimal("7")},
+        supported_rows=[],
+        group_target_stock_qty=Decimal("7"),
+        group_free_stock_qty=Decimal("0"),
+        group_incoming_qty=Decimal("0"),
+        group_avg_daily_sales_qty=Decimal("1"),
+        price_batch_rules=(
+            PriceBatchRule(
+                speed_tier="normal",
+                price_segments=("mid_low",),
+                minimum_batch_qty=10,
+            ),
+        ),
+        price_batch_applies_to_statuses=("working",),
+        price_batch_applies_to_analog_roles=("single_sku",),
+        min_order_qty=0,
+        max_order_qty=None,
+        order_rounding_rules=(OrderRoundingRule(threshold_gt=0, round_to=5),),
+    )
+
+    assert row["recommended_order_qty_raw"] == "7"
+    assert row["recommended_order_qty"] == "10"
+    assert "price_batch_minimum_applied" in row["warnings"]
 
 
 def test_price_batch_rule_uses_stable_status_codes_not_display_labels() -> None:

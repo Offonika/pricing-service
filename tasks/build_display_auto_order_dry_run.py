@@ -41,6 +41,7 @@ from app.services.display_scope_policy import (
     filter_display_scope_records,
     merge_display_scope_audits,
 )
+from app.services.onec_nomenclature_snapshot import fetch_onec_nomenclature_by_codes
 from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
@@ -76,6 +77,10 @@ SUPPORTED_VARIANT_COLOR_RE = re.compile(
 CSV_COLUMNS = [
     "nomenclature_code",
     "name",
+    "main_supplier_ref",
+    "main_supplier_code",
+    "main_supplier_name",
+    "main_supplier_source_status",
     "status_label",
     "quality_raw",
     "quality_normalized",
@@ -570,6 +575,7 @@ def main() -> int:
         "sales": {},
         "returns": {},
         "purchase": {},
+        "nomenclature": {},
         "margin_flow": {},
     }
     margin_flow_point_sales: dict[str, dict[str, dict[int, Decimal]]] = {}
@@ -619,6 +625,13 @@ def main() -> int:
                 if _clean(item.get("status")).casefold()
                 == auto_order_policy.margin_flow_policy.status_code.casefold()
             )
+            try:
+                facts["nomenclature"] = fetch_onec_nomenclature_by_codes(
+                    onec_engine,
+                    codes=codes,
+                )
+            except Exception as exc:  # noqa: BLE001 - fail closed for supplier policy.
+                source_errors["main_supplier"] = f"{type(exc).__name__}: {exc}"
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
             facts["customer_orders"] = fetch_active_customer_order_totals(
@@ -1969,6 +1982,12 @@ def build_dry_run_rows(
         sales = facts.get("sales", {}).get(code, {})
         returns = facts.get("returns", {}).get(code, {})
         purchase = facts.get("purchase", {}).get(code, {})
+        nomenclature = facts.get("nomenclature", {}).get(code)
+        main_supplier_source_status = (
+            "configured"
+            if nomenclature and _clean(nomenclature.get("main_supplier_ref"))
+            else "empty" if nomenclature is not None else "unavailable"
+        )
         sellable_stock_qty = _decimal(stock.get("sellable_stock_qty"))
         reserved_qty = _decimal(reserve.get("reserved_qty"))
         free_stock_qty = sellable_stock_qty - reserved_qty
@@ -2319,6 +2338,10 @@ def build_dry_run_rows(
             {
                 "nomenclature_code": code,
                 "name": _clean(item.get("name")),
+                "main_supplier_ref": _clean((nomenclature or {}).get("main_supplier_ref")),
+                "main_supplier_code": _clean((nomenclature or {}).get("main_supplier_code")),
+                "main_supplier_name": _clean((nomenclature or {}).get("main_supplier_name")),
+                "main_supplier_source_status": main_supplier_source_status,
                 "status_label": _clean(item.get("status_label")),
                 "_assortment_status": _clean(item.get("status")),
                 "_auto_order_allowed": bool(item.get("auto_order_allowed", True)),
@@ -2756,7 +2779,10 @@ def _apply_allocations_and_price_batch(
             continue
         final_by_id[id(row)] = candidate_qty
         row["price_batch_decision"] = "rounded_to_price_minimum"
-        if candidate_qty > raw_qty:
+        # Сигнал относится только к подъёму ИСХОДНОЙ потребности до
+        # минимальной партии. Обычное округление (например, 31 -> 35 при
+        # минимальной партии 10) не должно выдавать этот сигнал.
+        if raw_qty < minimum_batch_qty <= candidate_qty:
             _append_warning(row, "price_batch_minimum_applied")
 
     final_group_qty = sum(final_by_id.values(), Decimal("0"))

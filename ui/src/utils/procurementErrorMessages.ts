@@ -25,6 +25,14 @@ const PROCUREMENT_ERROR_MESSAGES: Record<string, string> = {
   "manual minimum cannot be negative": "Ручной минимум не может быть отрицательным.",
   "classification approver user IDs are not configured":
     "Не настроен список сотрудников, которые согласовывают классификацию.",
+  "selected supplier was not found in 1C":
+    "Поставщик больше не найден в 1С — обновите поиск и выберите его заново.",
+  "main supplier changed in 1C; refresh the order and use the 1C value":
+    "Основного поставщика уже изменили в 1С. Обновите заказ: значение 1С имеет приоритет.",
+  "only the supplier review room can be distributed":
+    "Разнести строки можно только из комнаты разбора без поставщика.",
+  "no lines with a selected supplier to distribute":
+    "Сначала назначьте поставщика хотя бы одной строке.",
 };
 
 export function procurementErrorText(error: unknown, fallback = "Операция не выполнена") {

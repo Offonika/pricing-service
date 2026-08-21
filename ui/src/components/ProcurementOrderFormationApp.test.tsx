@@ -7,6 +7,9 @@ import type {
   ProcurementOrderFormationLine,
 } from "../api/procurementAssortment";
 import {
+  previewProcurementSupplierDistribution,
+  searchProcurementSupplierOptions,
+  selectProcurementLineMainSupplier,
   createProcurementClassification,
   fetchProcurementOrder,
   updateProcurementOrderLine,
@@ -15,9 +18,13 @@ import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
 
 vi.mock("../api/procurementAssortment", () => ({
+  applyProcurementSupplierDistribution: vi.fn(),
   approveProcurementClassification: vi.fn(),
   createProcurementClassification: vi.fn(),
   fetchProcurementOrder: vi.fn(),
+  previewProcurementSupplierDistribution: vi.fn(),
+  searchProcurementSupplierOptions: vi.fn(),
+  selectProcurementLineMainSupplier: vi.fn(),
   submitProcurementOrder: vi.fn(),
   updateProcurementOrderLine: vi.fn(),
 }));
@@ -58,6 +65,7 @@ function order(overrides: Partial<ProcurementOrderFormation> = {}) {
     stable_key: "order-12",
     status: "draft",
     version: 1,
+    supplier_ref: "supplier-ref",
     supplier_name: "03-Мария",
     contract_name: "Основной договор",
     currency: "RUB",
@@ -368,6 +376,77 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     expect(toast.success).toHaveBeenCalledWith(
       "Строка исключена из проекта; причина сохранена в журнале"
     );
+  });
+});
+
+
+describe("ProcurementOrderFormationApp комната разбора поставщиков", () => {
+  beforeEach(() => {
+    vi.mocked(searchProcurementSupplierOptions).mockReset();
+    vi.mocked(selectProcurementLineMainSupplier).mockReset();
+    vi.mocked(previewProcurementSupplierDistribution).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("назначает поставщика в строке и показывает предпросмотр разнесения", async () => {
+    const room = order({
+      supplier_ref: null,
+      supplier_code: null,
+      supplier_name: "Не определён",
+      blockers: ["line_1:supplier_1c_reference_missing"],
+      lines: [line({ blockers: ["supplier_1c_reference_missing"] })],
+    });
+    const selected = order({
+      ...room,
+      version: 2,
+      lines: [line({
+        version: 2,
+        blockers: ["supplier_1c_reference_missing"],
+        payload: {
+          main_supplier_selection: {
+            ref: "0xsamsung",
+            code: "S9",
+            name: "Samsung display",
+            status: "pending_onec_write",
+          },
+        },
+      })],
+    });
+    vi.mocked(searchProcurementSupplierOptions).mockResolvedValue([
+      { ref: "0xsamsung", code: "S9", name: "Samsung display" },
+    ]);
+    vi.mocked(selectProcurementLineMainSupplier).mockResolvedValue(selected);
+    vi.mocked(previewProcurementSupplierDistribution).mockResolvedValue({
+      source_order_id: 12,
+      source_order_version: 2,
+      groups: [{
+        supplier_ref: "0xsamsung",
+        supplier_code: "S9",
+        supplier_name: "Samsung display",
+        line_ids: [40],
+        line_numbers: [1],
+        nomenclature_codes: ["РБ000031600"],
+        target_order_id: null,
+        target_order_status: "new",
+      }],
+      unresolved_line_numbers: [],
+    });
+
+    render(<ProcurementOrderFormationApp initialOrder={room} />);
+    fireEvent.change(screen.getByLabelText("Поставщик Дисплей для Huawei P10 Lite"), {
+      target: { value: "Samsung" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await waitFor(() => expect(searchProcurementSupplierOptions).toHaveBeenCalledWith("Samsung"));
+    fireEvent.click(await screen.findByRole("button", { name: /Samsung display/ }));
+    await waitFor(() => expect(selectProcurementLineMainSupplier).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/выбран, в карточке ещё не записан/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Разнести по поставщикам" }));
+    expect(await screen.findByText("Предпросмотр разнесения")).toBeInTheDocument();
+    expect(screen.getByText(/будет создан новый проект/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Подтвердить разнесение" })).toBeEnabled();
   });
 });
 

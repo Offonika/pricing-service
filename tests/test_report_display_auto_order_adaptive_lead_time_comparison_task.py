@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.services.display_family_registry import ActiveDisplayFamilyMemberContext
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
+    adaptive_reason,
     build_comparison_rows,
     build_summary,
     build_sync_ready_rows,
@@ -12,9 +13,28 @@ from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
 )
 
 
+def test_adaptive_reason_lists_quantity_and_horizon_as_independent_changes() -> None:
+    reason = adaptive_reason(
+        current_qty=Decimal("31"),
+        adaptive_qty=Decimal("35"),
+        current_effective_days=105,
+        adaptive_effective_days=82,
+        lead_applied=False,
+        lead_candidate=None,
+        seasonality_adjustment={"total_adjustment_days": 0},
+    )
+
+    assert reason.startswith(
+        "адаптивный расчет: количество 31 -> 35 шт. (увеличено); " "горизонт 105 -> 82 дней"
+    )
+    assert "увеличил заказ: горизонт" not in reason
+
+
 def test_adaptive_lead_time_comparison_reduces_order_when_live_route_is_shorter() -> None:
+    dry_row = _dry_row()
+    dry_row["distribution_to_shelf_days"] = "7"
     rows = build_comparison_rows(
-        [_dry_row()],
+        [dry_row],
         [
             {
                 "nomenclature_code": "RB1",
@@ -35,15 +55,17 @@ def test_adaptive_lead_time_comparison_reduces_order_when_live_route_is_shorter(
     row = rows[0]
     assert row["lead_time_applied"] == 1
     assert row["lead_time_source_level"] == "sku"
-    assert row["adaptive_effective_target_days"] == 52
-    assert row["adaptive_recommended_order_qty"] == "110"
-    assert row["qty_delta"] == "-10"
+    assert row["adaptive_effective_target_days"] == 59
+    assert row["adaptive_recommended_order_qty"] == "120"
+    assert row["qty_delta"] == "0"
     assert row["supplier_name"] == "Samsung display"
 
 
 def test_adaptive_lead_time_comparison_keeps_fallback_for_low_confidence() -> None:
+    dry_row = _dry_row()
+    dry_row["distribution_to_shelf_days"] = "7"
     rows = build_comparison_rows(
-        [_dry_row()],
+        [dry_row],
         [
             {
                 "nomenclature_code": "RB1",
@@ -64,8 +86,8 @@ def test_adaptive_lead_time_comparison_keeps_fallback_for_low_confidence() -> No
     row = rows[0]
     assert row["lead_time_applied"] == 0
     assert row["lead_time_source_level"] == "sku_low_confidence"
-    assert row["adaptive_effective_target_days"] == 60
-    assert row["adaptive_recommended_order_qty"] == "120"
+    assert row["adaptive_effective_target_days"] == 67
+    assert row["adaptive_recommended_order_qty"] == "140"
     assert "lead_time_low_confidence_fallback" in row["warnings"]
 
 
@@ -254,6 +276,7 @@ def test_adaptive_lead_time_comparison_applies_recent_supplier_seasonality() -> 
         current_target_stock_qty="59",
         current_effective_target_days="59",
     )
+    dry_row["distribution_to_shelf_days"] = "7"
     rows = build_comparison_rows(
         [dry_row],
         [
@@ -288,9 +311,118 @@ def test_adaptive_lead_time_comparison_applies_recent_supplier_seasonality() -> 
     row = rows[0]
     assert row["seasonality_adjustment_days"] == 10
     assert row["adaptive_logistics_days"] == 26
-    assert row["adaptive_effective_target_days"] == 69
-    assert row["adaptive_recommended_order_qty"] == "69"
+    assert row["adaptive_effective_target_days"] == 76
+    assert row["adaptive_recommended_order_qty"] == "76"
     assert row["seasonality_signal"] == "road_seasonality"
+
+
+def test_adaptive_lead_time_uses_only_main_supplier_history() -> None:
+    dry_row = _dry_row()
+    dry_row.update(
+        {
+            "main_supplier_ref": "0xcard",
+            "main_supplier_name": "Поставщик карточки",
+            "main_supplier_source_status": "configured",
+            "distribution_to_shelf_days": "7",
+        }
+    )
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_ref": "0xother",
+                "supplier_name": "Другой поставщик",
+                "order_line_count": "50",
+                "recommended_supplier_prepare_days": "1",
+                "recommended_logistics_days": "1",
+                "lead_time_confidence": "high",
+            },
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_ref": "0xcard",
+                "supplier_name": "Поставщик карточки",
+                "order_line_count": "2",
+                "recommended_supplier_prepare_days": "4",
+                "recommended_logistics_days": "16",
+                "lead_time_confidence": "medium",
+            },
+        ],
+        policy={"order_rounding_rules": []},
+        as_of=date(2026, 8, 20),
+    )
+
+    row = rows[0]
+    assert row["lead_time_applied"] == 1
+    assert row["lead_time_source_level"] == "sku_main_supplier"
+    assert row["supplier_name"] == "Поставщик карточки"
+    assert row["adaptive_lead_time_days"] == 20
+
+
+def test_adaptive_lead_time_does_not_substitute_another_supplier() -> None:
+    dry_row = _dry_row()
+    dry_row.update(
+        {
+            "main_supplier_ref": "0xcard",
+            "main_supplier_name": "Поставщик карточки",
+            "main_supplier_source_status": "configured",
+            "distribution_to_shelf_days": "7",
+        }
+    )
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_ref": "0xother",
+                "supplier_name": "Другой поставщик",
+                "order_line_count": "50",
+                "recommended_supplier_prepare_days": "1",
+                "recommended_logistics_days": "1",
+                "lead_time_confidence": "high",
+            }
+        ],
+        policy={"order_rounding_rules": []},
+        as_of=date(2026, 8, 20),
+    )
+
+    row = rows[0]
+    assert row["lead_time_applied"] == 0
+    assert row["lead_time_source_level"] == "main_supplier_history_missing"
+    assert row["supplier_name"] == ""
+    assert row["adaptive_lead_time_days"] == 48
+    assert "main_supplier_lead_time_missing_fallback" in row["warnings"]
+
+
+def test_adaptive_lead_time_fails_closed_when_card_snapshot_is_unavailable() -> None:
+    dry_row = _dry_row()
+    dry_row["main_supplier_source_status"] = "unavailable"
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_ref": "0xother",
+                "supplier_name": "Другой поставщик",
+                "order_line_count": "50",
+                "recommended_supplier_prepare_days": "1",
+                "recommended_logistics_days": "1",
+                "lead_time_confidence": "high",
+            }
+        ],
+        policy={"order_rounding_rules": []},
+        as_of=date(2026, 8, 20),
+    )
+
+    row = rows[0]
+    assert row["lead_time_applied"] == 0
+    assert row["lead_time_source_level"] == "main_supplier_source_unavailable"
+    assert row["supplier_name"] == ""
+    assert "main_supplier_source_unavailable_fallback" in row["warnings"]
 
 
 def test_adaptive_lead_time_comparison_summary_totals() -> None:
@@ -354,6 +486,85 @@ def test_build_sync_ready_rows_applies_adaptive_quantities_for_bitrix_sync() -> 
     assert rows[0]["reason_ru"] == "адаптивный расчет уменьшил заказ"
     assert "adaptive_lead_time_sync_ready" in rows[0]["warnings"]
     assert "local:adaptive_lead_time" in rows[0]["data_sources"]
+
+
+def test_sync_ready_removes_minimum_batch_signal_for_plain_rounding() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="10")
+    dry_row.update(
+        {
+            "price_batch_min_qty": "10",
+            "warnings": "price_batch_minimum_applied; order_qty_rounded_to_multiple",
+        }
+    )
+    comparison_row = {
+        "adaptive_decision": "order",
+        "adaptive_recommended_order_qty": "35",
+        "adaptive_recommended_order_qty_raw": "31",
+        "warnings": "",
+    }
+
+    row = build_sync_ready_rows([dry_row], [comparison_row])[0]
+
+    assert row["recommended_order_qty_raw"] == "31"
+    assert row["recommended_order_qty"] == "35"
+    assert "price_batch_minimum_applied" not in row["warnings"]
+
+
+def test_sync_ready_removes_stale_minimum_batch_signal_when_qty_is_unchanged() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="20")
+    dry_row.update(
+        {
+            "price_batch_min_qty": "20",
+            "warnings": "price_batch_minimum_applied",
+        }
+    )
+    comparison_row = {
+        "adaptive_decision": "order",
+        "adaptive_recommended_order_qty": "160",
+        "adaptive_recommended_order_qty_raw": "160",
+        "warnings": "",
+    }
+
+    row = build_sync_ready_rows([dry_row], [comparison_row])[0]
+
+    assert row["recommended_order_qty_raw"] == "160"
+    assert row["recommended_order_qty"] == "160"
+    assert "price_batch_minimum_applied" not in row["warnings"]
+
+
+def test_sync_ready_recomputes_minimum_batch_signal_after_adaptive_overlay() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="35")
+    dry_row.update({"price_batch_min_qty": "10", "warnings": ""})
+    comparison_row = {
+        "adaptive_decision": "order",
+        "adaptive_recommended_order_qty": "10",
+        "adaptive_recommended_order_qty_raw": "7",
+        "warnings": "",
+    }
+
+    row = build_sync_ready_rows([dry_row], [comparison_row])[0]
+
+    assert "price_batch_minimum_applied" in row["warnings"]
+
+
+def test_sync_ready_does_not_claim_minimum_when_final_qty_stays_below_it() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="10")
+    dry_row.update(
+        {
+            "price_batch_min_qty": "10",
+            "warnings": "price_batch_minimum_applied",
+        }
+    )
+    comparison_row = {
+        "adaptive_decision": "order",
+        "adaptive_recommended_order_qty": "5",
+        "adaptive_recommended_order_qty_raw": "1",
+        "warnings": "price_batch_minimum_applied",
+    }
+
+    row = build_sync_ready_rows([dry_row], [comparison_row])[0]
+
+    assert "price_batch_minimum_applied" not in row["warnings"]
 
 
 def test_sync_ready_family_overlay_is_rebuilt_after_adaptive_quantity() -> None:

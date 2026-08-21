@@ -130,6 +130,13 @@ def test_order_assistant_openapi_exposes_metric_evidence_and_supplier_profile_ve
         "lead_time_days",
         "lead_time_source_level",
         "lead_time_confidence",
+        "supplier_selection_rule",
+        "supplier_selection_reason",
+        "supplier_cost_tie_pct",
+        "supplier_price_candidate_count",
+        "supplier_price_min",
+        "supplier_selected_purchase_price",
+        "supplier_selected_price_currency",
     ):
         assert field_name in properties
 

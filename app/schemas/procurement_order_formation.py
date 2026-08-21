@@ -178,6 +178,13 @@ class ProcurementOrderFormationLineRead(BaseModel):
     lead_time_days: int | None = None
     lead_time_source_level: str | None = None
     lead_time_confidence: str | None = None
+    supplier_selection_rule: str | None = None
+    supplier_selection_reason: str | None = None
+    supplier_cost_tie_pct: Decimal | None = None
+    supplier_price_candidate_count: int | None = None
+    supplier_price_min: Decimal | None = None
+    supplier_selected_purchase_price: Decimal | None = None
+    supplier_selected_price_currency: str | None = None
     delivery_days: int | None = None
 
 

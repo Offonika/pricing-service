@@ -6,11 +6,87 @@ from decimal import Decimal
 from app.services.display_family_registry import ActiveDisplayFamilyMemberContext
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     adaptive_reason,
+    best_lead_time_row,
     build_comparison_rows,
     build_summary,
     build_sync_ready_rows,
     refresh_sync_ready_family_recommendations,
 )
+
+
+def _supplier_candidate(
+    supplier: str,
+    *,
+    price: str,
+    total_days: int,
+    currency: str = "USD",
+    confidence: str = "high",
+    order_count: int = 10,
+) -> dict[str, str]:
+    return {
+        "supplier_name": supplier,
+        "latest_purchase_price": price,
+        "price_currency_code": currency,
+        "recommended_supplier_prepare_days": str(total_days // 2),
+        "recommended_logistics_days": str(total_days - total_days // 2),
+        "lead_time_confidence": confidence,
+        "order_line_count": str(order_count),
+        "latest_supplier_order_at": "2026-08-20",
+    }
+
+
+def test_supplier_selection_prefers_price_when_difference_exceeds_three_pct() -> None:
+    selected = best_lead_time_row(
+        [
+            _supplier_candidate("Дешевле", price="100", total_days=30, order_count=3),
+            _supplier_candidate("Быстрее", price="110", total_days=10, order_count=30),
+        ]
+    )
+
+    assert selected is not None
+    assert selected["supplier_name"] == "Дешевле"
+    assert selected["supplier_selection_reason"] == "price_guard_over_3pct_then_speed"
+    assert selected["supplier_cost_tie_pct"] == "3"
+
+
+def test_supplier_selection_prefers_speed_inside_three_pct_price_corridor() -> None:
+    selected = best_lead_time_row(
+        [
+            _supplier_candidate("Дешевле", price="100", total_days=30, order_count=30),
+            _supplier_candidate("Быстрее", price="102", total_days=10, order_count=3),
+        ]
+    )
+
+    assert selected is not None
+    assert selected["supplier_name"] == "Быстрее"
+    assert selected["supplier_selection_reason"] == "price_tie_within_3pct_speed"
+    assert selected["supplier_selected_purchase_price"] == "102"
+
+
+def test_supplier_selection_does_not_compare_prices_in_different_currencies() -> None:
+    selected = best_lead_time_row(
+        [
+            _supplier_candidate(
+                "USD поставщик",
+                price="100",
+                total_days=30,
+                currency="USD",
+                order_count=3,
+            ),
+            _supplier_candidate(
+                "CNY поставщик",
+                price="10",
+                total_days=10,
+                currency="CNY",
+                order_count=30,
+            ),
+        ]
+    )
+
+    assert selected is not None
+    assert selected["supplier_name"] == "CNY поставщик"
+    assert selected["supplier_selection_rule"] == "historical_evidence_fallback"
+    assert selected["supplier_selection_reason"] == "comparable_current_prices_unavailable"
 
 
 def test_adaptive_reason_lists_quantity_and_horizon_as_independent_changes() -> None:
@@ -359,6 +435,8 @@ def test_adaptive_lead_time_uses_only_main_supplier_history() -> None:
     assert row["lead_time_source_level"] == "sku_main_supplier"
     assert row["supplier_name"] == "Поставщик карточки"
     assert row["adaptive_lead_time_days"] == 20
+    assert row["supplier_selection_rule"] == "main_supplier_card"
+    assert row["supplier_selection_reason"] == "main_supplier_from_onec_card"
 
 
 def test_adaptive_lead_time_does_not_substitute_another_supplier() -> None:

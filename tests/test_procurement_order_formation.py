@@ -578,6 +578,13 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
             "profitability_pct": "34.6",
             "supplier_defect_pct": "0.8",
             "supplier_defect_history_units": 1842,
+            "supplier_selection_rule": "current_price_then_speed",
+            "supplier_selection_reason": "price_tie_within_3pct_speed",
+            "supplier_cost_tie_pct": "3",
+            "supplier_price_candidate_count": 3,
+            "supplier_price_min": "47.5",
+            "supplier_selected_purchase_price": "48.2",
+            "supplier_selected_price_currency": "USD",
         }
     db_session.commit()
 
@@ -590,6 +597,9 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     assert validated.orders[0].supplier_profile.qualification_class == "A"
     assert validated.orders[0].supplier_profile.defect_pct == Decimal("0.8")
     assert validated.orders[0].supplier_profile.updated_at.date() == date(2026, 8, 1)
+    assert validated.orders[0].lines[0].supplier_selection_reason == ("price_tie_within_3pct_speed")
+    assert validated.orders[0].lines[0].supplier_cost_tie_pct == Decimal("3")
+    assert validated.orders[0].lines[0].supplier_selected_purchase_price == Decimal("48.2")
     assert validated.orders[0].lines[0].photo_original_url.endswith("/1.jpg")
     assert validated.orders[0].lines[0].product_card_url == (
         "https://master-mobile.ru/catalog/displei/1/"

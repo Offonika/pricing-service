@@ -87,6 +87,13 @@ CSV_COLUMNS = [
     "supplier_name",
     "responsible_name",
     "supplier_order_line_count",
+    "supplier_selection_rule",
+    "supplier_selection_reason",
+    "supplier_cost_tie_pct",
+    "supplier_price_candidate_count",
+    "supplier_price_min",
+    "supplier_selected_purchase_price",
+    "supplier_selected_price_currency",
     "missing_cargo_count",
     "missing_receipt_after_cargo_count",
     "seasonality_adjustment_days",
@@ -102,6 +109,8 @@ CSV_COLUMNS = [
 
 CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "": 0}
 APPLICABLE_CONFIDENCE = {"high", "medium"}
+SUPPLIER_COST_TIE_PCT = Decimal("3")
+SUPPLIER_COST_TIE_MULTIPLIER = Decimal("1") + SUPPLIER_COST_TIE_PCT / Decimal("100")
 BLOCKING_WARNING_CODES = {
     "not_auto_order_allowed",
     "analog_winner_not_auto_order_allowed",
@@ -550,6 +559,27 @@ def build_row_comparison(
         "supplier_order_line_count": (
             _clean(lead_candidate.get("order_line_count")) if lead_candidate else ""
         ),
+        "supplier_selection_rule": (
+            _clean(lead_candidate.get("supplier_selection_rule")) if lead_candidate else ""
+        ),
+        "supplier_selection_reason": (
+            _clean(lead_candidate.get("supplier_selection_reason")) if lead_candidate else ""
+        ),
+        "supplier_cost_tie_pct": (
+            _clean(lead_candidate.get("supplier_cost_tie_pct")) if lead_candidate else ""
+        ),
+        "supplier_price_candidate_count": (
+            _clean(lead_candidate.get("supplier_price_candidate_count")) if lead_candidate else ""
+        ),
+        "supplier_price_min": (
+            _clean(lead_candidate.get("supplier_price_min")) if lead_candidate else ""
+        ),
+        "supplier_selected_purchase_price": (
+            _clean(lead_candidate.get("supplier_selected_purchase_price")) if lead_candidate else ""
+        ),
+        "supplier_selected_price_currency": (
+            _clean(lead_candidate.get("supplier_selected_price_currency")) if lead_candidate else ""
+        ),
         "missing_cargo_count": (
             _clean(lead_candidate.get("missing_cargo_count")) if lead_candidate else ""
         ),
@@ -721,14 +751,23 @@ def choose_lead_time_candidate(
     else:
         level_suffix = ""
         missing_level = "fallback_default"
-    for rows, level in (
-        (eligible_lead_time_rows(exact), "sku"),
-        (eligible_lead_time_rows(group), "display_group"),
-        (exact, "sku_low_confidence"),
-        (group, "display_group_low_confidence"),
+    for rows, level, use_price in (
+        (eligible_lead_time_rows(exact), "sku", True),
+        (eligible_lead_time_rows(group), "display_group", False),
+        (exact, "sku_low_confidence", True),
+        (group, "display_group_low_confidence", False),
     ):
-        candidate = best_lead_time_row(rows)
+        candidate = best_lead_time_row(
+            rows,
+            use_price=use_price and not normalized_supplier_ref,
+        )
         if candidate:
+            if normalized_supplier_ref:
+                candidate = {
+                    **dict(candidate),
+                    "supplier_selection_rule": "main_supplier_card",
+                    "supplier_selection_reason": "main_supplier_from_onec_card",
+                }
             return candidate, f"{level}{level_suffix}"
     return None, missing_level
 
@@ -739,21 +778,119 @@ def eligible_lead_time_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Mapping[
     )
 
 
-def best_lead_time_row(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+def best_lead_time_row(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    use_price: bool = True,
+) -> Mapping[str, Any] | None:
     if not rows:
         return None
-    return max(
+    if use_price:
+        price_candidate = _best_supplier_by_price_and_speed(rows)
+        if price_candidate is not None:
+            return price_candidate
+    candidate = max(
         rows,
-        key=lambda row: (
-            CONFIDENCE_RANK.get(_clean(row.get("lead_time_confidence")), 0),
-            _int_or_none(row.get("order_line_count")) or 0,
-            _clean(row.get("latest_supplier_order_at")),
-            -(
-                (_int_or_none(row.get("recommended_supplier_prepare_days")) or 0)
-                + (_int_or_none(row.get("recommended_logistics_days")) or 0)
-            ),
-        ),
+        key=_historical_evidence_sort_key,
     )
+    return {
+        **dict(candidate),
+        "supplier_selection_rule": "historical_evidence_fallback",
+        "supplier_selection_reason": (
+            "only_historical_supplier_candidate"
+            if len(rows) == 1
+            else "comparable_current_prices_unavailable"
+        ),
+    }
+
+
+def _best_supplier_by_price_and_speed(
+    rows: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    priced_rows: list[tuple[Mapping[str, Any], Decimal, str]] = []
+    for row in rows:
+        price = _decimal(row.get("latest_purchase_price"))
+        currency = _supplier_price_currency(row)
+        if price is None or price <= 0 or not currency:
+            return None
+        priced_rows.append((row, price, currency))
+    if len(priced_rows) < 2 or len({currency for _row, _price, currency in priced_rows}) != 1:
+        return None
+
+    minimum_price = min(price for _row, price, _currency in priced_rows)
+    price_ceiling = minimum_price * SUPPLIER_COST_TIE_MULTIPLIER
+    affordable = [
+        (row, price, currency) for row, price, currency in priced_rows if price <= price_ceiling
+    ]
+    fastest_days = min(_supplier_total_days(row) for row, _price, _currency in affordable)
+    fastest = [
+        (row, price, currency)
+        for row, price, currency in affordable
+        if _supplier_total_days(row) == fastest_days
+    ]
+    selected_row, selected_price, selected_currency = max(
+        fastest,
+        key=lambda item: _historical_evidence_sort_key(item[0]),
+    )
+    maximum_price = max(price for _row, price, _currency in priced_rows)
+    reason = (
+        "price_guard_over_3pct_then_speed"
+        if maximum_price > price_ceiling
+        else "price_tie_within_3pct_speed"
+    )
+    return {
+        **dict(selected_row),
+        "supplier_selection_rule": "current_price_then_speed",
+        "supplier_selection_reason": reason,
+        "supplier_cost_tie_pct": _out_decimal(SUPPLIER_COST_TIE_PCT),
+        "supplier_price_candidate_count": len(priced_rows),
+        "supplier_price_min": _out_decimal(minimum_price),
+        "supplier_selected_purchase_price": _out_decimal(selected_price),
+        "supplier_selected_price_currency": selected_currency,
+    }
+
+
+def _historical_evidence_sort_key(row: Mapping[str, Any]) -> tuple[int, int, str, int]:
+    return (
+        CONFIDENCE_RANK.get(_clean(row.get("lead_time_confidence")), 0),
+        _int_or_none(row.get("order_line_count")) or 0,
+        _clean(row.get("latest_supplier_order_at")),
+        -_supplier_total_days(row),
+    )
+
+
+def _supplier_total_days(row: Mapping[str, Any]) -> int:
+    return (_int_or_none(row.get("recommended_supplier_prepare_days")) or 0) + (
+        _int_or_none(row.get("recommended_logistics_days")) or 0
+    )
+
+
+def _supplier_price_currency(row: Mapping[str, Any]) -> str:
+    code = _clean(row.get("price_currency_code")).upper().replace(" ", "")
+    name = _clean(row.get("price_currency_name")).upper().replace(" ", "")
+    aliases = {
+        "643": "RUB",
+        "RUR": "RUB",
+        "RUB": "RUB",
+        "РУБ": "RUB",
+        "РУБ.": "RUB",
+        "840": "USD",
+        "USD": "USD",
+        "ДОЛЛАРСША": "USD",
+        "978": "EUR",
+        "EUR": "EUR",
+        "ЕВРО": "EUR",
+        "156": "CNY",
+        "CNY": "CNY",
+        "RMB": "CNY",
+        "ЮАНЬ": "CNY",
+    }
+    for value in (code, name):
+        if value in aliases:
+            return aliases[value]
+    currency_ref = _clean(row.get("price_currency_ref")).lower()
+    ref_hex = currency_ref.removeprefix("0x")
+    return currency_ref if ref_hex and any(char != "0" for char in ref_hex) else ""
 
 
 def seasonality_adjustment_for_candidate(

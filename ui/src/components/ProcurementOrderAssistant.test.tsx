@@ -129,6 +129,13 @@ function assistantData(photoOriginal: string | null = "https://cdn.example.test/
         supplier_defect_pct: "0.8",
         supplier_defect_history_units: 1842,
         price_change_pct: "-2.1",
+        supplier_selection_rule: "current_price_then_speed",
+        supplier_selection_reason: "price_tie_within_3pct_speed",
+        supplier_cost_tie_pct: "3",
+        supplier_price_candidate_count: 3,
+        supplier_price_min: "47.5",
+        supplier_selected_purchase_price: "48.2",
+        supplier_selected_price_currency: "USD",
         delivery_days: 12,
       }],
     }],
@@ -322,6 +329,7 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Tianma" }));
     expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
+    expect(screen.getAllByText("Цены в пределах 3%: выбран более быстрый — 48,2 USD").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Закрыть панель поставщика" }));
     expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
   });

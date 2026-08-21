@@ -566,6 +566,17 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
             "lead_time_match_level",
         ),
         "lead_time_confidence": _payload_text(payload, "lead_time_confidence"),
+        "supplier_selection_rule": _payload_text(payload, "supplier_selection_rule"),
+        "supplier_selection_reason": _payload_text(payload, "supplier_selection_reason"),
+        "supplier_cost_tie_pct": _payload_decimal(payload, "supplier_cost_tie_pct"),
+        "supplier_price_candidate_count": _payload_int(payload, "supplier_price_candidate_count"),
+        "supplier_price_min": _payload_decimal(payload, "supplier_price_min"),
+        "supplier_selected_purchase_price": _payload_decimal(
+            payload, "supplier_selected_purchase_price"
+        ),
+        "supplier_selected_price_currency": _payload_text(
+            payload, "supplier_selected_price_currency"
+        ),
         "delivery_days": _payload_int(
             payload,
             "delivery_days",

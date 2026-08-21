@@ -1354,6 +1354,19 @@ def procurement_assistant_line_payload(
         "lead_time_days": lead_time_days,
         "lead_time_confidence": _clean(lead_candidate.get("lead_time_confidence")),
         "lead_time_source_level": lead_source_level,
+        "supplier_selection_rule": _clean(lead_candidate.get("supplier_selection_rule")),
+        "supplier_selection_reason": _clean(lead_candidate.get("supplier_selection_reason")),
+        "supplier_cost_tie_pct": _clean(lead_candidate.get("supplier_cost_tie_pct")),
+        "supplier_price_candidate_count": _integer(
+            lead_candidate.get("supplier_price_candidate_count")
+        ),
+        "supplier_price_min": _clean(lead_candidate.get("supplier_price_min")),
+        "supplier_selected_purchase_price": _clean(
+            lead_candidate.get("supplier_selected_purchase_price")
+        ),
+        "supplier_selected_price_currency": _clean(
+            lead_candidate.get("supplier_selected_price_currency")
+        ),
         "batch_error_return_qty": _clean(row.get("batch_error_return_qty")),
         "batch_error_share_pct": _clean(row.get("batch_error_share_pct")),
         "defect_return_qty": _clean(row.get("defect_return_qty")),

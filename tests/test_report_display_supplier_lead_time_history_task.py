@@ -171,6 +171,53 @@ def test_display_supplier_lead_time_aggregate_counts_missing_dates() -> None:
     assert row["lead_time_confidence"] == "low"
 
 
+def test_display_supplier_lead_time_uses_latest_posted_price_with_currency() -> None:
+    detail_rows = build_lead_time_detail_rows(
+        [
+            {
+                "supplier_name": "Supplier A",
+                "supplier_ref": "0x01",
+                "supplier_order_number": "РБ0001",
+                "supplier_order_created_at": "2026-01-01",
+                "cargo_handoff_at": "2026-01-05",
+                "nomenclature_ref": "0xAAA",
+                "nomenclature_code": "RB1",
+                "name": "Дисплей тест",
+                "qty": "2",
+                "price": "110",
+                "amount": "220",
+                "price_currency_ref": "0xUSD",
+                "price_currency_code": "840",
+                "price_currency_name": "USD",
+            },
+            {
+                "supplier_name": "Supplier A",
+                "supplier_ref": "0x01",
+                "supplier_order_number": "РБ0002",
+                "supplier_order_created_at": "2026-02-01",
+                "cargo_handoff_at": "2026-02-05",
+                "nomenclature_ref": "0xAAA",
+                "nomenclature_code": "RB1",
+                "name": "Дисплей тест",
+                "qty": "2",
+                "price": "100",
+                "amount": "200",
+                "price_currency_ref": "0xUSD",
+                "price_currency_code": "840",
+                "price_currency_name": "USD",
+            },
+        ],
+        [{"nomenclature_ref": "0xAAA", "receipt_at": "2026-02-10"}],
+    )
+
+    row = aggregate_lead_time_rows(detail_rows)[0]
+
+    assert row["latest_purchase_price"] == "100"
+    assert row["latest_purchase_price_at"] == "2026-02-01"
+    assert row["price_currency_ref"] == "0xusd"
+    assert row["price_currency_code"] == "840"
+
+
 def test_display_supplier_lead_time_summary_recommends_overall_defaults() -> None:
     detail_rows = build_lead_time_detail_rows(
         [

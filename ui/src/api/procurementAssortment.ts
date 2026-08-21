@@ -252,6 +252,13 @@ export interface ProcurementOrderFormationLine {
   lead_time_days?: number | null;
   lead_time_source_level?: string | null;
   lead_time_confidence?: string | null;
+  supplier_selection_rule?: string | null;
+  supplier_selection_reason?: string | null;
+  supplier_cost_tie_pct?: string | null;
+  supplier_price_candidate_count?: number | null;
+  supplier_price_min?: string | null;
+  supplier_selected_purchase_price?: string | null;
+  supplier_selected_price_currency?: string | null;
   delivery_days?: number | null;
 }
 

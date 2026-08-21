@@ -294,6 +294,28 @@ function priceHistoryLabel(line: ProcurementOrderFormationLine) {
   return `Нет двух заказов в ${currency}`;
 }
 
+function supplierSelectionLabel(line: ProcurementOrderFormationLine) {
+  const price = numeric(line.supplier_selected_purchase_price);
+  const currency = line.supplier_selected_price_currency || line.currency;
+  const selectedPrice = price === null ? "" : ` — ${quantity(String(price))} ${currency}`;
+  if (line.supplier_selection_reason === "price_guard_over_3pct_then_speed") {
+    return `Разница больше 3%: выбран более дешёвый${selectedPrice}`;
+  }
+  if (line.supplier_selection_reason === "price_tie_within_3pct_speed") {
+    return `Цены в пределах 3%: выбран более быстрый${selectedPrice}`;
+  }
+  if (line.supplier_selection_reason === "main_supplier_from_onec_card") {
+    return "Основной поставщик из карточки 1С";
+  }
+  if (line.supplier_selection_reason === "only_historical_supplier_candidate") {
+    return "Единственный поставщик в истории товара";
+  }
+  if (line.supplier_selection_rule === "historical_evidence_fallback") {
+    return "Выбор по истории: сопоставимой цены нет";
+  }
+  return "Правило выбора не записано";
+}
+
 function filterMatches(row: AssistantRow, filter: QuickFilter) {
   const profitability = numeric(row.line.profitability_pct);
   const defect = numeric(row.line.supplier_defect_pct);
@@ -624,6 +646,7 @@ function SupplierPanel({ rows, onClose, onOpenOrder, onRefresh }: { rows: Assist
           <dl className="order-assistant__source-confidence">
             <div><dt>Источник</dt><dd>{sourceLevelLabel(firstLine.lead_time_source_level)}</dd></div>
             <div><dt>Уверенность</dt><dd className={firstLine.lead_time_confidence === "high" || firstLine.lead_time_confidence === "reliable" ? "is-good" : ""}>{confidenceLabel(firstLine.lead_time_confidence || profile.lead_time_confidence)}</dd></div>
+            <div><dt>Почему выбран поставщик</dt><dd>{supplierSelectionLabel(firstLine)}</dd></div>
           </dl>
         </section>
 
@@ -1002,7 +1025,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                           </>
                         )}
                       </td>
-                      <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{sourceLevelLabel(row.line.lead_time_source_level)} · {confidenceLabel(row.line.lead_time_confidence)}</small></td>
+                      <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{sourceLevelLabel(row.line.lead_time_source_level)} · {confidenceLabel(row.line.lead_time_confidence)}</small><small>{supplierSelectionLabel(row.line)}</small></td>
                       <td>
                         <div className="order-assistant__decision">
                           {row.order.blockers.length > 0 ? (

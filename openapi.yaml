@@ -24174,6 +24174,44 @@ components:
           - type: string
           - type: 'null'
           title: Lead Time Confidence
+        supplier_selection_rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Selection Rule
+        supplier_selection_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Selection Reason
+        supplier_cost_tie_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Cost Tie Pct
+        supplier_price_candidate_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Price Candidate Count
+        supplier_price_min:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Price Min
+        supplier_selected_purchase_price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Selected Purchase Price
+        supplier_selected_price_currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Selected Price Currency
         delivery_days:
           anyOf:
           - type: integer

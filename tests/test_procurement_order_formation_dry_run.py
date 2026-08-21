@@ -553,6 +553,8 @@ def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
         "lead_time_days": 30,
         "lead_time_confidence": "high",
         "lead_time_source_level": "sku",
+        "supplier_selection_rule": "historical_evidence_fallback",
+        "supplier_selection_reason": "only_historical_supplier_candidate",
     }
 
 

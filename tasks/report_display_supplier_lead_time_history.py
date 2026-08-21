@@ -71,6 +71,11 @@ AGGREGATE_CSV_COLUMNS = [
     "order_line_count",
     "ordered_qty",
     "order_amount",
+    "latest_purchase_price",
+    "latest_purchase_price_at",
+    "price_currency_ref",
+    "price_currency_code",
+    "price_currency_name",
     "orders_with_cargo_count",
     "orders_with_receipt_after_cargo_count",
     "missing_cargo_count",
@@ -118,6 +123,9 @@ DETAIL_CSV_COLUMNS = [
     "qty",
     "price",
     "amount",
+    "price_currency_ref",
+    "price_currency_code",
+    "price_currency_name",
     "supplier_prepare_days",
     "logistics_receiving_days",
     "total_arrival_days",
@@ -358,7 +366,10 @@ def fetch_supplier_order_line_rows(
             line.{_ident(line_no_column)} AS line_no,
             CAST(line.{_ident(quantity_column)} AS decimal(18, 3)) AS qty,
             CAST(line.{_ident(supplier_mapping.line_price_column)} AS decimal(18, 2)) AS price,
-            CAST(line.{_ident(amount_column)} AS decimal(18, 2)) AS amount
+            CAST(line.{_ident(amount_column)} AS decimal(18, 2)) AS amount,
+            CONVERT(varchar(34), contract._Fld498RRef, 1) AS price_currency_ref,
+            NULLIF(LTRIM(RTRIM(currency._Code)), N'') AS price_currency_code,
+            NULLIF(LTRIM(RTRIM(currency._Description)), N'') AS price_currency_name
         FROM dbo.{_ident(supplier_mapping.line_table)} AS line WITH (NOLOCK)
         JOIN dbo.{_ident(supplier_mapping.document_table)} AS doc WITH (NOLOCK)
             ON doc.{_ident(supplier_mapping.document_id_column)}
@@ -371,6 +382,10 @@ def fetch_supplier_order_line_rows(
             ON supplier._IDRRef = doc.{_ident(supplier_ref_column)}
         LEFT JOIN dbo._Reference69 AS responsible WITH (NOLOCK)
             ON responsible._IDRRef = doc.{_ident(responsible_ref_column)}
+        LEFT JOIN dbo._Reference37 AS contract WITH (NOLOCK)
+            ON contract._IDRRef = doc._Fld2494RRef
+        LEFT JOIN dbo._Reference20 AS currency WITH (NOLOCK)
+            ON currency._IDRRef = contract._Fld498RRef
         WHERE doc.{_ident(supplier_mapping.marked_column)} = 0x00
           AND doc.{_ident(supplier_mapping.posted_column)} = 0x01
           AND doc.{_ident(supplier_mapping.document_date_column)} >= :history_start
@@ -496,6 +511,9 @@ def build_lead_time_detail_rows(
                 "qty": _json_decimal(_decimal(item.get("qty"))),
                 "price": _json_decimal(_decimal(item.get("price"))),
                 "amount": _json_decimal(_decimal(item.get("amount"))),
+                "price_currency_ref": _clean(item.get("price_currency_ref")).lower(),
+                "price_currency_code": _clean(item.get("price_currency_code")),
+                "price_currency_name": _clean(item.get("price_currency_name")),
                 "supplier_prepare_days": _json_int(prepare_days),
                 "logistics_receiving_days": _json_int(logistics_days),
                 "total_arrival_days": _json_int(total_days),
@@ -553,6 +571,21 @@ def mark_lead_time_outliers(detail_rows: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def _latest_purchase_price_row(
+    rows: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    priced_rows = [row for row in rows if (_decimal(row.get("price")) or Decimal("0")) > 0]
+    if not priced_rows:
+        return None
+    return max(
+        priced_rows,
+        key=lambda row: (
+            _date(row.get("supplier_order_created_at")) or date.min,
+            _clean(row.get("supplier_order_number")),
+        ),
+    )
+
+
 def aggregate_lead_time_rows(detail_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in detail_rows:
@@ -580,6 +613,7 @@ def aggregate_lead_time_rows(detail_rows: Sequence[Mapping[str, Any]]) -> list[d
         missing_receipt = sum(
             _int_or_none(row.get("missing_receipt_after_cargo")) or 0 for row in rows
         )
+        latest_price_row = _latest_purchase_price_row(rows)
         notes = [
             "receipt_match=nearest_same_sku_after_cargo",
             f"missing_cargo={missing_cargo}",
@@ -600,6 +634,17 @@ def aggregate_lead_time_rows(detail_rows: Sequence[Mapping[str, Any]]) -> list[d
                 "order_line_count": len(rows),
                 "ordered_qty": _sum_decimal(rows, "qty"),
                 "order_amount": _sum_decimal(rows, "amount"),
+                "latest_purchase_price": _json_decimal(
+                    _decimal((latest_price_row or {}).get("price"))
+                ),
+                "latest_purchase_price_at": _clean(
+                    (latest_price_row or {}).get("supplier_order_created_at")
+                ),
+                "price_currency_ref": _clean(
+                    (latest_price_row or {}).get("price_currency_ref")
+                ).lower(),
+                "price_currency_code": _clean((latest_price_row or {}).get("price_currency_code")),
+                "price_currency_name": _clean((latest_price_row or {}).get("price_currency_name")),
                 "orders_with_cargo_count": sum(
                     1 for row in rows if _clean(row.get("cargo_handoff_at"))
                 ),

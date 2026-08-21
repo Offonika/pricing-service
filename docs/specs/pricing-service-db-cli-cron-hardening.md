@@ -17,6 +17,7 @@ related_tests:
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
   - tests/test_product_classification.py
+  - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
 contracts: []
 depends_on:
@@ -131,6 +132,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-21 — `report_exclusive_auto_detect_candidates.py` переведён на центральный
+  read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-21 — `report_product_classification_diff.py` переведён на центральный
   read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-21 — `report_parsed_models.py` переведён на центральный read-only

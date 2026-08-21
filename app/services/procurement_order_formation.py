@@ -355,11 +355,13 @@ def _open_supplier_target(
     source: ProcurementOrderFormation,
     supplier_ref: str,
 ) -> ProcurementOrderFormation | None:
+    # A review-room line joins the latest supplier order that has not entered the
+    # 1C exchange yet. The order may come from an earlier daily batch: the
+    # business document remains open until it is actually sent to 1C.
     return db.scalar(
         _order_statement()
         .where(
             ProcurementOrderFormation.id != source.id,
-            ProcurementOrderFormation.batch_id == source.batch_id,
             ProcurementOrderFormation.supplier_ref.ilike(supplier_ref),
             ProcurementOrderFormation.status.in_(("draft", "review", "error")),
             ProcurementOrderFormation.onec_status.notin_(("pending", "transmitted")),

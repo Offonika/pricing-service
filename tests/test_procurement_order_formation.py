@@ -434,6 +434,101 @@ def test_supplier_review_room_previews_and_moves_resolved_lines(db_session, monk
     assert [line.nomenclature_code for line in updated_source.lines] == ["РБ000006738"]
 
 
+def test_supplier_review_room_reuses_unsent_order_from_earlier_batch(
+    db_session,
+    monkeypatch,
+) -> None:
+    source = _order(db_session)
+    source.supplier_ref = None
+    source.supplier_code = None
+    source.supplier_name = "Не определён"
+    source.batch_id = "2026-08-21"
+    source.order_date = date(2026, 8, 21)
+    source.stable_key = "proc-order:review-room-reuse"
+    source.bitrix_item_id = "review-room-reuse"
+    source.lines[0].stable_key = "line:review-room-reuse:1"
+    source.lines[1].stable_key = "line:review-room-reuse:2"
+    db_session.commit()
+
+    target = _order(db_session)
+    target.stable_key = "proc-order:earlier-open"
+    target.batch_id = "2026-08-20"
+    target.order_date = date(2026, 8, 20)
+    target.supplier_ref = "0xnew"
+    target.supplier_code = "S9"
+    target.supplier_name = "Samsung display"
+    target.lines[0].stable_key = "line:earlier"
+    db_session.commit()
+
+    supplier = {"ref": "0xnew", "code": "S9", "name": "Samsung display"}
+
+    def resolved(order, *, settings=None):
+        del settings
+        return {"0xnew": [(order.lines[0], supplier, "pending_onec_write")]}, []
+
+    monkeypatch.setattr(order_service, "_resolved_line_suppliers", resolved)
+
+    preview = preview_supplier_distribution(db_session, source.id)
+
+    assert preview["groups"][0]["target_order_id"] == target.id
+    assert preview["groups"][0]["target_order_status"] == "existing"
+
+    _updated_source, target_ids, moved = distribute_lines_by_suppliers(
+        db_session,
+        source.id,
+        expected_order_version=1,
+        session=_session(),
+    )
+
+    assert moved == 1
+    assert target_ids == [target.id]
+    db_session.refresh(target)
+    assert [line.nomenclature_code for line in target.lines] == [
+        "РБ000006737",
+        "РБ000006738",
+        "РБ000006737",
+    ]
+
+
+def test_supplier_review_room_does_not_reuse_order_already_exchanged_with_onec(
+    db_session,
+    monkeypatch,
+) -> None:
+    source = _order(db_session)
+    source.supplier_ref = None
+    source.supplier_code = None
+    source.supplier_name = "Не определён"
+    source.batch_id = "2026-08-21"
+    source.stable_key = "proc-order:review-room-exchanged"
+    source.bitrix_item_id = "review-room-exchanged"
+    source.lines[0].stable_key = "line:review-room-exchanged:1"
+    source.lines[1].stable_key = "line:review-room-exchanged:2"
+    db_session.commit()
+
+    exchanged = _order(db_session)
+    exchanged.stable_key = "proc-order:already-exchanged"
+    exchanged.batch_id = "2026-08-20"
+    exchanged.supplier_ref = "0xnew"
+    exchanged.supplier_code = "S9"
+    exchanged.supplier_name = "Samsung display"
+    exchanged.onec_status = "transmitted"
+    exchanged.lines[0].stable_key = "line:already-exchanged"
+    db_session.commit()
+
+    supplier = {"ref": "0xnew", "code": "S9", "name": "Samsung display"}
+
+    def resolved(order, *, settings=None):
+        del settings
+        return {"0xnew": [(order.lines[0], supplier, "pending_onec_write")]}, []
+
+    monkeypatch.setattr(order_service, "_resolved_line_suppliers", resolved)
+
+    preview = preview_supplier_distribution(db_session, source.id)
+
+    assert preview["groups"][0]["target_order_id"] is None
+    assert preview["groups"][0]["target_order_status"] == "new"
+
+
 def test_order_does_not_require_legacy_bitrix_card_url(db_session) -> None:
     order = _order(db_session)
     order.bitrix_item_url = None

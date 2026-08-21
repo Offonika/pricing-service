@@ -55,6 +55,7 @@ DEFAULT_OUTPUT_SEASONALITY_JSON = (
 )
 ONEC_EMPTY_DATE = date(1753, 1, 1)
 MAX_SQLSERVER_EXPANDING_REFS = 1800
+DEFAULT_HISTORY_MONTHS = 36
 
 AGGREGATE_CSV_COLUMNS = [
     "supplier_name",
@@ -1206,7 +1207,7 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--folder", default="дисплеи", help="1C folder/name filter")
-    parser.add_argument("--history-months", type=int, default=6)
+    parser.add_argument("--history-months", type=int, default=DEFAULT_HISTORY_MONTHS)
     parser.add_argument("--as-of", type=_parse_date, default=date.today())
     parser.add_argument("--limit", type=int, default=10000)
     parser.add_argument("--onec-database-url", default="")

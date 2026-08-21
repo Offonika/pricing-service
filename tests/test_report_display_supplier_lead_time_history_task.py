@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
 from datetime import date
 
+import tasks.report_display_supplier_lead_time_history as lead_time_report
 from tasks.report_display_supplier_lead_time_history import (
     aggregate_lead_time_rows,
     build_lead_time_detail_rows,
@@ -10,6 +12,14 @@ from tasks.report_display_supplier_lead_time_history import (
     build_weekly_seasonality_rows,
     mark_lead_time_outliers,
 )
+
+
+def test_display_supplier_lead_time_defaults_to_three_year_history(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["report_display_supplier_lead_time_history"])
+
+    args = lead_time_report._parse_args()
+
+    assert args.history_months == 36
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

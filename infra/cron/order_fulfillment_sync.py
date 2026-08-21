@@ -265,6 +265,19 @@ def decide_new_deal_stage(
             return _new_decision(deal, "EXECUTING", "preparation_courier_cod_to_assembly")
         return _new_decision(deal, None, f"preparation_waiting:{delivery or '-'}")
     if stage == "PREPAYMENT_INVOICE":
+        if (
+            order_status is not None
+            and order_status.status_id == "F"
+            and onec_settlement is not None
+            and onec_settlement.posted_sale_count > 0
+        ):
+            return _new_decision(
+                deal,
+                None,
+                "historical_completed_with_rtu_needs_delivery_check",
+                order_status=order_status,
+                onec_settlement=onec_settlement,
+            )
         if order_status is not None and order_status.payed:
             return _new_decision(
                 deal,
@@ -985,9 +998,14 @@ def quick_onec_settlement_candidate_orders(
         if not order_number:
             continue
         order_status = order_statuses.get(order_number)
-        if order_status is None or order_status.payed is True:
+        if order_status is None:
             continue
         stage_id = fulfillment._clean_string(deal.stage_id)  # noqa: SLF001
+        if stage_id == "PREPAYMENT_INVOICE" and order_status.status_id == "F":
+            order_numbers.append(order_number)
+            continue
+        if order_status.payed is True:
+            continue
         if stage_id == "PREPAYMENT_INVOICE" and _is_prepayment_waiting_expired(order_status):
             order_numbers.append(order_number)
             continue

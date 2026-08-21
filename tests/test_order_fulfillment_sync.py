@@ -322,6 +322,7 @@ def test_quick_onec_candidates_include_expired_prepayment_and_completed_pickup()
         _deal(deal_id=1, order_number="218001", stage_id="PREPAYMENT_INVOICE", delivery="СДЭК"),
         _deal(deal_id=2, order_number="218002", stage_id="PICKUP_WAITING", delivery="Самовывоз"),
         _deal(deal_id=3, order_number="218003", stage_id="PREPAYMENT_INVOICE", delivery="СДЭК"),
+        _deal(deal_id=4, order_number="218004", stage_id="PREPAYMENT_INVOICE", delivery="СДЭК"),
     ]
     statuses = {
         "218001": sync.SaleOrderStatus(
@@ -345,11 +346,19 @@ def test_quick_onec_candidates_include_expired_prepayment_and_completed_pickup()
             payed=False,
             created_at=now,
         ),
+        "218004": sync.SaleOrderStatus(
+            order_number="218004",
+            canceled=False,
+            status_id="F",
+            payed=True,
+            created_at=now,
+        ),
     }
 
     assert sync.quick_onec_settlement_candidate_orders(deals, statuses) == [
         "218001",
         "218002",
+        "218004",
     ]
 
 
@@ -447,6 +456,32 @@ def test_decide_new_deal_stage_moves_paid_prepayment_to_assembly() -> None:
     assert decision.action == "update_stage"
     assert decision.recommended_stage == "EXECUTING"
     assert decision.review_reason == "prepayment_paid_to_assembly"
+
+
+def test_decide_new_deal_stage_does_not_reassemble_completed_order_with_posted_sale() -> None:
+    decision = sync.decide_new_deal_stage(
+        _deal(stage_id="PREPAYMENT_INVOICE", delivery="СДЭК", payment_status="0"),
+        order_status=sync.SaleOrderStatus(
+            order_number="218001",
+            canceled=False,
+            status_id="F",
+            payed=True,
+            created_at=datetime.now() - timedelta(days=10),
+        ),
+        onec_settlement=sync.OneCOrderSettlement(
+            order_number="218001",
+            posted_sale_count=1,
+            posted_sale_amount=Decimal("250.00"),
+            payment_amount=Decimal("250.00"),
+            debt_amount=Decimal("0.00"),
+            payment_confirmed=True,
+            evidence="onec_no_debt",
+        ),
+    )
+
+    assert decision.action == "manual_review"
+    assert decision.recommended_stage is None
+    assert decision.review_reason == "historical_completed_with_rtu_needs_delivery_check"
 
 
 def test_fetch_new_deals_includes_prepayment_stage_per_stage_limit() -> None:

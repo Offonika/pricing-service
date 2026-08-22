@@ -119,6 +119,7 @@ def test_order_assistant_openapi_exposes_metric_evidence_and_supplier_profile_ve
     for field_name in (
         "metrics_as_of",
         "metrics_window_days",
+        "profitability_calculation_basis",
         "profitability_status",
         "product_defect_pct",
         "supplier_defect_pct",

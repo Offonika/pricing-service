@@ -899,7 +899,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
           )}
           <div className="order-assistant__table-scroll">
             <table className="order-assistant__table">
-              <thead><tr><th><input aria-label="Выбрать все готовые проекты в фильтре" checked={selectableVisibleRows.length > 0 && selectableVisibleRows.every((row) => selected.has(row.key))} disabled={selectableVisibleRows.length === 0} onChange={toggleVisible} type="checkbox" /></th><th>Фото / товар</th><th>Потребность</th><th>Поставщик</th><th>Цена / изменение</th><th>Рентабельность</th><th>Брак</th><th>Срок</th><th>Решение</th></tr></thead>
+              <thead><tr><th><input aria-label="Выбрать все готовые проекты в фильтре" checked={selectableVisibleRows.length > 0 && selectableVisibleRows.every((row) => selected.has(row.key))} disabled={selectableVisibleRows.length === 0} onChange={toggleVisible} type="checkbox" /></th><th>Фото / товар</th><th>Потребность</th><th>Поставщик</th><th>Цена / изменение</th><th title="Доля прибыли в обороте, 180 дней">Рентабельность</th><th>Брак</th><th>Срок</th><th>Решение</th></tr></thead>
               <tbody>
                 {visibleRows.map((row) => {
                   const profitability = numeric(row.line.profitability_pct);
@@ -1002,7 +1002,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                       </td>
                       <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} title={`${row.order.supplier_name || "Нет поставщика"} — открыть карточку строки справа`} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
-                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{profitability === null ? "Не рассчитана" : percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
+                      <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{profitability !== null ? percent(profitability) : row.line.profitability_status && row.line.profitability_status !== "ready" ? "не рассчитана" : "нет данных"}</strong><small>{profitability === null && row.line.profitability_explanation ? row.line.profitability_explanation : `доля прибыли в обороте, ${row.line.metrics_window_days || 180} дней`}</small></td>
                       <td>
                         {batchShare !== null ? (
                           <>

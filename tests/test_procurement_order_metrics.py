@@ -110,8 +110,9 @@ def test_price_history_uses_distinct_orders_and_keeps_currencies_separate() -> N
 
 
 def test_procurement_metric_formulas_and_zero_denominators() -> None:
-    assert profitability_pct("150", "100") == Decimal("50.00")
-    assert profitability_pct("150", "0") is None
+    assert profitability_pct("301611.00", "166912.17") == Decimal("44.66")
+    assert profitability_pct("0", "166912.17") is None
+    assert profitability_pct("150", "0") == Decimal("100.00")
     assert price_change_pct("110", "100") == Decimal("10.00")
     assert price_change_pct("110", "0") is None
     assert rate_pct("12", "100") == Decimal("12.00")
@@ -139,12 +140,30 @@ def test_product_defect_does_not_become_supplier_defect_without_exact_trace() ->
         as_of=date(2026, 8, 1),
     )
 
-    assert payload["profitability_pct"] == "90.00"
+    assert payload["profitability_pct"] == "47.37"
+    assert payload["profitability_calculation_basis"] == "net_sales_amount"
     assert payload["product_defect_pct"] == "12.00"
     assert payload["product_defect_confidence"] == "reliable"
     assert payload["supplier_defect_attribution"] == "unconfirmed"
     assert "supplier_defect_pct" not in payload
     assert payload["price_change_pct"] == "10.00"
+
+
+def test_zero_revenue_has_empty_profitability_and_explicit_reason() -> None:
+    payload = build_line_metric_payload(
+        product_metrics={
+            "sales_qty": 0,
+            "sales_amount": 0,
+            "return_amount": 0,
+            "cost_amount": 100,
+        },
+        price_metrics=None,
+        as_of=date(2026, 8, 1),
+    )
+
+    assert "profitability_pct" not in payload
+    assert payload["profitability_status"] == "revenue_missing"
+    assert payload["profitability_calculation_basis"] == "net_sales_amount"
 
 
 def test_exact_supplier_defect_uses_its_own_basis() -> None:

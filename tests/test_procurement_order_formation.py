@@ -600,6 +600,8 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     assert validated.orders[0].lines[0].supplier_selection_reason == ("price_tie_within_3pct_speed")
     assert validated.orders[0].lines[0].supplier_cost_tie_pct == Decimal("3")
     assert validated.orders[0].lines[0].supplier_selected_purchase_price == Decimal("48.2")
+    assert validated.orders[0].lines[0].profitability_pct == Decimal("34.6")
+    assert validated.orders[0].lines[0].profitability_calculation_basis is None
     assert validated.orders[0].lines[0].photo_original_url.endswith("/1.jpg")
     assert validated.orders[0].lines[0].product_card_url == (
         "https://master-mobile.ru/catalog/displei/1/"

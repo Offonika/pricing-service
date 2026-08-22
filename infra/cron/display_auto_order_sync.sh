@@ -79,6 +79,7 @@ OUTPUT_CSV="${DISPLAY_AUTO_ORDER_OUTPUT_CSV:-${REPORT_DIR}/display-auto-order-dr
 OUTPUT_JSON="${DISPLAY_AUTO_ORDER_OUTPUT_JSON:-${REPORT_DIR}/display-auto-order-dry-run-summary.json}"
 ORDER_FORMATION_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-formation-dry-run.json}"
 ORDER_FORMATION_OUTPUT_CSV="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_CSV:-${REPORT_DIR}/procurement-order-formation-lines-dry-run.csv}"
+ORDER_METRICS_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_METRICS_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-metrics.json}"
 CONFIGURED_ORDER_FORMATION_PERSIST_DB="${DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB:-false}"
 ORDER_FORMATION_PERSIST_DB="false"
 USE_ADAPTIVE_LEAD_TIME="${DISPLAY_AUTO_ORDER_USE_ADAPTIVE_LEAD_TIME:-true}"
@@ -254,5 +255,29 @@ cat "${tmp_output}" >> "${LOG_FILE}"
 
 timestamp="$(date -Iseconds)"
 echo "[$timestamp] finished order-formation sync (status=${exit_code}, persist_db=${ORDER_FORMATION_PERSIST_DB})" >> "${LOG_FILE}"
+
+if [[ "${exit_code}" -ne 0 ]]; then
+  exit "${exit_code}"
+fi
+
+if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then
+  metrics_cmd=(
+    "${PYTHON_BIN}"
+    -m tasks.backfill_procurement_order_metrics
+    --apply
+    --as-of "${AS_OF}"
+    --lead-time-csv "${LEAD_TIME_CSV}"
+    --order-ids-from-json "${ORDER_FORMATION_OUTPUT_JSON}"
+    --output-json "${ORDER_METRICS_OUTPUT_JSON}"
+    --json
+  )
+
+  set +e
+  "${metrics_cmd[@]}" > "${tmp_output}" 2>&1
+  exit_code=$?
+  set -e
+  cat "${tmp_output}" >> "${LOG_FILE}"
+  echo "[$(date -Iseconds)] finished persisted order metrics (status=${exit_code})" >> "${LOG_FILE}"
+fi
 
 exit "${exit_code}"

@@ -122,6 +122,11 @@ def main(
                 limit=args.limit,
                 cleanup_paths=cleanup_paths,
             )
+            # File rows and the corresponding Bitrix readback must be durable
+            # before outbound polling starts committing per-card checkpoints.
+            session.commit()
+            cleanup_uploaded_site_service_request_files(cleanup_paths)
+            cleanup_paths.clear()
             commands = collect_site_service_request_outbound_commands(
                 session,
                 settings=settings,

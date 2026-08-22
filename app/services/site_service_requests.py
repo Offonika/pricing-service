@@ -186,6 +186,8 @@ def accept_site_service_request_event(
                 )
             case.sync_status = "pending"
             case.last_error_code = None
+            case.base_sync_status = "pending"
+            case.base_error_code = None
             case.updated_at = current_time
 
             event = SiteServiceRequestEvent(
@@ -270,6 +272,16 @@ def stage_site_service_request_file(
         raise SiteServiceRequestConflictError("file_identity_ambiguous")
     file = files[0]
 
+    # Once Bitrix has confirmed this file, a malformed transport retry must not
+    # regress the durable upload state.
+    if file.status == "uploaded":
+        return StagedSiteServiceRequestFile(
+            event_id=event_id,
+            file_id=file_id,
+            status="uploaded",
+            duplicate=True,
+        )
+
     try:
         normalized_filename = _normalize_safe_filename(safe_filename)
         normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
@@ -298,14 +310,6 @@ def stage_site_service_request_file(
         exc.persist_state = True
         raise
 
-    if file.status == "uploaded":
-        return StagedSiteServiceRequestFile(
-            event_id=event_id,
-            file_id=file_id,
-            status="uploaded",
-            duplicate=True,
-        )
-
     existing_path = Path(file.temporary_path) if file.temporary_path else None
     if file.status == "staged" and existing_path is not None and existing_path.is_file():
         try:
@@ -333,8 +337,8 @@ def stage_site_service_request_file(
     file.updated_at = _as_utc(now or datetime.now(UTC))
     if _case_file_error_code(session, case_id=file.case_id) is None:
         if file.case.sync_status == "file_sync_error":
-            file.case.sync_status = "pending"
-            file.case.last_error_code = None
+            file.case.sync_status = file.case.base_sync_status
+            file.case.last_error_code = file.case.base_error_code
     return StagedSiteServiceRequestFile(
         event_id=event_id,
         file_id=file_id,
@@ -605,11 +609,13 @@ def _upsert_file_metadata(
             if existing is not None:
                 if existing.sha256 != file.sha256 or existing.byte_size != file.size:
                     raise SiteServiceRequestConflictError("file_metadata_conflict")
-                if is_oversized:
+                if is_oversized and existing.status != "uploaded":
                     existing.status = "failed"
                     existing.last_error_code = "file_too_large"
                     existing.updated_at = current_time
-                elif existing.status == "pending":
+                elif (
+                    message.message_id == payload.source_message_id and existing.status == "pending"
+                ):
                     missing_file_ids.add(file.file_id)
                 continue
             session.add(
@@ -627,7 +633,7 @@ def _upsert_file_metadata(
                     updated_at=current_time,
                 )
             )
-            if not is_oversized:
+            if not is_oversized and message.message_id == payload.source_message_id:
                 missing_file_ids.add(file.file_id)
     return sorted(missing_file_ids)
 
@@ -638,7 +644,10 @@ def _missing_file_ids(
     payload: SiteServiceRequestEventPayload,
 ) -> list[int]:
     requested = {
-        (message.message_id, file.file_id) for message in payload.history for file in message.files
+        (message.message_id, file.file_id)
+        for message in payload.history
+        if message.message_id == payload.source_message_id
+        for file in message.files
     }
     if not requested:
         return []

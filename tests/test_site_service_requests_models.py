@@ -45,6 +45,18 @@ def _load_open_stage_migration():
     return migration
 
 
+def _load_hardening_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/4e6f80912c45_harden_site_service_request_state.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_hardening", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -92,6 +104,7 @@ def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
         session.commit()
 
         assert case.assignment_state == "waiting"
+        assert case.base_sync_status == "pending"
         assert case.sync_status == "pending"
         assert case.version == 1
         assert case.events[0].payload_encrypted == b"encrypted-event"
@@ -183,4 +196,52 @@ def test_open_stage_migration_is_reversible_and_extends_site_request_head(tmp_pa
         assert "last_open_stage_id" not in columns
 
     assert open_stage_migration.down_revision == "2c4d6e8f0a12"
+    engine.dispose()
+
+
+def test_hardening_migration_backfills_status_and_is_reversible(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-hardening.db'}")
+    base_migration = _load_migration()
+    open_stage_migration = _load_open_stage_migration()
+    hardening_migration = _load_hardening_migration()
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        base_migration.op = operations
+        open_stage_migration.op = operations
+        hardening_migration.op = operations
+        base_migration.upgrade()
+        open_stage_migration.upgrade()
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_case "
+            "(source_ticket_id, assignment_state, round_robin_seq, first_seen_at, "
+            "sync_status, last_error_code, version, created_at, updated_at) VALUES "
+            "(741, 'waiting', 0, CURRENT_TIMESTAMP, 'order_not_found', "
+            "'order_not_found', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        hardening_migration.upgrade()
+
+        row = connection.exec_driver_sql(
+            "SELECT base_sync_status, base_error_code FROM site_service_request_case"
+        ).one()
+        assert row == ("order_not_found", "order_not_found")
+        case_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert {"assignment_checked_at", "outbound_checked_at"} <= case_columns
+        command_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_command")
+        }
+        assert "card_action_cleared_at" in command_columns
+
+        hardening_migration.downgrade()
+        case_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "base_sync_status" not in case_columns
+
+    assert hardening_migration.down_revision == "3d5e7f901b34"
     engine.dispose()

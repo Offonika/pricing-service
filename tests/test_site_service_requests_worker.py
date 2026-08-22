@@ -776,6 +776,10 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
         temporary_path=str(path),
     )
     db_session.add(file)
+    case.base_sync_status = "order_not_found"
+    case.base_error_code = "order_not_found"
+    case.sync_status = "file_sync_error"
+    case.last_error_code = "file_sync_error"
     db_session.commit()
 
     results = sync_staged_site_service_request_files(
@@ -795,6 +799,9 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     assert file.temporary_path is None
     assert path.exists() is False
     assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["2000"]
+    assert case.sync_status == "order_not_found"
+    assert case.last_error_code == "order_not_found"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
 
 
 def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session) -> None:
@@ -879,6 +886,126 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     assert failed[0]["status"] == "failed"
     assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "ERROR"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "message_write_failed"
+
+
+def test_outbound_command_is_durable_before_card_action_clear(db_session) -> None:
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class FailingClearApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Ответ из карточки",
+            }
+            self.fail_clear = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.update" and self.fail_clear:
+                self.fail_clear = False
+                raise RuntimeError("temporary clear failure")
+            return super().call(method, params, **kwargs)
+
+    api = FailingClearApi()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    with pytest.raises(RuntimeError, match="temporary clear failure"):
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            cipher=cipher,
+        )
+
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert command is not None
+    assert command.card_action_cleared_at is None
+    retried = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    assert retried[0]["commandId"] == command.id
+    assert retried[0]["duplicate"] is True
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+    db_session.refresh(command)
+    assert command.card_action_cleared_at is not None
+
+
+def test_outbound_scan_rotates_past_the_first_batch(db_session) -> None:
+    api = FakeBitrixApi()
+    for ticket_id in range(1, 22):
+        db_session.add(_case(source_ticket_id=ticket_id, bitrix_item_id=1000 + ticket_id))
+        api.items[1000 + ticket_id] = {}
+    db_session.commit()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    assert (
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            cipher=cipher,
+            limit=20,
+        )
+        == []
+    )
+    assert (
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(api),
+            cipher=cipher,
+            limit=1,
+        )
+        == []
+    )
+
+    last_case = db_session.scalar(
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.source_ticket_id == 21)
+    )
+    assert last_case is not None and last_case.outbound_checked_at is not None
+
+
+def test_later_outbound_card_failure_cannot_rollback_previous_command(db_session) -> None:
+    first_case = _case(source_ticket_id=741, bitrix_item_id=1000)
+    second_case = _case(source_ticket_id=742, bitrix_item_id=1001)
+    db_session.add_all([first_case, second_case])
+    db_session.commit()
+
+    class SecondCardFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Первый ответ",
+            }
+            self.items[1001] = {}
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            if method == "crm.item.get" and mapped.get("id") == "1001":
+                raise RuntimeError("second card unavailable")
+            return super().call(method, params, **kwargs)
+
+    api = SecondCardFailureApi()
+    with pytest.raises(RuntimeError, match="second card unavailable"):
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+            writer=SiteServiceRequestBitrixWriter(api),
+            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+            limit=2,
+        )
+
+    commands = db_session.scalars(select(SiteServiceRequestCommand)).all()
+    assert len(commands) == 1
+    assert commands[0].case_id == first_case.id
+    assert commands[0].card_action_cleared_at is not None
 
 
 def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
@@ -1178,3 +1305,228 @@ def test_dynamic_item_writer_uses_rest_camel_case_and_clears_null_values() -> No
     )
 
     assert api.items[1000] == {"ufCrm36SiteReplyAction": ""}
+
+
+def test_timeman_exception_creates_card_in_assignment_waiting(db_session) -> None:
+    cipher = _persist_event(db_session)
+
+    class TimemanFailureApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "timeman.status":
+                raise RuntimeError("timeman unavailable")
+            return super().call(method, params, **kwargs)
+
+    api = TimemanFailureApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+    )
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert results[0].status == "processed"
+    assert case is not None and case.bitrix_item_id is not None
+    assert case.assignment_state == "waiting"
+    assert case.sync_status == "assignment_waiting"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ASSIGNMENT_WAITING"
+
+
+def test_assignment_reassigns_only_while_card_is_new(db_session) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+        cipher=cipher,
+    )
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None and case.bitrix_item_id is not None
+    assert case.assigned_user_id == 1001
+
+    api.timeman = {1001: "CLOSED", 1002: "OPENED"}
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 2, tzinfo=UTC),
+    )
+    assert case.assigned_user_id == 1002
+    assert api.items[int(case.bitrix_item_id)]["assignedById"] == "1002"
+
+    api.items[int(case.bitrix_item_id)]["stageId"] = "DT1134_55:PREPARATION"
+    api.timeman = {1001: "OPENED", 1002: "CLOSED"}
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 3, tzinfo=UTC),
+    )
+    assert case.assigned_user_id == 1002
+    assert api.items[int(case.bitrix_item_id)]["assignedById"] == "1002"
+
+
+def test_assignment_scan_rotates_past_the_first_batch(db_session) -> None:
+    api = FakeBitrixApi()
+    for ticket_id in range(1, 22):
+        case = _case(source_ticket_id=ticket_id, bitrix_item_id=1000 + ticket_id)
+        db_session.add(case)
+        api.items[1000 + ticket_id] = {"stageId": "DT1134_55:NEW"}
+    db_session.commit()
+    settings = _worker_settings()
+    reader = SiteServiceRequestBitrixReader(api)
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        limit=20,
+    )
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        limit=1,
+    )
+
+    last_case = db_session.scalar(
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.source_ticket_id == 21)
+    )
+    assert last_case is not None and last_case.assignment_checked_at is not None
+
+
+def test_hidden_support_note_does_not_close_first_response_sla(db_session) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    initial = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=initial,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    payload = _event_payload()
+    payload["eventId"] = "site-support:741:1301"
+    payload["eventType"] = "ticket.message_added"
+    payload["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "support-team",
+            "isVisibleToCustomer": False,
+            "createdAt": "2026-08-22T11:00:00+03:00",
+            "text": "Внутренняя заметка",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, payload, cipher)
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None and case.first_response_at is None
+
+
+def test_worker_clears_stale_deal_and_order_reference_with_readback(db_session) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    initial = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=initial,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None and case.bitrix_item_id is not None
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Crmdeal"] == "701"
+
+    payload = _event_payload()
+    payload["eventId"] = "site-support:741:1301"
+    payload["eventType"] = "ticket.updated"
+    payload["ticket"]["orderNumber"] = None
+    payload["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T11:00:00+03:00",
+            "text": "Заказ не относится к обращению",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, payload, cipher)
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Crmdeal"] == ""
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Orderrefs"] == ""

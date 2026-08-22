@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -10,7 +11,11 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from app.api.dependencies import get_db, get_site_service_request_settings
+from app.api.dependencies import (
+    SiteServiceRequestBodyLimitMiddleware,
+    get_db,
+    get_site_service_request_settings,
+)
 from app.core.config import Settings
 from app.main import app
 from app.models.site_service_requests import (
@@ -363,6 +368,51 @@ def test_event_api_rejects_body_over_configured_limit_without_reserving_nonce(
     assert db_session.scalar(select(func.count(SiteServiceRequestEvent.id))) == 0
 
 
+def test_streaming_body_limit_stops_chunked_request_without_content_length() -> None:
+    consumed_all = False
+    sent: list[dict] = []
+    chunks = [
+        {"type": "http.request", "body": b"a" * 600, "more_body": True},
+        {"type": "http.request", "body": b"b" * 600, "more_body": True},
+        {"type": "http.request", "body": b"c" * 600, "more_body": False},
+    ]
+
+    async def downstream(_scope, receive, _send) -> None:
+        nonlocal consumed_all
+        while True:
+            message = await receive()
+            if not message.get("more_body"):
+                consumed_all = True
+                return
+
+    async def receive() -> dict:
+        return chunks.pop(0)
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    middleware = SiteServiceRequestBodyLimitMiddleware(
+        downstream,
+        settings=_settings(site_service_requests_max_event_body_bytes=1024),
+    )
+    asyncio.run(
+        middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": _EVENT_PATH,
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+    )
+
+    assert consumed_all is False
+    assert len(chunks) == 1
+    assert sent[0]["status"] == 413
+
+
 def test_command_ack_api_rejects_body_over_configured_limit_without_reserving_nonce(
     client,
     db_session,
@@ -466,8 +516,12 @@ def test_file_upload_identity_includes_event_source_message(
     settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
 
     with _api_dependencies(db_session, settings):
-        assert _post_event(client, first).status_code == 202
-        assert _post_event(client, second).status_code == 202
+        first_response = _post_event(client, first)
+        second_response = _post_event(client, second)
+        assert first_response.status_code == 202
+        assert first_response.json()["missingFileIds"] == [93287]
+        assert second_response.status_code == 202
+        assert second_response.json()["missingFileIds"] == [93287]
         uploaded = _put_file(
             client,
             event_id=second["eventId"],
@@ -484,6 +538,70 @@ def test_file_upload_identity_includes_event_source_message(
         (1201, "pending"),
         (1301, "staged"),
     ]
+
+
+def test_event_requests_only_files_from_its_own_source_message(client, db_session) -> None:
+    first = _event_payload()
+    second = json.loads(json.dumps(first))
+    second["eventId"] = "site-support:741:1301"
+    second["eventType"] = "ticket.message_added"
+    second["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T12:01:00+03:00",
+            "text": "Новое вложение",
+            "files": [
+                {
+                    "fileId": 93288,
+                    "name": "second.jpg",
+                    "mimeType": "image/jpeg",
+                    "size": 2048,
+                    "sha256": "b" * 64,
+                }
+            ],
+        }
+    )
+
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, first).json()["missingFileIds"] == [93287]
+        response = _post_event(client, second)
+
+    assert response.status_code == 202
+    assert response.json()["missingFileIds"] == [93288]
+
+
+def test_uploaded_file_does_not_regress_on_malformed_transport_retry(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    body = b"expected-file"
+    payload = _event_payload()
+    payload["history"][0]["files"][0]["size"] = len(body)
+    payload["history"][0]["files"][0]["sha256"] = hashlib.sha256(body).hexdigest()
+    settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
+
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, payload).status_code == 202
+        file = db_session.scalar(select(SiteServiceRequestFile))
+        assert file is not None
+        file.status = "uploaded"
+        file.bitrix_object_id = "2000"
+        db_session.commit()
+        retry = _put_file(
+            client,
+            event_id=payload["eventId"],
+            file_id=93287,
+            body=b"bad",
+            filename="wrong.jpg",
+        )
+
+    assert retry.status_code == 200
+    assert retry.json()["duplicate"] is True
+    db_session.refresh(file)
+    assert file.status == "uploaded"
+    assert file.last_error_code is None
 
 
 def test_file_api_rejects_unregistered_unsafe_or_changed_content(

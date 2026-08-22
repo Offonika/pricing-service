@@ -28,6 +28,7 @@ from app.api.customer_price_types import (
     page_router as customer_price_types_page_router,
 )
 from app.api.customer_price_types import router as customer_price_types_router
+from app.api.dependencies import SiteServiceRequestBodyLimitMiddleware
 from app.api.expertise import router as expertise_router
 from app.api.health import router as health_router
 from app.api.internal_alerts import router as internal_alerts_router
@@ -73,6 +74,7 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.debug,
 )
+app.add_middleware(SiteServiceRequestBodyLimitMiddleware, settings=settings)
 
 
 @app.exception_handler(RequestValidationError)

@@ -37,6 +37,7 @@ class SiteServiceRequestHistoryMessage(BaseModel):
 
     message_id: int = Field(alias="messageId", gt=0)
     author_kind: str = Field(alias="authorKind", min_length=1, max_length=32)
+    is_visible_to_customer: bool = Field(default=True, alias="isVisibleToCustomer")
     created_at: datetime = Field(alias="createdAt")
     text: str = Field(max_length=200_000)
     files: list[SiteServiceRequestFilePayload]

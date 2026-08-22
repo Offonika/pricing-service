@@ -35,6 +35,8 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "ServiceTicketBridge::installSchema();" not in source
     assert "Bitrix\\Main\\Config\\Option::set" not in source
     assert "'support-team'" in source
+    assert "'isVisibleToCustomer'" in source
+    assert "`IS_HIDDEN`" in source
     assert "rawurlencode((string) $eventKey)" not in source
     assert "$isPermanentHttpError" in source
 

@@ -85,7 +85,17 @@ class FakeBitrixApi:
         self.persist_added_fields = persist_added_fields
         self.return_saved_form = return_saved_form
         self.stages = deepcopy(stages if stages is not None else _stages())
-        self.saved_form: list[dict[str, Any]] = deepcopy(existing_form or [])
+        default_form = [
+            {
+                "name": "main",
+                "title": "Основное",
+                "type": "section",
+                "elements": [{"name": "TITLE", "optionFlags": 1}],
+            }
+        ]
+        self.saved_form: list[dict[str, Any]] = deepcopy(
+            default_form if existing_form is None else existing_form
+        )
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def call_json(
@@ -187,13 +197,13 @@ def test_apply_requires_created_field_readback() -> None:
     assert _write_methods(api) == ["userfieldconfig.add"]
 
 
-def test_apply_requires_form_readback() -> None:
+def test_apply_fails_closed_when_existing_form_readback_is_empty() -> None:
     api = FakeBitrixApi(fields=_all_fields(), return_saved_form=False)
 
-    with pytest.raises(RuntimeError, match="form_readback_failed"):
+    with pytest.raises(RuntimeError, match="form_readback_unrecognized"):
         bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
 
-    assert _write_methods(api) == ["crm.item.details.configuration.set"]
+    assert _write_methods(api) == []
 
 
 def test_apply_blocks_missing_required_stage_before_writes() -> None:
@@ -246,6 +256,30 @@ def test_apply_merges_site_sections_without_replacing_existing_form() -> None:
         )
         == 1
     )
+
+
+def test_apply_refetches_and_merges_concurrent_form_change_before_set() -> None:
+    class ConcurrentFormApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__(fields=_all_fields())
+            self.form_reads = 0
+
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            if method == "crm.item.details.configuration.get":
+                self.form_reads += 1
+                if self.form_reads == 2:
+                    self.saved_form[0]["elements"].append(
+                        {"name": "UF_CRM_36_CONCURRENT", "optionFlags": 1}
+                    )
+            return super().call_json(method, payload, **kwargs)
+
+    api = ConcurrentFormApi()
+    bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    names = {
+        element["name"] for section in api.saved_form for element in section.get("elements") or []
+    }
+    assert "UF_CRM_36_CONCURRENT" in names
 
 
 def test_userfield_list_reads_all_pages() -> None:

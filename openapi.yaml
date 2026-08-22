@@ -28217,6 +28217,10 @@ components:
           maxLength: 32
           minLength: 1
           title: Authorkind
+        isVisibleToCustomer:
+          type: boolean
+          title: Isvisibletocustomer
+          default: true
         createdAt:
           type: string
           format: date-time

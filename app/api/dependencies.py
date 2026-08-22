@@ -1,6 +1,7 @@
 from typing import Annotated, Generator
 
 from fastapi import Depends, Header, HTTPException, Request, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -124,14 +125,99 @@ async def require_site_service_request_signature(
 
 
 def _site_service_request_body_limit(request: Request, *, settings: Settings) -> int:
-    path = request.url.path
-    if request.method.upper() == "PUT" and "/files/" in path:
+    return _site_service_request_body_limit_for_path(
+        method=request.method,
+        path=request.url.path,
+        settings=settings,
+    )
+
+
+def _site_service_request_body_limit_for_path(
+    *,
+    method: str,
+    path: str,
+    settings: Settings,
+) -> int:
+    if method.upper() == "PUT" and "/files/" in path:
         return settings.site_service_requests_max_file_bytes
-    if request.method.upper() == "POST" and path.endswith("/events"):
+    if method.upper() == "POST" and path.endswith("/events"):
         return settings.site_service_requests_max_event_body_bytes
-    if request.method.upper() == "POST" and path.endswith("/ack"):
+    if method.upper() == "POST" and path.endswith("/ack"):
         return settings.site_service_requests_max_ack_body_bytes
     return settings.site_service_requests_max_ack_body_bytes
+
+
+class SiteServiceRequestBodyLimitMiddleware:
+    """Reject oversized site requests while ASGI chunks are still arriving."""
+
+    def __init__(self, app, *, settings: Settings) -> None:
+        self.app = app
+        self.settings = settings
+
+    async def __call__(self, scope, receive, send) -> None:
+        path = str(scope.get("path") or "")
+        if scope.get("type") != "http" or not path.startswith(
+            "/api/internal/site-service-requests/"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        method = str(scope.get("method") or "GET")
+        limit = _site_service_request_body_limit_for_path(
+            method=method,
+            path=path,
+            settings=self.settings,
+        )
+        headers = {
+            key.lower(): value
+            for key, value in scope.get("headers", [])
+            if isinstance(key, bytes) and isinstance(value, bytes)
+        }
+        raw_content_length = headers.get(b"content-length")
+        if raw_content_length is not None:
+            try:
+                declared_length = int(raw_content_length)
+            except ValueError:
+                await JSONResponse(
+                    status_code=422,
+                    content={"detail": "request_size_invalid"},
+                )(scope, receive, send)
+                return
+            if declared_length < 0:
+                await JSONResponse(
+                    status_code=422,
+                    content={"detail": "request_size_invalid"},
+                )(scope, receive, send)
+                return
+            if declared_length > limit:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "request_body_too_large"},
+                )(scope, receive, send)
+                return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    raise _SiteServiceRequestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _SiteServiceRequestBodyTooLarge:
+            await JSONResponse(
+                status_code=413,
+                content={"detail": "request_body_too_large"},
+            )(scope, receive, send)
+
+
+class _SiteServiceRequestBodyTooLarge(Exception):
+    pass
 
 
 def require_management_internal_token(

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -287,16 +287,16 @@ def ensure(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         category_id=settings.site_service_requests_bitrix_working_category_id,
     )
-    existing_form = _configuration_result(
-        api.call_json(
-            "crm.item.details.configuration.get",
-            {
-                "entityTypeId": settings.site_service_requests_bitrix_entity_type_id,
-                "scope": "C",
-                "extras": {"categoryId": settings.site_service_requests_bitrix_working_category_id},
-            },
-        )
+    configuration_payload = {
+        "entityTypeId": settings.site_service_requests_bitrix_entity_type_id,
+        "scope": "C",
+        "extras": {"categoryId": settings.site_service_requests_bitrix_working_category_id},
+    }
+    configuration_response = api.call_json(
+        "crm.item.details.configuration.get",
+        configuration_payload,
     )
+    existing_form = _configuration_result(configuration_response)
     plan = build_plan(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,
@@ -309,6 +309,7 @@ def ensure(
         return plan
     if not settings.site_service_requests_bitrix_writes_enabled:
         raise RuntimeError("site_service_request_bitrix_writes_disabled")
+    _require_recognized_form(configuration_response)
     if plan.type_mismatches:
         raise RuntimeError("site_service_request_field_type_mismatch")
     if plan.missing_stages:
@@ -345,6 +346,15 @@ def ensure(
         or refreshed.missing_enum_mappings
     ):
         raise RuntimeError("site_service_request_fields_readback_failed")
+    # Re-read immediately before the write so a concurrent administrator change
+    # is merged instead of being replaced by the stale initial snapshot.
+    latest_form = _require_recognized_form(
+        api.call_json("crm.item.details.configuration.get", configuration_payload)
+    )
+    refreshed = replace(
+        refreshed,
+        form=merge_form(latest_form, build_form(refreshed.field_map)),
+    )
     api.call_json(
         "crm.item.details.configuration.set",
         {
@@ -472,6 +482,20 @@ def _configuration_result(response: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(result, dict):
         result = result.get("data") or result.get("configuration") or []
     return [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
+
+
+def _require_recognized_form(response: dict[str, Any]) -> list[dict[str, Any]]:
+    form = _configuration_result(response)
+    if not form:
+        raise RuntimeError("site_service_request_form_readback_unrecognized")
+    for section in form:
+        if (
+            not str(section.get("name") or "").strip()
+            or section.get("type") != "section"
+            or not isinstance(section.get("elements"), list)
+        ):
+            raise RuntimeError("site_service_request_form_readback_unrecognized")
+    return form
 
 
 def _form_contains(

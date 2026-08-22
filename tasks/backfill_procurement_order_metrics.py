@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     parser.add_argument("--window-days", type=int, default=DEFAULT_METRICS_WINDOW_DAYS)
     parser.add_argument("--lead-time-csv", type=Path)
+    parser.add_argument(
+        "--order-ids-from-json",
+        type=Path,
+        help="Limit processing to persisted_order_ids from an order-formation JSON result.",
+    )
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--run-id", default="")
     parser.add_argument("--json", action="store_true")
@@ -82,6 +87,11 @@ def main() -> int:
         / "display-supplier-lead-time-history.csv"
     )
     lead_time_rows = _read_csv(lead_time_path) if lead_time_path.exists() else []
+    order_ids = (
+        _read_persisted_order_ids(args.order_ids_from_json)
+        if args.order_ids_from_json is not None
+        else None
+    )
     onec_engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     try:
         with Session(app_engine) as db:
@@ -92,6 +102,7 @@ def main() -> int:
                 as_of=args.as_of,
                 window_days=args.window_days,
                 run_id=args.run_id or None,
+                order_ids=order_ids,
             )
             if not args.apply:
                 db.rollback()
@@ -117,6 +128,20 @@ def main() -> int:
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as source:
         return [dict(row) for row in csv.DictReader(source)]
+
+
+def _read_persisted_order_ids(path: Path) -> list[int]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot read --order-ids-from-json: {path}") from exc
+    raw_order_ids = payload.get("persisted_order_ids") if isinstance(payload, dict) else None
+    if not isinstance(raw_order_ids, list):
+        raise SystemExit("--order-ids-from-json must contain persisted_order_ids list")
+    try:
+        return sorted({int(order_id) for order_id in raw_order_ids})
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("persisted_order_ids must contain integer order ids") from exc
 
 
 def _print_result(payload: Mapping[str, Any], *, compact: bool) -> None:

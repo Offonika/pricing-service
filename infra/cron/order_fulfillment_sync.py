@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -29,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from app.core.config import get_settings  # noqa: E402
 from app.infrastructure.db.engines import build_engine  # noqa: E402
+from app.services import sdek_refund_cancellation as sdek_refunds  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
@@ -37,8 +39,11 @@ QUICK_STAGE_IDS = (
     "PREPARATION",
     "PREPAYMENT_INVOICE",
     "EXECUTING",
+    "FINAL_INVOICE",
+    "IN_DELIVERY",
     "PICKUP_WAITING",
     "DELIVERY_REVIEW",
+    "DISMANTLING",
 )
 PREPAYMENT_WAITING_MAX_AGE_DAYS = 7
 PROCESS_STAGES = (
@@ -56,6 +61,7 @@ PROCESS_STAGES = (
     "LOSE",
     "APOLOGY",
 )
+REFUND_CONTROL_STAGE_IDS = frozenset(PROCESS_STAGES) - {"WON", "LOSE", "APOLOGY"}
 NEW_REVIEW_FIELDS = (
     "site_order_number",
     "bitrix_deal_id",
@@ -73,6 +79,36 @@ NEW_REVIEW_FIELDS = (
     "review_reason",
 )
 CRM_ASSEMBLED_FIELD = "UF_CRM_MM_1C_ASSEMBLED"
+CRM_CDEK_TRACKING_FIELD = "UF_CRM_OT_TRACKING"
+SDEK_REFUND_STATE_FILENAME = "sdek-refund-terminal-state.json"
+SDEK_REFUND_TERMINAL_RESULTS = {
+    "cancelled",
+    "already_removed",
+    "missing_tracking",
+    "blocked_after_handover",
+    "blocked_unknown_status",
+    "shipment_order_mismatch",
+}
+SDEK_REFUND_STAGE_SAFE_RESULTS = {
+    "cancelled",
+    "already_removed",
+    "missing_tracking",
+}
+SDEK_REFUND_CANCELLATION_MODES = frozenset({"off", "allowlist", "all"})
+SDEK_REFUND_CANCELLATION_MODE_ENV = "ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE"
+SDEK_REFUND_CANCELLATION_ALLOWLIST_ENV = "ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_ALLOWLIST"
+SDEK_REFUND_RESULT_CSV_FIELDS = (
+    "operation_key",
+    "site_order_number",
+    "bitrix_deal_id",
+    "tracking_number",
+    "statuses",
+    "result",
+    "refund_verified",
+    "applied",
+    "reason",
+    "timeline_comment_result",
+)
 READY_APPLY_RESULTS = {"dry_run_ready", "ready"}
 TECHNICAL_APPLY_RESULTS = {
     "technical_review",
@@ -238,6 +274,16 @@ def decide_new_deal_stage(
 
     if not order_number:
         return _new_decision(deal, None, "missing_order_number")
+    if (
+        order_status is not None
+        and order_status.status_id in sdek_refunds.FULL_REFUND_SITE_STATUS_IDS
+    ):
+        return _new_decision(
+            deal,
+            "DISMANTLING",
+            "fully_refunded_to_dismantling",
+            order_status=order_status,
+        )
     if order_status is not None and order_status.canceled:
         if assembled:
             return _new_decision(
@@ -505,7 +551,11 @@ def fetch_new_deals(
                 "crm.deal.list",
                 {
                     "filter": {"STAGE_ID": stage_id},
-                    "select": [*fulfillment.CRM_REVIEW_SELECT_FIELDS, CRM_ASSEMBLED_FIELD],
+                    "select": [
+                        *fulfillment.CRM_REVIEW_SELECT_FIELDS,
+                        CRM_ASSEMBLED_FIELD,
+                        CRM_CDEK_TRACKING_FIELD,
+                    ],
                     "order": {"ID": "ASC"},
                     "start": start,
                 },
@@ -520,6 +570,85 @@ def fetch_new_deals(
             next_value = response.get("next")
             start = int(next_value) if next_value is not None else None
     return deals
+
+
+def fetch_full_refund_order_numbers(
+    *,
+    limit: int = 1000,
+    runner: Any = subprocess.run,
+) -> list[str]:
+    safe_limit = max(1, min(int(limit), 5000))
+    try:
+        completed = runner(
+            ["ssh", "-o", "BatchMode=yes", "bitrix-box", "sudo -u mm php"],
+            input=_build_full_refund_order_numbers_php(safe_limit),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return sorted(
+        {
+            value
+            for item in payload
+            if (value := fulfillment._clean_string(item)).isdigit()  # noqa: SLF001
+        }
+    )
+
+
+def fetch_deals_by_site_orders(
+    client: fulfillment.BitrixChatClient,
+    order_numbers: list[str],
+    *,
+    chunk_size: int = 50,
+) -> list[fulfillment.BitrixDealSnapshot]:
+    clean_numbers = sorted({number for number in order_numbers if number and number.isdigit()})
+    deals: dict[int, fulfillment.BitrixDealSnapshot] = {}
+    safe_chunk_size = max(1, min(chunk_size, 50))
+    for offset in range(0, len(clean_numbers), safe_chunk_size):
+        chunk = clean_numbers[offset : offset + safe_chunk_size]
+        start: int | None = 0
+        while start is not None:
+            response = client.call(
+                "crm.deal.list",
+                {
+                    "filter": {f"@{fulfillment.CRM_ORDER_NUMBER_FIELD}": chunk},
+                    "select": [
+                        *fulfillment.CRM_REVIEW_SELECT_FIELDS,
+                        CRM_ASSEMBLED_FIELD,
+                        CRM_CDEK_TRACKING_FIELD,
+                    ],
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            for item in response.get("result") or []:
+                deal = fulfillment.bitrix_deal_from_payload(item)
+                if deal is None or deal.stage_id not in REFUND_CONTROL_STAGE_IDS:
+                    continue
+                deals[deal.deal_id] = deal
+            next_value = response.get("next")
+            start = int(next_value) if next_value is not None else None
+    return list(deals.values())
+
+
+def merge_deal_snapshots(
+    primary: list[fulfillment.BitrixDealSnapshot],
+    targeted: list[fulfillment.BitrixDealSnapshot],
+) -> list[fulfillment.BitrixDealSnapshot]:
+    result = {deal.deal_id: deal for deal in primary}
+    result.update({deal.deal_id: deal for deal in targeted})
+    return list(result.values())
 
 
 def fetch_sale_order_statuses(order_numbers: list[str]) -> dict[str, SaleOrderStatus]:
@@ -785,6 +914,30 @@ def _parse_bitrix_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _build_full_refund_order_numbers_php(limit: int) -> str:
+    return f"""<?php
+$_SERVER["DOCUMENT_ROOT"] = "/var/www/mm/data/www/crm.master-mobile.ru";
+define("NO_KEEP_STATISTIC", true);
+define("NOT_CHECK_PERMISSIONS", true);
+define("BX_CRONTAB", true);
+chdir($_SERVER["DOCUMENT_ROOT"]);
+require($_SERVER["DOCUMENT_ROOT"] . "/bitrix/modules/main/include/prolog_before.php");
+$connection = Bitrix\\Main\\Application::getConnection();
+$rows = $connection->query(
+    "SELECT ACCOUNT_NUMBER FROM b_sale_order " .
+    "WHERE STATUS_ID = 'YR' ORDER BY DATE_UPDATE DESC LIMIT {int(limit)}"
+)->fetchAll();
+$result = [];
+foreach ($rows as $row) {{
+    $number = (string)$row["ACCOUNT_NUMBER"];
+    if (preg_match('/^\\d+$/', $number)) {{
+        $result[] = $number;
+    }}
+}}
+echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+"""
+
+
 def _build_sale_order_status_php(order_numbers: list[str]) -> str:
     encoded_numbers = json.dumps(order_numbers, ensure_ascii=False)
     return f"""<?php
@@ -838,6 +991,336 @@ def _truthy_bitrix_value(value: Any) -> bool:
     }  # noqa: SLF001
 
 
+def build_sdek_refund_candidates(
+    deals: list[fulfillment.BitrixDealSnapshot],
+    decisions: list[NewDealDecision],
+) -> list[sdek_refunds.SdekRefundCandidate]:
+    deals_by_id = {deal.deal_id: deal for deal in deals}
+    candidates: list[sdek_refunds.SdekRefundCandidate] = []
+    for decision in decisions:
+        if decision.review_reason != "fully_refunded_to_dismantling":
+            continue
+        if not _is_sdek_delivery(decision.crm_delivery):
+            continue
+        deal = deals_by_id.get(decision.bitrix_deal_id)
+        tracking_numbers = sdek_refunds.extract_tracking_numbers(
+            (deal.raw or {}).get(CRM_CDEK_TRACKING_FIELD) if deal is not None else None
+        )
+        if not tracking_numbers:
+            tracking_numbers = [None]
+        candidates.extend(
+            sdek_refunds.SdekRefundCandidate(
+                site_order_number=decision.site_order_number,
+                bitrix_deal_id=decision.bitrix_deal_id,
+                tracking_number=tracking_number,
+            )
+            for tracking_number in tracking_numbers
+        )
+    return candidates
+
+
+def _is_sdek_delivery(delivery: str | None) -> bool:
+    return "сдэк" in fulfillment._clean_string(delivery).lower()  # noqa: SLF001
+
+
+def resolve_sdek_refund_cancellation_rollout(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, frozenset[str] | None]:
+    source = os.environ if environ is None else environ
+    mode = clean_csv_value(source.get(SDEK_REFUND_CANCELLATION_MODE_ENV) or "off").lower()
+    if mode not in SDEK_REFUND_CANCELLATION_MODES:
+        raise ValueError("invalid_sdek_refund_cancellation_mode")
+    if mode == "all":
+        return mode, None
+    if mode == "off":
+        return mode, frozenset()
+
+    raw_allowlist = clean_csv_value(source.get(SDEK_REFUND_CANCELLATION_ALLOWLIST_ENV))
+    order_numbers = frozenset(item for item in re.split(r"[\s,;]+", raw_allowlist) if item)
+    if any(not item.isdigit() or not 1 <= len(item) <= 20 for item in order_numbers):
+        raise ValueError("invalid_sdek_refund_cancellation_allowlist")
+    return mode, order_numbers
+
+
+def _sdek_refund_result_allows_stage(result: sdek_refunds.SdekRefundResult) -> bool:
+    if not result.refund_verified:
+        return False
+    if result.result in SDEK_REFUND_STAGE_SAFE_RESULTS:
+        return True
+    return (
+        result.result == "skipped_terminal_state"
+        and clean_csv_value(result.reason) in SDEK_REFUND_STAGE_SAFE_RESULTS
+    )
+
+
+def split_terminal_sdek_refund_candidates(
+    candidates: list[sdek_refunds.SdekRefundCandidate],
+    state: dict[str, Any],
+) -> tuple[
+    list[sdek_refunds.SdekRefundCandidate],
+    list[sdek_refunds.SdekRefundResult],
+]:
+    pending: list[sdek_refunds.SdekRefundCandidate] = []
+    skipped: list[sdek_refunds.SdekRefundResult] = []
+    for candidate in candidates:
+        previous = state.get(candidate.operation_key)
+        previous_result = (
+            clean_csv_value(previous.get("result")) if isinstance(previous, dict) else ""
+        )
+        if previous_result in SDEK_REFUND_TERMINAL_RESULTS:
+            if not bool(previous.get("comment_recorded")):
+                skipped.append(
+                    sdek_refunds.SdekRefundResult(
+                        candidate=candidate,
+                        result=previous_result,
+                        refund_verified=True,
+                        statuses=tuple(previous.get("statuses") or ()),
+                        reason="terminal_state_comment_retry",
+                    )
+                )
+                continue
+            skipped.append(
+                sdek_refunds.SdekRefundResult(
+                    candidate=candidate,
+                    result="skipped_terminal_state",
+                    refund_verified=True,
+                    reason=previous_result,
+                )
+            )
+        else:
+            pending.append(candidate)
+    return pending, skipped
+
+
+def filter_unverified_sdek_refund_decisions(
+    decisions: list[NewDealDecision],
+    results: list[sdek_refunds.SdekRefundResult],
+    *,
+    automation_enabled: bool = True,
+) -> list[NewDealDecision]:
+    results_by_deal: dict[int, list[sdek_refunds.SdekRefundResult]] = defaultdict(list)
+    for result in results:
+        results_by_deal[result.candidate.bitrix_deal_id].append(result)
+
+    filtered: list[NewDealDecision] = []
+    for decision in decisions:
+        if decision.review_reason != "fully_refunded_to_dismantling" or not _is_sdek_delivery(
+            decision.crm_delivery
+        ):
+            filtered.append(decision)
+            continue
+        if not automation_enabled:
+            continue
+        deal_results = results_by_deal.get(decision.bitrix_deal_id) or []
+        if deal_results and all(
+            _sdek_refund_result_allows_stage(result) for result in deal_results
+        ):
+            filtered.append(decision)
+    return filtered
+
+
+def record_sdek_refund_timeline_comments(
+    *,
+    client: fulfillment.BitrixChatClient,
+    results: list[sdek_refunds.SdekRefundResult],
+    apply: bool,
+) -> dict[str, str]:
+    outcomes: dict[str, str] = {}
+    for result in results:
+        key = result.candidate.operation_key
+        if result.result == "skipped_terminal_state":
+            outcomes[key] = "skipped_terminal_state"
+            continue
+        if not result.refund_verified:
+            outcomes[key] = "skipped_refund_not_verified"
+            continue
+        if result.result == "cancel_not_authorized":
+            outcomes[key] = "rollout_guarded"
+            continue
+        if not apply:
+            outcomes[key] = "dry_run"
+            continue
+
+        marker_prefix = _sdek_refund_comment_marker_prefix(result)
+        marker = f"{marker_prefix}:{result.result}]"
+        try:
+            comments = _list_deal_timeline_comments(
+                client,
+                deal_id=result.candidate.bitrix_deal_id,
+            )
+        except Exception:  # noqa: BLE001 - no duplicate comment if lookup is unavailable.
+            outcomes[key] = "timeline_lookup_error"
+            continue
+        if any(marker in comment for comment in comments):
+            outcomes[key] = "already_present"
+            continue
+        if result.result in SDEK_REFUND_TERMINAL_RESULTS and any(
+            any(
+                f"{marker_prefix}:{terminal_result}]" in comment
+                for terminal_result in SDEK_REFUND_TERMINAL_RESULTS
+            )
+            for comment in comments
+        ):
+            outcomes[key] = "terminal_comment_already_present"
+            continue
+        try:
+            client.call(
+                "crm.timeline.comment.add",
+                {
+                    "fields": {
+                        "ENTITY_ID": result.candidate.bitrix_deal_id,
+                        "ENTITY_TYPE": "deal",
+                        "COMMENT": _build_sdek_refund_timeline_comment(result, marker),
+                    }
+                },
+            )
+        except Exception:  # noqa: BLE001 - retry on the next quick run.
+            outcomes[key] = "timeline_add_error"
+        else:
+            outcomes[key] = "added"
+    return outcomes
+
+
+def _list_deal_timeline_comments(
+    client: fulfillment.BitrixChatClient,
+    *,
+    deal_id: int,
+    max_pages: int = 5,
+) -> list[str]:
+    comments: list[str] = []
+    start: int | None = 0
+    pages = 0
+    while start is not None and pages < max_pages:
+        response = client.call(
+            "crm.timeline.comment.list",
+            {
+                "filter": {"ENTITY_ID": deal_id, "ENTITY_TYPE": "deal"},
+                "select": ["ID", "COMMENT"],
+                "order": {"ID": "DESC"},
+                "start": start,
+            },
+        )
+        for row in response.get("result") or []:
+            if isinstance(row, dict):
+                comment = clean_csv_value(row.get("COMMENT") or row.get("comment"))
+                if comment:
+                    comments.append(comment)
+        next_value = response.get("next")
+        start = int(next_value) if next_value is not None else None
+        pages += 1
+    return comments
+
+
+def _sdek_refund_comment_marker_prefix(result: sdek_refunds.SdekRefundResult) -> str:
+    tracking_number = result.candidate.tracking_number or "NO_TRACK"
+    return f"[MM-SDEK-REFUND:{result.candidate.site_order_number}:{tracking_number}"
+
+
+def _build_sdek_refund_timeline_comment(
+    result: sdek_refunds.SdekRefundResult,
+    marker: str,
+) -> str:
+    result_labels = {
+        "cancelled": "накладная отменена до передачи перевозчику",
+        "already_removed": "накладная уже была отменена в СДЭК",
+        "missing_tracking": "трек отсутствует, запрос отмены не отправлялся",
+        "blocked_after_handover": (
+            "накладная не отменена: отправление уже передано перевозчику "
+            "или вышло из начального статуса"
+        ),
+        "blocked_unknown_status": (
+            "накладная не отменена: безопасный начальный статус не подтвержден"
+        ),
+        "shipment_order_mismatch": ("накладная не отменена: трек принадлежит другому заказу"),
+        "shipment_not_found": "накладная не найдена через настроенный аккаунт СДЭК",
+        "shipment_account_missing": "аккаунт СДЭК для накладной недоступен",
+        "shipment_uuid_missing": "СДЭК не вернул идентификатор накладной",
+        "cancel_error": "СДЭК не подтвердил отмену; проверка будет повторена",
+        "inspection_error": "статус СДЭК не удалось проверить; проверка будет повторена",
+        "cancel_ready": "накладная может быть отменена до передачи перевозчику",
+        "cancel_not_authorized": (
+            "накладная проверена, но отмена заблокирована режимом безопасного rollout"
+        ),
+    }
+    tracking_number = result.candidate.tracking_number or "отсутствует"
+    statuses = ", ".join(result.statuses) if result.statuses else "не получены"
+    outcome = result_labels.get(result.result, f"результат проверки: {result.result}")
+    return "\n".join(
+        (
+            "Полный возврат оплаты: проверка накладной СДЭК.",
+            f"Заказ: {result.candidate.site_order_number}",
+            f"Трек: {tracking_number}",
+            f"Статусы СДЭК: {statuses}",
+            f"Результат: {outcome}.",
+            "Трек сохранён в карточке и истории сделки.",
+            marker,
+        )
+    )
+
+
+def sdek_refund_result_rows(
+    results: list[sdek_refunds.SdekRefundResult],
+    timeline_outcomes: dict[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "operation_key": result.candidate.operation_key,
+            "site_order_number": result.candidate.site_order_number,
+            "bitrix_deal_id": result.candidate.bitrix_deal_id,
+            "tracking_number": result.candidate.tracking_number,
+            "statuses": "|".join(result.statuses),
+            "result": result.result,
+            "refund_verified": result.refund_verified,
+            "applied": result.applied,
+            "reason": result.reason,
+            "timeline_comment_result": timeline_outcomes.get(
+                result.candidate.operation_key,
+                "not_attempted",
+            ),
+        }
+        for result in results
+    ]
+
+
+def update_sdek_refund_terminal_state(
+    state: dict[str, Any],
+    results: list[sdek_refunds.SdekRefundResult],
+    timeline_outcomes: dict[str, str],
+) -> bool:
+    changed = False
+    comment_success_results = {
+        "added",
+        "already_present",
+        "terminal_comment_already_present",
+        "skipped_terminal_state",
+    }
+    for result in results:
+        if result.result not in SDEK_REFUND_TERMINAL_RESULTS:
+            continue
+        if result.result == "skipped_terminal_state":
+            continue
+        previous = state.get(result.candidate.operation_key)
+        previous = previous if isinstance(previous, dict) else {}
+        comment_recorded = bool(previous.get("comment_recorded")) or (
+            timeline_outcomes.get(result.candidate.operation_key) in comment_success_results
+        )
+        value = {
+            "result": result.result,
+            "statuses": list(result.statuses),
+            "comment_recorded": comment_recorded,
+        }
+        comparable_previous = {
+            "result": previous.get("result"),
+            "statuses": list(previous.get("statuses") or ()),
+            "comment_recorded": bool(previous.get("comment_recorded")),
+        }
+        if comparable_previous != value:
+            value["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            state[result.candidate.operation_key] = value
+            changed = True
+    return changed
+
+
 def build_new_deal_outbox_rows(
     decisions: list[NewDealDecision],
     *,
@@ -889,7 +1372,13 @@ def run_quick_sync(
     apply: bool,
     limit: int,
 ) -> dict[str, Any]:
-    deals = fetch_new_deals(client, limit=limit)
+    queue_deals = fetch_new_deals(client, limit=limit)
+    full_refund_order_numbers = fetch_full_refund_order_numbers()
+    targeted_full_refund_deals = fetch_deals_by_site_orders(
+        client,
+        full_refund_order_numbers,
+    )
+    deals = merge_deal_snapshots(queue_deals, targeted_full_refund_deals)
     order_numbers = [
         fulfillment._clean_string(
             (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
@@ -916,10 +1405,56 @@ def run_quick_sync(
         )
         for deal in deals
     ]
+    sdek_refund_state_path = output_dir / SDEK_REFUND_STATE_FILENAME
+    sdek_refund_state = load_notification_state(sdek_refund_state_path) if apply else {}
+    sdek_refund_cancellation_mode, authorized_sdek_refund_orders = (
+        resolve_sdek_refund_cancellation_rollout()
+    )
+    sdek_refund_candidates = build_sdek_refund_candidates(deals, decisions)
+    pending_sdek_candidates, skipped_sdek_results = split_terminal_sdek_refund_candidates(
+        sdek_refund_candidates,
+        sdek_refund_state,
+    )
+    processed_sdek_results = sdek_refunds.process_sdek_refund_candidates(
+        pending_sdek_candidates,
+        apply=apply,
+        authorized_order_numbers=authorized_sdek_refund_orders,
+    )
+    sdek_refund_results = [*skipped_sdek_results, *processed_sdek_results]
+    sdek_timeline_outcomes = record_sdek_refund_timeline_comments(
+        client=client,
+        results=sdek_refund_results,
+        apply=apply and sdek_refund_cancellation_mode != "off",
+    )
+    sdek_refund_path = output_dir / f"sdek-refund-cancellation-{stamp}.csv"
+    write_dict_csv(
+        sdek_refund_path,
+        sdek_refund_result_rows(sdek_refund_results, sdek_timeline_outcomes),
+        fieldnames=list(SDEK_REFUND_RESULT_CSV_FIELDS),
+    )
+    if (
+        apply
+        and sdek_refund_cancellation_mode != "off"
+        and update_sdek_refund_terminal_state(
+            sdek_refund_state,
+            sdek_refund_results,
+            sdek_timeline_outcomes,
+        )
+    ):
+        write_notification_state(sdek_refund_state_path, sdek_refund_state)
+
+    stage_decisions = filter_unverified_sdek_refund_decisions(
+        decisions,
+        sdek_refund_results,
+        automation_enabled=sdek_refund_cancellation_mode != "off",
+    )
     available_stage_ids = client.list_deal_stage_ids()
     review_path = output_dir / f"new-deals-review-{stamp}.csv"
     write_new_review_csv(review_path, decisions)
-    outbox_rows = build_new_deal_outbox_rows(decisions, available_stage_ids=available_stage_ids)
+    outbox_rows = build_new_deal_outbox_rows(
+        stage_decisions,
+        available_stage_ids=available_stage_ids,
+    )
     outbox_path = output_dir / f"new-deals-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
     apply_results = apply_outbox_by_target(outbox_rows, client=client, apply=apply)
@@ -948,18 +1483,28 @@ def run_quick_sync(
     summary = {
         "mode": "quick",
         "deals": len(deals),
+        "queue_deals": len(queue_deals),
+        "targeted_full_refund_deals": len(targeted_full_refund_deals),
         "review": str(review_path),
         "outbox": str(outbox_path),
         "apply_result": str(apply_path),
         "stage_summary": str(stage_path),
         "monitoring": str(monitoring_path),
         "rtu_without_assembled": str(rtu_signal_path),
+        "sdek_refund_cancellation": str(sdek_refund_path),
         "dry_run": not apply,
         "by_reason": dict(Counter(decision.review_reason for decision in decisions)),
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),
         "stage_summary_counts": stage_summary_counts(stage_summary),
         "rtu_without_assembled_rows": len(rtu_signal_rows),
+        "sdek_refund_rows": len(sdek_refund_results),
+        "sdek_refund_results": dict(Counter(row.result for row in sdek_refund_results)),
+        "sdek_refund_cancellation_mode": sdek_refund_cancellation_mode,
+        "sdek_refund_cancellation_active": (apply and sdek_refund_cancellation_mode != "off"),
+        "sdek_refund_authorized_orders": (
+            "all" if authorized_sdek_refund_orders is None else len(authorized_sdek_refund_orders)
+        ),
     }
     enrich_summary_item_from_artifacts(summary)
     enrich_summary_item_from_monitoring(summary)

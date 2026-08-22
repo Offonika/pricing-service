@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.core.config import Settings
 from app.services import site_order_fulfillment as service
 from infra.cron import order_fulfillment_sync as sync
@@ -51,6 +53,26 @@ class FakeDealListClient:
         }
 
 
+class FakeRefundDealClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def call(self, method: str, payload: dict) -> dict:
+        assert method == "crm.deal.list"
+        self.calls.append(payload)
+        order_numbers = payload["filter"][f"@{service.CRM_ORDER_NUMBER_FIELD}"]
+        return {
+            "result": [
+                {
+                    "ID": order_number,
+                    "STAGE_ID": "EXECUTING" if index == 0 else "WON",
+                    service.CRM_ORDER_NUMBER_FIELD: order_number,
+                }
+                for index, order_number in enumerate(order_numbers)
+            ]
+        }
+
+
 class FakeNotifyClient:
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -58,6 +80,26 @@ class FakeNotifyClient:
     def call(self, method: str, payload: dict) -> dict:
         self.calls.append({"method": method, "payload": payload})
         return {"result": 1000 + len(self.calls)}
+
+
+class FakeTimelineClient:
+    def __init__(self) -> None:
+        self.comments: list[str] = []
+        self.add_calls = 0
+
+    def call(self, method: str, payload: dict) -> dict:
+        if method == "crm.timeline.comment.list":
+            return {
+                "result": [
+                    {"ID": str(index + 1), "COMMENT": comment}
+                    for index, comment in enumerate(self.comments)
+                ]
+            }
+        if method == "crm.timeline.comment.add":
+            self.add_calls += 1
+            self.comments.append(payload["fields"]["COMMENT"])
+            return {"result": self.add_calls}
+        raise AssertionError(method)
 
 
 def _deal(
@@ -68,10 +110,13 @@ def _deal(
     delivery: str = "Самовывоз",
     payment_status: str = "0",
     assembled: str | None = None,
+    tracking_number: str | None = None,
 ) -> service.BitrixDealSnapshot:
     raw = {service.CRM_ORDER_NUMBER_FIELD: order_number}
     if assembled is not None:
         raw[sync.CRM_ASSEMBLED_FIELD] = assembled
+    if tracking_number is not None:
+        raw[sync.CRM_CDEK_TRACKING_FIELD] = tracking_number
     return service.BitrixDealSnapshot(
         deal_id=deal_id,
         stage_id=stage_id,
@@ -235,6 +280,310 @@ def test_decide_new_deal_stage_routes_canceled_orders_by_assembly_state() -> Non
     assert assembled.review_reason == "canceled_assembled_to_dismantling"
     assert prepayment.recommended_stage == "LOSE"
     assert prepayment.review_reason == "canceled_unassembled_to_lost"
+
+
+def test_decide_full_refund_routes_to_dismantling_before_other_rules() -> None:
+    decision = sync.decide_new_deal_stage(
+        _deal(
+            stage_id="FINAL_INVOICE",
+            delivery="СДЭК",
+            payment_status="0",
+            assembled="1",
+            tracking_number="10291528413",
+        ),
+        order_status=sync.SaleOrderStatus(
+            order_number="229271",
+            canceled=False,
+            status_id="YR",
+            payed=False,
+        ),
+    )
+
+    assert decision.recommended_stage == "DISMANTLING"
+    assert decision.review_reason == "fully_refunded_to_dismantling"
+
+
+def test_build_sdek_refund_candidates_keeps_track_or_explicit_missing_track() -> None:
+    tracked = _deal(
+        deal_id=1,
+        order_number="229271",
+        delivery="СДЭК",
+        tracking_number="10291528413",
+    )
+    missing = _deal(
+        deal_id=2,
+        order_number="231004",
+        delivery="СДЭК (Доставка курьером)",
+    )
+    status = sync.SaleOrderStatus(
+        order_number="229271",
+        canceled=False,
+        status_id="YR",
+        payed=False,
+    )
+    missing_status = sync.SaleOrderStatus(
+        order_number="231004",
+        canceled=False,
+        status_id="YR",
+        payed=False,
+    )
+    decisions = [
+        sync.decide_new_deal_stage(tracked, order_status=status),
+        sync.decide_new_deal_stage(missing, order_status=missing_status),
+    ]
+
+    candidates = sync.build_sdek_refund_candidates([tracked, missing], decisions)
+
+    assert [(row.site_order_number, row.tracking_number) for row in candidates] == [
+        ("229271", "10291528413"),
+        ("231004", None),
+    ]
+
+
+def test_filter_unverified_sdek_refund_blocks_stale_stage_transition() -> None:
+    deal = _deal(deal_id=1, order_number="229271", delivery="СДЭК")
+    decision = sync.decide_new_deal_stage(
+        deal,
+        order_status=sync.SaleOrderStatus(
+            order_number="229271",
+            canceled=False,
+            status_id="YR",
+            payed=False,
+        ),
+    )
+    candidate = sync.sdek_refunds.SdekRefundCandidate("229271", 1, None)
+    stale = sync.sdek_refunds.SdekRefundResult(
+        candidate=candidate,
+        result="order_not_refunded",
+        refund_verified=False,
+    )
+
+    assert sync.filter_unverified_sdek_refund_decisions([decision], [stale]) == []
+
+
+def test_sdek_refund_rollout_defaults_off_and_parses_allowlist() -> None:
+    assert sync.resolve_sdek_refund_cancellation_rollout({}) == (
+        "off",
+        frozenset(),
+    )
+    assert sync.resolve_sdek_refund_cancellation_rollout(
+        {
+            sync.SDEK_REFUND_CANCELLATION_MODE_ENV: "allowlist",
+            sync.SDEK_REFUND_CANCELLATION_ALLOWLIST_ENV: "225281, 229002;225281",
+        }
+    ) == ("allowlist", frozenset({"225281", "229002"}))
+    assert sync.resolve_sdek_refund_cancellation_rollout(
+        {
+            sync.SDEK_REFUND_CANCELLATION_MODE_ENV: "all",
+            sync.SDEK_REFUND_CANCELLATION_ALLOWLIST_ENV: "ignored",
+        }
+    ) == ("all", None)
+
+
+def test_sdek_refund_rollout_rejects_invalid_configuration() -> None:
+    with pytest.raises(ValueError, match="invalid_sdek_refund_cancellation_mode"):
+        sync.resolve_sdek_refund_cancellation_rollout(
+            {sync.SDEK_REFUND_CANCELLATION_MODE_ENV: "enabled"}
+        )
+    with pytest.raises(ValueError, match="invalid_sdek_refund_cancellation_allowlist"):
+        sync.resolve_sdek_refund_cancellation_rollout(
+            {
+                sync.SDEK_REFUND_CANCELLATION_MODE_ENV: "allowlist",
+                sync.SDEK_REFUND_CANCELLATION_ALLOWLIST_ENV: "225281,DROP",
+            }
+        )
+
+
+def test_order_fulfillment_shell_preserves_sdek_rollout_overrides() -> None:
+    shell_source = Path(sync.__file__).with_suffix(".sh").read_text(encoding="utf-8")
+
+    assert "SDEK_REFUND_MODE_OVERRIDE_SET" in shell_source
+    assert (
+        'export ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE="${SDEK_REFUND_MODE_OVERRIDE}"'
+        in shell_source
+    )
+    assert "SDEK_REFUND_ALLOWLIST_OVERRIDE_SET" in shell_source
+    assert (
+        'export ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_ALLOWLIST="${SDEK_REFUND_ALLOWLIST_OVERRIDE}"'
+        in shell_source
+    )
+
+
+def test_sdek_refund_rollout_guard_blocks_stage_until_cancellation() -> None:
+    deal = _deal(deal_id=1, order_number="229271", delivery="СДЭК")
+    decision = sync.decide_new_deal_stage(
+        deal,
+        order_status=sync.SaleOrderStatus(
+            order_number="229271",
+            canceled=False,
+            status_id="YR",
+            payed=False,
+        ),
+    )
+    candidate = sync.sdek_refunds.SdekRefundCandidate("229271", 1, "10291528413")
+    guarded = sync.sdek_refunds.SdekRefundResult(
+        candidate=candidate,
+        result="cancel_not_authorized",
+        refund_verified=True,
+        statuses=("ACCEPTED", "CREATED"),
+        reason="rollout_guard",
+    )
+    cancelled = sync.sdek_refunds.SdekRefundResult(
+        candidate=candidate,
+        result="cancelled",
+        refund_verified=True,
+        statuses=("ACCEPTED", "CREATED"),
+        applied=True,
+    )
+
+    assert sync.filter_unverified_sdek_refund_decisions([decision], [guarded]) == []
+    assert sync.filter_unverified_sdek_refund_decisions([decision], [cancelled]) == [decision]
+    assert (
+        sync.filter_unverified_sdek_refund_decisions(
+            [decision],
+            [cancelled],
+            automation_enabled=False,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("result_name", "allows_stage"),
+    [
+        ("cancelled", True),
+        ("already_removed", True),
+        ("missing_tracking", True),
+        ("cancel_ready", False),
+        ("cancel_not_authorized", False),
+        ("shipment_not_found", False),
+        ("shipment_order_mismatch", False),
+        ("blocked_after_handover", False),
+        ("blocked_unknown_status", False),
+        ("cancel_error", False),
+    ],
+)
+def test_sdek_refund_stage_requires_safe_terminal_result(
+    result_name: str,
+    allows_stage: bool,
+) -> None:
+    deal = _deal(deal_id=1, order_number="229271", delivery="СДЭК")
+    decision = sync.decide_new_deal_stage(
+        deal,
+        order_status=sync.SaleOrderStatus(
+            order_number="229271",
+            canceled=False,
+            status_id="YR",
+            payed=False,
+        ),
+    )
+    result = sync.sdek_refunds.SdekRefundResult(
+        candidate=sync.sdek_refunds.SdekRefundCandidate(
+            "229271",
+            1,
+            "10291528413",
+        ),
+        result=result_name,
+        refund_verified=True,
+    )
+
+    filtered = sync.filter_unverified_sdek_refund_decisions([decision], [result])
+
+    assert filtered == ([decision] if allows_stage else [])
+
+
+def test_sdek_refund_rollout_guard_does_not_write_timeline_comment() -> None:
+    client = FakeTimelineClient()
+    result = sync.sdek_refunds.SdekRefundResult(
+        candidate=sync.sdek_refunds.SdekRefundCandidate(
+            site_order_number="229271",
+            bitrix_deal_id=22406,
+            tracking_number="10291528413",
+        ),
+        result="cancel_not_authorized",
+        refund_verified=True,
+        statuses=("ACCEPTED", "CREATED"),
+        reason="rollout_guard",
+    )
+
+    outcomes = sync.record_sdek_refund_timeline_comments(
+        client=client,  # type: ignore[arg-type]
+        results=[result],
+        apply=True,
+    )
+
+    assert outcomes[result.candidate.operation_key] == "rollout_guarded"
+    assert client.add_calls == 0
+
+
+def test_sdek_refund_timeline_comment_is_idempotent_and_keeps_track() -> None:
+    client = FakeTimelineClient()
+    result = sync.sdek_refunds.SdekRefundResult(
+        candidate=sync.sdek_refunds.SdekRefundCandidate(
+            site_order_number="229271",
+            bitrix_deal_id=22406,
+            tracking_number="10291528413",
+        ),
+        result="cancelled",
+        refund_verified=True,
+        statuses=("ACCEPTED", "CREATED"),
+        applied=True,
+    )
+
+    first = sync.record_sdek_refund_timeline_comments(
+        client=client,  # type: ignore[arg-type]
+        results=[result],
+        apply=True,
+    )
+    second = sync.record_sdek_refund_timeline_comments(
+        client=client,  # type: ignore[arg-type]
+        results=[result],
+        apply=True,
+    )
+
+    assert first[result.candidate.operation_key] == "added"
+    assert second[result.candidate.operation_key] == "already_present"
+    assert client.add_calls == 1
+    assert "10291528413" in client.comments[0]
+    assert "Трек сохранён" in client.comments[0]
+
+
+def test_terminal_sdek_state_prevents_second_delete_and_retries_comment() -> None:
+    candidate = sync.sdek_refunds.SdekRefundCandidate(
+        site_order_number="229271",
+        bitrix_deal_id=22406,
+        tracking_number="10291528413",
+    )
+    result = sync.sdek_refunds.SdekRefundResult(
+        candidate=candidate,
+        result="cancelled",
+        refund_verified=True,
+        statuses=("ACCEPTED", "CREATED"),
+        applied=True,
+    )
+    state: dict = {}
+
+    changed = sync.update_sdek_refund_terminal_state(
+        state,
+        [result],
+        {candidate.operation_key: "timeline_add_error"},
+    )
+    pending, comment_retry = sync.split_terminal_sdek_refund_candidates([candidate], state)
+
+    assert changed is True
+    assert pending == []
+    assert comment_retry[0].result == "cancelled"
+    assert comment_retry[0].reason == "terminal_state_comment_retry"
+
+    sync.update_sdek_refund_terminal_state(
+        state,
+        comment_retry,
+        {candidate.operation_key: "added"},
+    )
+    pending, skipped = sync.split_terminal_sdek_refund_candidates([candidate], state)
+
+    assert pending == []
+    assert skipped[0].result == "skipped_terminal_state"
 
 
 def test_decide_new_deal_stage_keeps_active_prepayment_waiting() -> None:
@@ -441,6 +790,40 @@ def test_fetch_new_deals_includes_prepayment_stage_per_stage_limit() -> None:
     assert [call["payload"]["filter"]["STAGE_ID"] for call in client.calls] == list(
         sync.QUICK_STAGE_IDS
     )
+
+
+def test_fetch_full_refund_order_numbers_uses_targeted_site_status_query() -> None:
+    calls: list[dict] = []
+
+    def runner(command: list[str], **kwargs):
+        calls.append({"command": command, **kwargs})
+        return type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": '["236532","231004","bad"]'},
+        )()
+
+    result = sync.fetch_full_refund_order_numbers(limit=250, runner=runner)
+
+    assert result == ["231004", "236532"]
+    assert "STATUS_ID = 'YR'" in calls[0]["input"]
+    assert "LIMIT 250" in calls[0]["input"]
+
+
+def test_fetch_deals_by_site_orders_chunks_and_excludes_closed_deals() -> None:
+    client = FakeRefundDealClient()
+
+    deals = sync.fetch_deals_by_site_orders(
+        client,  # type: ignore[arg-type]
+        ["231004", "233441", "236532"],
+        chunk_size=2,
+    )
+
+    assert [deal.raw[service.CRM_ORDER_NUMBER_FIELD] for deal in deals] == [
+        "231004",
+        "236532",
+    ]
+    assert len(client.calls) == 2
 
 
 def test_new_deal_outbox_excludes_manual_review_and_won_targets() -> None:

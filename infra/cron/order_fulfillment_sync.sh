@@ -15,15 +15,26 @@ SITE_CHAT_LIMIT="${ORDER_FULFILLMENT_SYNC_SITE_CHAT_LIMIT:-50}"
 COURIER_CHAT_LIMIT="${ORDER_FULFILLMENT_SYNC_COURIER_CHAT_LIMIT:-10}"
 REVIEW_LIMIT="${ORDER_FULFILLMENT_SYNC_REVIEW_LIMIT:-100}"
 OUTPUT_DIR="${ORDER_FULFILLMENT_ARTIFACT_DIR:-${REPO_DIR}/.local/order-fulfillment-pilot}"
+LOCK_FILE="${ORDER_FULFILLMENT_SYNC_LOCK_FILE:-/run/lock/mm-order-fulfillment-sync.lock}"
 
 # Explicit cron overrides must win over defaults loaded from .env. Quick/chat
 # runs set notifications to false and must stay silent even when the daily digest
 # is enabled in the shared environment.
 NOTIFY_ENABLED_OVERRIDE_SET="${ORDER_FULFILLMENT_NOTIFY_ENABLED+x}"
 NOTIFY_ENABLED_OVERRIDE="${ORDER_FULFILLMENT_NOTIFY_ENABLED:-}"
+SDEK_REFUND_MODE_OVERRIDE_SET="${ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE+x}"
+SDEK_REFUND_MODE_OVERRIDE="${ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE:-}"
+SDEK_REFUND_ALLOWLIST_OVERRIDE_SET="${ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_ALLOWLIST+x}"
+SDEK_REFUND_ALLOWLIST_OVERRIDE="${ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_ALLOWLIST:-}"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
+
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+  echo "[$(date -Iseconds)] order_fulfillment_sync skipped: another run holds the lock" >> "${LOG_FILE}"
+  exit 0
+fi
 
 if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
@@ -33,6 +44,12 @@ fi
 
 if [[ -n "${NOTIFY_ENABLED_OVERRIDE_SET}" ]]; then
   export ORDER_FULFILLMENT_NOTIFY_ENABLED="${NOTIFY_ENABLED_OVERRIDE}"
+fi
+if [[ -n "${SDEK_REFUND_MODE_OVERRIDE_SET}" ]]; then
+  export ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE="${SDEK_REFUND_MODE_OVERRIDE}"
+fi
+if [[ -n "${SDEK_REFUND_ALLOWLIST_OVERRIDE_SET}" ]]; then
+  export ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_ALLOWLIST="${SDEK_REFUND_ALLOWLIST_OVERRIDE}"
 fi
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -57,6 +74,6 @@ if [[ "${ORDER_FULFILLMENT_SYNC_APPLY:-false}" == "true" ]]; then
   cmd+=(--apply)
 fi
 
-echo "[$(date -Iseconds)] starting order_fulfillment_sync mode=${MODE} apply=${ORDER_FULFILLMENT_SYNC_APPLY:-false}" >> "${LOG_FILE}"
+echo "[$(date -Iseconds)] starting order_fulfillment_sync mode=${MODE} apply=${ORDER_FULFILLMENT_SYNC_APPLY:-false} sdek_refund_mode=${ORDER_FULFILLMENT_SDEK_REFUND_CANCELLATION_MODE:-off}" >> "${LOG_FILE}"
 "${cmd[@]}" >> "${LOG_FILE}" 2>&1
 echo "[$(date -Iseconds)] order_fulfillment_sync finished" >> "${LOG_FILE}"

@@ -6029,6 +6029,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/events:
+    post:
+      summary: Accept Event
+      operationId: accept_event_api_internal_site_service_requests_events_post
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestEventPayload'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestEventAcceptedResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/health:
+    get:
+      summary: Health
+      operationId: health_api_internal_site_service_requests_health_get
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestHealthResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/card-balance-reconciliation/events:
     get:
       summary: List Events
@@ -27600,6 +27690,248 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SiteServiceRequestEventAcceptedResponse:
+      properties:
+        eventId:
+          type: string
+          title: Eventid
+        status:
+          type: string
+          const: accepted
+          title: Status
+          default: accepted
+        duplicate:
+          type: boolean
+          title: Duplicate
+        missingFileIds:
+          items:
+            type: integer
+          type: array
+          title: Missingfileids
+      type: object
+      required:
+      - eventId
+      - duplicate
+      - missingFileIds
+      title: SiteServiceRequestEventAcceptedResponse
+    SiteServiceRequestEventPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        eventId:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Eventid
+        eventType:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z][a-z0-9_.-]+$
+          title: Eventtype
+        occurredAt:
+          type: string
+          format: date-time
+          title: Occurredat
+        ticket:
+          $ref: '#/components/schemas/SiteServiceRequestTicket'
+        history:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestHistoryMessage'
+          type: array
+          minItems: 1
+          title: History
+      type: object
+      required:
+      - schemaVersion
+      - eventId
+      - eventType
+      - occurredAt
+      - ticket
+      - history
+      title: SiteServiceRequestEventPayload
+    SiteServiceRequestFilePayload:
+      properties:
+        fileId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Fileid
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        mimeType:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Mimetype
+        size:
+          type: integer
+          minimum: 0.0
+          title: Size
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Sha256
+      type: object
+      required:
+      - fileId
+      - name
+      - mimeType
+      - size
+      - sha256
+      title: SiteServiceRequestFilePayload
+    SiteServiceRequestHealthResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - healthy
+          - degraded
+          - disabled
+          title: Status
+        pendingEvents:
+          type: integer
+          minimum: 0.0
+          title: Pendingevents
+        failedEvents:
+          type: integer
+          minimum: 0.0
+          title: Failedevents
+        oldestPendingLagSeconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Oldestpendinglagseconds
+        pendingCommands:
+          type: integer
+          minimum: 0.0
+          title: Pendingcommands
+        unlinkedCases:
+          type: integer
+          minimum: 0.0
+          title: Unlinkedcases
+        lastSuccessfulExchangeAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Lastsuccessfulexchangeat
+        ingestEnabled:
+          type: boolean
+          title: Ingestenabled
+        bitrixWritesEnabled:
+          type: boolean
+          title: Bitrixwritesenabled
+        outboundRepliesEnabled:
+          type: boolean
+          title: Outboundrepliesenabled
+      type: object
+      required:
+      - status
+      - pendingEvents
+      - failedEvents
+      - pendingCommands
+      - unlinkedCases
+      - ingestEnabled
+      - bitrixWritesEnabled
+      - outboundRepliesEnabled
+      title: SiteServiceRequestHealthResponse
+    SiteServiceRequestHistoryMessage:
+      properties:
+        messageId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Messageid
+        authorKind:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Authorkind
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        text:
+          type: string
+          maxLength: 200000
+          title: Text
+        files:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestFilePayload'
+          type: array
+          title: Files
+      type: object
+      required:
+      - messageId
+      - authorKind
+      - createdAt
+      - text
+      title: SiteServiceRequestHistoryMessage
+    SiteServiceRequestTicket:
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Id
+        siteId:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Siteid
+        ownerUserId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Owneruserid
+        title:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Title
+        phone:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Phone
+        email:
+          anyOf:
+          - type: string
+            maxLength: 320
+          - type: 'null'
+          title: Email
+        orderNumber:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Ordernumber
+        requestType:
+          type: string
+          enum:
+          - warranty
+          - refund_money
+          - replacement
+          - delivery_return
+          - consultation
+          - other
+          title: Requesttype
+        isClosed:
+          type: boolean
+          title: Isclosed
+      type: object
+      required:
+      - id
+      - siteId
+      - ownerUserId
+      - title
+      - phone
+      - requestType
+      - isClosed
+      title: SiteServiceRequestTicket
     SmsAttemptCreateRequest:
       properties:
         event_id:

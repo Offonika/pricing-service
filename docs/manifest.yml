@@ -444,6 +444,21 @@ documents:
       - tests/test_site_defect_workflow.py
       - tests/test_site_defect_archive.py
     keywords: [site, service, warranty, tickets, reclamations, expertise, bitrix24, task-3223]
+  - path: docs/specs/site-service-requests-mvp.md
+    title: Site Service Requests MVP
+    doc_type: spec
+    domain: order_flow
+    status: draft
+    owner: engineering-and-operations
+    source_of_truth: true
+    related_code:
+      - app/services/site_defect_workflow.py
+      - app/services/expertise_bitrix.py
+      - scripts/ensure_site_defect_archive_bitrix_process.py
+    related_tests:
+      - tests/test_site_defect_workflow.py
+      - tests/test_site_defect_archive.py
+    keywords: [site, service, tickets, warranty, support, bitrix24, smart-process, timeman, sla, idempotency, task-3223]
   - path: docs/specs/logistics-control-contour.md
     title: Logistics Control Contour
     doc_type: spec

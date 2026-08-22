@@ -153,6 +153,7 @@ class ProcurementOrderFormationLineRead(BaseModel):
     photo_source: str | None = None
     photo_count: int = 0
     profitability_pct: Decimal | None = None
+    profitability_calculation_basis: str | None = None
     profitability_status: str | None = None
     profitability_source: str | None = None
     profitability_explanation: str | None = None

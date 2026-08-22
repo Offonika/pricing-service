@@ -513,12 +513,13 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
             "gross_margin_pct",
             "margin_pct",
         ),
+        "profitability_calculation_basis": _payload_text(
+            payload, "profitability_calculation_basis"
+        ),
         "profitability_status": _payload_text(payload, "profitability_status"),
         "profitability_source": _payload_text(payload, "profitability_source"),
-        "profitability_explanation": (
-            "Себестоимость за период отсутствует или равна нулю"
-            if _payload_text(payload, "profitability_status") == "cost_missing"
-            else None
+        "profitability_explanation": _profitability_explanation(
+            _payload_text(payload, "profitability_status")
         ),
         "metrics_as_of": _payload_text(payload, "metrics_as_of"),
         "metrics_window_days": _payload_int(payload, "metrics_window_days"),
@@ -1787,6 +1788,14 @@ def _payload_text(payload: dict[str, Any], *keys: str) -> str | None:
         if value not in (None, ""):
             return str(value).strip() or None
     return None
+
+
+def _profitability_explanation(status: str | None) -> str | None:
+    return {
+        "revenue_missing": "Чистая выручка за период отсутствует или равна нулю",
+        "cost_missing": "Себестоимость за период отсутствует или равна нулю",
+        "history_missing": "Нет истории продаж и себестоимости за период",
+    }.get(status or "")
 
 
 def _payload_list(payload: dict[str, Any], key: str) -> list[str]:

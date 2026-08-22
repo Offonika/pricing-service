@@ -820,6 +820,9 @@ def test_standard_cron_keeps_blocked_projects_and_uses_shared_queue() -> None:
     assert "--fail-on-blockers" not in script
     assert "DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-130757" not in script
     assert "DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-}" in script
+    assert "tasks.backfill_procurement_order_metrics" in script
+    assert '--order-ids-from-json "${ORDER_FORMATION_OUTPUT_JSON}"' in script
+    assert 'if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then' in script
 
 
 def test_persist_never_mutates_transmitted_order(db_session) -> None:

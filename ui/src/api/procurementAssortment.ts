@@ -227,6 +227,7 @@ export interface ProcurementOrderFormationLine {
   photo_source?: string | null;
   photo_count?: number;
   profitability_pct?: string | null;
+  profitability_calculation_basis?: string | null;
   profitability_status?: string | null;
   profitability_source?: string | null;
   profitability_explanation?: string | null;

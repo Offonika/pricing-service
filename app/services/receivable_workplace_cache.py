@@ -258,6 +258,7 @@ def rebuild_open_debt_cache(
     updated_count = 0
     diagnostic_counts: Counter[str] = Counter()
     statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
+    canonical_origin_statuses = open_debt_diagnostics.get("canonical_origin_statuses") or {}
     for snapshot in snapshots:
         key = _ref_key(snapshot.counterparty_ref)
         documents = documents_by_counterparty.get(key, [])
@@ -266,6 +267,7 @@ def rebuild_open_debt_cache(
                 documents,
                 current_balance=snapshot.current_balance,
                 statement_sale_count=int(statement_sale_counts.get(key) or 0),
+                canonical_origin_status=canonical_origin_statuses.get(key),
             )
             if freshness.source_status == "cache_ready"
             else freshness.source_status

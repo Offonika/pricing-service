@@ -24,6 +24,7 @@ from app.services.counterparty_folder_recommendations import (
     OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE,
     OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
     QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
     QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
@@ -35,6 +36,7 @@ from app.services.counterparty_folder_recommendations import (
     _apply_report_suppression,
     _build_item,
     build_counterparty_folder_recommendations,
+    build_open_debt_documents_by_counterparty,
     classify_open_debt_documents,
     enrich_folder_recommendation_item,
     open_debt_documents_match_balance,
@@ -533,6 +535,15 @@ def test_open_debt_diagnostics_do_not_accept_missing_or_mismatched_documents() -
         )
         == OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
     )
+    assert (
+        classify_open_debt_documents(
+            [confirmed],
+            current_balance=Decimal("100.00"),
+            statement_sale_count=1,
+            canonical_origin_status="canonical_balance_mismatch",
+        )
+        == OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+    )
 
 
 def test_document_mismatch_guard_clears_unverified_terms_and_preserves_diagnostics() -> None:
@@ -815,6 +826,168 @@ def test_canonical_continuous_balance_does_not_guess_on_amount_mismatch() -> Non
 
     assert resolution.status == CANONICAL_DEBT_STATUS_BALANCE_MISMATCH
     assert resolution.documents == ()
+
+
+def test_tyupilin_uses_structure_after_canonical_balance_match(monkeypatch) -> None:
+    snapshot = _snapshot(
+        "cp-tyupilin",
+        counterparty_name="Тюпилин Владимир *",
+        balance="1200.00",
+        document_ref="sale-origin",
+        document_number="РБГУ0354716",
+        document_date=datetime(2026, 7, 31, 15, 23, 56),
+        credit_depth_days=7,
+        is_overdue=True,
+        overdue_days=30,
+    )
+    sales = [
+        _statement_event("sale", "sale-old", "РБГУ0094876", datetime(2026, 7, 1, 12, 0), "450"),
+        _statement_event("sale", "sale-1", "РБГУ0318756", datetime(2026, 7, 12, 16, 18), "200"),
+        _statement_event("sale", "sale-2", "РБГУ0319271", datetime(2026, 7, 12, 19, 54), "490"),
+        _statement_event("sale", "sale-3", "РБГУ0322272", datetime(2026, 7, 14, 14, 9), "750"),
+        _statement_event("sale", "sale-4", "РБГУ0325060", datetime(2026, 7, 15, 18, 22), "1240"),
+    ]
+    structure_checks = {
+        "sale-old": SimpleNamespace(
+            status="confirmed_open",
+            open_amount=Decimal("30.00"),
+            sale_amount=Decimal("450.00"),
+            closing_amount=Decimal("-420.00"),
+            sale_number="РБГУ0094876",
+            sale_date=sales[0].document_date,
+            order_ref=None,
+            order_number=None,
+            order_date=None,
+            linked_documents=({"document_ref": "pko-old", "amount": Decimal("-420.00")},),
+        ),
+        "sale-1": SimpleNamespace(
+            status="closed_by_structure",
+            open_amount=Decimal("0.00"),
+            sale_amount=Decimal("200.00"),
+            closing_amount=Decimal("-200.00"),
+            sale_number="РБГУ0318756",
+            sale_date=sales[1].document_date,
+            order_ref=None,
+            order_number=None,
+            order_date=None,
+            linked_documents=({"document_ref": "pko-1", "amount": Decimal("-200.00")},),
+        ),
+        "sale-2": SimpleNamespace(
+            status="confirmed_open",
+            open_amount=Decimal("490.00"),
+            sale_amount=Decimal("490.00"),
+            closing_amount=Decimal("0.00"),
+            sale_number="РБГУ0319271",
+            sale_date=sales[2].document_date,
+            order_ref=None,
+            order_number=None,
+            order_date=None,
+            linked_documents=(),
+        ),
+        "sale-3": SimpleNamespace(
+            status="closed_by_structure",
+            open_amount=Decimal("0.00"),
+            sale_amount=Decimal("750.00"),
+            closing_amount=Decimal("-750.00"),
+            sale_number="РБГУ0322272",
+            sale_date=sales[3].document_date,
+            order_ref=None,
+            order_number=None,
+            order_date=None,
+            linked_documents=({"document_ref": "pko-2", "amount": Decimal("-750.00")},),
+        ),
+        "sale-4": SimpleNamespace(
+            status="confirmed_open",
+            open_amount=Decimal("890.00"),
+            sale_amount=Decimal("1240.00"),
+            closing_amount=Decimal("-350.00"),
+            sale_number="РБГУ0325060",
+            sale_date=sales[4].document_date,
+            order_ref=None,
+            order_number=None,
+            order_date=None,
+            linked_documents=({"document_ref": "pko-3", "amount": Decimal("-350.00")},),
+        ),
+    }
+    canonical_documents = (
+        SimpleNamespace(document_ref="sale-1"),
+        SimpleNamespace(document_ref="sale-2"),
+        SimpleNamespace(document_ref="sale-3"),
+    )
+    canonical_batch = SimpleNamespace(
+        supported=True,
+        opening_period=date(2025, 1, 1),
+        documents_by_counterparty={"cp-tyupilin": canonical_documents},
+        resolutions_by_counterparty={
+            "cp-tyupilin": SimpleNamespace(
+                status="matched",
+                last_nonpositive_day=date(2026, 7, 10),
+            )
+        },
+    )
+
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.fetch_counterparty_ledger_statement_events",
+        lambda *args, **kwargs: {"cp-tyupilin": sales},
+    )
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.fetch_canonical_open_debt_documents",
+        lambda *args, **kwargs: canonical_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.fetch_receivable_document_structure_checks",
+        lambda *args, **kwargs: {
+            ref: structure_checks[ref] for ref in kwargs["document_refs"] if ref in structure_checks
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.fetch_sale_document_departments",
+        lambda *args, **kwargs: {},
+    )
+
+    diagnostics: dict[str, object] = {}
+    with Session(_make_sqlite_engine()) as session:
+        documents = build_open_debt_documents_by_counterparty(
+            session,
+            onec_engine=SimpleNamespace(dialect=SimpleNamespace(name="mssql")),
+            snapshots=[snapshot],
+            snapshot_date=date(2026, 8, 12),
+            diagnostics=diagnostics,
+        )["cp-tyupilin"]
+
+    assert [item["document_number"] for item in documents] == [
+        "РБГУ0319271",
+        "РБГУ0325060",
+    ]
+    assert [item["open_amount"] for item in documents] == [
+        Decimal("490.00"),
+        Decimal("890.00"),
+    ]
+    assert all(
+        item["statement_selection_rule"] == "statement_structure_confirmed_open"
+        for item in documents
+    )
+    assert diagnostics["canonical_origin_statuses"] == {"cp-tyupilin": "matched"}
+    diagnostic = classify_open_debt_documents(
+        documents,
+        current_balance=snapshot.current_balance,
+        statement_sale_count=len(sales),
+    )
+    assert diagnostic == OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
+
+    guarded = _apply_document_mismatch_guard(
+        _build_item(
+            snapshot,
+            folder_row=None,
+            document_row=None,
+            open_debt_documents=documents,
+        ),
+        diagnostic=diagnostic,
+    )
+    assert guarded["open_debt_documents"] == []
+    assert guarded["debt_document_ref"] is None
+    assert guarded["recommended_folder_ref"] is None
+    assert enrich_folder_recommendation_item(guarded)["queue"] == QUEUE_DATA_QUALITY
 
 
 def test_multiple_confirmed_open_folders_are_sent_to_business_review() -> None:

@@ -14,9 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.models.receivable_ledger_event import ReceivableLedgerEvent
 from app.services.receivable_canonical_debt_origin import (
-    CANONICAL_DEBT_SELECTION_RULE,
     CANONICAL_DEBT_STATUS_MATCHED,
-    CanonicalOpenDebtDocument,
     fetch_canonical_open_debt_documents,
 )
 from app.services.receivable_department_aliases import (
@@ -141,7 +139,13 @@ def classify_open_debt_documents(
     *,
     current_balance: Decimal,
     statement_sale_count: int,
+    canonical_origin_status: str | None = None,
 ) -> str:
+    if (
+        canonical_origin_status is not None
+        and canonical_origin_status != CANONICAL_DEBT_STATUS_MATCHED
+    ):
+        return OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
     balance = Decimal(current_balance).quantize(Decimal("0.01"))
     if not documents:
         return (
@@ -1153,101 +1157,30 @@ def _open_debt_documents_from_statement(
     return documents
 
 
-def _open_debt_documents_from_canonical_origin(
-    documents: Sequence[CanonicalOpenDebtDocument],
-    *,
-    document_departments: dict[str, SaleDocumentDepartmentRow],
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for document in documents:
-        document_key = _ref_key(document.document_ref)
-        document_row = document_departments.get(document_key)
-        recommended_folder_ref, recommended_folder_name, recommended_folder_source = (
-            _effective_recommended_folder(document_row)
-        )
-        result.append(
-            {
-                "document_ref": document.document_ref,
-                "document_number": document.document_number,
-                "document_date": document.document_date,
-                "open_amount": document.open_amount,
-                "sale_amount": document.gross_amount,
-                "closing_amount": document.closing_amount,
-                "return_amount": Decimal("0.00"),
-                "manager_ref": None,
-                "manager_name": None,
-                "document_responsible_ref": (
-                    document_row.document_responsible_ref if document_row else None
-                ),
-                "document_responsible_name": (
-                    document_row.document_responsible_name if document_row else None
-                ),
-                "document_author_ref": (document_row.document_author_ref if document_row else None),
-                "document_author_name": (
-                    document_row.document_author_name if document_row else None
-                ),
-                "debt_department_ref": (
-                    document_row.document_department_ref if document_row else None
-                ),
-                "debt_department_name": (
-                    document_row.document_department_name if document_row else None
-                ),
-                "document_department_recommended_folder_ref": (
-                    document_row.recommended_folder_ref if document_row else None
-                ),
-                "document_department_recommended_folder_name": (
-                    document_row.recommended_folder_name if document_row else None
-                ),
-                "document_responsible_department_ref": (
-                    document_row.responsible_department_ref if document_row else None
-                ),
-                "document_responsible_department_name": (
-                    document_row.responsible_department_name if document_row else None
-                ),
-                "document_responsible_folder_ref": (
-                    document_row.responsible_folder_ref if document_row else None
-                ),
-                "document_responsible_folder_name": (
-                    document_row.responsible_folder_name if document_row else None
-                ),
-                "recommended_folder_ref": recommended_folder_ref,
-                "recommended_folder_name": recommended_folder_name,
-                "recommended_folder_source": recommended_folder_source,
-                "document_structure_status": DOCUMENT_STRUCTURE_CONFIRMED_OPEN,
-                "document_structure_order_ref": None,
-                "document_structure_order_number": None,
-                "document_structure_order_date": None,
-                "document_structure_linked_documents": [],
-                "statement_selection_rule": CANONICAL_DEBT_SELECTION_RULE,
-                "statement_balance_after": document.open_amount,
-                "statement_segment_start_row": None,
-                "statement_segment_end_row": None,
-                "statement_match_details": [
-                    {
-                        "rule": CANONICAL_DEBT_SELECTION_RULE,
-                        "gross_amount": document.gross_amount,
-                        "open_amount": document.open_amount,
-                    }
-                ],
-            }
-        )
-    return result
-
-
 def _candidate_sale_events_for_structure(
     snapshot: ReceivableBalanceSnapshot,
     sale_events: Sequence[ReceivableStatementEvent],
+    *,
+    canonical_last_nonpositive_day: date | None = None,
 ) -> list[ReceivableStatementEvent]:
     events = sorted(
         (
             event
             for event in sale_events
-            if event.event_type == "sale" and Decimal(event.amount_delta) > Decimal("0")
+            if event.event_type == "sale"
+            and Decimal(event.amount_delta) > Decimal("0")
+            and (
+                canonical_last_nonpositive_day is None
+                or event.document_date.date() > canonical_last_nonpositive_day
+            )
         ),
         key=lambda row: (row.document_date, row.document_ref),
     )
     if not events:
         return []
+
+    if canonical_last_nonpositive_day is not None:
+        return events
 
     selected_by_ref: dict[str, ReceivableStatementEvent] = {}
 
@@ -1300,6 +1233,7 @@ def build_open_debt_documents_by_counterparty(
             for key, events in statement_events_by_counterparty.items()
         }
     should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
+    canonical_resolutions_by_counterparty: dict[str, Any] = {}
     if should_enrich_from_onec and onec_engine.dialect.name == "mssql":
         canonical_batch = fetch_canonical_open_debt_documents(
             onec_engine,
@@ -1311,20 +1245,8 @@ def build_open_debt_documents_by_counterparty(
             snapshot_date=snapshot_date,
         )
         if canonical_batch.supported:
-            selected_document_refs = sorted(
-                {
-                    document.document_ref
-                    for documents in canonical_batch.documents_by_counterparty.values()
-                    for document in documents
-                }
-            )
-            canonical_document_departments = (
-                fetch_sale_document_departments(
-                    onec_engine,
-                    document_refs=selected_document_refs,
-                )
-                if selected_document_refs
-                else {}
+            canonical_resolutions_by_counterparty.update(
+                canonical_batch.resolutions_by_counterparty
             )
             if diagnostics is not None:
                 diagnostics["canonical_opening_period"] = canonical_batch.opening_period
@@ -1336,32 +1258,35 @@ def build_open_debt_documents_by_counterparty(
                     resolution.status == CANONICAL_DEBT_STATUS_MATCHED
                     for resolution in canonical_batch.resolutions_by_counterparty.values()
                 )
-            return {
-                _ref_key(snapshot.counterparty_ref): _open_debt_documents_from_canonical_origin(
-                    canonical_batch.documents_by_counterparty.get(
-                        _ref_key(snapshot.counterparty_ref),
-                        (),
-                    ),
-                    document_departments=canonical_document_departments,
-                )
-                for snapshot in snapshots
-                if _needs_structure_lookup_for_status(snapshot, status=status)
-            }
     document_departments: dict[str, SaleDocumentDepartmentRow] = {}
     document_structure_checks: dict[str, ReceivableDocumentStructureCheck] = {}
     structure_document_refs: set[str] = set()
     for snapshot in snapshots:
         if not _needs_structure_lookup_for_status(snapshot, status=status):
             continue
-        origin_document_ref = _normalize_ref(snapshot.origin_document_ref)
-        if origin_document_ref:
-            structure_document_refs.add(origin_document_ref)
         counterparty_key = _ref_key(snapshot.counterparty_ref)
+        canonical_resolution = canonical_resolutions_by_counterparty.get(counterparty_key)
+        canonical_last_nonpositive_day = (
+            canonical_resolution.last_nonpositive_day
+            if canonical_resolution is not None
+            and canonical_resolution.status == CANONICAL_DEBT_STATUS_MATCHED
+            else None
+        )
+        origin_document_ref = _normalize_ref(snapshot.origin_document_ref)
+        if origin_document_ref and (
+            canonical_last_nonpositive_day is None
+            or (
+                snapshot.origin_document_date is not None
+                and snapshot.origin_document_date.date() > canonical_last_nonpositive_day
+            )
+        ):
+            structure_document_refs.add(origin_document_ref)
         structure_document_refs.update(
             event.document_ref
             for event in _candidate_sale_events_for_structure(
                 snapshot,
                 statement_events_by_counterparty.get(counterparty_key, ()),
+                canonical_last_nonpositive_day=canonical_last_nonpositive_day,
             )
         )
     initial_structure_refs = sorted(structure_document_refs)
@@ -1968,6 +1893,7 @@ def build_counterparty_folder_recommendations(
 
     items = []
     statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
+    canonical_origin_statuses = open_debt_diagnostics.get("canonical_origin_statuses") or {}
     for snapshot in snapshots:
         counterparty_key = _ref_key(snapshot.counterparty_ref)
         open_debt_documents = open_debt_documents_by_counterparty.get(counterparty_key, [])
@@ -1975,6 +1901,7 @@ def build_counterparty_folder_recommendations(
             open_debt_documents,
             current_balance=snapshot.current_balance,
             statement_sale_count=int(statement_sale_counts.get(counterparty_key) or 0),
+            canonical_origin_status=canonical_origin_statuses.get(counterparty_key),
         )
         document_amount_mismatch = (
             source_freshness.source_status == "cache_ready"

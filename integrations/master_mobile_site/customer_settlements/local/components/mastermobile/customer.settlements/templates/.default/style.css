@@ -1,0 +1,137 @@
+.mm-settlements {
+    width: 100%;
+}
+
+.mm-settlements__panel {
+    overflow: hidden;
+}
+
+.mm-settlements__head {
+    align-items: center;
+    display: flex;
+    gap: 16px;
+    justify-content: space-between;
+}
+
+.mm-settlements__readonly {
+    background: #f3f4f6;
+    border-radius: 999px;
+    color: #6b7280;
+    font-size: 12px;
+    line-height: 20px;
+    padding: 2px 10px;
+    white-space: nowrap;
+}
+
+.mm-settlements__card,
+.mm-settlements__message {
+    background: #f7f8fa;
+    border: 1px solid #e4e7ec;
+    border-radius: 16px;
+    margin: 24px;
+    padding: 28px 30px;
+}
+
+.mm-settlements__card--debt {
+    border-left: 5px solid #e84b4b;
+}
+
+.mm-settlements__card--advance {
+    border-left: 5px solid #37a66b;
+}
+
+.mm-settlements__card--zero {
+    border-left: 5px solid #65758b;
+}
+
+.mm-settlements__caption {
+    color: #65758b;
+    font-size: 16px;
+    margin-bottom: 8px;
+}
+
+.mm-settlements__amount {
+    color: #20242a;
+    font-size: clamp(30px, 4vw, 46px);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.15;
+}
+
+.mm-settlements__date,
+.mm-settlements__sync {
+    color: #737b87;
+    font-size: 13px;
+    margin-top: 12px;
+}
+
+.mm-settlements__warning {
+    background: #fff3d7;
+    border-radius: 10px;
+    color: #795800;
+    margin-top: 18px;
+    padding: 12px 14px;
+}
+
+.mm-settlements__message {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.mm-settlements__message strong {
+    color: #20242a;
+    font-size: 20px;
+}
+
+.mm-settlements__message span {
+    color: #65758b;
+}
+
+.mm-settlements__message--link {
+    border-left: 5px solid #d39228;
+}
+
+.mm-settlements__info {
+    border-top: 1px solid #edf0f3;
+    margin: 0 24px;
+    padding: 20px 0 24px;
+}
+
+.mm-settlements__info summary {
+    color: #333c48;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.mm-settlements__info-body {
+    color: #5d6672;
+    line-height: 1.55;
+    max-width: 720px;
+    padding-top: 10px;
+}
+
+.mm-settlements__info-body p {
+    margin: 8px 0 0;
+}
+
+@media (max-width: 767px) {
+    .mm-settlements__head {
+        align-items: flex-start;
+    }
+
+    .mm-settlements__card,
+    .mm-settlements__message {
+        border-radius: 12px;
+        margin: 16px;
+        padding: 22px 18px;
+    }
+
+    .mm-settlements__info {
+        margin: 0 16px;
+    }
+
+    .mm-settlements__readonly {
+        font-size: 11px;
+    }
+}

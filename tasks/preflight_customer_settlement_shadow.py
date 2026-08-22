@@ -21,7 +21,7 @@ from app.models.customer_settlement import (
 )
 from app.services.customer_settlements import customer_settlement_health_metrics
 
-EXPECTED_ALEMBIC_REVISION = "d9e1f3a5b7c9"
+EXPECTED_ALEMBIC_REVISION = "2a4c6e8f0b1d"
 EXPECTED_ORGANIZATION_FIELD = "_Fld7005RRef"
 EXPECTED_SOURCE_MODE = "onec_canonical_mutual_statement_7002"
 DEFAULT_EXPECTED_DATABASE_NAME = "settlements_stage"

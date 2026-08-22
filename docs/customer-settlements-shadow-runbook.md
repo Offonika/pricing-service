@@ -66,6 +66,13 @@ apply mapping/whitelist и бухгалтерской сверки десятк�
 Пилотный mapping импортируется вручную из проверенного CSV. Bitrix24 webhook в
 режиме `manual_confirmed` не нужен и не должен добавляться «на всякий случай».
 
+## Release integration 2026-08-22
+
+Settlement migrations объединены с фактически активным production-head
+`1b9d3f5a7c21` новой no-op revision `2a4c6e8f0b1d`. Новый staging runtime должен
+выполнять `alembic upgrade 2a4c6e8f0b1d`; прежняя пустая shadow-БД и runtime на
+`d9e1f3a5b7c9` доказательством нового 72-часового запуска не являются.
+
 ## 1. Отдельный secret-файл
 
 Создать вне репозитория файл с правами `0600`. Не копировать целиком production

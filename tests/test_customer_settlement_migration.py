@@ -122,3 +122,17 @@ def test_customer_account_guid_migration_upgrade_and_downgrade(tmp_path: Path) -
             assert "counterparty_guid" not in balance_columns
     finally:
         engine.dispose()
+
+
+def test_customer_settlement_merge_revision_joins_active_production_head() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/2a4c6e8f0b1d_merge_customer_settlements_with_active_head.py"
+    )
+    spec = importlib.util.spec_from_file_location("customer_settlement_merge_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    assert module.revision == "2a4c6e8f0b1d"
+    assert set(module.down_revision) == {"1b9d3f5a7c21", "d9e1f3a5b7c9"}

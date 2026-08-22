@@ -1,0 +1,5 @@
+{
+  "mode": "mock",
+  "mock_query_enabled": true,
+  "mock_variant": "debt"
+}

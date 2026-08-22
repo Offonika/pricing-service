@@ -599,8 +599,9 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - PHP-компонент должен отключить component cache, composite cache и
   reverse-proxy cache; одного `Cache-Control` недостаточно.
 - Alembic-цепочка однозначна: базовая revision взаиморасчётов
-  `c3d4e5f6a7b9` следует за опубликованным head `b2d4f6a8c0e1`, а GUID/account
-  revision `d9e1f3a5b7c9` следует за `c3d4e5f6a7b9` и является текущим head.
+  `c3d4e5f6a7b9` следует за `b2d4f6a8c0e1`, GUID/account revision
+  `d9e1f3a5b7c9` следует за ней, а no-op revision `2a4c6e8f0b1d` объединяет
+  settlement-ветку с активным production-head `1b9d3f5a7c21`.
 
 # Tests
 
@@ -654,6 +655,9 @@ Rollback:
 
 # Changelog
 
+- 2026-08-22 — settlement migrations объединены с активным production-head
+  `1b9d3f5a7c21` через additive no-op revision `2a4c6e8f0b1d`; новый shadow-run
+  обязан начинаться на этой revision.
 - 2026-07-29 — backend V1 implemented behind disabled feature/readiness gates;
   live 1С/CRM/Bitrix rollout remains blocked pending business inputs.
 - 2026-07-30 — live SQL подтвердил организацию, физические поля, знак,

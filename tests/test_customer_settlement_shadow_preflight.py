@@ -31,7 +31,7 @@ def _facts(**overrides):
     values = {
         "database_dialect": "postgresql",
         "current_database": "settlements_stage",
-        "alembic_revision": "d9e1f3a5b7c9",
+        "alembic_revision": "2a4c6e8f0b1d",
         "alembic_revision_count": 1,
         "active_mapping_source_name": None,
         "enabled_pilots": 10,

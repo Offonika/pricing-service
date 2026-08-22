@@ -24045,11 +24045,6 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Profitability Pct
-        profitability_calculation_basis:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Profitability Calculation Basis
         profitability_status:
           anyOf:
           - type: string

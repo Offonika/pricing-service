@@ -42,7 +42,6 @@ MANAGED_METRIC_KEYS = frozenset(
         "metrics_as_of",
         "metrics_window_days",
         "profitability_pct",
-        "profitability_calculation_basis",
         "profitability_source",
         "profitability_sales_amount",
         "profitability_cost_amount",
@@ -109,20 +108,19 @@ def build_metrics_backfill_plan(
     as_of: date,
     window_days: int = DEFAULT_METRICS_WINDOW_DAYS,
     run_id: str | None = None,
-    order_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     run_id = run_id or f"procurement-metrics-{uuid.uuid4().hex}"
-    order_query = (
-        select(ProcurementOrderFormation)
-        .where(ProcurementOrderFormation.status.in_(OPEN_ASSISTANT_STATUSES))
-        .where(~ProcurementOrderFormation.onec_status.in_(IMMUTABLE_ONEC_STATUSES))
-        .options(selectinload(ProcurementOrderFormation.lines))
-        .order_by(ProcurementOrderFormation.id)
+    orders = list(
+        db.scalars(
+            select(ProcurementOrderFormation)
+            .where(ProcurementOrderFormation.status.in_(OPEN_ASSISTANT_STATUSES))
+            .where(~ProcurementOrderFormation.onec_status.in_(IMMUTABLE_ONEC_STATUSES))
+            .options(selectinload(ProcurementOrderFormation.lines))
+            .order_by(ProcurementOrderFormation.id)
+        )
+        .unique()
+        .all()
     )
-    if order_ids is not None:
-        normalized_order_ids = sorted({int(order_id) for order_id in order_ids})
-        order_query = order_query.where(ProcurementOrderFormation.id.in_(normalized_order_ids))
-    orders = list(db.scalars(order_query).unique().all())
     lines = [
         line
         for order in orders

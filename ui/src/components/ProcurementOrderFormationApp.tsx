@@ -148,15 +148,6 @@ function blockerSummaryMessage(detail: ProcurementBlockerDetail) {
   return detail.message;
 }
 
-function profitabilityText(line: ProcurementOrderFormationLine) {
-  const value = numeric(line.profitability_pct);
-  if (value !== null) return percent(value);
-  if (line.profitability_status && line.profitability_status !== "ready") {
-    return `не рассчитана: ${line.profitability_explanation || "нет данных за период"}`;
-  }
-  return "нет данных";
-}
-
 function payloadValue(line: ProcurementOrderFormationLine, key: string) {
   return line.payload?.[key];
 }
@@ -967,9 +958,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       ) : (
                         <small>Данных о браке нет</small>
                       )}
-                      <small title="Доля прибыли в обороте, 180 дней">
-                        Рентабельность: {profitabilityText(line)}
-                      </small>
+                      <small>Рентабельность: {numeric(line.profitability_pct) === null ? "не рассчитана" : percent(line.profitability_pct)}</small>
                       {rounding && <small>{rounding}</small>}
                       {b2bDemand && (
                         <div className="order-formation__b2b-advisory">

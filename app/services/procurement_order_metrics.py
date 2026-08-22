@@ -38,9 +38,9 @@ DEFECT_REASON_SQL = """
 def profitability_pct(net_sales_amount: Any, cost_amount: Any) -> Decimal | None:
     revenue = _decimal(net_sales_amount)
     cost = _decimal(cost_amount)
-    if revenue <= 0:
+    if cost <= 0:
         return None
-    return ((revenue - cost) / revenue * Decimal("100")).quantize(
+    return ((revenue - cost) / cost * Decimal("100")).quantize(
         PERCENT_QUANT, rounding=ROUND_HALF_UP
     )
 
@@ -88,7 +88,6 @@ def build_line_metric_payload(
     payload: dict[str, Any] = {
         "metrics_as_of": as_of.isoformat(),
         "metrics_window_days": int(window_days),
-        "profitability_calculation_basis": "net_sales_amount",
         "profitability_status": "history_missing",
         "product_defect_status": "history_missing",
         "supplier_defect_attribution": "unconfirmed",
@@ -108,9 +107,7 @@ def build_line_metric_payload(
                 "profitability_source": "onec_sku_sales_cost",
                 "profitability_sales_amount": _out_decimal(net_sales_amount),
                 "profitability_cost_amount": _out_decimal(cost_amount),
-                "profitability_status": (
-                    "ready" if profitability is not None else "revenue_missing"
-                ),
+                "profitability_status": "ready" if profitability is not None else "cost_missing",
             }
         )
         if profitability is not None:

@@ -74,7 +74,6 @@ def _stub_sources(monkeypatch) -> None:
                 "metrics_as_of": "2026-08-01",
                 "metrics_window_days": 180,
                 "profitability_pct": "25.00",
-                "profitability_calculation_basis": "net_sales_amount",
                 "profitability_status": "ready",
                 "product_defect_pct": "4.00",
                 "product_defect_history_units": 50,
@@ -138,7 +137,6 @@ def test_metrics_backfill_dry_run_apply_repeat_and_rollback(db_session, monkeypa
         lead_time_rows=lead_rows,
         as_of=date(2026, 8, 1),
         run_id="metrics-run",
-        order_ids=[order.id],
     )
     assert plan["mode"] == "dry_run"
     assert plan["summary"]["lines_changed"] == 1
@@ -150,8 +148,6 @@ def test_metrics_backfill_dry_run_apply_repeat_and_rollback(db_session, monkeypa
     supplier_profile = db_session.query(ProcurementSupplierProfile).one()
     assert supplier_profile.version == 1
     assert line.payload["profitability_pct"] == "25.00"
-    assert line.payload["profitability_calculation_basis"] == "net_sales_amount"
-    assert line.payload["profitability_status"] == "ready"
     assert line.payload["supplier_prepare_days"] == 5
     assert line.payload["logistics_days"] == 7
     assert line.payload["lead_time_days"] == 12

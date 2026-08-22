@@ -56,6 +56,16 @@ class SiteServiceRequestCase(Base):
             "ix_site_service_request_case_first_response_due",
             "first_response_due_at",
         ),
+        Index(
+            "ix_site_service_request_case_assignment_checked",
+            "assignment_checked_at",
+            "id",
+        ),
+        Index(
+            "ix_site_service_request_case_outbound_checked",
+            "outbound_checked_at",
+            "id",
+        ),
     )
 
     source_ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -96,6 +106,13 @@ class SiteServiceRequestCase(Base):
 
     latest_inbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latest_outbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    base_sync_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    base_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sync_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -103,6 +120,12 @@ class SiteServiceRequestCase(Base):
         server_default="pending",
     )
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    assignment_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outbound_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     version: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -293,6 +316,9 @@ class SiteServiceRequestCommand(Base):
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    card_action_cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

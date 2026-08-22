@@ -4,6 +4,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.models.procurement_order_formation import ProcurementOrderFormation
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.master_mobile_catalog import ProductMediaResolution
@@ -99,6 +101,37 @@ def test_grouped_dry_run_uses_supplier_contract_warehouse_and_exact_catalog_guid
     summary = build_summary(source_rows=sources, selected_rows=sources, orders=orders)
     assert summary["catalog_matched_line_count"] == 2
     assert summary["blocking_line_count"] == 0
+
+
+def test_grouped_dry_run_rounds_money_half_up(db_session) -> None:
+    source = _source("A", "1", "A")
+    source["latest_purchase_price"] = "1.005"
+    orders = build_grouped_orders(
+        [source],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            assortment_status="Продажа",
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Основной договор"}},
+        warehouse={"code": "MAIN", "name": "Центральный склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id="2026-07-10",
+        order_date=date(2026, 7, 10),
+        calculation_id="calc-money",
+    )
+
+    assert orders[0]["lines"][0]["amount"] == "1.01"
+    persisted_ids = persist_grouped_orders(db_session, orders)
+    persisted = db_session.get(ProcurementOrderFormation, persisted_ids[0])
+    assert persisted is not None
+    assert persisted.lines[0].amount == Decimal("1.01")
 
 
 def test_grouped_dry_run_carries_b2b_advisory_without_changing_order_quantity(
@@ -382,18 +415,150 @@ def test_persist_keeps_disappeared_need_visible(db_session) -> None:
         db_session,
         _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
     )
-    next_payload = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
-    next_payload[0]["lines"] = []
+    next_payload = build_grouped_orders(
+        [],
+        [],
+        nomenclature_by_code={},
+        catalog_resolver=lambda _guid: None,
+        skip_catalog=False,
+        contracts={},
+        warehouse={"code": "MAIN", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id="2026-07-31",
+        order_date=date(2026, 7, 31),
+        calculation_id="887",
+    )
+    assert next_payload == []
 
-    next_ids = persist_grouped_orders(db_session, next_payload, supersede_open_batches=True)
+    next_ids = persist_grouped_orders(
+        db_session,
+        next_payload,
+        supersede_open_batches=True,
+        sync_context={
+            "batch_id": "2026-07-31",
+            "order_date": date(2026, 7, 31),
+            "calculation_id": "887",
+            "source_run_id": "887",
+        },
+    )
 
     assert next_ids == first_ids
     refreshed = db_session.get(ProcurementOrderFormation, first_ids[0])
     assert refreshed is not None
+    assert refreshed.status == "draft"
+    assert refreshed.calculation_id == "887"
+    assert refreshed.batch_id == "2026-07-31"
     assert len(refreshed.lines) == 1
     assert refreshed.lines[0].removed is True
     assert refreshed.lines[0].payload["need_status"] == "disappeared"
     assert refreshed.lines[0].payload["disappeared_in_calculation_id"] == "887"
+    assert list_orders(db_session)["total"] == 1
+
+    repeated_ids = persist_grouped_orders(
+        db_session,
+        [],
+        supersede_open_batches=True,
+        sync_context={
+            "batch_id": "2026-07-31",
+            "order_date": date(2026, 7, 31),
+            "calculation_id": "887",
+            "source_run_id": "887",
+        },
+    )
+    assert repeated_ids == first_ids
+
+
+def test_accepting_fully_disappeared_need_moves_order_to_history(db_session) -> None:
+    order_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    persist_grouped_orders(
+        db_session,
+        [],
+        supersede_open_batches=True,
+        sync_context={
+            "batch_id": "2026-07-31",
+            "order_date": date(2026, 7, 31),
+            "calculation_id": "887",
+        },
+    )
+    disappeared = db_session.get(ProcurementOrderFormation, order_ids[0])
+    assert disappeared is not None
+
+    resolved = update_order_line(
+        db_session,
+        disappeared.id,
+        disappeared.lines[0].id,
+        {"disappearance_resolution": "accepted"},
+    )
+
+    assert resolved.status == "superseded"
+    assert resolved.lines[0].removed is True
+    assert resolved.lines[0].payload["disappearance_resolution"] == "accepted"
+    assert list_orders(db_session)["total"] == 0
+    assert list_orders(db_session, status="superseded")["total"] == 1
+    with pytest.raises(ValueError, match="superseded order is read-only"):
+        update_order_line(
+            db_session,
+            resolved.id,
+            resolved.lines[0].id,
+            {"final_quantity": Decimal("1")},
+        )
+
+
+def test_manual_retained_need_survives_later_empty_calculation(db_session) -> None:
+    order_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    persist_grouped_orders(
+        db_session,
+        [],
+        supersede_open_batches=True,
+        sync_context={
+            "batch_id": "2026-07-31",
+            "order_date": date(2026, 7, 31),
+            "calculation_id": "887",
+        },
+    )
+    disappeared = db_session.get(ProcurementOrderFormation, order_ids[0])
+    assert disappeared is not None
+    retained = update_order_line(
+        db_session,
+        disappeared.id,
+        disappeared.lines[0].id,
+        {"disappearance_resolution": "manual_retained"},
+    )
+    assert retained.lines[0].removed is False
+    assert retained.lines[0].explicit_demand is True
+    assert retained.lines[0].payload["manual_overrides"] == {
+        "final_quantity": True,
+        "purchase_price": True,
+    }
+
+    next_ids = persist_grouped_orders(
+        db_session,
+        [],
+        supersede_open_batches=True,
+        sync_context={
+            "batch_id": "2026-08-01",
+            "order_date": date(2026, 8, 1),
+            "calculation_id": "888",
+        },
+    )
+
+    assert next_ids == order_ids
+    refreshed = db_session.get(ProcurementOrderFormation, order_ids[0])
+    assert refreshed is not None
+    assert refreshed.status == "draft"
+    assert refreshed.calculation_id == "888"
+    assert refreshed.lines[0].removed is False
+    assert refreshed.lines[0].explicit_demand is True
+    assert refreshed.lines[0].payload["need_status"] == "manual_retained"
+    assert refreshed.lines[0].payload["automatic_recommendation"]["final_quantity"] == "0"
 
 
 def test_persist_reorders_remaining_lines_without_hiding_disappeared_need(db_session) -> None:
@@ -446,6 +611,28 @@ def test_persist_reorders_remaining_lines_without_hiding_disappeared_need(db_ses
     assert by_code["B"].removed is False
     assert by_code["A"].removed is True
     assert by_code["A"].line_number > by_code["B"].line_number
+
+    update_order_line(
+        db_session,
+        refreshed.id,
+        by_code["A"].id,
+        {"disappearance_resolution": "manual_retained"},
+    )
+    third_ids = persist_grouped_orders(
+        db_session,
+        grouped([_source("B", "4", "B")], batch="2026-08-01", calculation="888"),
+        supersede_open_batches=True,
+    )
+
+    assert third_ids == first_ids
+    db_session.expire_all()
+    retained = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert retained is not None
+    retained_by_code = {line.nomenclature_code: line for line in retained.lines}
+    assert retained_by_code["A"].removed is False
+    assert retained_by_code["A"].explicit_demand is True
+    assert retained_by_code["A"].payload["need_status"] == "manual_retained"
+    assert retained_by_code["B"].final_quantity == Decimal("4")
 
 
 def test_standard_cron_keeps_blocked_projects_and_uses_shared_queue() -> None:

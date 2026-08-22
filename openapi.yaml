@@ -22835,6 +22835,14 @@ components:
           - type: boolean
           - type: 'null'
           title: Explicit Demand
+        disappearance_resolution:
+          anyOf:
+          - type: string
+            enum:
+            - accepted
+            - manual_retained
+          - type: 'null'
+          title: Disappearance Resolution
       type: object
       required:
       - expected_order_version

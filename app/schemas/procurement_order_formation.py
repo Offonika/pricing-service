@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -254,6 +254,7 @@ class ProcurementOrderLineUpdateRequest(BaseModel):
     purchase_price: Decimal | None = Field(default=None, ge=0)
     removed: bool | None = None
     explicit_demand: bool | None = None
+    disappearance_resolution: Literal["accepted", "manual_retained"] | None = None
 
     @model_validator(mode="after")
     def ensure_update_present(self) -> ProcurementOrderLineUpdateRequest:
@@ -264,6 +265,7 @@ class ProcurementOrderLineUpdateRequest(BaseModel):
                 self.purchase_price,
                 self.removed,
                 self.explicit_demand,
+                self.disappearance_resolution,
             )
         ):
             raise ValueError("at least one line field must be provided")

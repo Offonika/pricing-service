@@ -125,6 +125,7 @@ export interface ProcurementLineSyncPayload {
   };
   need_status?: "disappeared" | string;
   disappeared_in_calculation_id?: string;
+  disappearance_resolution?: "accepted" | "manual_retained";
   [key: string]: unknown;
 }
 
@@ -610,6 +611,7 @@ export async function updateProcurementOrderLine(
     purchase_price?: string;
     removed?: boolean;
     explicit_demand?: boolean;
+    disappearance_resolution?: "accepted" | "manual_retained";
   }
 ) {
   const { data } = await api.patch<ProcurementOrderFormation>(

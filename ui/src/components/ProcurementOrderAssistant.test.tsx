@@ -143,6 +143,13 @@ describe("ProcurementOrderAssistant", () => {
 
   it("не скрывает исчезнувшую потребность и показывает новую рекомендацию", async () => {
     const data = assistantData();
+    data.orders[0].lines.push({
+      ...data.orders[0].lines[0],
+      id: 41,
+      line_number: 2,
+      nomenclature_code: "MMI-15P-OLED-ALT",
+      nomenclature_name: "Дисплей iPhone 15 Pro OLED — второй",
+    });
     data.orders[0].lines[0].removed = true;
     data.orders[0].lines[0].final_quantity = "7";
     data.orders[0].lines[0].payload = {
@@ -159,7 +166,8 @@ describe("ProcurementOrderAssistant", () => {
     expect(await screen.findAllByText("Потребность исчезла")).not.toHaveLength(0);
     expect(screen.getByText("Новый расчёт: 9 шт.")).toBeInTheDocument();
     expect(screen.getByText(/Новая цена:/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Выбрать Дисплей iPhone 15 Pro OLED/)).toBeDisabled();
+    expect(screen.getByLabelText("Выбрать Дисплей iPhone 15 Pro OLED")).toBeDisabled();
+    expect(screen.getByLabelText("Выбрать Дисплей iPhone 15 Pro OLED — второй")).toBeEnabled();
   });
 
   it("собирает только готовую полностью выбранную группу и не отправляет её в 1С", async () => {

@@ -374,6 +374,33 @@ def update_order_line(
         raise VersionConflictError("order line version changed; refresh the order")
     changed = False
     manual_overrides = dict((line.payload or {}).get("manual_overrides") or {})
+    disappearance_resolution = values.get("disappearance_resolution")
+    if disappearance_resolution is not None:
+        if not line.removed:
+            raise ValueError("disappearance can only be resolved for a removed line")
+        line_payload = dict(line.payload or {})
+        if disappearance_resolution == "accepted":
+            line_payload.update(
+                {
+                    "need_status": "disappearance_accepted",
+                    "disappearance_resolution": "accepted",
+                }
+            )
+        elif disappearance_resolution == "manual_retained":
+            line.removed = False
+            line.explicit_demand = True
+            manual_overrides.update({"final_quantity": True, "purchase_price": True})
+            line_payload.update(
+                {
+                    "need_status": "manual_retained",
+                    "disappearance_resolution": "manual_retained",
+                }
+            )
+        else:
+            raise ValueError("unsupported disappearance resolution")
+        if line.payload != line_payload:
+            line.payload = line_payload
+        changed = True
     for field_name in ("final_quantity", "purchase_price"):
         value = values.get(field_name)
         if value is None:
@@ -398,6 +425,19 @@ def update_order_line(
         line.amount = _money(line.final_quantity * line.purchase_price)
         line.version += 1
         invalidate_order_approval(order)
+        if (
+            disappearance_resolution == "accepted"
+            and order.lines
+            and all(
+                item.removed and (item.payload or {}).get("disappearance_resolution") == "accepted"
+                for item in order.lines
+            )
+        ):
+            order.status = "superseded"
+            order.payload = {
+                **(order.payload or {}),
+                "disappearance_resolution": "accepted",
+            }
         db.commit()
     return get_order(db, order_id)
 
@@ -963,6 +1003,8 @@ def invalidate_order_approval(order: ProcurementOrderFormation) -> None:
 
 
 def ensure_order_editable(order: ProcurementOrderFormation) -> None:
+    if order.status == "superseded":
+        raise ValueError("superseded order is read-only; create a new revision")
     if (
         order.status in {"approved", "transmitting", "transmitted"}
         or order.approved_version is not None

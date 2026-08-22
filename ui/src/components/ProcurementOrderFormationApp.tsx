@@ -36,6 +36,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   transmitting: "Передача в 1С",
   transmitted: "Передано в 1С",
   deferred: "Отложено / отменено",
+  superseded: "Заменён новым расчётом",
   error: "Ошибка передачи",
 };
 
@@ -58,6 +59,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Заказ уже передан в 1С, его нельзя менять. Создайте новую версию заказа.",
   "approved order is read-only; create a new revision":
     "Подтверждённый заказ заморожен. Новый расчёт создаст отдельную ревизию.",
+  "superseded order is read-only; create a new revision":
+    "Закрытый проект хранится в истории и больше не изменяется.",
   "classification proposal cannot be self-approved":
     "Своё предложение согласовать нельзя — нужен второй сотрудник.",
   "user cannot approve product classification":
@@ -96,7 +99,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
     () => [...order.lines].sort((left, right) => left.line_number - right.line_number),
     [order.lines]
   );
-  const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
+  const locked = ["approved", "transmitting", "transmitted", "superseded"].includes(order.status);
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
       const edit = lineEdits[line.id];
@@ -161,6 +164,32 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
         return next;
       });
       toast.success("Строка сохранена, согласование версии снято");
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const resolveDisappearance = async (
+    line: ProcurementOrderFormationLine,
+    resolution: "accepted" | "manual_retained"
+  ) => {
+    setLoadingKey(`disappearance-${line.id}`);
+    try {
+      const updated = await runVersioned(line, ({ orderVersion, lineVersion }) =>
+        updateProcurementOrderLine(order.id, line.id, {
+          expected_order_version: orderVersion,
+          expected_line_version: lineVersion,
+          disappearance_resolution: resolution,
+        })
+      );
+      setOrder(updated);
+      toast.success(
+        resolution === "accepted"
+          ? "Исчезновение потребности принято"
+          : "Строка сохранена как ручная потребность"
+      );
     } catch (error: unknown) {
       toast.error(errorText(error));
     } finally {
@@ -375,6 +404,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       {line.removed && (
                         <small className="is-warning">Потребность исчезла в новом расчёте</small>
                       )}
+                      {line.payload?.disappearance_resolution === "manual_retained" && (
+                        <small className="is-warning">Сохранена как ручная потребность</small>
+                      )}
                       {line.payload?.recommendation_discrepancy?.final_quantity && (
                         <small className="is-warning">
                           Решение человека: {line.payload.recommendation_discrepancy.final_quantity.manual} · новый расчёт: {line.payload.recommendation_discrepancy.final_quantity.recommended}
@@ -409,6 +441,26 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                               <small>{b2bDemand.reason_ru}</small>
                             </details>
                           )}
+                        </div>
+                      )}
+                      {line.removed && line.payload?.disappearance_resolution !== "accepted" && (
+                        <div className="order-formation__disappearance-actions">
+                          <button
+                            className="btn btn--small"
+                            disabled={Boolean(loadingKey) || locked}
+                            onClick={() => resolveDisappearance(line, "manual_retained")}
+                            type="button"
+                          >
+                            Оставить как ручную потребность
+                          </button>
+                          <button
+                            className="btn btn--ghost btn--small"
+                            disabled={Boolean(loadingKey) || locked}
+                            onClick={() => resolveDisappearance(line, "accepted")}
+                            type="button"
+                          >
+                            Принять исчезновение
+                          </button>
                         </div>
                       )}
                       {line.risk_codes.map((risk) => (

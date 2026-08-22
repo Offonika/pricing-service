@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import Counter, defaultdict
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -224,6 +224,12 @@ def main() -> int:
                 db,
                 orders,
                 supersede_open_batches=args.supersede_open_batches,
+                sync_context={
+                    "batch_id": args.batch_id,
+                    "order_date": args.order_date,
+                    "calculation_id": calculation_id,
+                    "source_run_id": source_run_id,
+                },
             )
         payload["persisted_order_ids"] = persisted_ids
         write_json(args.output_json, payload)
@@ -391,7 +397,7 @@ def build_grouped_orders(
                 "recommended_quantity": str(quantity),
                 "final_quantity": str(quantity),
                 "purchase_price": str(price),
-                "amount": str((quantity * price).quantize(Decimal("0.01"))),
+                "amount": str(_money(quantity * price)),
                 "currency": currency,
                 "source_kind": "automatic",
                 "explicit_demand": False,
@@ -644,8 +650,10 @@ def persist_grouped_orders(
     orders: Sequence[Mapping[str, Any]],
     *,
     supersede_open_batches: bool = False,
+    sync_context: Mapping[str, Any] | None = None,
 ) -> list[int]:
     persisted_ids: list[int] = []
+    merge_candidates: list[ProcurementOrderFormation] | None = None
     for payload in orders:
         requested_stable_key = str(payload["stable_key"])
         revision_of: ProcurementOrderFormation | None = None
@@ -654,7 +662,7 @@ def persist_grouped_orders(
                 ProcurementOrderFormation.stable_key == requested_stable_key
             )
         )
-        if order is not None and _order_is_immutable(order):
+        if order is not None and (_order_is_immutable(order) or order.status == "superseded"):
             revision_of = order
             requested_stable_key = _immutable_revision_stable_key(payload)
             order = db.scalar(
@@ -662,11 +670,13 @@ def persist_grouped_orders(
                     ProcurementOrderFormation.stable_key == requested_stable_key
                 )
             )
-            if order is not None and _order_is_immutable(order):
+            if order is not None and (_order_is_immutable(order) or order.status == "superseded"):
                 persisted_ids.append(order.id)
                 continue
         if order is None:
-            merge_candidate = _latest_merge_candidate(db, payload)
+            if merge_candidates is None:
+                merge_candidates = _load_merge_candidates(db)
+            merge_candidate = _latest_merge_candidate(merge_candidates, payload)
             if merge_candidate is not None:
                 if _order_is_immutable(merge_candidate):
                     revision_of = merge_candidate
@@ -713,6 +723,8 @@ def persist_grouped_orders(
             )
             db.add(order)
             db.flush()
+            if merge_candidates is not None:
+                merge_candidates.append(order)
         changed = False
         if not created:
             ensure_order_editable(order)
@@ -728,8 +740,11 @@ def persist_grouped_orders(
                 if getattr(order, field_name) != value:
                     setattr(order, field_name, value)
                     changed = True
+            previous_payload = dict(order.payload or {})
+            previous_payload.pop("all_needs_disappeared", None)
+            previous_payload.pop("disappeared_in_calculation_id", None)
             expected_payload = {
-                **(order.payload or {}),
+                **previous_payload,
                 "dry_run_source": True,
                 "sync_source": "display_auto_order",
                 "merge_key": _incoming_order_merge_key(payload),
@@ -742,6 +757,7 @@ def persist_grouped_orders(
         existing_by_identity = {_stored_line_identity(line): line for line in order.lines}
         incoming_lines = list(payload.get("lines", []))
         incoming_identities = {_incoming_line_identity(item) for item in incoming_lines}
+        incoming_line_numbers = {int(item["line_number"]) for item in incoming_lines}
         next_removed_line_number = max(
             [len(incoming_lines), *(line.line_number for line in order.lines)],
             default=0,
@@ -749,15 +765,34 @@ def persist_grouped_orders(
         for line in order.lines:
             if _stored_line_identity(line) in incoming_identities:
                 continue
-            if not line.removed:
+            current_payload = dict(line.payload or {})
+            line_number_changed = False
+            if line.line_number in incoming_line_numbers:
                 next_removed_line_number += 1
                 line.line_number = next_removed_line_number
-                line.removed = True
-                line.payload = {
-                    **(line.payload or {}),
-                    "need_status": "disappeared",
-                    "disappeared_in_calculation_id": str(payload.get("calculation_id") or ""),
-                }
+                line_number_changed = True
+            if line.removed and current_payload.get("disappearance_resolution") == "accepted":
+                if line_number_changed:
+                    line.version += 1
+                    changed = True
+                continue
+            manual_retained = bool(
+                line.explicit_demand
+                and current_payload.get("disappearance_resolution") == "manual_retained"
+            )
+            target_removed = not manual_retained
+            next_payload = _disappeared_line_payload(
+                line,
+                calculation_id=str(payload.get("calculation_id") or ""),
+                manual_retained=manual_retained,
+            )
+            if (
+                line_number_changed
+                or line.removed != target_removed
+                or line.payload != next_payload
+            ):
+                line.removed = target_removed
+                line.payload = next_payload
                 line.version += 1
                 changed = True
         db.flush()
@@ -837,7 +872,7 @@ def persist_grouped_orders(
                 "recommended_quantity": Decimal(str(line_payload["recommended_quantity"])),
                 "final_quantity": final_quantity,
                 "purchase_price": purchase_price,
-                "amount": (final_quantity * purchase_price).quantize(Decimal("0.01")),
+                "amount": _money(final_quantity * purchase_price),
                 "currency": str(line_payload["currency"]),
                 "source_kind": str(line_payload["source_kind"]),
                 "explicit_demand": bool(line_payload["explicit_demand"]),
@@ -889,7 +924,15 @@ def persist_grouped_orders(
             )
         persisted_ids.append(order.id)
     if supersede_open_batches:
-        _supersede_previous_open_batches(db, active_order_ids=set(persisted_ids), orders=orders)
+        current_sync = _resolve_sync_context(orders, sync_context)
+        disappeared_ids = _preserve_disappeared_open_batches(
+            db,
+            active_order_ids=set(persisted_ids),
+            sync_context=current_sync,
+        )
+        persisted_ids.extend(
+            order_id for order_id in disappeared_ids if order_id not in persisted_ids
+        )
     db.commit()
     return persisted_ids
 
@@ -941,21 +984,24 @@ def _stored_order_merge_key(order: ProcurementOrderFormation) -> str:
     )
 
 
-def _latest_merge_candidate(
-    db: Session, payload: Mapping[str, Any]
-) -> ProcurementOrderFormation | None:
-    merge_key = _incoming_order_merge_key(payload)
-    candidates = db.scalars(select(ProcurementOrderFormation)).all()
-    matches = [
+def _load_merge_candidates(db: Session) -> list[ProcurementOrderFormation]:
+    candidates = db.scalars(
+        select(ProcurementOrderFormation).where(ProcurementOrderFormation.status != "superseded")
+    ).all()
+    return [
         order
         for order in candidates
-        if order.status != "superseded"
-        and (
-            (order.payload or {}).get("sync_source") == "display_auto_order"
-            or (order.payload or {}).get("dry_run_source")
-        )
-        and _stored_order_merge_key(order) == merge_key
+        if (order.payload or {}).get("sync_source") == "display_auto_order"
+        or (order.payload or {}).get("dry_run_source")
     ]
+
+
+def _latest_merge_candidate(
+    candidates: Sequence[ProcurementOrderFormation],
+    payload: Mapping[str, Any],
+) -> ProcurementOrderFormation | None:
+    merge_key = _incoming_order_merge_key(payload)
+    matches = [order for order in candidates if _stored_order_merge_key(order) == merge_key]
     return max(matches, key=lambda item: (item.created_at, item.id or 0), default=None)
 
 
@@ -978,56 +1024,154 @@ def _stored_line_identity(line: ProcurementOrderFormationLine) -> str:
     )
 
 
+def _disappeared_line_payload(
+    line: ProcurementOrderFormationLine,
+    *,
+    calculation_id: str,
+    manual_retained: bool,
+) -> dict[str, Any]:
+    line_payload = dict(line.payload or {})
+    automatic_recommendation = dict(line_payload.get("automatic_recommendation") or {})
+    automatic_recommendation.update(
+        {
+            "final_quantity": "0",
+            "calculation_id": calculation_id,
+        }
+    )
+    line_payload.update(
+        {
+            "need_status": "manual_retained" if manual_retained else "disappeared",
+            "disappeared_in_calculation_id": calculation_id,
+            "automatic_recommendation": automatic_recommendation,
+        }
+    )
+    manual_overrides = dict(line_payload.get("manual_overrides") or {})
+    if manual_overrides.get("final_quantity") and line.final_quantity != 0:
+        discrepancy = dict(line_payload.get("recommendation_discrepancy") or {})
+        discrepancy["final_quantity"] = {
+            "manual": str(line.final_quantity),
+            "recommended": "0",
+        }
+        line_payload["recommendation_discrepancy"] = discrepancy
+    return line_payload
+
+
 def _immutable_revision_stable_key(payload: Mapping[str, Any]) -> str:
     calculation = str(payload.get("calculation_id") or payload.get("source_run_id") or "new")
     digest = hashlib.sha256(calculation.encode("utf-8")).hexdigest()[:12]
     return f"{payload['stable_key']}:revision:{digest}"
 
 
-def _supersede_previous_open_batches(
+def _resolve_sync_context(
+    orders: Sequence[Mapping[str, Any]],
+    explicit: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    context = dict(explicit or {})
+    if orders:
+        first = orders[0]
+        for field_name in ("batch_id", "order_date", "calculation_id", "source_run_id"):
+            if context.get(field_name) in (None, ""):
+                context[field_name] = first.get(field_name)
+    calculation_id = _clean(context.get("calculation_id"))
+    batch_id = _clean(context.get("batch_id"))
+    order_date_value = context.get("order_date")
+    if not calculation_id or not batch_id or order_date_value in (None, ""):
+        raise ValueError(
+            "sync_context with calculation_id, batch_id and order_date is required "
+            "when supersede_open_batches is enabled"
+        )
+    return {
+        "batch_id": batch_id,
+        "order_date": (
+            order_date_value
+            if isinstance(order_date_value, date)
+            else date.fromisoformat(str(order_date_value))
+        ),
+        "calculation_id": calculation_id,
+        "source_run_id": _clean(context.get("source_run_id")) or None,
+    }
+
+
+def _preserve_disappeared_open_batches(
     db: Session,
     *,
     active_order_ids: set[int],
-    orders: Sequence[Mapping[str, Any]],
-) -> None:
-    current_calculation_ids = {str(order.get("calculation_id") or "") for order in orders}
-    candidates = db.scalars(select(ProcurementOrderFormation)).all()
+    sync_context: Mapping[str, Any],
+) -> list[int]:
+    current_calculation_id = str(sync_context["calculation_id"])
+    preserved_ids: list[int] = []
+    candidates = db.scalars(
+        select(ProcurementOrderFormation)
+        .where(ProcurementOrderFormation.status != "superseded")
+        .order_by(ProcurementOrderFormation.id)
+    ).all()
     for order in candidates:
         payload = order.payload or {}
         is_display_auto_order = bool(payload.get("dry_run_source")) or (
             payload.get("sync_source") == "display_auto_order"
         )
-        if (
-            order.id in active_order_ids
-            or not is_display_auto_order
-            or _order_is_immutable(order)
-            or order.status == "superseded"
-            or order.calculation_id in current_calculation_ids
-        ):
+        if order.id in active_order_ids or not is_display_auto_order or _order_is_immutable(order):
+            continue
+        if order.calculation_id == current_calculation_id:
+            preserved_ids.append(order.id)
+            continue
+        changed = False
+        for line in order.lines:
+            line_payload = dict(line.payload or {})
+            manual_retained = bool(
+                line.explicit_demand
+                and line_payload.get("disappearance_resolution") == "manual_retained"
+            )
+            line_payload = _disappeared_line_payload(
+                line,
+                calculation_id=current_calculation_id,
+                manual_retained=manual_retained,
+            )
+            target_removed = not manual_retained
+            if line.removed != target_removed or line.payload != line_payload:
+                line.removed = target_removed
+                line.payload = line_payload
+                line.version += 1
+                changed = True
+        header_values = {
+            "batch_id": str(sync_context["batch_id"]),
+            "order_date": sync_context["order_date"],
+            "calculation_id": current_calculation_id,
+            "source_run_id": sync_context.get("source_run_id"),
+        }
+        for field_name, value in header_values.items():
+            if getattr(order, field_name) != value:
+                setattr(order, field_name, value)
+                changed = True
+        next_payload = {
+            **payload,
+            "all_needs_disappeared": True,
+            "disappeared_in_calculation_id": current_calculation_id,
+        }
+        if order.payload != next_payload:
+            order.payload = next_payload
+            changed = True
+        if not changed:
+            preserved_ids.append(order.id)
             continue
         previous_status = order.status
-        if order.status in {"approved", "review", "error"} or order.approved_version is not None:
-            invalidate_order_approval(order)
-        order.status = "superseded"
-        order.payload = {
-            **payload,
-            "superseded_by_calculation_ids": sorted(current_calculation_ids),
-        }
+        invalidate_order_approval(order)
         db.add(
             ProcurementOrderFormationEvent(
                 order_id=order.id,
                 entity_type="order",
                 entity_id=str(order.id),
-                event_type="automatic_order_superseded",
+                event_type="automatic_order_need_disappeared",
                 actor="display-auto-order-sync",
                 idempotency_key=(
-                    f"auto-order-supersede:{order.id}:"
-                    f"{','.join(sorted(current_calculation_ids))}"
+                    f"auto-order-need-disappeared:{order.id}:{current_calculation_id}"
                 ),
                 before={"status": previous_status},
-                after={"status": "superseded"},
+                after={"status": order.status, "all_lines_removed": True},
             )
         )
+        preserved_ids.append(order.id)
+    return preserved_ids
 
 
 def read_csv(path: Path) -> list[dict[str, Any]]:
@@ -1094,6 +1238,10 @@ def _decimal(value: Any) -> Decimal | None:
         return Decimal(str(value).replace(" ", "").replace(",", "."))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _split_codes(value: Any) -> list[str]:

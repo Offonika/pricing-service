@@ -117,7 +117,7 @@ function orderReady(order: ProcurementOrderFormation) {
 }
 
 function rowSelectable(row: AssistantRow) {
-  return orderReady(row.order);
+  return !row.line.removed && orderReady(row.order);
 }
 
 function rowUnavailableReason(row: AssistantRow) {
@@ -707,7 +707,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                     <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
                       <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
-                      <td><strong>{quantity(row.line.final_quantity)} шт.</strong><small>к {dateLabel(row.order.order_date)}</small>{row.line.removed && <small className="is-warning">Потребность исчезла</small>}{row.line.payload?.recommendation_discrepancy?.final_quantity && <small className="is-warning">Новый расчёт: {quantity(row.line.payload.recommendation_discrepancy.final_quantity.recommended)} шт.</small>}</td>
+                      <td><strong>{quantity(row.line.final_quantity)} шт.</strong><small>к {dateLabel(row.order.order_date)}</small>{row.line.removed && <small className="is-warning">Потребность исчезла</small>}{row.line.payload?.disappearance_resolution === "manual_retained" && <small className="is-warning">Ручная потребность</small>}{row.line.payload?.recommendation_discrepancy?.final_quantity && <small className="is-warning">Новый расчёт: {quantity(row.line.payload.recommendation_discrepancy.final_quantity.recommended)} шт.</small>}</td>
                       <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
                       <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>

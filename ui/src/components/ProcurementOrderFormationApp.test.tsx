@@ -9,6 +9,7 @@ import type {
 import {
   createProcurementClassification,
   fetchProcurementOrder,
+  updateProcurementOrderLine,
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -90,6 +91,7 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
   beforeEach(() => {
     vi.mocked(createProcurementClassification).mockReset();
     vi.mocked(fetchProcurementOrder).mockReset();
+    vi.mocked(updateProcurementOrderLine).mockReset();
     vi.mocked(toast.success).mockReset();
     vi.mocked(toast.error).mockReset();
   });
@@ -182,5 +184,37 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
     expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
     expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Оставить как ручную потребность" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Принять исчезновение" })).toBeEnabled();
+  });
+
+  it("сохраняет исчезнувшую строку как ручную потребность", async () => {
+    const disappeared = order({
+      lines: [line({ removed: true, payload: { need_status: "disappeared" } })],
+    });
+    vi.mocked(updateProcurementOrderLine).mockResolvedValue(
+      order({
+        version: 2,
+        lines: [
+          line({
+            version: 2,
+            removed: false,
+            explicit_demand: true,
+            payload: { disappearance_resolution: "manual_retained" },
+          }),
+        ],
+      })
+    );
+
+    render(<ProcurementOrderFormationApp initialOrder={disappeared} />);
+    fireEvent.click(screen.getByRole("button", { name: "Оставить как ручную потребность" }));
+
+    await waitFor(() => expect(updateProcurementOrderLine).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(updateProcurementOrderLine).mock.calls[0][2]).toMatchObject({
+      expected_order_version: 1,
+      expected_line_version: 1,
+      disappearance_resolution: "manual_retained",
+    });
+    expect(await screen.findByText("Сохранена как ручная потребность")).toBeInTheDocument();
   });
 });

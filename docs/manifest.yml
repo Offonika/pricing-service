@@ -144,6 +144,7 @@ documents:
       - tasks/manage_customer_settlement_pilot.py
       - tasks/mock_customer_settlement_client.py
       - tasks/preflight_customer_settlement_shadow.py
+      - infra/cron/customer_settlement_shadow_checkpoint.sh
       - integrations/master_mobile_site/customer_settlements/local/components/mastermobile/customer.settlements/class.php
       - integrations/master_mobile_site/customer_settlements/local/components/mastermobile/customer.settlements/lib/client.php
       - integrations/master_mobile_site/customer_settlements/personal/settlements/index.php

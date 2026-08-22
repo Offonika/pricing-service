@@ -73,6 +73,18 @@ Settlement migrations объединены с фактически активн�
 выполнять `alembic upgrade 2a4c6e8f0b1d`; прежняя пустая shadow-БД и runtime на
 `d9e1f3a5b7c9` доказательством нового 72-часового запуска не являются.
 
+## Активный shadow-run 2026-08-22
+
+- старт: `2026-08-22 20:43 MSK`;
+- clean commit: `4458c90469522c5acd430de5a2833a7fc84a9eb2`;
+- staging DB: `settlements_shadow_20260822`, Alembic head `2a4c6e8f0b1d`;
+- client API остаётся выключенным, shadow flag включён;
+- manual mapping и whitelist: `10/10`, ambiguous: `0`;
+- первый и повторный snapshots: expected/loaded `10/10`, explicit zero: `1`;
+- первый `ready` preflight: `30/30`, health: `ok`;
+- cron установлен только в staging-контуре; контрольные точки — через 24, 48 и
+  72 часа от времени старта.
+
 ## 1. Отдельный secret-файл
 
 Создать вне репозитория файл с правами `0600`. Не копировать целиком production

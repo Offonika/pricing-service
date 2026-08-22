@@ -586,7 +586,8 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - [x] ОТМЕНЕНО (2026-08-11): кандидатная десятка внешних клиентов с обязательным
   валидным ИНН; пилот заменён на сотрудников с точной связью Bitrix–1С.
 - [x] Отбор 10 сотрудников и importer dry-run `10/10` без записи.
-- [ ] Apply mapping/whitelist и бухгалтерская сверка сотруднического пилота.
+- [x] Apply mapping/whitelist выполнен для 10 сотрудников на изолированном staging.
+- [ ] Бухгалтерская сверка сотруднического пилота на контрольных точках shadow-run.
 - [ ] Shadow-run, security/cache acceptance и бухгалтерская приёмка.
 - [ ] Отдельная установка Bitrix server adapter.
 
@@ -655,6 +656,9 @@ Rollback:
 
 # Changelog
 
+- 2026-08-22 — новый staging-контур поднят на head `2a4c6e8f0b1d`, manual mapping
+  и whitelist применены `10/10`, snapshot загрузил `10/10` с одним explicit zero;
+  72-часовой shadow-run запущен в `20:43 MSK`, клиентский API выключен.
 - 2026-08-22 — settlement migrations объединены с активным production-head
   `1b9d3f5a7c21` через additive no-op revision `2a4c6e8f0b1d`; новый shadow-run
   обязан начинаться на этой revision.

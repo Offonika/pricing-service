@@ -116,6 +116,7 @@ def build_updates_from_records(
     changed_at: date | None = None,
     source: str = DEFAULT_TASK_SOURCE,
     suspicious_quantity_threshold: Decimal | int | str | None = None,
+    apply_legacy_fact_status_decisions: bool = False,
 ) -> tuple[list[NomenclaturePropertyUpdateRow], list[dict[str, Any]]]:
     rows: list[NomenclaturePropertyUpdateRow] = []
     summaries: list[dict[str, Any]] = []
@@ -124,7 +125,8 @@ def build_updates_from_records(
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
         status_decision = decide_assortment_status(lifecycle_input)
-        status_decision = _fact_status_decision_from_record(record, status_decision)
+        if apply_legacy_fact_status_decisions:
+            status_decision = _fact_status_decision_from_record(record, status_decision)
         commercial_decision = decide_commercial_marks(_commercial_marks_input_from_record(record))
         profile_decision = _profile_decision_from_record(record)
         sales_point_codes = systemic_sales_point_codes(_warehouses_from_record(record))
@@ -240,6 +242,11 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
             record,
             "first_supplier_order_at",
             "FirstSupplierOrderAt",
+        ),
+        historical_first_cargo_handoff_at=_optional_date_field(
+            record,
+            "historical_first_cargo_handoff_at",
+            "HistoricalFirstCargoHandoffAt",
         ),
         supplier_order_cargo_handoff_dates=_date_tuple(
             _optional_field(

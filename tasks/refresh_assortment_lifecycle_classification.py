@@ -53,7 +53,6 @@ from app.services.procurement_order_formation_workspace import (
 from tasks.build_assortment_lifecycle_updates import build_updates_from_records
 
 DEFAULT_SOURCE = "assortment_lifecycle_postgres_v1"
-DEFAULT_FACT_STATUS_DECISIONS_JSON = Path("config/assortment/display-fact-status-decisions.json")
 
 
 def main() -> int:
@@ -81,6 +80,7 @@ def main() -> int:
             changed_at=classified_at.date(),
             source=args.source,
             suspicious_quantity_threshold=args.suspicious_quantity_threshold,
+            apply_legacy_fact_status_decisions=bool(args.fact_status_decisions_json),
         )
         rows = build_classification_rows(
             records=records,
@@ -207,8 +207,8 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=_default_fact_status_decisions_json(),
         help=(
-            "Optional JSON registry with fact-based target statuses. "
-            "Affects Postgres classification only; UT103 export is blocked until approval."
+            "Legacy JSON registry for explicit offline dry-run reproduction only. "
+            "It is never loaded by the scheduled current classification."
         ),
     )
     parser.add_argument("--source", default=DEFAULT_SOURCE)
@@ -248,6 +248,8 @@ def _parse_args() -> argparse.Namespace:
         raise SystemExit("--history-months must be positive")
     if args.limit <= 0:
         raise SystemExit("--limit must be positive")
+    if args.fact_status_decisions_json is not None and not args.dry_run:
+        raise SystemExit("--fact-status-decisions-json is allowed only with --dry-run")
     return args
 
 
@@ -457,12 +459,10 @@ def _attach_fact_status_decisions(
 
 
 def _default_fact_status_decisions_json() -> Path | None:
-    raw_value = os.getenv("ASSORTMENT_FACT_STATUS_DECISIONS_JSON")
-    if raw_value is not None:
-        if raw_value.strip() == "":
-            return None
-        return Path(raw_value)
-    return DEFAULT_FACT_STATUS_DECISIONS_JSON
+    # Решение 2026-08-22: июльский реестр был тестовым артефактом и не должен
+    # незаметно подключаться ни из checkout, ни через production env. Для
+    # воспроизведения старого расчёта путь передают явно вместе с --dry-run.
+    return None
 
 
 def _load_optional_json(path: Path | None) -> Any:

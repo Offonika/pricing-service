@@ -119,6 +119,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ReceivableBitrixUserAccess,
         ReceivableFolderRecommendationCache,
         ReceivableOpenDebtCache,
+        ReceivablePkoShadowResult,
     )
     from app.models.return_scheme_alert_batch import ReturnSchemeAlertBatch
     from app.models.return_scheme_incident import ReturnSchemeIncident
@@ -265,6 +266,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableSmsLog",
         "ReceivableSupervisorNote",
         "ReceivableOpenDebtCache",
+        "ReceivablePkoShadowResult",
         "ReceivableFolderRecommendationCache",
         "ReceivableBitrixUserAccess",
     ]

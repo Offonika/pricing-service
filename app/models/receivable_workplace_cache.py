@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Optional
 
 from sqlalchemy import (
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Index,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -36,6 +38,76 @@ class ReceivableOpenDebtCache(Base):
     department_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     source_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ready")
     documents: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ReceivablePkoShadowResult(Base):
+    __tablename__ = "receivable_pko_shadow_result"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_date",
+            "algorithm_version",
+            "counterparty_ref",
+            name="uq_receivable_pko_shadow_date_version_counterparty",
+        ),
+        Index(
+            "ix_receivable_pko_shadow_date_version",
+            "snapshot_date",
+            "algorithm_version",
+        ),
+        Index("ix_receivable_pko_shadow_run_id", "run_id"),
+        Index("ix_receivable_pko_shadow_status", "status"),
+    )
+
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    counterparty_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    department_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    department_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    current_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    base_payment_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    base_payment_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    base_payment_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    base_balance_after: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    current_origin_document_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    current_origin_document_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    current_origin_document_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    candidate_origin_document_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    candidate_origin_document_number: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    candidate_origin_document_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    candidate_responsible_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    candidate_responsible_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    candidate_origin_open_amount: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(18, 2), nullable=True
+    )
+    selected_open_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    delta: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    current_documents: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    candidate_documents: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    diagnostics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

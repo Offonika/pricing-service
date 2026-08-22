@@ -5,6 +5,7 @@ import type { ReceivableWorkplaceItem, ReceivableWorkplaceResponse } from "../ap
 import {
   deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
+  fetchReceivablePkoShadow,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
   updateReceivableWorkplaceItem,
@@ -16,6 +17,7 @@ vi.mock("../api/receivables", async (importOriginal) => {
   return {
     ...actual,
     fetchCounterpartyFolderRecommendations: vi.fn(),
+    fetchReceivablePkoShadow: vi.fn(),
     fetchReceivableWorkplace: vi.fn(),
     fetchReceivableWorkplaceMeta: vi.fn(),
     updateReceivableWorkplaceItem: vi.fn(),
@@ -95,6 +97,50 @@ describe("ReceivablesWorkplace", () => {
       summary: {},
       payload: [],
     });
+    vi.mocked(fetchReceivablePkoShadow).mockResolvedValue({
+      as_of: "2026-07-23",
+      algorithm_version: "pko-shadow-v1",
+      run_id: "run-1",
+      computed_at: "2026-07-23T12:00:00",
+      summary: {
+        row_count: 1,
+        matched_count: 1,
+        data_quality_count: 0,
+        no_candidate_count: 0,
+      },
+      payload: [
+        {
+          snapshot_date: "2026-07-23",
+          algorithm_version: "pko-shadow-v1",
+          run_id: "run-1",
+          counterparty_ref: "test-client",
+          counterparty_code: "РБ025702",
+          counterparty_name: "Контрольный клиент ПКО",
+          current_balance: "500.00",
+          base_payment_ref: "pko-1",
+          base_payment_number: "ПКО-1",
+          base_payment_date: "2026-07-20T10:00:00",
+          base_balance_after: "500.00",
+          current_origin_document_ref: "sale-old",
+          current_origin_document_number: "РТУ-OLD",
+          current_origin_document_date: "2025-10-01T10:00:00",
+          candidate_origin_document_ref: "sale-new",
+          candidate_origin_document_number: "РТУ-NEW",
+          candidate_origin_document_date: "2025-11-01T10:00:00",
+          candidate_responsible_ref: "manager-1",
+          candidate_responsible_name: "Мария",
+          candidate_origin_open_amount: "500.00",
+          selected_open_amount: "500.00",
+          delta: "0.00",
+          status: "matched",
+          reason: "pko_cycle_matched",
+          current_documents: [],
+          candidate_documents: [],
+          diagnostics: {},
+          computed_at: "2026-07-23T12:00:00",
+        },
+      ],
+    });
   });
 
   afterEach(() => {
@@ -111,6 +157,31 @@ describe("ReceivablesWorkplace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
 
     expect(screen.getByRole("button", { name: "Сохранить комментарий" })).toBeVisible();
+  });
+
+  it("shows the read-only PKO shadow comparison only to full-access Bitrix users", async () => {
+    const { unmount } = render(
+      <ReceivablesWorkplace bitrixMode accessLevel="full" />
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Тест ПКО" }));
+    expect(
+      await screen.findByRole("region", { name: "Теневое сравнение ПКО-алгоритма" })
+    ).toHaveAttribute("tabindex", "0");
+    expect(screen.getByText("Контрольный клиент ПКО")).toBeVisible();
+    expect(screen.getByText("РТУ-OLD")).toBeVisible();
+    expect(screen.getByText("РТУ-NEW")).toBeVisible();
+    expect(screen.getByText("Цикл от ПКО полностью сошёлся")).toBeVisible();
+    expect(
+      screen.getByText(/статусы, комментарии, карточки Bitrix24 и данные 1С не изменяются/i)
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: /сохранить/i })).not.toBeInTheDocument();
+    expect(fetchReceivablePkoShadow).toHaveBeenCalledWith("2026-07-23");
+
+    unmount();
+    render(<ReceivablesWorkplace bitrixMode accessLevel="department" />);
+    expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Тест ПКО" })).not.toBeInTheDocument();
   });
 
   it("exposes the workplace table as a keyboard-scrollable region", async () => {

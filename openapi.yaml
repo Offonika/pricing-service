@@ -4334,6 +4334,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/pko-shadow:
+    get:
+      summary: Get Receivable Pko Shadow
+      operationId: get_receivable_pko_shadow_api_receivables_workplace_pko_shadow_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: algorithm_version
+        in: query
+        required: false
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: pko-shadow-v1
+          title: Algorithm Version
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivablePkoShadowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/receivables/workplace/{counterparty_ref}:
     patch:
       summary: Update Receivable Workplace Item
@@ -23940,6 +23976,202 @@ components:
       - aged_bucket
       - activity_segment
       title: ReceivableCaseItem
+    ReceivablePkoShadowItem:
+      properties:
+        snapshot_date:
+          type: string
+          format: date
+          title: Snapshot Date
+        algorithm_version:
+          type: string
+          title: Algorithm Version
+        run_id:
+          type: string
+          title: Run Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        current_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Current Balance
+        base_payment_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Payment Ref
+        base_payment_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Payment Number
+        base_payment_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Base Payment Date
+        base_balance_after:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Base Balance After
+        current_origin_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Origin Document Ref
+        current_origin_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Origin Document Number
+        current_origin_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Current Origin Document Date
+        candidate_origin_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Origin Document Ref
+        candidate_origin_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Origin Document Number
+        candidate_origin_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Candidate Origin Document Date
+        candidate_responsible_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Responsible Ref
+        candidate_responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Candidate Responsible Name
+        candidate_origin_open_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Candidate Origin Open Amount
+        selected_open_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Selected Open Amount
+        delta:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Delta
+        status:
+          type: string
+          enum:
+          - matched
+          - data_quality
+          - no_candidate
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        current_documents:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Current Documents
+        candidate_documents:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Candidate Documents
+        diagnostics:
+          additionalProperties: true
+          type: object
+          title: Diagnostics
+        computed_at:
+          type: string
+          format: date-time
+          title: Computed At
+      type: object
+      required:
+      - snapshot_date
+      - algorithm_version
+      - run_id
+      - counterparty_ref
+      - current_balance
+      - selected_open_amount
+      - delta
+      - status
+      - computed_at
+      title: ReceivablePkoShadowItem
+    ReceivablePkoShadowResponse:
+      properties:
+        as_of:
+          type: string
+          format: date
+          title: As Of
+        algorithm_version:
+          type: string
+          title: Algorithm Version
+        run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Id
+        computed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Computed At
+        summary:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Summary
+        payload:
+          items:
+            $ref: '#/components/schemas/ReceivablePkoShadowItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - as_of
+      - algorithm_version
+      title: ReceivablePkoShadowResponse
     ReceivableSupervisorNoteItem:
       properties:
         id:

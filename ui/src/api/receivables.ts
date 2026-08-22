@@ -36,6 +36,55 @@ export interface ReceivableWorkplaceMetaResponse {
   cache_status: Record<string, ReceivableCacheComponent>;
 }
 
+export type ReceivablePkoShadowStatus = "matched" | "data_quality" | "no_candidate";
+
+export interface ReceivablePkoShadowItem {
+  snapshot_date: string;
+  algorithm_version: string;
+  run_id: string;
+  counterparty_ref: string;
+  counterparty_code?: string | null;
+  counterparty_name?: string | null;
+  department_ref?: string | null;
+  department_name?: string | null;
+  current_balance: string;
+  base_payment_ref?: string | null;
+  base_payment_number?: string | null;
+  base_payment_date?: string | null;
+  base_balance_after?: string | null;
+  current_origin_document_ref?: string | null;
+  current_origin_document_number?: string | null;
+  current_origin_document_date?: string | null;
+  candidate_origin_document_ref?: string | null;
+  candidate_origin_document_number?: string | null;
+  candidate_origin_document_date?: string | null;
+  candidate_responsible_ref?: string | null;
+  candidate_responsible_name?: string | null;
+  candidate_origin_open_amount?: string | null;
+  selected_open_amount: string;
+  delta: string;
+  status: ReceivablePkoShadowStatus;
+  reason?: string | null;
+  current_documents: Array<Record<string, unknown>>;
+  candidate_documents: Array<Record<string, unknown>>;
+  diagnostics: Record<string, unknown>;
+  computed_at: string;
+}
+
+export interface ReceivablePkoShadowResponse {
+  as_of: string;
+  algorithm_version: string;
+  run_id?: string | null;
+  computed_at?: string | null;
+  summary: {
+    row_count?: number;
+    matched_count?: number;
+    data_quality_count?: number;
+    no_candidate_count?: number;
+  };
+  payload: ReceivablePkoShadowItem[];
+}
+
 export interface ReceivableDocument {
   document_ref?: string | null;
   document_number?: string | null;
@@ -332,6 +381,15 @@ export async function fetchReceivableWorkplaceMeta(date?: string) {
   const response = await withReceivablesAuthRetry(() =>
     api.get<ReceivableWorkplaceMetaResponse>("/receivables/workplace/meta", {
       params: { date: date || undefined },
+    })
+  );
+  return response.data;
+}
+
+export async function fetchReceivablePkoShadow(date: string) {
+  const response = await withReceivablesAuthRetry(() =>
+    api.get<ReceivablePkoShadowResponse>("/receivables/workplace/pko-shadow", {
+      params: { date },
     })
   );
   return response.data;

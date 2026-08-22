@@ -5742,6 +5742,99 @@
   background: #ffffff;
 }
 
+.receivables__pko-shadow {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.receivables__pko-shadow-note {
+  margin: 0;
+  color: #475467;
+  font-size: 12px;
+}
+
+.receivables__pko-shadow-table {
+  width: 100%;
+  min-width: 1540px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.receivables__pko-shadow-table th,
+.receivables__pko-shadow-table td {
+  padding: 7px;
+  border-bottom: 1px solid #eef2f6;
+  color: #18202a;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: top;
+}
+
+.receivables__pko-shadow-table th {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  background: #eef2f6;
+  color: #344054;
+  font-weight: 800;
+}
+
+.receivables__pko-shadow-table th:nth-child(1),
+.receivables__pko-shadow-table td:nth-child(1) { width: 78px; }
+.receivables__pko-shadow-table th:nth-child(2),
+.receivables__pko-shadow-table td:nth-child(2) { width: 190px; }
+.receivables__pko-shadow-table th:nth-child(3),
+.receivables__pko-shadow-table td:nth-child(3),
+.receivables__pko-shadow-table th:nth-child(5),
+.receivables__pko-shadow-table td:nth-child(5),
+.receivables__pko-shadow-table th:nth-child(8),
+.receivables__pko-shadow-table td:nth-child(8),
+.receivables__pko-shadow-table th:nth-child(10),
+.receivables__pko-shadow-table td:nth-child(10),
+.receivables__pko-shadow-table th:nth-child(11),
+.receivables__pko-shadow-table td:nth-child(11) { width: 108px; }
+.receivables__pko-shadow-table th:nth-child(4),
+.receivables__pko-shadow-table td:nth-child(4),
+.receivables__pko-shadow-table th:nth-child(6),
+.receivables__pko-shadow-table td:nth-child(6),
+.receivables__pko-shadow-table th:nth-child(7),
+.receivables__pko-shadow-table td:nth-child(7) { width: 135px; }
+.receivables__pko-shadow-table th:nth-child(9),
+.receivables__pko-shadow-table td:nth-child(9) { width: 160px; }
+.receivables__pko-shadow-table th:nth-child(12),
+.receivables__pko-shadow-table td:nth-child(12) { width: 210px; }
+
+.receivables__pko-shadow-table small {
+  display: block;
+  margin-top: 3px;
+  color: #667085;
+}
+
+.receivables__pko-status {
+  display: inline-flex;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.receivables__pko-status--matched {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.receivables__pko-status--data_quality {
+  background: #fef3c7;
+  color: #854d0e;
+}
+
+.receivables__pko-status--no_candidate {
+  background: #f1f5f9;
+  color: #475569;
+}
+
 .receivables__scroll-shell {
   position: relative;
   overflow: hidden;

@@ -39,6 +39,51 @@ class ReceivableWorkplaceMetaResponse(BaseModel):
     cache_status: dict[str, ReceivableWorkplaceCacheComponent] = Field(default_factory=dict)
 
 
+PkoShadowStatus = Literal["matched", "data_quality", "no_candidate"]
+
+
+class ReceivablePkoShadowItem(BaseModel):
+    snapshot_date: date
+    algorithm_version: str
+    run_id: str
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    department_ref: str | None = None
+    department_name: str | None = None
+    current_balance: Decimal
+    base_payment_ref: str | None = None
+    base_payment_number: str | None = None
+    base_payment_date: datetime | None = None
+    base_balance_after: Decimal | None = None
+    current_origin_document_ref: str | None = None
+    current_origin_document_number: str | None = None
+    current_origin_document_date: datetime | None = None
+    candidate_origin_document_ref: str | None = None
+    candidate_origin_document_number: str | None = None
+    candidate_origin_document_date: datetime | None = None
+    candidate_responsible_ref: str | None = None
+    candidate_responsible_name: str | None = None
+    candidate_origin_open_amount: Decimal | None = None
+    selected_open_amount: Decimal
+    delta: Decimal
+    status: PkoShadowStatus
+    reason: str | None = None
+    current_documents: list[dict[str, Any]] = Field(default_factory=list)
+    candidate_documents: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    computed_at: datetime
+
+
+class ReceivablePkoShadowResponse(BaseModel):
+    as_of: date
+    algorithm_version: str
+    run_id: str | None = None
+    computed_at: datetime | None = None
+    summary: dict[str, int] = Field(default_factory=dict)
+    payload: list[ReceivablePkoShadowItem] = Field(default_factory=list)
+
+
 class ReceivableWorkplaceDocument(BaseModel):
     document_ref: str | None = None
     document_number: str | None = None

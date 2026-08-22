@@ -168,6 +168,16 @@
       "side_effect_level": "db_write",
       "spec": "docs/specs/pricing-service-architecture-hardening.md",
       "remove_after": "2026-10-31"
+    },
+    "rebuild_receivable_pko_shadow.py": {
+      "owner": "receivables",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "snapshot_replace_by_version",
+      "side_effect_level": "db_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/receivables-smart-process-workflow.md",
+      "remove_after": null
     }
   }
 }

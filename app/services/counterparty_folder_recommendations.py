@@ -658,6 +658,7 @@ def fetch_counterparty_ledger_statement_events(
     *,
     counterparty_refs: Sequence[str],
     snapshot_date: date,
+    include_opening_balance: bool = False,
 ) -> dict[str, list[ReceivableStatementEvent]]:
     refs = sorted({_normalize_ref(value) for value in counterparty_refs if _normalize_ref(value)})
     if not refs:
@@ -683,7 +684,14 @@ def fetch_counterparty_ledger_statement_events(
                 .where(
                     ReceivableLedgerEvent.counterparty_ref.in_(chunk),
                     ReceivableLedgerEvent.event_type.in_(
-                        ("sale", "payment", "return", "settlement", "debt_adjustment")
+                        (
+                            "sale",
+                            "payment",
+                            "return",
+                            "settlement",
+                            "debt_adjustment",
+                            *(("opening_balance",) if include_opening_balance else ()),
+                        )
                     ),
                     ReceivableLedgerEvent.external_document_date < snapshot_end,
                 )

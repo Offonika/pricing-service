@@ -22,6 +22,8 @@ from app.schemas.management import (
     CounterpartyFolderRecommendationResponse,
 )
 from app.schemas.receivable_workplace import (
+    ReceivablePkoShadowItem,
+    ReceivablePkoShadowResponse,
     ReceivableSupervisorNoteMutationResponse,
     ReceivableSupervisorNoteUpsertRequest,
     ReceivableWorkplaceActionRequest,
@@ -42,6 +44,10 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_counterparty_folder_recommendations,
+)
+from app.services.receivable_pko_shadow import (
+    PKO_SHADOW_ALGORITHM_VERSION,
+    load_receivable_pko_shadow,
 )
 from app.services.receivable_workplace import (
     WorkplaceSortBy,
@@ -360,6 +366,75 @@ def get_receivable_workplace_folder_recommendations(
         freshness_status="fresh" if source_snapshot_count else "missing",
         source_status=response_source_status,
         report_revision=report["report_revision"],
+        summary=summary,
+        payload=payload,
+    )
+
+
+@router.get(
+    "/workplace/pko-shadow",
+    response_model=ReceivablePkoShadowResponse,
+)
+def get_receivable_pko_shadow(
+    date_value: date = Query(alias="date"),
+    algorithm_version: str = Query(
+        default=PKO_SHADOW_ALGORITHM_VERSION,
+        min_length=1,
+        max_length=64,
+    ),
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivablePkoShadowResponse:
+    if access.source != "bitrix" or access.access_level != "full":
+        raise HTTPException(
+            status_code=403,
+            detail="Тест ПКО доступен только пользователям Bitrix24 с полным доступом",
+        )
+    rows, summary = load_receivable_pko_shadow(
+        db,
+        snapshot_date=date_value,
+        algorithm_version=algorithm_version,
+    )
+    payload = [
+        ReceivablePkoShadowItem(
+            snapshot_date=row.snapshot_date,
+            algorithm_version=row.algorithm_version,
+            run_id=row.run_id,
+            counterparty_ref=row.counterparty_ref,
+            counterparty_code=row.counterparty_code,
+            counterparty_name=row.counterparty_name,
+            department_ref=row.department_ref,
+            department_name=row.department_name,
+            current_balance=row.current_balance,
+            base_payment_ref=row.base_payment_ref,
+            base_payment_number=row.base_payment_number,
+            base_payment_date=row.base_payment_date,
+            base_balance_after=row.base_balance_after,
+            current_origin_document_ref=row.current_origin_document_ref,
+            current_origin_document_number=row.current_origin_document_number,
+            current_origin_document_date=row.current_origin_document_date,
+            candidate_origin_document_ref=row.candidate_origin_document_ref,
+            candidate_origin_document_number=row.candidate_origin_document_number,
+            candidate_origin_document_date=row.candidate_origin_document_date,
+            candidate_responsible_ref=row.candidate_responsible_ref,
+            candidate_responsible_name=row.candidate_responsible_name,
+            candidate_origin_open_amount=row.candidate_origin_open_amount,
+            selected_open_amount=row.selected_open_amount,
+            delta=row.delta,
+            status=row.status,
+            reason=row.reason,
+            current_documents=row.current_documents or [],
+            candidate_documents=row.candidate_documents or [],
+            diagnostics=row.diagnostics or {},
+            computed_at=row.computed_at,
+        )
+        for row in rows
+    ]
+    return ReceivablePkoShadowResponse(
+        as_of=date_value,
+        algorithm_version=algorithm_version,
+        run_id=rows[0].run_id if rows else None,
+        computed_at=max((row.computed_at for row in rows), default=None),
         summary=summary,
         payload=payload,
     )

@@ -15,6 +15,7 @@ import { receivableStatusTone } from "../receivableStatusTone";
 import {
   deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
+  fetchReceivablePkoShadow,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
   buildReceivableWorkplaceActionPayload,
@@ -25,6 +26,8 @@ import {
   type CounterpartyFolderQueue,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
+  type ReceivablePkoShadowItem,
+  type ReceivablePkoShadowResponse,
   type ReceivableStatusOption,
   type ReceivableWorkplaceSortBy,
   type ReceivableWorkplaceSortDir,
@@ -41,7 +44,7 @@ type EditState = ReceivableWorkplaceEditState;
 
 type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
 type MinimumDebtFilter = "" | "500" | "1000";
-type ReceivablesTab = "work" | "folders";
+type ReceivablesTab = "work" | "folders" | "pko-shadow";
 
 const emptySummary: ReceivableWorkplaceSummary = {
   row_count: 0,
@@ -90,6 +93,9 @@ function readInitialToken() {
 function readInitialTab(): ReceivablesTab {
   const params = new URLSearchParams(window.location.search);
   if (params.get("tab") === "folders" || window.location.hash === "#folders") return "folders";
+  if (params.get("tab") === "pko-shadow" || window.location.hash === "#pko-shadow") {
+    return "pko-shadow";
+  }
   return "work";
 }
 
@@ -208,6 +214,20 @@ function formatMoney(value: string | number | null | undefined) {
     style: "currency",
     currency: "RUB",
   }).format(Number.isFinite(numberValue) ? numberValue : 0);
+}
+
+function formatMoneyPrecise(value: string | number | null | undefined) {
+  const numberValue = Number(value || 0);
+  return new Intl.NumberFormat("ru-RU", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    style: "currency",
+    currency: "RUB",
+  }).format(Number.isFinite(numberValue) ? numberValue : 0);
+}
+
+function formatOptionalMoneyPrecise(value: string | number | null | undefined) {
+  return value === null || value === undefined || value === "" ? "—" : formatMoneyPrecise(value);
 }
 
 function formatDate(value?: string | null) {
@@ -866,6 +886,127 @@ function FolderRecommendations({
   );
 }
 
+function pkoShadowStatusLabel(status: ReceivablePkoShadowItem["status"]) {
+  if (status === "matched") return "Сошлось";
+  if (status === "data_quality") return "Проверка данных";
+  return "Нет кандидата";
+}
+
+function pkoShadowReasonLabel(reason?: string | null) {
+  const labels: Record<string, string> = {
+    structure_confirmed: "Подтверждено структурой документов 1С",
+    structure_total_mismatch: "Сумма структуры не совпала с текущим долгом",
+    pko_cycle_matched: "Цикл от ПКО полностью сошёлся",
+    final_balance_mismatch: "Итог цикла не совпал с текущим долгом",
+    base_balance_exceeds_known_sales: "Остаток после ПКО больше известных РТУ",
+    unconfirmed_return_link: "Не подтверждена связь возврата с РТУ",
+    return_sale_missing_from_statement: "Связанная с возвратом РТУ отсутствует в ведомости",
+    positive_unattributed_adjustment: "Положительная корректировка не привязана к РТУ",
+    opening_balance_after_base_payment: "Начальный остаток расположен после базового ПКО",
+    no_pko_in_statement: "В ведомости нет подходящего ПКО",
+  };
+  return reason ? labels[reason] || "Требуется проверка диагностики" : "—";
+}
+
+function PkoShadowComparison({
+  data,
+  loading,
+}: {
+  data: ReceivablePkoShadowResponse | null;
+  loading: boolean;
+}) {
+  if (loading) return <div className="receivables__state">Загрузка теста ПКО...</div>;
+  if (!data || !data.payload.length) {
+    return (
+      <div className="receivables__state">
+        Теневой расчёт за выбранную дату ещё не выполнен.
+      </div>
+    );
+  }
+  return (
+    <section className="receivables__pko-shadow">
+      <div className="receivables__folder-summary">
+        <span>Алгоритм: {data.algorithm_version}</span>
+        <span>Строк: {data.summary.row_count ?? data.payload.length}</span>
+        <span>Сошлось: {data.summary.matched_count ?? 0}</span>
+        <span>Проверка данных: {data.summary.data_quality_count ?? 0}</span>
+        <span>Без кандидата: {data.summary.no_candidate_count ?? 0}</span>
+        {data.computed_at && <span>Расчёт: {formatDateTime(data.computed_at)}</span>}
+      </div>
+      <p className="receivables__pko-shadow-note">
+        Только сравнение: статусы, комментарии, карточки Bitrix24 и данные 1С не изменяются.
+      </p>
+      <ScrollableTableRegion
+        ariaLabel="Теневое сравнение ПКО-алгоритма"
+        className="receivables__pko-shadow-table-wrap"
+      >
+        <table className="receivables__pko-shadow-table">
+          <thead>
+            <tr>
+              <th>Код 1С</th>
+              <th>Клиент</th>
+              <th>Текущий долг</th>
+              <th>Базовый ПКО</th>
+              <th>Баланс после ПКО</th>
+              <th>Текущий источник</th>
+              <th>Новый источник</th>
+              <th>Остаток РТУ</th>
+              <th>Ответственный</th>
+              <th>Сумма кандидатов</th>
+              <th>Разница</th>
+              <th>Результат</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.payload.map((item) => (
+              <tr key={item.counterparty_ref}>
+                <td className="mono">{item.counterparty_code || "—"}</td>
+                <td title={item.counterparty_ref}>{item.counterparty_name || item.counterparty_ref}</td>
+                <td className="receivables__nowrap">{formatMoneyPrecise(item.current_balance)}</td>
+                <td title={item.base_payment_ref || ""}>
+                  {item.base_payment_number || "—"}
+                  {item.base_payment_date && <small>{formatDate(item.base_payment_date)}</small>}
+                </td>
+                <td className="receivables__nowrap">
+                  {formatOptionalMoneyPrecise(item.base_balance_after)}
+                </td>
+                <td title={item.current_origin_document_ref || ""}>
+                  {item.current_origin_document_number || "—"}
+                  {item.current_origin_document_date && (
+                    <small>{formatDate(item.current_origin_document_date)}</small>
+                  )}
+                </td>
+                <td title={item.candidate_origin_document_ref || ""}>
+                  {item.candidate_origin_document_number || "—"}
+                  {item.candidate_origin_document_date && (
+                    <small>{formatDate(item.candidate_origin_document_date)}</small>
+                  )}
+                </td>
+                <td className="receivables__nowrap">
+                  {formatOptionalMoneyPrecise(item.candidate_origin_open_amount)}
+                </td>
+                <td title={item.candidate_responsible_ref || ""}>
+                  {item.candidate_responsible_name || "—"}
+                </td>
+                <td className="receivables__nowrap">
+                  {formatMoneyPrecise(item.selected_open_amount)}
+                </td>
+                <td className="receivables__nowrap">{formatMoneyPrecise(item.delta)}</td>
+                <td>
+                  <span className={`receivables__pko-status receivables__pko-status--${item.status}`}>
+                    {pkoShadowStatusLabel(item.status)}
+                  </span>
+                  <small title={item.reason || undefined}>{pkoShadowReasonLabel(item.reason)}</small>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ScrollableTableRegion>
+    </section>
+  );
+}
+
 export function ReceivablesWorkplace({
   bitrixMode = false,
   bitrixUserName,
@@ -899,11 +1040,18 @@ export function ReceivablesWorkplace({
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [folderQueue, setFolderQueue] = useState<CounterpartyFolderQueue>("actionable");
+  const [pkoShadow, setPkoShadow] = useState<ReceivablePkoShadowResponse | null>(null);
+  const [pkoShadowLoading, setPkoShadowLoading] = useState(false);
   const [metaLoaded, setMetaLoaded] = useState(false);
   const [latestSnapshotDate, setLatestSnapshotDate] = useState<string | null>(null);
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
+  const canViewPkoShadow = bitrixMode && accessLevel === "full";
+
+  useEffect(() => {
+    if (tab === "pko-shadow" && !canViewPkoShadow) setTab("work");
+  }, [canViewPkoShadow, tab]);
 
   useEffect(() => {
     if (bitrixMode) return;
@@ -1016,6 +1164,29 @@ export function ReceivablesWorkplace({
     }
   }, [date, folderQueue, hasToken]);
 
+  const loadPkoShadow = useCallback(async () => {
+    if (!canViewPkoShadow || !date) {
+      setPkoShadow(null);
+      return;
+    }
+    setPkoShadowLoading(true);
+    try {
+      setPkoShadow(await fetchReceivablePkoShadow(date));
+    } catch (error: unknown) {
+      setMessage(getErrorMessage(error, "Не удалось загрузить тест ПКО"));
+    } finally {
+      setPkoShadowLoading(false);
+    }
+  }, [canViewPkoShadow, date]);
+
+  const currentTabLoading =
+    tab === "pko-shadow" ? pkoShadowLoading : tab === "folders" ? foldersLoading : loading;
+  const reloadCurrentTab = () => {
+    if (tab === "pko-shadow") void loadPkoShadow();
+    else if (tab === "folders") void loadFolders();
+    else void loadWorkplace();
+  };
+
   useEffect(() => {
     void loadWorkplace();
   }, [loadWorkplace]);
@@ -1023,6 +1194,10 @@ export function ReceivablesWorkplace({
   useEffect(() => {
     if (tab === "folders") void loadFolders();
   }, [loadFolders, tab]);
+
+  useEffect(() => {
+    if (tab === "pko-shadow") void loadPkoShadow();
+  }, [loadPkoShadow, tab]);
 
   const saveItem = async (item: ReceivableWorkplaceItem) => {
     const edit = edits[item.counterparty_ref] || initialEdit(item);
@@ -1120,8 +1295,13 @@ export function ReceivablesWorkplace({
             onChange={(event) => setToken(event.target.value)}
           />
         )}
-        <button className="btn btn--ghost" disabled={!hasToken || loading} onClick={loadWorkplace} type="button">
-          {loading ? "Обновляем..." : "Обновить"}
+        <button
+          className="btn btn--ghost"
+          disabled={!hasToken || currentTabLoading}
+          onClick={reloadCurrentTab}
+          type="button"
+        >
+          {currentTabLoading ? "Обновляем..." : "Обновить"}
         </button>
       </header>
       {hasToken && (
@@ -1171,6 +1351,15 @@ export function ReceivablesWorkplace({
         <button className={tab === "folders" ? "btn" : "btn btn--ghost"} onClick={() => setTab("folders")} type="button">
           Контроль папок
         </button>
+        {canViewPkoShadow && (
+          <button
+            className={tab === "pko-shadow" ? "btn" : "btn btn--ghost"}
+            onClick={() => setTab("pko-shadow")}
+            type="button"
+          >
+            Тест ПКО
+          </button>
+        )}
       </nav>
       {message && <div className="products-table__state products-table__state--error">{message}</div>}
       {hasToken && tab === "work" && (
@@ -1265,6 +1454,9 @@ export function ReceivablesWorkplace({
           queue={folderQueue}
           onQueueChange={setFolderQueue}
         />
+      )}
+      {canViewPkoShadow && tab === "pko-shadow" && (
+        <PkoShadowComparison data={pkoShadow} loading={pkoShadowLoading} />
       )}
       <footer className="receivables__legend">
         <span>Красное "нет" в телефоне: номера нет.</span>

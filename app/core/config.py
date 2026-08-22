@@ -198,6 +198,16 @@ class Settings(BaseSettings):
         ge=60,
         le=86400,
     )
+    site_service_requests_max_event_body_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1024,
+        le=16 * 1024 * 1024,
+    )
+    site_service_requests_max_ack_body_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
     site_service_requests_max_file_bytes: int = Field(
         default=10 * 1024 * 1024,
         ge=1,

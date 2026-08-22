@@ -34,6 +34,16 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "ServiceTicketBridge::registerHandlers();" not in source
     assert "ServiceTicketBridge::installSchema();" not in source
     assert "Bitrix\\Main\\Config\\Option::set" not in source
+    assert "'support-team'" in source
+    assert "rawurlencode((string) $eventKey)" not in source
+    assert "$isPermanentHttpError" in source
+
+
+def test_event_handlers_preserve_bitrix_event_chain_contract() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
+    assert source.count("? $arguments[0]") == 2
+    assert source.count(": array();") >= 2
 
 
 def test_support_fields_are_declared_and_exposed_to_component() -> None:
@@ -123,6 +133,16 @@ def test_php_source_lints(path: Path) -> None:
             {"ticketId": 741, "messageId": 1201, "eventType": "message.created"},
         ),
         ("command_duplicate_fixture.php", {"messageId": 8002}),
+        (
+            "ticket_set_contract_fixture.php",
+            {
+                "ticketId": 741,
+                "checkRights": "N",
+                "sendEmailToAuthor": "N",
+                "sendEmailToTechsupport": "N",
+                "fieldTicketId": 741,
+            },
+        ),
     ],
 )
 def test_php_contract_fixture_executes(fixture: str, expected: dict[str, object]) -> None:

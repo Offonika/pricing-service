@@ -25,6 +25,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixWriter,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
+    cleanup_uploaded_site_service_request_files,
     choose_site_service_assignee,
     collect_site_service_request_outbound_commands,
     contains_exact_order_token,
@@ -106,6 +107,8 @@ class FakeBitrixApi:
             return {"result": [item] if item else []}
         if method == "crm.timeline.comment.add":
             return {"result": 1}
+        if method == "im.notify.personal.add":
+            return {"result": 1}
         if method == "timeman.status":
             user_id = int(mapped["USER_ID"])
             return {"result": {"STATUS": self.timeman.get(user_id, "ERROR")}}
@@ -186,7 +189,10 @@ def _worker_settings(**overrides) -> Settings:
             "site_ticket_url": "UF_SITE_TICKET_URL",
             "site_history": "UF_SITE_HISTORY",
             "site_sync_status": "UF_SITE_SYNC_STATUS",
+            "site_last_sync_at": "UF_SITE_LAST_SYNC_AT",
             "first_response_due_at": "UF_FIRST_RESPONSE_DUE_AT",
+            "first_response_at": "UF_FIRST_RESPONSE_AT",
+            "site_sync_error": "UF_SITE_SYNC_ERROR",
             "site_reply_text": "UF_SITE_REPLY_TEXT",
             "site_reply_action": "UF_SITE_REPLY_ACTION",
             "site_reply_status": "UF_SITE_REPLY_STATUS",
@@ -194,10 +200,14 @@ def _worker_settings(**overrides) -> Settings:
         "site_service_requests_bitrix_stage_map": {
             "new": "DT1134_55:NEW",
             "success": "DT1134_55:SUCCESS",
+            "failure": "DT1134_55:FAIL",
         },
         "site_service_requests_bitrix_enum_map": {
             "reply_action_send": "SEND",
             "reply_status_pending": "PENDING",
+            "reply_status_sent": "SENT",
+            "reply_status_error": "ERROR",
+            "request_type_warranty": "WARRANTY",
         },
         "site_service_requests_bitrix_root_folder_id": 777,
         "site_service_requests_crm_order_field": "UF_CRM_ORDER",
@@ -227,6 +237,23 @@ def _persist_event(db_session) -> SiteServiceRequestCipher:
     )
     db_session.commit()
     return cipher
+
+
+def _persist_payload(db_session, payload_dict: dict, cipher: SiteServiceRequestCipher) -> None:
+    raw_body = json.dumps(
+        payload_dict,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    accept_site_service_request_event(
+        db_session,
+        payload=SiteServiceRequestEventPayload.model_validate(payload_dict),
+        raw_body=raw_body,
+        payload_sha256=content_sha256(raw_body),
+        cipher=cipher,
+        max_file_bytes=10 * 1024 * 1024,
+    )
+    db_session.commit()
 
 
 def test_normalization_and_exact_order_token() -> None:
@@ -428,9 +455,11 @@ def test_worker_apply_creates_one_item_and_recovers_add_timeout_by_readback(
     item_id, fields = next(iter(api.items.items()))
     assert fields["categoryId"] == "55"
     assert fields["stageId"] == "DT1134_55:NEW"
-    assert fields["UF_CRM_36_IDEMPOTENCYKEY"] == "site-support-ticket:741"
-    assert fields["UF_SITE_TICKET_ID"] == "741"
-    assert "PRIVATE-CUSTOMER-TEXT" in fields["UF_SITE_HISTORY"]
+    assert fields["ufCrm36Idempotencykey"] == "site-support-ticket:741"
+    assert fields["ufSiteTicketId"] == "741"
+    assert "PRIVATE-CUSTOMER-TEXT" in fields["ufSiteHistory"]
+    assert fields["ufSiteSyncError"] == ""
+    assert "None" not in fields.values()
 
     event = db_session.scalar(select(SiteServiceRequestEvent))
     case = db_session.scalar(select(SiteServiceRequestCase))
@@ -472,6 +501,77 @@ def test_worker_creates_service_contact_but_never_sales_lead(db_session) -> None
     assert "crm.lead.add" not in methods
     case = db_session.scalar(select(SiteServiceRequestCase))
     assert case is not None and case.crm_contact_id == 900
+
+
+def test_worker_coalesces_same_case_per_batch_and_round_robins_distinct_cases(
+    db_session,
+) -> None:
+    cipher = _persist_event(db_session)
+    same_case = _event_payload()
+    same_case["eventId"] = "site-support:741:1202"
+    same_case["eventType"] = "ticket.message_added"
+    same_case["history"].append(
+        {
+            "messageId": 1202,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T09:01:00+03:00",
+            "text": "Повторное сообщение",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, same_case, cipher)
+    other_case = _event_payload()
+    other_case["eventId"] = "site-support:742:2201"
+    other_case["ticket"]["id"] = 742
+    other_case["history"][0]["messageId"] = 2201
+    _persist_payload(db_session, other_case, cipher)
+
+    api = FakeBitrixApi()
+    api.phone_contacts = []
+    api.email_contacts = []
+    api.timeman = {1001: "OPENED", 1002: "OPENED"}
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    assert [plan.ticket_id for plan in plans] == [741, 742]
+    assert [plan.assigned_user_id for plan in plans] == [1001, 1002]
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+    )
+    remaining = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 2, tzinfo=UTC),
+    )
+    assert [plan.event_id for plan in remaining] == ["site-support:741:1202"]
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=remaining,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 3, tzinfo=UTC),
+    )
+
+    methods = [method for method, _params in api.calls]
+    assert methods.count("crm.contact.add") == 2
+    assert methods.count("crm.item.add") == 2
 
 
 def test_outbound_command_creation_encrypts_text_and_deduplicates(db_session) -> None:
@@ -551,8 +651,11 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
         db_session,
         settings=settings,
         writer=SiteServiceRequestBitrixWriter(api),
+        cleanup_paths=(cleanup_paths := []),
     )
+    assert path.exists() is True
     db_session.commit()
+    cleanup_uploaded_site_service_request_files(cleanup_paths)
 
     assert results[0]["status"] == "uploaded"
     db_session.refresh(file)
@@ -560,7 +663,7 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     assert file.bitrix_object_id == "2000"
     assert file.temporary_path is None
     assert path.exists() is False
-    assert api.items[int(case.bitrix_item_id)]["UF_CRM_36_CLIENTFILES"] == ["2000"]
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["2000"]
 
 
 def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session) -> None:
@@ -588,8 +691,8 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     assert case is not None and case.bitrix_item_id is not None
     api.items[int(case.bitrix_item_id)].update(
         {
-            "UF_SITE_REPLY_ACTION": "SEND",
-            "UF_SITE_REPLY_TEXT": "Ответ из карточки",
+            "ufSiteReplyAction": "SEND",
+            "ufSiteReplyText": "Ответ из карточки",
         }
     )
 
@@ -607,9 +710,10 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     )
 
     assert first[0]["duplicate"] is False
-    assert second[0]["duplicate"] is True
+    assert second == []
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
-    assert api.items[int(case.bitrix_item_id)]["UF_SITE_REPLY_STATUS"] == "PENDING"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "PENDING"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] == ""
 
 
 def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
@@ -666,6 +770,18 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     assert case.escalated_at is not None
     assert api.items[int(case.bitrix_item_id)]["stageId"] == "DT1134_55:WORK"
     assert [method for method, _params in api.calls].count("crm.timeline.comment.add") == 1
+    assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
+
+    api.items[int(case.bitrix_item_id)]["stageId"] = "DT1134_55:FAIL"
+    failed_close = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 2, tzinfo=UTC),
+    )
+    assert failed_close[0]["closeReverted"] is True
+    assert api.items[int(case.bitrix_item_id)]["stageId"] == "DT1134_55:WORK"
 
 
 def test_support_message_readback_is_required_before_first_response_is_recorded(
@@ -752,3 +868,107 @@ def test_support_message_readback_is_required_before_first_response_is_recorded(
     db_session.refresh(case)
     assert case.first_response_at is not None
     assert case.first_response_at.replace(tzinfo=UTC) == datetime(2026, 8, 22, 8, 0, tzinfo=UTC)
+    item = api.items[int(case.bitrix_item_id)]
+    assert item["ufFirstResponseAt"].startswith("2026-08-22T08:00:00")
+    assert item["ufSiteReplyStatus"] == "SENT"
+    assert item["ufSiteReplyAction"] == ""
+
+
+def test_direct_support_reply_closes_first_response_without_backend_command(db_session) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    initial = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=initial,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+    )
+    payload = _event_payload()
+    payload["eventId"] = "site-support:741:1301"
+    payload["eventType"] = "ticket.message_added"
+    payload["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "support-team",
+            "createdAt": "2026-08-22T11:00:00+03:00",
+            "text": "Прямой ответ поддержки",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, payload, cipher)
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 8, 1, tzinfo=UTC),
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 8, 2, tzinfo=UTC),
+    )
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    assert case.first_response_at is not None
+    assert case.first_response_at.replace(tzinfo=UTC) == datetime(2026, 8, 22, 8, 0, tzinfo=UTC)
+
+
+def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> None:
+    cipher = _persist_event(db_session)
+
+    class FailingApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.duplicate.findbycomm":
+                raise RuntimeError("temporary Bitrix outage")
+            return super().call(method, params, **kwargs)
+
+    api = FailingApi()
+    failures = []
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+        failure_results=failures,
+        failure_writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert plans == []
+    assert len(failures) == 1
+    assert failures[0].status == "retry"
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None and event.status == "retry"
+    assert event.last_error_code == "bitrix_unavailable"
+
+
+def test_dynamic_item_writer_uses_rest_camel_case_and_clears_null_values() -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {}
+    writer = SiteServiceRequestBitrixWriter(api)
+
+    writer.update_item_fields(
+        entity_type_id=1134,
+        item_id=1000,
+        fields={"UF_CRM_36_SITE_REPLY_ACTION": None},
+    )
+
+    assert api.items[1000] == {"ufCrm36SiteReplyAction": ""}

@@ -723,7 +723,7 @@ export interface ExecutiveInstrumentDevice {
 }
 
 export interface ExecutiveInstrumentsResponse {
-  schema_version: 2 | 3 | 4;
+  schema_version: 2 | 3 | 4 | 5;
   generated_at: string;
   source_status: string;
   freshness_status: string;

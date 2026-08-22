@@ -78,11 +78,25 @@ async def require_site_service_request_signature(
     settings: Settings = Depends(get_site_service_request_settings),
 ) -> VerifiedSiteRequest:
     try:
+        body_limit = _site_service_request_body_limit(request, settings=settings)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="request_size_invalid") from exc
+            if declared_length < 0:
+                raise HTTPException(status_code=422, detail="request_size_invalid")
+            if declared_length > body_limit:
+                raise HTTPException(status_code=413, detail="request_body_too_large")
+        body = await request.body()
+        if len(body) > body_limit:
+            raise HTTPException(status_code=413, detail="request_body_too_large")
         verified = verify_site_request(
             db,
             method=request.method,
             path=request.url.path,
-            body=await request.body(),
+            body=body,
             timestamp_header=timestamp_header,
             nonce_header=nonce_header,
             content_sha256_header=content_sha256_header,
@@ -107,6 +121,17 @@ async def require_site_service_request_signature(
             status_code=503,
             detail="site_service_requests_auth_unavailable",
         ) from exc
+
+
+def _site_service_request_body_limit(request: Request, *, settings: Settings) -> int:
+    path = request.url.path
+    if request.method.upper() == "PUT" and "/files/" in path:
+        return settings.site_service_requests_max_file_bytes
+    if request.method.upper() == "POST" and path.endswith("/events"):
+        return settings.site_service_requests_max_event_body_bytes
+    if request.method.upper() == "POST" and path.endswith("/ack"):
+        return settings.site_service_requests_max_ack_body_bytes
+    return settings.site_service_requests_max_ack_body_bytes
 
 
 def require_management_internal_token(

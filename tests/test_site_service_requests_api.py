@@ -327,14 +327,39 @@ def test_event_api_keeps_ingest_disabled_and_encryption_fail_closed(
     assert db_session.scalar(select(func.count(SiteServiceRequestEvent.id))) == 0
 
 
-def test_event_api_rejects_oversized_file_before_persistence(client, db_session) -> None:
+def test_event_api_preserves_case_when_file_metadata_is_oversized(client, db_session) -> None:
     payload = _event_payload()
     payload["history"][0]["files"][0]["size"] = 10 * 1024 * 1024 + 1
     with _api_dependencies(db_session, _settings()):
         response = _post_event(client, payload)
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "file_too_large"}
+    assert response.status_code == 202
+    assert response.json()["missingFileIds"] == []
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    file = db_session.scalar(select(SiteServiceRequestFile))
+    assert case is not None and case.sync_status == "file_sync_error"
+    assert case.last_error_code == "file_too_large"
+    assert event is not None and event.status == "pending"
+    assert file is not None and file.status == "failed"
+    assert file.last_error_code == "file_too_large"
+
+
+def test_event_api_rejects_body_over_configured_limit_without_reserving_nonce(
+    client,
+    db_session,
+) -> None:
+    payload = _event_payload()
+    payload["history"][0]["text"] = "x" * 2048
+    with _api_dependencies(
+        db_session,
+        _settings(site_service_requests_max_event_body_bytes=1024),
+    ):
+        response = _post_event(client, payload)
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "request_body_too_large"}
+    assert db_session.scalar(select(func.count(SiteServiceRequestNonce.id))) == 0
     assert db_session.scalar(select(func.count(SiteServiceRequestEvent.id))) == 0
 
 
@@ -427,8 +452,10 @@ def test_file_api_rejects_unregistered_unsafe_or_changed_content(
     assert changed.status_code == 422
     assert changed.json() == {"detail": "file_hash_mismatch"}
     file = db_session.scalar(select(SiteServiceRequestFile))
-    assert file is not None and file.status == "pending"
+    assert file is not None and file.status == "failed"
+    assert file.last_error_code == "file_hash_mismatch"
     assert file.temporary_path is None
+    assert file.case.sync_status == "file_sync_error"
     assert list(tmp_path.rglob("*.bin")) == []
 
 
@@ -571,6 +598,17 @@ def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(
         }
         failed = _post_command_ack(client, command.id, ack_payload)
         duplicate = _post_command_ack(client, command.id, ack_payload)
+        applied_after_failure = _post_command_ack(
+            client,
+            command.id,
+            {
+                "schemaVersion": 1,
+                "status": "applied",
+                "ticketId": 741,
+                "messageId": 1301,
+                "appliedAt": "2026-08-22T13:00:00+03:00",
+            },
+        )
 
     assert failed.status_code == 200
     assert failed.json() == {
@@ -580,6 +618,8 @@ def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(
     }
     assert duplicate.status_code == 200
     assert duplicate.json()["duplicate"] is True
+    assert applied_after_failure.status_code == 409
+    assert applied_after_failure.json() == {"detail": "command_ack_conflict"}
     db_session.refresh(command)
     assert command.status == "failed"
     assert command.last_error_code == "message_write_failed"

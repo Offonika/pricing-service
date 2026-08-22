@@ -46,7 +46,10 @@ _REQUIRED_WORKER_FIELD_KEYS = {
     "site_ticket_url",
     "site_history",
     "site_sync_status",
+    "site_last_sync_at",
     "first_response_due_at",
+    "first_response_at",
+    "site_sync_error",
 }
 
 
@@ -293,6 +296,14 @@ class SiteServiceRequestBitrixWriter:
             ],
         )
 
+    def notify_user(self, *, user_id: int, message: str) -> None:
+        response = self.api.call(
+            "im.notify.personal.add",
+            [("USER_ID", str(user_id)), ("MESSAGE", message)],
+        )
+        if not response.get("result"):
+            raise RuntimeError("bitrix_notification_failed")
+
     def upload_file(
         self,
         *,
@@ -402,7 +413,10 @@ class SiteServiceRequestBitrixWriter:
             "crm.item.list",
             [
                 ("entityTypeId", str(entity_type_id)),
-                (f"filter[{idempotency_field}]", idempotency_key),
+                (
+                    f"filter[{_bitrix_item_field_name(idempotency_field)}]",
+                    idempotency_key,
+                ),
                 ("select[]", "id"),
             ],
         )
@@ -581,22 +595,32 @@ def build_site_service_request_worker_plans(
     cipher: SiteServiceRequestCipher,
     now: datetime | None = None,
     limit: int | None = None,
+    failure_results: list[SiteServiceRequestWorkerResult] | None = None,
+    failure_writer: SiteServiceRequestBitrixWriter | None = None,
 ) -> list[SiteServiceRequestWorkerPlan]:
     current_time = _as_utc(now or datetime.now(UTC))
     batch_limit = limit or settings.site_service_requests_worker_batch_size
-    events = session.scalars(
-        select(SiteServiceRequestEvent)
-        .where(
+    available = or_(
+        SiteServiceRequestEvent.status == "pending",
+        and_(
+            SiteServiceRequestEvent.status == "retry",
             or_(
-                SiteServiceRequestEvent.status == "pending",
-                and_(
-                    SiteServiceRequestEvent.status == "retry",
-                    or_(
-                        SiteServiceRequestEvent.next_retry_at.is_(None),
-                        SiteServiceRequestEvent.next_retry_at <= current_time,
-                    ),
-                ),
-            )
+                SiteServiceRequestEvent.next_retry_at.is_(None),
+                SiteServiceRequestEvent.next_retry_at <= current_time,
+            ),
+        ),
+    )
+    first_event_per_case = (
+        select(func.min(SiteServiceRequestEvent.id).label("event_id"))
+        .where(available)
+        .group_by(SiteServiceRequestEvent.case_id)
+        .subquery()
+    )
+    event_ids = session.scalars(
+        select(SiteServiceRequestEvent.id)
+        .join(first_event_per_case, first_event_per_case.c.event_id == SiteServiceRequestEvent.id)
+        .where(
+            available,
         )
         .order_by(SiteServiceRequestEvent.created_at, SiteServiceRequestEvent.id)
         .limit(batch_limit)
@@ -610,73 +634,136 @@ def build_site_service_request_worker_plans(
     max_round_robin_seq = int(
         session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0
     )
+    virtual_last_assigned_user_id = (
+        last_assignment.assigned_user_id if last_assignment is not None else None
+    )
+    next_round_robin_seq = max_round_robin_seq + 1
     plans: list[SiteServiceRequestWorkerPlan] = []
-    for offset, event in enumerate(events, start=1):
-        if event.payload_encrypted is None:
-            raise SiteServiceRequestConfigurationError(
-                "site service request event payload is unavailable"
-            )
+    for event_id in event_ids:
         try:
-            payload = SiteServiceRequestEventPayload.model_validate_json(
-                cipher.decrypt(event.payload_encrypted, event_id=event.event_id)
+            event = session.scalar(
+                select(SiteServiceRequestEvent)
+                .where(SiteServiceRequestEvent.id == event_id)
+                .with_for_update(skip_locked=True)
             )
-        except ValidationError as exc:
-            raise SiteServiceRequestConfigurationError(
-                "site service request event payload is invalid"
-            ) from exc
-
-        contact = reader.find_contact(phone=payload.ticket.phone, email=payload.ticket.email)
-        order = reader.find_order(
-            contact_id=contact.contact_id,
-            order_number=payload.ticket.order_number,
-            order_field=settings.site_service_requests_crm_order_field,
-        )
-        statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
-        assignment = decide_site_service_assignment(
-            case=event.case,
-            configured_user_ids=settings.site_service_requests_first_line_user_ids,
-            timeman_statuses=statuses,
-            last_assigned_user_id=(
-                last_assignment.assigned_user_id if last_assignment is not None else None
-            ),
-            next_round_robin_seq=max_round_robin_seq + offset,
-            escalation_user_id=settings.site_service_requests_escalation_user_id,
-            first_response_hours=settings.site_service_requests_first_response_hours,
-            timezone_name=settings.site_service_requests_timezone,
-            now=current_time,
-        )
-        actions = ["sync_bitrix_item"]
-        if contact.status == "not_found":
-            actions.insert(0, "create_service_contact")
-        elif contact.status == "ambiguous":
-            actions.insert(0, "request_manual_contact_match")
-        if order.status == "ambiguous":
-            actions.append("request_manual_order_match")
-        elif order.status == "not_found" and payload.ticket.order_number:
-            actions.append("mark_order_not_found")
-        if assignment.escalated_at and event.case.escalated_at is None:
-            actions.append("escalate_once")
-        plans.append(
-            SiteServiceRequestWorkerPlan(
-                event_id=event.event_id,
-                case_id=event.case_id,
-                ticket_id=payload.ticket.id,
-                contact_status=contact.status,
+            if event is None:
+                continue
+            payload = _decrypt_site_service_request_payload(event, cipher=cipher)
+            case = event.case
+            if case.crm_contact_id is not None:
+                contact = ContactMatch(
+                    status="matched",
+                    contact_id=case.crm_contact_id,
+                    company_id=case.crm_company_id,
+                    candidate_ids=(case.crm_contact_id,),
+                )
+            else:
+                contact = reader.find_contact(
+                    phone=payload.ticket.phone,
+                    email=payload.ticket.email,
+                )
+            order = reader.find_order(
                 contact_id=contact.contact_id,
-                company_id=contact.company_id,
-                order_status=order.status,
-                deal_id=order.deal_id,
-                assignment_state=assignment.state,
-                assigned_user_id=assignment.assigned_user_id,
-                intake_mode=assignment.intake_mode,
-                first_response_due_at=assignment.first_response_due_at,
-                sla_paused_at=assignment.sla_paused_at,
-                escalated_at=assignment.escalated_at,
-                round_robin_seq=assignment.round_robin_seq,
-                escalated=assignment.escalated_at is not None,
-                actions=tuple(actions),
+                order_number=payload.ticket.order_number,
+                order_field=settings.site_service_requests_crm_order_field,
             )
-        )
+            statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
+            assignment = decide_site_service_assignment(
+                case=case,
+                configured_user_ids=settings.site_service_requests_first_line_user_ids,
+                timeman_statuses=statuses,
+                last_assigned_user_id=virtual_last_assigned_user_id,
+                next_round_robin_seq=next_round_robin_seq,
+                escalation_user_id=settings.site_service_requests_escalation_user_id,
+                first_response_hours=settings.site_service_requests_first_response_hours,
+                timezone_name=settings.site_service_requests_timezone,
+                now=current_time,
+            )
+            if case.assigned_user_id is None and assignment.assigned_user_id is not None:
+                virtual_last_assigned_user_id = assignment.assigned_user_id
+                next_round_robin_seq += 1
+            actions = ["sync_bitrix_item"]
+            if contact.status == "not_found":
+                actions.insert(0, "create_service_contact")
+            elif contact.status == "ambiguous":
+                actions.insert(0, "request_manual_contact_match")
+            if order.status == "ambiguous":
+                actions.append("request_manual_order_match")
+            elif order.status == "not_found" and payload.ticket.order_number:
+                actions.append("mark_order_not_found")
+            if assignment.escalated_at and case.escalated_at is None:
+                actions.append("escalate_once")
+            plans.append(
+                SiteServiceRequestWorkerPlan(
+                    event_id=event.event_id,
+                    case_id=event.case_id,
+                    ticket_id=payload.ticket.id,
+                    contact_status=contact.status,
+                    contact_id=contact.contact_id,
+                    company_id=contact.company_id,
+                    order_status=order.status,
+                    deal_id=order.deal_id,
+                    assignment_state=assignment.state,
+                    assigned_user_id=assignment.assigned_user_id,
+                    intake_mode=assignment.intake_mode,
+                    first_response_due_at=assignment.first_response_due_at,
+                    sla_paused_at=assignment.sla_paused_at,
+                    escalated_at=assignment.escalated_at,
+                    round_robin_seq=assignment.round_robin_seq,
+                    escalated=assignment.escalated_at is not None,
+                    actions=tuple(actions),
+                )
+            )
+        except SiteServiceRequestPermanentError as exc:
+            if failure_results is None:
+                raise
+            session.rollback()
+            failure = _record_site_service_request_failure(
+                session,
+                event_id=str(
+                    session.scalar(
+                        select(SiteServiceRequestEvent.event_id).where(
+                            SiteServiceRequestEvent.id == event_id
+                        )
+                    )
+                    or event_id
+                ),
+                error_code=exc.code,
+                permanent=True,
+                now=current_time,
+            )
+            session.commit()
+            _notify_needs_attention_if_required(
+                result=failure,
+                settings=settings,
+                writer=failure_writer,
+            )
+            failure_results.append(failure)
+        except RuntimeError:
+            if failure_results is None:
+                raise
+            session.rollback()
+            stored_event_id = session.scalar(
+                select(SiteServiceRequestEvent.event_id).where(
+                    SiteServiceRequestEvent.id == event_id
+                )
+            )
+            if stored_event_id is None:
+                continue
+            failure = _record_site_service_request_failure(
+                session,
+                event_id=stored_event_id,
+                error_code="bitrix_unavailable",
+                permanent=False,
+                now=current_time,
+            )
+            session.commit()
+            _notify_needs_attention_if_required(
+                result=failure,
+                settings=settings,
+                writer=failure_writer,
+            )
+            failure_results.append(failure)
     return plans
 
 
@@ -727,6 +814,11 @@ def apply_site_service_request_worker_plans(
                 now=current_time,
             )
             session.commit()
+            _notify_needs_attention_if_required(
+                result=result,
+                settings=settings,
+                writer=writer,
+            )
         except RuntimeError:
             session.rollback()
             result = _record_site_service_request_failure(
@@ -737,6 +829,11 @@ def apply_site_service_request_worker_plans(
                 now=current_time,
             )
             session.commit()
+            _notify_needs_attention_if_required(
+                result=result,
+                settings=settings,
+                writer=writer,
+            )
         results.append(result)
     return results
 
@@ -802,6 +899,7 @@ def sync_staged_site_service_request_files(
     writer: SiteServiceRequestBitrixWriter,
     now: datetime | None = None,
     limit: int | None = None,
+    cleanup_paths: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     if not settings.site_service_requests_bitrix_writes_enabled:
         return []
@@ -857,8 +955,9 @@ def sync_staged_site_service_request_files(
             file.status = "uploaded"
             file.last_error_code = None
             file.updated_at = current_time
-            path.unlink(missing_ok=True)
             file.temporary_path = None
+            if cleanup_paths is not None:
+                cleanup_paths.append(path)
             results.append(
                 {
                     "fileId": file.source_file_id,
@@ -871,6 +970,18 @@ def sync_staged_site_service_request_files(
             file.status = "failed"
             file.last_error_code = exc.code
             file.updated_at = current_time
+            file.case.sync_status = "file_sync_error"
+            file.case.last_error_code = "file_sync_error"
+            file.case.updated_at = current_time
+            file.temporary_path = None
+            if cleanup_paths is not None:
+                cleanup_paths.append(path)
+            _write_file_sync_error_to_item(
+                file=file,
+                settings=settings,
+                writer=writer,
+                field_map=field_map,
+            )
             results.append(
                 {
                     "fileId": file.source_file_id,
@@ -882,6 +993,15 @@ def sync_staged_site_service_request_files(
             file.status = "failed"
             file.last_error_code = "file_sync_error"
             file.updated_at = current_time
+            file.case.sync_status = "file_sync_error"
+            file.case.last_error_code = "file_sync_error"
+            file.case.updated_at = current_time
+            _write_file_sync_error_to_item(
+                file=file,
+                settings=settings,
+                writer=writer,
+                field_map=field_map,
+            )
             results.append(
                 {
                     "fileId": file.source_file_id,
@@ -891,6 +1011,40 @@ def sync_staged_site_service_request_files(
             )
     session.flush()
     return results
+
+
+def cleanup_uploaded_site_service_request_files(paths: list[Path]) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+def _write_file_sync_error_to_item(
+    *,
+    file: SiteServiceRequestFile,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    field_map: dict[str, str],
+) -> None:
+    if file.case.bitrix_item_id is None:
+        return
+    sync_status_value = settings.site_service_requests_bitrix_enum_map.get(
+        "sync_status_file_sync_error",
+        "file_sync_error",
+    )
+    try:
+        writer.update_item_fields(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=int(file.case.bitrix_item_id),
+            fields={
+                field_map["site_sync_status"]: sync_status_value,
+                field_map["site_sync_error"]: "file_sync_error",
+            },
+        )
+    except RuntimeError:
+        return
 
 
 def collect_site_service_request_outbound_commands(
@@ -916,7 +1070,9 @@ def collect_site_service_request_outbound_commands(
     enum_map = settings.site_service_requests_bitrix_enum_map
     send_value = str(enum_map.get("reply_action_send") or "").strip()
     pending_value = str(enum_map.get("reply_status_pending") or "").strip()
-    if not send_value or not pending_value:
+    sent_value = str(enum_map.get("reply_status_sent") or "").strip()
+    error_value = str(enum_map.get("reply_status_error") or "").strip()
+    if not send_value or not pending_value or not sent_value or not error_value:
         raise SiteServiceRequestConfigurationError(
             "site service request outbound enum mapping is incomplete"
         )
@@ -946,10 +1102,17 @@ def collect_site_service_request_outbound_commands(
             cipher=cipher,
             now=now,
         )
+        reply_status = error_value if command.status == "failed" else pending_value
         writer.update_item_fields(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
             item_id=int(case.bitrix_item_id),
-            fields={field_map["site_reply_status"]: pending_value},
+            fields={
+                field_map["site_reply_action"]: None,
+                field_map["site_reply_status"]: reply_status,
+                field_map["site_sync_error"]: (
+                    command.last_error_code if command.status == "failed" else None
+                ),
+            },
         )
         results.append(
             {
@@ -976,6 +1139,8 @@ def reconcile_site_service_request_assignments(
         return []
     field_map = resolved_site_service_request_field_map(settings)
     success_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("success") or "")
+    failure_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("failure") or "")
+    closed_stage_ids = {value for value in (success_stage_id, failure_stage_id) if value}
     fallback_open_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("new") or "")
     current_time = _as_utc(now or datetime.now(UTC))
     statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
@@ -998,8 +1163,12 @@ def reconcile_site_service_request_assignments(
     max_sequence = int(
         session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0
     )
+    virtual_last_assigned_user_id = (
+        last_assignment.assigned_user_id if last_assignment is not None else None
+    )
+    next_round_robin_seq = max_sequence + 1
     results: list[dict[str, Any]] = []
-    for offset, case in enumerate(cases, start=1):
+    for case in cases:
         was_escalated = case.escalated_at is not None
         item = writer.get_item(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
@@ -1007,21 +1176,22 @@ def reconcile_site_service_request_assignments(
         )
         current_stage_id = str(_item_field_value(item, "stageId") or "")
         close_reverted = False
-        if current_stage_id and current_stage_id != success_stage_id:
+        if current_stage_id and current_stage_id not in closed_stage_ids:
             case.last_open_stage_id = current_stage_id
         decision = decide_site_service_assignment(
             case=case,
             configured_user_ids=settings.site_service_requests_first_line_user_ids,
             timeman_statuses=statuses,
-            last_assigned_user_id=(
-                last_assignment.assigned_user_id if last_assignment is not None else None
-            ),
-            next_round_robin_seq=max_sequence + offset,
+            last_assigned_user_id=virtual_last_assigned_user_id,
+            next_round_robin_seq=next_round_robin_seq,
             escalation_user_id=settings.site_service_requests_escalation_user_id,
             first_response_hours=settings.site_service_requests_first_response_hours,
             timezone_name=settings.site_service_requests_timezone,
             now=current_time,
         )
+        if case.assigned_user_id is None and decision.assigned_user_id is not None:
+            virtual_last_assigned_user_id = decision.assigned_user_id
+            next_round_robin_seq += 1
         case.assigned_user_id = decision.assigned_user_id
         case.assignment_state = decision.state
         case.intake_mode = decision.intake_mode
@@ -1033,7 +1203,7 @@ def reconcile_site_service_request_assignments(
         fields: dict[str, Any] = {
             field_map["first_response_due_at"]: decision.first_response_due_at,
         }
-        if success_stage_id and current_stage_id == success_stage_id:
+        if current_stage_id in closed_stage_ids:
             return_stage_id = case.last_open_stage_id or fallback_open_stage_id
             if return_stage_id:
                 fields["stageId"] = return_stage_id
@@ -1052,6 +1222,14 @@ def reconcile_site_service_request_assignments(
                 item_id=int(case.bitrix_item_id),
                 comment="SLA первого ответа просрочен. Ответственность передана резерву.",
             )
+            if settings.site_service_requests_escalation_user_id is not None:
+                writer.notify_user(
+                    user_id=settings.site_service_requests_escalation_user_id,
+                    message=(
+                        "Просрочен SLA первого ответа по сервисному обращению "
+                        f"сайта #{case.source_ticket_id}."
+                    ),
+                )
         results.append(
             {
                 "caseId": case.id,
@@ -1086,16 +1264,34 @@ def _apply_site_service_request_worker_plan(
     if event is None or event.payload_encrypted is None:
         raise SiteServiceRequestPermanentError("event_payload_unavailable")
     payload = _decrypt_site_service_request_payload(event, cipher=cipher)
-    case = event.case
-    _confirm_site_service_request_command_readback(
+    case = session.scalar(
+        select(SiteServiceRequestCase)
+        .where(SiteServiceRequestCase.id == event.case_id)
+        .with_for_update()
+    )
+    if case is None:
+        raise SiteServiceRequestPermanentError("case_not_found")
+    confirmed_outbound_reply = _confirm_site_service_request_command_readback(
         session,
         case=case,
         payload=payload,
     )
 
-    contact_id = plan.contact_id
-    company_id = plan.company_id
-    contact_status = plan.contact_status
+    if case.crm_contact_id is not None:
+        contact = ContactMatch(
+            status="matched",
+            contact_id=case.crm_contact_id,
+            company_id=case.crm_company_id,
+            candidate_ids=(case.crm_contact_id,),
+        )
+    else:
+        contact = reader.find_contact(
+            phone=payload.ticket.phone,
+            email=payload.ticket.email,
+        )
+    contact_id = contact.contact_id
+    company_id = contact.company_id
+    contact_status = contact.status
     if contact_status == "not_found":
         contact_id = writer.create_contact(payload)
         company_id = None
@@ -1109,18 +1305,61 @@ def _apply_site_service_request_worker_plan(
     case.crm_contact_id = contact_id
     case.crm_company_id = company_id
     case.crm_deal_id = order.deal_id
-    case.assigned_user_id = plan.assigned_user_id
-    case.assignment_state = plan.assignment_state
-    case.intake_mode = plan.intake_mode
-    case.first_response_due_at = plan.first_response_due_at
-    case.sla_paused_at = plan.sla_paused_at
-    case.escalated_at = plan.escalated_at
-    case.round_robin_seq = plan.round_robin_seq
+
+    last_assignment = session.scalar(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.assigned_user_id.is_not(None),
+            SiteServiceRequestCase.id != case.id,
+        )
+        .order_by(SiteServiceRequestCase.round_robin_seq.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    max_round_robin_seq = int(
+        session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0
+    )
+    timeman_statuses = reader.timeman_statuses(
+        settings.site_service_requests_first_line_user_ids
+    )
+    was_escalated = case.escalated_at is not None
+    assignment = decide_site_service_assignment(
+        case=case,
+        configured_user_ids=settings.site_service_requests_first_line_user_ids,
+        timeman_statuses=timeman_statuses,
+        last_assigned_user_id=(
+            last_assignment.assigned_user_id if last_assignment is not None else None
+        ),
+        next_round_robin_seq=max_round_robin_seq + 1,
+        escalation_user_id=settings.site_service_requests_escalation_user_id,
+        first_response_hours=settings.site_service_requests_first_response_hours,
+        timezone_name=settings.site_service_requests_timezone,
+        now=now,
+    )
+    case.assigned_user_id = assignment.assigned_user_id
+    case.assignment_state = assignment.state
+    case.intake_mode = assignment.intake_mode
+    case.first_response_due_at = assignment.first_response_due_at
+    case.sla_paused_at = assignment.sla_paused_at
+    case.escalated_at = assignment.escalated_at
+    case.round_robin_seq = assignment.round_robin_seq
+
+    file_error_code = session.scalar(
+        select(SiteServiceRequestFile.last_error_code)
+        .where(
+            SiteServiceRequestFile.case_id == case.id,
+            SiteServiceRequestFile.status == "failed",
+        )
+        .order_by(SiteServiceRequestFile.updated_at.desc(), SiteServiceRequestFile.id.desc())
+        .limit(1)
+    )
 
     sync_status, error_code = _case_sync_status(
         contact_status=contact_status,
         order_status=order.status,
         has_order_number=bool(payload.ticket.order_number),
+        assignment_state=assignment.state,
+        file_error_code=file_error_code,
     )
     fields = _site_service_request_item_fields(
         payload=payload,
@@ -1128,6 +1367,9 @@ def _apply_site_service_request_worker_plan(
         field_map=field_map,
         sync_status=sync_status,
         settings=settings,
+        now=now,
+        error_code=error_code,
+        confirmed_outbound_reply=confirmed_outbound_reply,
     )
     idempotency_key = f"site-support-ticket:{payload.ticket.id}"
     item_id = writer.sync_item(
@@ -1154,6 +1396,21 @@ def _apply_site_service_request_worker_plan(
     event.processed_at = now
     event.updated_at = now
     event.payload_encrypted = None
+    escalated_now = not was_escalated and assignment.escalated_at is not None
+    if escalated_now:
+        writer.add_timeline_comment(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=item_id,
+            comment="SLA первого ответа просрочен. Ответственность передана резерву.",
+        )
+        if settings.site_service_requests_escalation_user_id is not None:
+            writer.notify_user(
+                user_id=settings.site_service_requests_escalation_user_id,
+                message=(
+                    "Просрочен SLA первого ответа по сервисному обращению "
+                    f"сайта #{case.source_ticket_id}."
+                ),
+            )
     session.flush()
     return SiteServiceRequestWorkerResult(
         event_id=event.event_id,
@@ -1168,14 +1425,24 @@ def _confirm_site_service_request_command_readback(
     *,
     case: SiteServiceRequestCase,
     payload: SiteServiceRequestEventPayload,
-) -> None:
+) -> bool:
     support_messages = {
         message.message_id: _as_utc(message.created_at)
         for message in payload.history
         if message.author_kind in {"support-team", "support_team"}
     }
     if not support_messages:
-        return
+        return False
+    first_support_response_at = min(support_messages.values())
+    if (
+        case.first_response_at is None
+        or first_support_response_at < _as_utc(case.first_response_at)
+    ):
+        case.first_response_at = first_support_response_at
+    case.latest_outbound_message_id = max(
+        case.latest_outbound_message_id or 0,
+        max(support_messages),
+    )
     commands = session.scalars(
         select(SiteServiceRequestCommand).where(
             SiteServiceRequestCommand.case_id == case.id,
@@ -1189,10 +1456,11 @@ def _confirm_site_service_request_command_readback(
         if command.source_message_id in support_messages
     ]
     if not confirmed_at:
-        return
+        return False
     first_response_at = min(confirmed_at)
     if case.first_response_at is None or first_response_at < _as_utc(case.first_response_at):
         case.first_response_at = first_response_at
+    return True
 
 
 def _record_site_service_request_failure(
@@ -1238,6 +1506,27 @@ def _record_site_service_request_failure(
     )
 
 
+def _notify_needs_attention_if_required(
+    *,
+    result: SiteServiceRequestWorkerResult,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter | None,
+) -> None:
+    if (
+        result.status != "needs_attention"
+        or writer is None
+        or settings.site_service_requests_escalation_user_id is None
+    ):
+        return
+    writer.notify_user(
+        user_id=settings.site_service_requests_escalation_user_id,
+        message=(
+            "Интеграция сервисных обращений требует внимания: "
+            f"событие {result.event_id}, код {result.error_code or 'unknown'}."
+        ),
+    )
+
+
 def _decrypt_site_service_request_payload(
     event: SiteServiceRequestEvent,
     *,
@@ -1260,6 +1549,9 @@ def _site_service_request_item_fields(
     field_map: dict[str, str],
     sync_status: str,
     settings: Settings,
+    now: datetime,
+    error_code: str | None,
+    confirmed_outbound_reply: bool,
 ) -> dict[str, Any]:
     latest_customer_text = next(
         (
@@ -1301,11 +1593,28 @@ def _site_service_request_item_fields(
             f"sync_status_{sync_status}",
             sync_status,
         ),
+        field_map["site_last_sync_at"]: now,
         field_map["first_response_due_at"]: case.first_response_due_at,
+        field_map["first_response_at"]: case.first_response_at,
+        field_map["site_sync_error"]: error_code,
     }
+    if confirmed_outbound_reply:
+        sent_value = str(
+            settings.site_service_requests_bitrix_enum_map.get("reply_status_sent") or ""
+        ).strip()
+        if not sent_value:
+            raise SiteServiceRequestConfigurationError(
+                "site service request sent reply enum mapping is incomplete"
+            )
+        fields[field_map["site_reply_action"]] = None
+        fields[field_map["site_reply_status"]] = sent_value
     if case.assigned_user_id is not None:
         fields["assignedById"] = case.assigned_user_id
-    return {key: value for key, value in fields.items() if value is not None}
+    rendered_fields = {key: value for key, value in fields.items() if value is not None}
+    rendered_fields[field_map["site_sync_error"]] = error_code
+    if confirmed_outbound_reply:
+        rendered_fields[field_map["site_reply_action"]] = None
+    return rendered_fields
 
 
 def _case_sync_status(
@@ -1313,13 +1622,19 @@ def _case_sync_status(
     contact_status: str,
     order_status: str,
     has_order_number: bool,
+    assignment_state: str,
+    file_error_code: str | None,
 ) -> tuple[str, str | None]:
+    if file_error_code:
+        return "file_sync_error", "file_sync_error"
     if contact_status == "ambiguous":
         return "client_match_required", "client_match_required"
     if order_status == "ambiguous":
         return "order_match_required", "order_match_required"
     if has_order_number and order_status == "not_found":
         return "order_not_found", "order_not_found"
+    if assignment_state == "waiting":
+        return "assignment_waiting", "assignment_waiting"
     return "synced", None
 
 
@@ -1369,17 +1684,33 @@ def _item_params(*, entity_type_id: int, fields: dict[str, Any]) -> list[tuple[s
 def _field_params(fields: dict[str, Any]) -> list[tuple[str, str]]:
     params: list[tuple[str, str]] = []
     for field, value in fields.items():
+        api_field = _bitrix_item_field_name(field)
         if isinstance(value, (list, tuple, set)):
-            params.extend((f"fields[{field}][]", str(item)) for item in value)
+            params.extend(
+                (f"fields[{api_field}][]", "" if item is None else str(item))
+                for item in value
+            )
             continue
-        if isinstance(value, datetime):
+        if value is None:
+            rendered = ""
+        elif isinstance(value, datetime):
             rendered = value.isoformat()
         elif isinstance(value, bool):
             rendered = "Y" if value else "N"
         else:
             rendered = str(value)
-        params.append((f"fields[{field}]", rendered))
+        params.append((f"fields[{api_field}]", rendered))
     return params
+
+
+def _bitrix_item_field_name(value: str) -> str:
+    normalized = str(value).strip()
+    if not normalized.upper().startswith("UF_"):
+        return normalized
+    parts = [part for part in normalized.lower().split("_") if part]
+    if not parts:
+        return normalized
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
 
 
 def _disk_file_from_payload(payload: dict[str, Any]) -> tuple[str, str | None] | None:

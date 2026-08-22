@@ -49,6 +49,7 @@ router = APIRouter()
     responses={
         401: {"description": "Invalid or missing site HMAC authentication"},
         409: {"description": "Nonce replay or idempotency conflict"},
+        413: {"description": "Request body exceeds the configured limit"},
         503: {"description": "Ingest, encryption, or storage is unavailable"},
     },
 )
@@ -141,11 +142,17 @@ def upload_event_file(
         db.rollback()
         raise HTTPException(status_code=404, detail=exc.code) from exc
     except SiteServiceRequestPayloadError as exc:
-        db.rollback()
+        if exc.persist_state:
+            db.commit()
+        else:
+            db.rollback()
         code = 413 if exc.code == "file_too_large" else 422
         raise HTTPException(status_code=code, detail=exc.code) from exc
     except SiteServiceRequestConflictError as exc:
-        db.rollback()
+        if exc.persist_state:
+            db.commit()
+        else:
+            db.rollback()
         raise HTTPException(status_code=409, detail=exc.code) from exc
     except SiteServiceRequestStorageError as exc:
         db.rollback()

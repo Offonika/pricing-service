@@ -175,6 +175,7 @@ def status_display_label(status: AssortmentStatus | str | None) -> str:
     legacy = ASSORTMENT_STATUS_LEGACY_LABELS.get(normalized, "")
     return f"{label} ({legacy})" if legacy and legacy != label else label
 
+
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
 # человеческих названий: обмен сломается, если отправить в справочник 1С
 # незнакомую строку.
@@ -233,6 +234,7 @@ class AssortmentLifecycleInput:
     nomenclature_code: str
     created_at: date | None = None
     first_supplier_order_at: date | None = None
+    historical_first_cargo_handoff_at: date | None = None
     supplier_order_cargo_handoff_dates: tuple[date, ...] = ()
     receipt_dates: tuple[date, ...] = ()
     # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
@@ -422,8 +424,55 @@ def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDeci
 
     cargo_dates = tuple(sorted(item.supplier_order_cargo_handoff_dates))
     receipt_dates = tuple(sorted(item.receipt_dates))
-    first_cargo_at = cargo_dates[0] if cargo_dates else None
+    first_cargo_at = min(
+        (
+            value
+            for value in (
+                cargo_dates[0] if cargo_dates else None,
+                item.historical_first_cargo_handoff_at,
+            )
+            if value is not None
+        ),
+        default=None,
+    )
     second_cargo_at = cargo_dates[1] if len(cargo_dates) >= 2 else None
+
+    # Продажа сильнее неполного закупочного окна. История заказов поставщику
+    # детально хранится за ограниченный период, а первая продажа собирается за
+    # всё время; поэтому товар с доказанной продажей нельзя возвращать в
+    # «Рассматриваем» только из-за отсутствия свежего заказа/cargo.
+    if item.first_sale_at is not None and _demand_data_available(item):
+        status, reason_code, reason_text = _demand_stage(item)
+        return _decision(
+            item,
+            status,
+            reason_code,
+            reason_text=reason_text,
+            auto_order_allowed=status in (AssortmentStatus.SALE, AssortmentStatus.WORKING),
+            changed_at=item.manual_changed_at,
+            approved_by=item.manual_approved_by.strip(),
+        )
+
+    first_supplier_activity_at = first_cargo_at or item.first_supplier_order_at
+    if (
+        first_supplier_activity_at is not None
+        and item.first_sale_at is None
+        and item.as_of is not None
+        and (item.as_of - first_supplier_activity_at).days > SALES_START_MAX_AGE_DAYS
+    ):
+        silent_days = (item.as_of - first_supplier_activity_at).days
+        return _decision(
+            item,
+            AssortmentStatus.WORKING,
+            "historical_supplier_activity_without_sales",
+            reason_text=(
+                f"Первое закупочное движение было {silent_days} дней назад, а продаж "
+                "не зарегистрировано. Старый товар не возвращается в ранние стадии; "
+                "нужен ручной разбор актуальности."
+            ),
+            manual_review_required=True,
+            auto_order_allowed=False,
+        )
 
     if first_cargo_at is not None:
         if _demand_data_available(item):

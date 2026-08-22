@@ -4,6 +4,7 @@ import argparse
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixWriter,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
+    cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
     reconcile_site_service_request_assignments,
     resolved_site_service_request_field_map,
@@ -75,23 +77,32 @@ def main(
     resolved_api = api or BitrixRestClient(str(settings.site_service_requests_bitrix_webhook_url))
     reader = SiteServiceRequestBitrixReader(resolved_api)
     cipher = build_site_service_request_cipher(settings)
+    cleanup_paths: list[Path] = []
     with session_scope_factory(read_only=not args.apply) as session:
+        planning_failures: list[Any] = []
         plans = build_site_service_request_worker_plans(
             session,
             settings=settings,
             reader=reader,
             cipher=cipher,
             limit=args.limit,
+            failure_results=planning_failures if args.apply else None,
+            failure_writer=(
+                SiteServiceRequestBitrixWriter(resolved_api) if args.apply else None
+            ),
         )
         if args.apply:
-            results = apply_site_service_request_worker_plans(
-                session,
-                plans=plans,
-                settings=settings,
-                reader=reader,
-                writer=SiteServiceRequestBitrixWriter(resolved_api),
-                cipher=cipher,
-            )
+            results = [
+                *planning_failures,
+                *apply_site_service_request_worker_plans(
+                    session,
+                    plans=plans,
+                    settings=settings,
+                    reader=reader,
+                    writer=SiteServiceRequestBitrixWriter(resolved_api),
+                    cipher=cipher,
+                ),
+            ]
             assignments = reconcile_site_service_request_assignments(
                 session,
                 settings=settings,
@@ -104,6 +115,7 @@ def main(
                 settings=settings,
                 writer=SiteServiceRequestBitrixWriter(resolved_api),
                 limit=args.limit,
+                cleanup_paths=cleanup_paths,
             )
             commands = collect_site_service_request_outbound_commands(
                 session,
@@ -134,6 +146,8 @@ def main(
                 "count": len(plans),
                 "plans": [safe_site_service_request_plan_dict(plan) for plan in plans],
             }
+    if cleanup_paths:
+        cleanup_uploaded_site_service_request_files(cleanup_paths)
     _print_result(result, compact=args.compact)
     return result
 

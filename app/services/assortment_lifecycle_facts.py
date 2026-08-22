@@ -205,6 +205,7 @@ def build_assortment_lifecycle_fact_records(
 
     supplier_dates: dict[str, list[date]] = defaultdict(list)
     cargo_dates: dict[str, list[date]] = defaultdict(list)
+    historical_cargo_dates: dict[str, list[date]] = defaultdict(list)
     line_prices: dict[str, list[Decimal]] = defaultdict(list)
     for row in supplier_order_rows:
         key = _resolve_event_key(row, code_by_key, key_by_code)
@@ -219,7 +220,12 @@ def build_assortment_lifecycle_fact_records(
         if order_date is not None:
             supplier_dates[key].append(order_date)
         if cargo_date is not None:
-            cargo_dates[key].append(cargo_date)
+            if bool(row.get("historical_aggregate")):
+                historical_cargo_dates[key].append(cargo_date)
+            else:
+                cargo_dates[key].append(cargo_date)
+        if bool(row.get("historical_aggregate")):
+            continue
         price = _decimal(
             row.get("line_price") or row.get("price") or row.get("item_value") or row.get("cost")
         )
@@ -274,6 +280,9 @@ def build_assortment_lifecycle_fact_records(
             "created_at": _json_date(_date(item.get("created_at")) or card_created_at),
             "card_created_at": _json_date(card_created_at),
             "first_supplier_order_at": _json_date(first_supplier_order_at),
+            "historical_first_cargo_handoff_at": _json_date(
+                _min_date(historical_cargo_dates.get(key, ()))
+            ),
             "supplier_order_cargo_handoff_dates": [
                 _json_date(value) for value in sorted(set(cargo_dates.get(key, ())))
             ],
@@ -605,6 +614,17 @@ def fetch_onec_lifecycle_source_rows(
         cargo_alias="cargo_handoff_date",
         value_alias="line_price",
     )
+    # Детальные строки ограничены рабочим окном (обычно 24 месяца), но факт
+    # первого движения нельзя терять: иначе старый товар без свежих документов
+    # снова выглядит как только что созданный. Добавляем по одной all-time
+    # агрегированной строке на SKU; дубли дат ниже безопасно схлопываются.
+    supplier_rows.extend(
+        _fetch_first_document_event_rows(
+            engine,
+            supplier_mapping,
+            allowed_refs=allowed_refs,
+        )
+    )
     receipt_rows = _fetch_document_line_rows(
         engine,
         receipt_mapping,
@@ -915,6 +935,49 @@ def _fetch_document_line_rows(
             if value is not None:
                 item[value_alias] = _json_decimal(value)
         result.append(item)
+    return result
+
+
+def _fetch_first_document_event_rows(
+    engine: Engine,
+    mapping: DocumentLineMapping,
+    *,
+    allowed_refs: set[str],
+) -> list[dict[str, Any]]:
+    refs = sorted(allowed_refs)
+    cargo_select = ""
+    if mapping.cargo_handoff_column:
+        cargo_column = f"doc.{_ident(mapping.cargo_handoff_column)}"
+        cargo_select = (
+            f", MIN(CASE WHEN {cargo_column} > CONVERT(datetime, '17530101', 112) "
+            f"THEN {cargo_column} END) AS first_cargo_handoff_date"
+        )
+    query = text(f"""
+        SELECT
+            CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
+                AS nomenclature_ref,
+            MIN(doc.{_ident(mapping.document_date_column)}) AS first_document_date
+            {cargo_select}
+        FROM dbo.{_ident(mapping.line_table)} AS line WITH (NOLOCK)
+        JOIN dbo.{_ident(mapping.document_table)} AS doc WITH (NOLOCK)
+            ON doc.{_ident(mapping.document_id_column)} = line.{_ident(mapping.line_document_column)}
+        WHERE doc.{_ident(mapping.marked_column)} = 0x00
+          AND doc.{_ident(mapping.posted_column)} = 0x01
+          AND CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1) IN :refs
+        GROUP BY CONVERT(varchar(34), line.{_ident(mapping.line_nomenclature_column)}, 1)
+        """).bindparams(bindparam("refs", expanding=True))
+    result: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        for refs_chunk in _chunks(refs, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"refs": refs_chunk}).mappings():
+                item = {
+                    "nomenclature_ref": _clean(row.get("nomenclature_ref")),
+                    "order_date": _json_date(_date(row.get("first_document_date"))),
+                    "cargo_handoff_date": _json_date(_date(row.get("first_cargo_handoff_date"))),
+                    "historical_aggregate": True,
+                }
+                if item["nomenclature_ref"] and item["order_date"]:
+                    result.append(item)
     return result
 
 

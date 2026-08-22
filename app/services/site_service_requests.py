@@ -33,9 +33,10 @@ class SiteServiceRequestConfigurationError(RuntimeError):
 
 
 class SiteServiceRequestConflictError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, persist_state: bool = False):
         super().__init__(code)
         self.code = code
+        self.persist_state = persist_state
 
 
 class SiteServiceRequestNotFoundError(RuntimeError):
@@ -45,9 +46,10 @@ class SiteServiceRequestNotFoundError(RuntimeError):
 
 
 class SiteServiceRequestPayloadError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, persist_state: bool = False):
         super().__init__(code)
         self.code = code
+        self.persist_state = persist_state
 
 
 class SiteServiceRequestStorageError(RuntimeError):
@@ -140,7 +142,6 @@ def accept_site_service_request_event(
     max_file_bytes: int,
     now: datetime | None = None,
 ) -> AcceptedSiteServiceRequestEvent:
-    validate_site_service_request_files(payload, max_file_bytes=max_file_bytes)
     existing_event = session.scalar(
         select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == payload.event_id)
     )
@@ -206,6 +207,10 @@ def accept_site_service_request_event(
                 current_time=current_time,
             )
             session.flush()
+            file_error_code = _case_file_error_code(session, case_id=case.id)
+            if file_error_code:
+                case.sync_status = "file_sync_error"
+                case.last_error_code = file_error_code
     except IntegrityError:
         concurrent_event = session.scalar(
             select(SiteServiceRequestEvent).where(
@@ -228,17 +233,6 @@ def accept_site_service_request_event(
     )
 
 
-def validate_site_service_request_files(
-    payload: SiteServiceRequestEventPayload,
-    *,
-    max_file_bytes: int,
-) -> None:
-    for message in payload.history:
-        for file in message.files:
-            if file.size > max_file_bytes:
-                raise SiteServiceRequestConflictError("file_too_large")
-
-
 def stage_site_service_request_file(
     session: Session,
     *,
@@ -253,19 +247,6 @@ def stage_site_service_request_file(
     max_file_bytes: int,
     now: datetime | None = None,
 ) -> StagedSiteServiceRequestFile:
-    normalized_filename = _normalize_safe_filename(safe_filename)
-    normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
-    if not normalized_mime_type:
-        raise SiteServiceRequestPayloadError("file_mime_type_invalid")
-    if declared_size < 0 or declared_size != len(body):
-        raise SiteServiceRequestPayloadError("file_size_mismatch")
-    if declared_size > max_file_bytes:
-        raise SiteServiceRequestPayloadError("file_too_large")
-
-    calculated_sha256 = hashlib.sha256(body).hexdigest()
-    if calculated_sha256 != body_sha256:
-        raise SiteServiceRequestPayloadError("file_hash_mismatch")
-
     event = session.scalar(
         select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == event_id)
     )
@@ -276,6 +257,7 @@ def stage_site_service_request_file(
         select(SiteServiceRequestFile)
         .where(
             SiteServiceRequestFile.case_id == event.case_id,
+            SiteServiceRequestFile.source_message_id == event.source_message_id,
             SiteServiceRequestFile.source_file_id == file_id,
         )
         .limit(2)
@@ -286,14 +268,33 @@ def stage_site_service_request_file(
         raise SiteServiceRequestConflictError("file_identity_ambiguous")
     file = files[0]
 
-    if (
-        file.safe_filename != normalized_filename
-        or file.mime_type.strip().lower() != normalized_mime_type
-        or file.byte_size != declared_size
-    ):
-        raise SiteServiceRequestConflictError("file_metadata_conflict")
-    if file.sha256 != calculated_sha256:
-        raise SiteServiceRequestPayloadError("file_hash_mismatch")
+    try:
+        normalized_filename = _normalize_safe_filename(safe_filename)
+        normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
+        if not normalized_mime_type:
+            raise SiteServiceRequestPayloadError("file_mime_type_invalid")
+        if declared_size < 0 or declared_size != len(body):
+            raise SiteServiceRequestPayloadError("file_size_mismatch")
+        if declared_size > max_file_bytes:
+            raise SiteServiceRequestPayloadError("file_too_large")
+
+        calculated_sha256 = hashlib.sha256(body).hexdigest()
+        if calculated_sha256 != body_sha256:
+            raise SiteServiceRequestPayloadError("file_hash_mismatch")
+
+        if (
+            file.safe_filename != normalized_filename
+            or file.mime_type.strip().lower() != normalized_mime_type
+            or file.byte_size != declared_size
+        ):
+            raise SiteServiceRequestConflictError("file_metadata_conflict")
+        if file.sha256 != calculated_sha256:
+            raise SiteServiceRequestPayloadError("file_hash_mismatch")
+    except (SiteServiceRequestPayloadError, SiteServiceRequestConflictError) as exc:
+        _mark_file_sync_error(file, error_code=exc.code, now=now)
+        session.flush()
+        exc.persist_state = True
+        raise
 
     if file.status == "uploaded":
         return StagedSiteServiceRequestFile(
@@ -328,6 +329,10 @@ def stage_site_service_request_file(
     file.status = "staged"
     file.last_error_code = None
     file.updated_at = _as_utc(now or datetime.now(UTC))
+    if _case_file_error_code(session, case_id=file.case_id) is None:
+        if file.case.sync_status == "file_sync_error":
+            file.case.sync_status = "pending"
+            file.case.last_error_code = None
     return StagedSiteServiceRequestFile(
         event_id=event_id,
         file_id=file_id,
@@ -433,6 +438,8 @@ def acknowledge_site_service_request_command(
         assert payload.applied_at is not None
         if payload.ticket_id != command.case.source_ticket_id:
             raise SiteServiceRequestConflictError("command_ticket_conflict")
+        if command.status == "failed":
+            raise SiteServiceRequestConflictError("command_ack_conflict")
         if command.status == "applied":
             if command.source_message_id != payload.message_id:
                 raise SiteServiceRequestConflictError("command_ack_conflict")
@@ -586,8 +593,7 @@ def _upsert_file_metadata(
     missing_file_ids: set[int] = set()
     for message in payload.history:
         for file in message.files:
-            if file.size > max_file_bytes:
-                raise SiteServiceRequestConflictError("file_too_large")
+            is_oversized = file.size > max_file_bytes
             existing = session.scalar(
                 select(SiteServiceRequestFile).where(
                     SiteServiceRequestFile.source_message_id == message.message_id,
@@ -597,7 +603,11 @@ def _upsert_file_metadata(
             if existing is not None:
                 if existing.sha256 != file.sha256 or existing.byte_size != file.size:
                     raise SiteServiceRequestConflictError("file_metadata_conflict")
-                if existing.status not in {"staged", "uploaded"}:
+                if is_oversized:
+                    existing.status = "failed"
+                    existing.last_error_code = "file_too_large"
+                    existing.updated_at = current_time
+                elif existing.status == "pending":
                     missing_file_ids.add(file.file_id)
                 continue
             session.add(
@@ -609,12 +619,14 @@ def _upsert_file_metadata(
                     mime_type=file.mime_type,
                     byte_size=file.size,
                     sha256=file.sha256,
-                    status="pending",
+                    status="failed" if is_oversized else "pending",
+                    last_error_code="file_too_large" if is_oversized else None,
                     created_at=current_time,
                     updated_at=current_time,
                 )
             )
-            missing_file_ids.add(file.file_id)
+            if not is_oversized:
+                missing_file_ids.add(file.file_id)
     return sorted(missing_file_ids)
 
 
@@ -636,8 +648,36 @@ def _missing_file_ids(
             row.source_file_id
             for row in rows
             if (row.source_message_id, row.source_file_id) in requested
-            and row.status not in {"staged", "uploaded"}
+            and row.status == "pending"
         }
+    )
+
+
+def _mark_file_sync_error(
+    file: SiteServiceRequestFile,
+    *,
+    error_code: str,
+    now: datetime | None,
+) -> None:
+    current_time = _as_utc(now or datetime.now(UTC))
+    file.status = "failed"
+    file.last_error_code = error_code
+    file.updated_at = current_time
+    file.case.sync_status = "file_sync_error"
+    file.case.last_error_code = error_code
+    file.case.updated_at = current_time
+
+
+def _case_file_error_code(session: Session, *, case_id: int) -> str | None:
+    return session.scalar(
+        select(SiteServiceRequestFile.last_error_code)
+        .where(
+            SiteServiceRequestFile.case_id == case_id,
+            SiteServiceRequestFile.status == "failed",
+            SiteServiceRequestFile.last_error_code.is_not(None),
+        )
+        .order_by(SiteServiceRequestFile.updated_at.desc(), SiteServiceRequestFile.id.desc())
+        .limit(1)
     )
 
 

@@ -130,10 +130,84 @@ class SiteServiceRequestEventAcceptedResponse(BaseModel):
     missing_file_ids: list[int] = Field(alias="missingFileIds")
 
 
+class SiteServiceRequestFileStagedResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    event_id: str = Field(alias="eventId")
+    file_id: int = Field(alias="fileId", gt=0)
+    status: Literal["staged", "uploaded"]
+    duplicate: bool
+
+
+class SiteServiceRequestCommandPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    command_id: int = Field(alias="commandId", gt=0)
+    command_key: str = Field(alias="commandKey", min_length=1, max_length=255)
+    ticket_id: int = Field(alias="ticketId", gt=0)
+    reply_text: str = Field(alias="replyText", min_length=1, max_length=200_000)
+    lease_until: datetime = Field(alias="leaseUntil")
+
+
+class SiteServiceRequestCommandsResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
+    commands: list[SiteServiceRequestCommandPayload]
+
+
+class SiteServiceRequestCommandAckPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: Literal[1] = Field(alias="schemaVersion")
+    status: Literal["applied", "failed"]
+    ticket_id: int | None = Field(default=None, alias="ticketId", gt=0)
+    message_id: int | None = Field(default=None, alias="messageId", gt=0)
+    applied_at: datetime | None = Field(default=None, alias="appliedAt")
+    error_code: (
+        Literal[
+            "ticket_not_found",
+            "support_user_invalid",
+            "message_write_failed",
+        ]
+        | None
+    ) = Field(default=None, alias="errorCode")
+
+    @model_validator(mode="after")
+    def validate_ack_shape(self) -> SiteServiceRequestCommandAckPayload:
+        if self.status == "applied":
+            if (
+                self.ticket_id is None
+                or self.message_id is None
+                or self.applied_at is None
+                or self.error_code is not None
+            ):
+                raise ValueError("applied ack fields are invalid")
+            if self.applied_at.tzinfo is None or self.applied_at.utcoffset() is None:
+                raise ValueError("timezone is required")
+        elif (
+            self.error_code is None
+            or self.ticket_id is not None
+            or self.message_id is not None
+            or self.applied_at is not None
+        ):
+            raise ValueError("failed ack fields are invalid")
+        return self
+
+
+class SiteServiceRequestCommandAckResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    command_id: int = Field(alias="commandId", gt=0)
+    status: Literal["applied", "failed"]
+    duplicate: bool
+
+
 class SiteServiceRequestHealthResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     status: Literal["healthy", "degraded", "disabled"]
+    alert_codes: list[Literal["event_lag", "dead_letter"]] = Field(alias="alertCodes")
     pending_events: int = Field(alias="pendingEvents", ge=0)
     failed_events: int = Field(alias="failedEvents", ge=0)
     oldest_pending_lag_seconds: int | None = Field(

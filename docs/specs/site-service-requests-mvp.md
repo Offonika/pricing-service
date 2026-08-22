@@ -7,13 +7,21 @@ status: draft
 owner: "engineering-and-operations"
 source_of_truth: true
 related_code:
-  - app/services/site_defect_workflow.py
-  - app/services/expertise_bitrix.py
-  - scripts/ensure_site_defect_archive_bitrix_process.py
+  - app/api/site_service_requests.py
+  - app/models/site_service_requests.py
+  - app/services/site_service_requests.py
+  - app/services/site_service_requests_worker.py
+  - integrations/master_mobile_site/service_ticket_bridge.php
+  - scripts/ensure_site_service_requests_bitrix_process.py
+  - tasks/site_service_requests_worker.py
 related_tests:
-  - tests/test_site_defect_workflow.py
-  - tests/test_site_defect_archive.py
-contracts: []
+  - tests/test_site_service_requests_api.py
+  - tests/test_site_service_requests_auth.py
+  - tests/test_site_service_requests_models.py
+  - tests/test_site_service_requests_php_bridge.py
+  - tests/test_site_service_requests_worker.py
+contracts:
+  - openapi.yaml
 depends_on: []
 supersedes: []
 rollout_required: true
@@ -561,24 +569,24 @@ ID существует, активен и соответствует ожида
 
 # Implementation Checklist
 
-- [ ] Добавить модели и Alembic-миграцию `pricing-service`.
-- [ ] Добавить dedicated settings, HMAC/replay protection и `.env.example` без
+- [x] Добавить модели и Alembic-миграцию `pricing-service`.
+- [x] Добавить dedicated settings, HMAC/replay protection и `.env.example` без
   реальных секретов.
-- [ ] Добавить schemas и внутренний API events/files/commands/ack/health.
-- [ ] Добавить сервисы dedupe, CRM matching, Bitrix item sync, TimeMan assignment,
+- [x] Добавить schemas и внутренний API events/files/commands/ack/health.
+- [x] Добавить сервисы dedupe, CRM matching, Bitrix item sync, TimeMan assignment,
   SLA и outbound commands.
-- [ ] Переиспользовать `BitrixRestClient`, не создавать второй несовместимый REST-клиент.
-- [ ] Расширить ensure-скрипт полями сайта и формой рабочей воронки.
-- [ ] Отключить создание отдельной задачи «Разобрать рекламацию» в этом intake-flow.
-- [ ] Добавить worker и зарегистрировать его в CLI/cron governance с dry-run.
-- [ ] Добавить версионируемый PHP bridge, idempotent DDL и Agent.
-- [ ] Добавить SUPPORT user fields и вывести их через `SET_SHOW_USER_FIELD` /
+- [x] Переиспользовать `BitrixRestClient`, не создавать второй несовместимый REST-клиент.
+- [x] Расширить ensure-скрипт полями сайта и формой рабочей воронки.
+- [x] Отключить создание отдельной задачи «Разобрать рекламацию» в этом intake-flow.
+- [x] Добавить worker и зарегистрировать его в CLI/cron governance с dry-run.
+- [x] Добавить версионируемый PHP bridge, idempotent DDL и Agent.
+- [x] Добавить SUPPORT user fields и вывести их через `SET_SHOW_USER_FIELD` /
   кастомный шаблон.
-- [ ] Добавить feature flags отдельно для site emit, backend ingest, Bitrix writes
+- [x] Добавить feature flags отдельно для site emit, backend ingest, Bitrix writes
   и outbound replies.
-- [ ] Добавить метрики, безопасные error codes и alert на lag/dead-letter.
-- [ ] Обновить OpenAPI после реализации API.
-- [ ] Добавить unit, API, worker, contract и static PHP tests.
+- [x] Добавить метрики, безопасные error codes и alert на lag/dead-letter.
+- [x] Обновить OpenAPI после реализации API.
+- [x] Добавить unit, API, worker, contract и static PHP tests.
 - [ ] Провести dry-run и только после отдельного разрешения — controlled live smoke.
 
 # Review Notes / Risks
@@ -654,6 +662,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-22 — локально реализованы intake API, durable-модели, worker, ensure-скрипт,
+  cron-template, site PHP bridge, SUPPORT fields, OpenAPI и автоматические проверки;
+  production, Bitrix24 и `master-mobile.ru` не изменялись, controlled live smoke
+  остаётся отдельным rollout-гейтом.
 - 2026-08-22 — создана Implementation Spec для задачи №3223 на основании OnePage,
   живого read-only обследования модуля support, процесса 1134 и TimeMan; зафиксирован
   асинхронный двусторонний контур с durable dedupe, SLA и безопасным rollout.

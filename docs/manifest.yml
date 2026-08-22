@@ -452,12 +452,19 @@ documents:
     owner: engineering-and-operations
     source_of_truth: true
     related_code:
-      - app/services/site_defect_workflow.py
-      - app/services/expertise_bitrix.py
-      - scripts/ensure_site_defect_archive_bitrix_process.py
+      - app/api/site_service_requests.py
+      - app/models/site_service_requests.py
+      - app/services/site_service_requests.py
+      - app/services/site_service_requests_worker.py
+      - integrations/master_mobile_site/service_ticket_bridge.php
+      - scripts/ensure_site_service_requests_bitrix_process.py
+      - tasks/site_service_requests_worker.py
     related_tests:
-      - tests/test_site_defect_workflow.py
-      - tests/test_site_defect_archive.py
+      - tests/test_site_service_requests_api.py
+      - tests/test_site_service_requests_auth.py
+      - tests/test_site_service_requests_models.py
+      - tests/test_site_service_requests_php_bridge.py
+      - tests/test_site_service_requests_worker.py
     keywords: [site, service, tickets, warranty, support, bitrix24, smart-process, timeman, sla, idempotency, task-3223]
   - path: docs/specs/logistics-control-contour.md
     title: Logistics Control Contour

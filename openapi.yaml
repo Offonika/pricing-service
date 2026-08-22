@@ -6083,6 +6083,201 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/events/{event_id}/files/{file_id}:
+    put:
+      summary: Upload Event File
+      operationId: upload_event_file_api_internal_site_service_requests_events__event_id__files__file_id__put
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: File Id
+      - name: Content-Disposition
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content-Disposition
+      - name: Content-Type
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content-Type
+      - name: Content-Length
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Content-Length
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestFileStagedResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '404':
+          description: Event or file metadata is not registered
+        '409':
+          description: Nonce replay or file metadata conflict
+        '413':
+          description: File exceeds the configured size limit
+        '422':
+          description: File body or metadata is invalid
+        '503':
+          description: Ingest or file storage is unavailable
+  /api/internal/site-service-requests/commands:
+    get:
+      summary: Get Commands
+      operationId: get_commands_api_internal_site_service_requests_commands_get
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestCommandsResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay
+        '503':
+          description: Command storage or encryption is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/commands/{command_id}/ack:
+    post:
+      summary: Acknowledge Command
+      operationId: acknowledge_command_api_internal_site_service_requests_commands__command_id__ack_post
+      parameters:
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Command Id
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestCommandAckPayload'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestCommandAckResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '404':
+          description: Command is not registered
+        '409':
+          description: Nonce replay or command acknowledgement conflict
+        '503':
+          description: Command storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/internal/site-service-requests/health:
     get:
       summary: Health
@@ -27707,6 +27902,119 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SiteServiceRequestCommandAckPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        status:
+          type: string
+          enum:
+          - applied
+          - failed
+          title: Status
+        ticketId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Ticketid
+        messageId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Messageid
+        appliedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Appliedat
+        errorCode:
+          anyOf:
+          - type: string
+            enum:
+            - ticket_not_found
+            - support_user_invalid
+            - message_write_failed
+          - type: 'null'
+          title: Errorcode
+      type: object
+      required:
+      - schemaVersion
+      - status
+      title: SiteServiceRequestCommandAckPayload
+    SiteServiceRequestCommandAckResponse:
+      properties:
+        commandId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Commandid
+        status:
+          type: string
+          enum:
+          - applied
+          - failed
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+      type: object
+      required:
+      - commandId
+      - status
+      - duplicate
+      title: SiteServiceRequestCommandAckResponse
+    SiteServiceRequestCommandPayload:
+      properties:
+        commandId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Commandid
+        commandKey:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Commandkey
+        ticketId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Ticketid
+        replyText:
+          type: string
+          maxLength: 200000
+          minLength: 1
+          title: Replytext
+        leaseUntil:
+          type: string
+          format: date-time
+          title: Leaseuntil
+      type: object
+      required:
+      - commandId
+      - commandKey
+      - ticketId
+      - replyText
+      - leaseUntil
+      title: SiteServiceRequestCommandPayload
+    SiteServiceRequestCommandsResponse:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+          default: 1
+        commands:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestCommandPayload'
+          type: array
+          title: Commands
+      type: object
+      required:
+      - commands
+      title: SiteServiceRequestCommandsResponse
     SiteServiceRequestEventAcceptedResponse:
       properties:
         eventId:
@@ -27801,6 +28109,31 @@ components:
       - size
       - sha256
       title: SiteServiceRequestFilePayload
+    SiteServiceRequestFileStagedResponse:
+      properties:
+        eventId:
+          type: string
+          title: Eventid
+        fileId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Fileid
+        status:
+          type: string
+          enum:
+          - staged
+          - uploaded
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+      type: object
+      required:
+      - eventId
+      - fileId
+      - status
+      - duplicate
+      title: SiteServiceRequestFileStagedResponse
     SiteServiceRequestHealthResponse:
       properties:
         status:
@@ -27810,6 +28143,14 @@ components:
           - degraded
           - disabled
           title: Status
+        alertCodes:
+          items:
+            type: string
+            enum:
+            - event_lag
+            - dead_letter
+          type: array
+          title: Alertcodes
         pendingEvents:
           type: integer
           minimum: 0.0
@@ -27850,6 +28191,7 @@ components:
       type: object
       required:
       - status
+      - alertCodes
       - pendingEvents
       - failedEvents
       - oldestPendingLagSeconds

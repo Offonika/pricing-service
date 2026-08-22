@@ -33,6 +33,18 @@ def _load_migration():
     return migration
 
 
+def _load_open_stage_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/3d5e7f901b34_add_site_service_request_open_stage.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_open_stage", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -144,3 +156,31 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
 
 def test_migration_extends_current_production_head() -> None:
     assert _load_migration().down_revision == "1b9d3f5a7c21"
+
+
+def test_open_stage_migration_is_reversible_and_extends_site_request_head(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-open-stage.db'}")
+    base_migration = _load_migration()
+    open_stage_migration = _load_open_stage_migration()
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        base_migration.op = operations
+        open_stage_migration.op = operations
+        base_migration.upgrade()
+        open_stage_migration.upgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "last_open_stage_id" in columns
+
+        open_stage_migration.downgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "last_open_stage_id" not in columns
+
+    assert open_stage_migration.down_revision == "2c4d6e8f0a12"
+    engine.dispose()

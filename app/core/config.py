@@ -173,6 +173,10 @@ class Settings(BaseSettings):
     site_service_requests_bitrix_entity_type_id: int = 1134
     site_service_requests_bitrix_working_category_id: int = 55
     site_service_requests_bitrix_archive_category_id: int = 56
+    site_service_requests_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_enum_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_root_folder_id: int | None = None
     site_service_requests_crm_order_field: str | None = None
     site_service_requests_first_line_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_escalation_user_id: int | None = None
@@ -186,6 +190,14 @@ class Settings(BaseSettings):
     )
     site_service_requests_nonce_ttl_seconds: int = Field(default=600, ge=300, le=3600)
     site_service_requests_command_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    site_service_requests_file_spool_dir: str = ".local/site-service-requests/files"
+    site_service_requests_worker_batch_size: int = Field(default=20, ge=1, le=100)
+    site_service_requests_site_base_url: str = "https://master-mobile.ru"
+    site_service_requests_health_lag_alert_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=86400,
+    )
     site_service_requests_max_file_bytes: int = Field(
         default=10 * 1024 * 1024,
         ge=1,

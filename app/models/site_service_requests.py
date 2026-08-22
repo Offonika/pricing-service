@@ -60,6 +60,7 @@ class SiteServiceRequestCase(Base):
 
     source_ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     bitrix_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_open_stage_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     crm_contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     crm_company_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     crm_deal_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

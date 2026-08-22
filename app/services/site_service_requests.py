@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -19,7 +22,10 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
 )
-from app.schemas.site_service_requests import SiteServiceRequestEventPayload
+from app.schemas.site_service_requests import (
+    SiteServiceRequestCommandAckPayload,
+    SiteServiceRequestEventPayload,
+)
 
 
 class SiteServiceRequestConfigurationError(RuntimeError):
@@ -32,11 +38,53 @@ class SiteServiceRequestConflictError(RuntimeError):
         self.code = code
 
 
+class SiteServiceRequestNotFoundError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class SiteServiceRequestPayloadError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class SiteServiceRequestStorageError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class AcceptedSiteServiceRequestEvent:
     event_id: str
     duplicate: bool
     missing_file_ids: list[int]
+
+
+@dataclass(frozen=True)
+class StagedSiteServiceRequestFile:
+    event_id: str
+    file_id: int
+    status: str
+    duplicate: bool
+    storage_path: str | None = None
+    cleanup_on_failure: bool = False
+
+
+@dataclass(frozen=True)
+class LeasedSiteServiceRequestCommand:
+    command_id: int
+    command_key: str
+    ticket_id: int
+    reply_text: str
+    lease_until: datetime
+
+
+@dataclass(frozen=True)
+class AcknowledgedSiteServiceRequestCommand:
+    command_id: int
+    status: str
+    duplicate: bool
 
 
 class SiteServiceRequestCipher:
@@ -191,6 +239,246 @@ def validate_site_service_request_files(
                 raise SiteServiceRequestConflictError("file_too_large")
 
 
+def stage_site_service_request_file(
+    session: Session,
+    *,
+    event_id: str,
+    file_id: int,
+    body: bytes,
+    safe_filename: str,
+    mime_type: str,
+    declared_size: int,
+    body_sha256: str,
+    spool_dir: str,
+    max_file_bytes: int,
+    now: datetime | None = None,
+) -> StagedSiteServiceRequestFile:
+    normalized_filename = _normalize_safe_filename(safe_filename)
+    normalized_mime_type = mime_type.split(";", 1)[0].strip().lower()
+    if not normalized_mime_type:
+        raise SiteServiceRequestPayloadError("file_mime_type_invalid")
+    if declared_size < 0 or declared_size != len(body):
+        raise SiteServiceRequestPayloadError("file_size_mismatch")
+    if declared_size > max_file_bytes:
+        raise SiteServiceRequestPayloadError("file_too_large")
+
+    calculated_sha256 = hashlib.sha256(body).hexdigest()
+    if calculated_sha256 != body_sha256:
+        raise SiteServiceRequestPayloadError("file_hash_mismatch")
+
+    event = session.scalar(
+        select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == event_id)
+    )
+    if event is None:
+        raise SiteServiceRequestNotFoundError("event_not_found")
+
+    files = session.scalars(
+        select(SiteServiceRequestFile)
+        .where(
+            SiteServiceRequestFile.case_id == event.case_id,
+            SiteServiceRequestFile.source_file_id == file_id,
+        )
+        .limit(2)
+    ).all()
+    if not files:
+        raise SiteServiceRequestNotFoundError("file_not_registered")
+    if len(files) != 1:
+        raise SiteServiceRequestConflictError("file_identity_ambiguous")
+    file = files[0]
+
+    if (
+        file.safe_filename != normalized_filename
+        or file.mime_type.strip().lower() != normalized_mime_type
+        or file.byte_size != declared_size
+    ):
+        raise SiteServiceRequestConflictError("file_metadata_conflict")
+    if file.sha256 != calculated_sha256:
+        raise SiteServiceRequestPayloadError("file_hash_mismatch")
+
+    if file.status == "uploaded":
+        return StagedSiteServiceRequestFile(
+            event_id=event_id,
+            file_id=file_id,
+            status="uploaded",
+            duplicate=True,
+        )
+
+    existing_path = Path(file.temporary_path) if file.temporary_path else None
+    if file.status == "staged" and existing_path is not None and existing_path.is_file():
+        try:
+            existing_sha256 = hashlib.sha256(existing_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise SiteServiceRequestStorageError("file_storage_unavailable") from exc
+        if existing_sha256 == calculated_sha256:
+            return StagedSiteServiceRequestFile(
+                event_id=event_id,
+                file_id=file_id,
+                status="staged",
+                duplicate=True,
+                storage_path=str(existing_path),
+            )
+
+    target_path = _write_site_service_request_file(
+        spool_dir=spool_dir,
+        case_id=event.case_id,
+        file_row_id=file.id,
+        body=body,
+    )
+    file.temporary_path = str(target_path)
+    file.status = "staged"
+    file.last_error_code = None
+    file.updated_at = _as_utc(now or datetime.now(UTC))
+    return StagedSiteServiceRequestFile(
+        event_id=event_id,
+        file_id=file_id,
+        status="staged",
+        duplicate=False,
+        storage_path=str(target_path),
+        cleanup_on_failure=True,
+    )
+
+
+def cleanup_staged_site_service_request_file(result: StagedSiteServiceRequestFile) -> None:
+    if not result.cleanup_on_failure or not result.storage_path:
+        return
+    try:
+        Path(result.storage_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def lease_site_service_request_commands(
+    session: Session,
+    *,
+    cipher: SiteServiceRequestCipher,
+    enabled: bool,
+    lease_seconds: int,
+    limit: int = 20,
+    now: datetime | None = None,
+) -> list[LeasedSiteServiceRequestCommand]:
+    if not enabled:
+        return []
+    current_time = _as_utc(now or datetime.now(UTC))
+    available = or_(
+        SiteServiceRequestCommand.status == "pending",
+        and_(
+            SiteServiceRequestCommand.status == "leased",
+            or_(
+                SiteServiceRequestCommand.lease_until.is_(None),
+                SiteServiceRequestCommand.lease_until <= current_time,
+            ),
+        ),
+    )
+    commands = session.scalars(
+        select(SiteServiceRequestCommand)
+        .where(available)
+        .order_by(SiteServiceRequestCommand.created_at, SiteServiceRequestCommand.id)
+        .limit(min(max(limit, 1), 20))
+        .with_for_update(skip_locked=True)
+    ).all()
+    lease_until = current_time + timedelta(seconds=lease_seconds)
+    leased: list[LeasedSiteServiceRequestCommand] = []
+    for command in commands:
+        try:
+            reply_text = cipher.decrypt(
+                command.reply_encrypted,
+                event_id=command.command_key,
+            ).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SiteServiceRequestConfigurationError(
+                "site service request command text is invalid"
+            ) from exc
+        if not reply_text:
+            raise SiteServiceRequestConfigurationError(
+                "site service request command text is invalid"
+            )
+        command.status = "leased"
+        command.attempts += 1
+        command.lease_until = lease_until
+        command.updated_at = current_time
+        leased.append(
+            LeasedSiteServiceRequestCommand(
+                command_id=command.id,
+                command_key=command.command_key,
+                ticket_id=command.case.source_ticket_id,
+                reply_text=reply_text,
+                lease_until=lease_until,
+            )
+        )
+    session.flush()
+    return leased
+
+
+def acknowledge_site_service_request_command(
+    session: Session,
+    *,
+    command_id: int,
+    payload: SiteServiceRequestCommandAckPayload,
+    now: datetime | None = None,
+) -> AcknowledgedSiteServiceRequestCommand:
+    command = session.scalar(
+        select(SiteServiceRequestCommand)
+        .where(SiteServiceRequestCommand.id == command_id)
+        .with_for_update()
+    )
+    if command is None:
+        raise SiteServiceRequestNotFoundError("command_not_found")
+    if command.status == "pending":
+        raise SiteServiceRequestConflictError("command_not_leased")
+
+    current_time = _as_utc(now or datetime.now(UTC))
+    if payload.status == "applied":
+        assert payload.ticket_id is not None
+        assert payload.message_id is not None
+        assert payload.applied_at is not None
+        if payload.ticket_id != command.case.source_ticket_id:
+            raise SiteServiceRequestConflictError("command_ticket_conflict")
+        if command.status == "applied":
+            if command.source_message_id != payload.message_id:
+                raise SiteServiceRequestConflictError("command_ack_conflict")
+            return AcknowledgedSiteServiceRequestCommand(
+                command_id=command.id,
+                status="applied",
+                duplicate=True,
+            )
+
+        command.status = "applied"
+        command.source_message_id = payload.message_id
+        command.ack_at = _as_utc(payload.applied_at)
+        command.last_error_code = None
+        command.lease_until = None
+        command.case.latest_outbound_message_id = max(
+            command.case.latest_outbound_message_id or 0,
+            payload.message_id,
+        )
+        result_status = "applied"
+    else:
+        assert payload.error_code is not None
+        if command.status == "applied":
+            raise SiteServiceRequestConflictError("command_ack_conflict")
+        if command.status == "failed":
+            if command.last_error_code != payload.error_code:
+                raise SiteServiceRequestConflictError("command_ack_conflict")
+            return AcknowledgedSiteServiceRequestCommand(
+                command_id=command.id,
+                status="failed",
+                duplicate=True,
+            )
+        command.status = "failed"
+        command.ack_at = current_time
+        command.last_error_code = payload.error_code
+        command.lease_until = None
+        result_status = "failed"
+
+    command.updated_at = current_time
+    session.flush()
+    return AcknowledgedSiteServiceRequestCommand(
+        command_id=command.id,
+        status=result_status,
+        duplicate=False,
+    )
+
+
 def build_site_service_request_health(
     session: Session,
     *,
@@ -236,15 +524,25 @@ def build_site_service_request_health(
         lag = current_time - _as_utc(oldest_pending_at)
         oldest_pending_lag_seconds = max(0, int(lag.total_seconds()))
 
+    alert_codes: list[str] = []
+    if failed_events:
+        alert_codes.append("dead_letter")
+    if (
+        oldest_pending_lag_seconds is not None
+        and oldest_pending_lag_seconds >= settings.site_service_requests_health_lag_alert_seconds
+    ):
+        alert_codes.append("event_lag")
+
     if not settings.site_service_requests_ingest_enabled:
         status = "disabled"
-    elif failed_events:
+    elif alert_codes:
         status = "degraded"
     else:
         status = "healthy"
 
     return {
         "status": status,
+        "alert_codes": alert_codes,
         "pending_events": pending_events,
         "failed_events": failed_events,
         "oldest_pending_lag_seconds": oldest_pending_lag_seconds,
@@ -299,7 +597,7 @@ def _upsert_file_metadata(
             if existing is not None:
                 if existing.sha256 != file.sha256 or existing.byte_size != file.size:
                     raise SiteServiceRequestConflictError("file_metadata_conflict")
-                if existing.status != "uploaded":
+                if existing.status not in {"staged", "uploaded"}:
                     missing_file_ids.add(file.file_id)
                 continue
             session.add(
@@ -337,9 +635,63 @@ def _missing_file_ids(
         {
             row.source_file_id
             for row in rows
-            if (row.source_message_id, row.source_file_id) in requested and row.status != "uploaded"
+            if (row.source_message_id, row.source_file_id) in requested
+            and row.status not in {"staged", "uploaded"}
         }
     )
+
+
+def _normalize_safe_filename(value: str) -> str:
+    normalized = value.strip()
+    if (
+        normalized in {"", ".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+        or "\x00" in normalized
+    ):
+        raise SiteServiceRequestPayloadError("file_name_invalid")
+    if len(normalized) > 255:
+        raise SiteServiceRequestPayloadError("file_name_invalid")
+    return normalized
+
+
+def _write_site_service_request_file(
+    *,
+    spool_dir: str,
+    case_id: int,
+    file_row_id: int,
+    body: bytes,
+) -> Path:
+    temporary_path: str | None = None
+    try:
+        root = Path(spool_dir).expanduser().resolve()
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
+        case_dir = root / str(case_id)
+        case_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(case_dir, 0o700)
+        file_descriptor, temporary_path = tempfile.mkstemp(
+            dir=case_dir,
+            prefix=f".{file_row_id}-",
+            suffix=".part",
+        )
+        with os.fdopen(file_descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        target_path = case_dir / f"{file_row_id}.bin"
+        os.replace(temporary_path, target_path)
+        temporary_path = None
+        os.chmod(target_path, 0o600)
+        return target_path
+    except OSError as exc:
+        if temporary_path:
+            try:
+                Path(temporary_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise SiteServiceRequestStorageError("file_storage_unavailable") from exc
 
 
 def _count(session: Session, model, predicate) -> int:

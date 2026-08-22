@@ -344,7 +344,7 @@ def test_v4_exchange_negative_matrix_is_rejected(monkeypatch, tmp_path: Path) ->
         variants.append(bad_enum)
 
     unknown_schema = _snapshot_v4(generated_at=now)
-    unknown_schema["schema_version"] = 5
+    unknown_schema["schema_version"] = 6
     variants.append(unknown_schema)
 
     false_severity = _snapshot_v4(generated_at=now)
@@ -617,3 +617,69 @@ def test_ssh_alias_in_string_value_is_rejected(monkeypatch, tmp_path: Path) -> N
     result = executive_instruments.load_executive_instruments_snapshot(now=now)
 
     assert result.source_status == "source_error"
+
+
+def test_loads_v5_snapshot_with_public_services_and_load_metrics(
+    monkeypatch, tmp_path: Path
+) -> None:
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    payload = _snapshot(generated_at=now)
+    payload["schema_version"] = 5
+    device = payload["devices"][0]  # type: ignore[index]
+    device["metrics"] = {  # type: ignore[index]
+        **device["metrics"],  # type: ignore[index]
+        "load_avg_1m": 4.5,
+        "load_avg_5m": 3.9,
+        "load_per_cpu_pct": 56.3,
+    }
+    device["public_services"] = [  # type: ignore[index]
+        {
+            "service_key": "site",
+            "name": "Публичный сайт компании",
+            "status": "critical",
+            "http_status": 502,
+            "latency_ms": 830,
+            "reason": "http_status_unexpected",
+            "reason_label": "сервис отвечает ошибкой",
+            "checked_at": now.isoformat().replace("+00:00", "Z"),
+        }
+    ]
+    path = tmp_path / "v5.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(executive_instruments, "get_settings", lambda: _settings(path))
+
+    result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+    assert result.schema_version == 5
+    assert result.source_status != "source_error"
+    service = result.devices[0].public_services[0]
+    assert service.service_key == "site"
+    assert service.http_status == 502
+    assert service.latency_ms == 830
+    assert result.devices[0].metrics.load_per_cpu_pct == 56.3
+
+
+def test_public_service_name_with_hostname_is_rejected(monkeypatch, tmp_path: Path) -> None:
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    payload = _snapshot(generated_at=now)
+    payload["schema_version"] = 5
+    payload["devices"][0]["public_services"] = [  # type: ignore[index]
+        {
+            "service_key": "site",
+            "name": "Сайт master-mobile.ru",
+            "status": "ready",
+            "http_status": 200,
+            "latency_ms": 210,
+            "reason": None,
+            "reason_label": None,
+            "checked_at": now.isoformat().replace("+00:00", "Z"),
+        }
+    ]
+    path = tmp_path / "leaky.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(executive_instruments, "get_settings", lambda: _settings(path))
+
+    result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+    assert result.source_status == "source_error"
+    assert result.devices == []

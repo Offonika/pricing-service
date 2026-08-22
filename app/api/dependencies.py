@@ -1,14 +1,20 @@
-from typing import Generator
+from typing import Annotated, Generator
 
-from fastapi import HTTPException, Security
+from fastapi import Depends, Header, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.infrastructure.db import (
     SqlAlchemyUnitOfWork,
     get_application_engine,
     get_application_session_factory,
+)
+from app.services.site_service_requests_auth import (
+    SiteServiceRequestAuthError,
+    VerifiedSiteRequest,
+    verify_site_request,
 )
 
 security = HTTPBearer(auto_error=False)
@@ -44,6 +50,63 @@ def get_db() -> Generator[Session, None, None]:
 def get_uow() -> Generator[SqlAlchemyUnitOfWork, None, None]:
     with SqlAlchemyUnitOfWork() as unit_of_work:
         yield unit_of_work
+
+
+def get_site_service_request_settings() -> Settings:
+    return get_settings()
+
+
+async def require_site_service_request_signature(
+    request: Request,
+    timestamp_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Timestamp"),
+    ],
+    nonce_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Nonce"),
+    ],
+    content_sha256_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Content-SHA256"),
+    ],
+    signature_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Signature"),
+    ],
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_site_service_request_settings),
+) -> VerifiedSiteRequest:
+    try:
+        verified = verify_site_request(
+            db,
+            method=request.method,
+            path=request.url.path,
+            body=await request.body(),
+            timestamp_header=timestamp_header,
+            nonce_header=nonce_header,
+            content_sha256_header=content_sha256_header,
+            signature_header=signature_header,
+            settings=settings,
+        )
+        db.commit()
+        return verified
+    except SiteServiceRequestAuthError as exc:
+        db.rollback()
+        if exc.code == "auth_not_configured":
+            raise HTTPException(
+                status_code=503,
+                detail="site_service_requests_auth_not_configured",
+            ) from exc
+        if exc.code == "nonce_replay":
+            raise HTTPException(status_code=409, detail="nonce_replay") from exc
+        raise HTTPException(status_code=401, detail="unauthorized") from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="site_service_requests_auth_unavailable",
+        ) from exc
 
 
 def require_management_internal_token(

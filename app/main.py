@@ -57,6 +57,7 @@ from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
 from app.api.site_defect_archive import page_router as site_defect_archive_page_router
 from app.api.site_defect_archive import router as site_defect_archive_router
+from app.api.site_service_requests import router as site_service_requests_router
 from app.api.sms_journal import router as sms_journal_router
 from app.api.staffing import router as staffing_router
 from app.api.telegram import router as telegram_router
@@ -78,6 +79,22 @@ app = FastAPI(
 async def safe_sms_validation_error(request: Request, exc: RequestValidationError) -> Response:
     if request.url.path.startswith("/api/internal/sms-journal"):
         return JSONResponse(status_code=422, content={"detail": "invalid SMS journal request"})
+    if request.url.path.startswith("/api/internal/site-service-requests"):
+        required_auth_headers = {
+            "x-mm-site-timestamp",
+            "x-mm-site-nonce",
+            "x-mm-site-content-sha256",
+            "x-mm-site-signature",
+        }
+        if any(
+            error.get("loc", ())[-1:] and str(error["loc"][-1]).lower() in required_auth_headers
+            for error in exc.errors()
+        ):
+            return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "invalid site service request"},
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -173,6 +190,10 @@ app.include_router(counterparty_duplicates_router, prefix="/api/internal/counter
 app.include_router(customer_price_types_router)
 app.include_router(expertise_router, prefix="/api/expertise")
 app.include_router(site_defect_archive_router, prefix="/api/site-defects")
+app.include_router(
+    site_service_requests_router,
+    prefix="/api/internal/site-service-requests",
+)
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")
 app.include_router(logistics_bot_router, prefix="/api/logistics/bot")

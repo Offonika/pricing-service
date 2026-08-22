@@ -178,6 +178,16 @@
       "side_effect_level": "db_write",
       "spec": "docs/specs/pricing-service-architecture-hardening.md",
       "remove_after": "2026-10-31"
+    },
+    "site_service_requests_worker.py": {
+      "owner": "site-service-requests",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "verified_by_event_command_and_bitrix_keys",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/site-service-requests-mvp.md",
+      "remove_after": null
     }
   }
 }

@@ -138,6 +138,9 @@ class ExecutiveInstrumentMetrics(ExecutiveInstrumentStrictModel):
     latency_ms: int | None = Field(default=None, ge=0)
     vcpu: int | None = Field(default=None, ge=0)
     uptime_seconds: int | None = Field(default=None, ge=0)
+    load_avg_1m: float | None = Field(default=None, ge=0)
+    load_avg_5m: float | None = Field(default=None, ge=0)
+    load_per_cpu_pct: float | None = Field(default=None, ge=0)
 
 
 class ExecutiveInstrumentService(ExecutiveInstrumentStrictModel):
@@ -258,6 +261,17 @@ class ExecutiveInstrumentExchange(ExecutiveInstrumentStrictModel):
         return self
 
 
+class ExecutiveInstrumentPublicService(ExecutiveInstrumentStrictModel):
+    service_key: str
+    name: str
+    status: Literal["ready", "warning", "critical"] = "ready"
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    latency_ms: int | None = Field(default=None, ge=0)
+    reason: str | None = None
+    reason_label: str | None = None
+    checked_at: datetime | None = None
+
+
 class ExecutiveInstrumentProblem(ExecutiveInstrumentStrictModel):
     problem_key: str
     category: Literal[
@@ -305,6 +319,7 @@ class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
     )
     access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
     exchange: ExecutiveInstrumentExchange = Field(default_factory=ExecutiveInstrumentExchange)
+    public_services: list[ExecutiveInstrumentPublicService] = Field(default_factory=list)
     problems: list[ExecutiveInstrumentProblem] = Field(default_factory=list)
     issue: str | None = None
     recommended_action: str | None = None
@@ -328,7 +343,7 @@ class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
 
 
 class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
-    schema_version: Literal[2, 3, 4] = 2
+    schema_version: Literal[2, 3, 4, 5] = 2
     generated_at: datetime
     source_status: ExecutiveInstrumentSourceStatus
     freshness_status: ExecutiveInstrumentFreshnessStatus

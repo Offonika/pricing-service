@@ -8,6 +8,7 @@ owner: "operations"
 source_of_truth: false
 related_code:
   - tasks/build_display_auto_order_dry_run.py
+  - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
   - tasks/report_display_marketplace_dependency_risk.py
   - tasks/build_procurement_order_formation_dry_run.py
   - app/services/assortment_lifecycle.py
@@ -18,6 +19,7 @@ related_code:
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
 related_tests:
   - tests/test_build_display_auto_order_dry_run_task.py
+  - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
   - tests/test_assortment_lifecycle.py
   - tests/test_transfer_assistant.py
   - tests/test_procurement_order_formation.py
@@ -31,7 +33,7 @@ depends_on:
   - docs/specs/transfer-assistant-readonly-v1.md
 supersedes: []
 rollout_required: false
-updated_at: "2026-08-17"
+updated_at: "2026-08-20"
 ---
 
 # Глубокая инвентаризация правил старого контура
@@ -1597,6 +1599,38 @@ Confidence должен объясняться вкладом:
 До изменения `openapi.yaml` эти поля являются требованиями будущего контракта,
 а не обещанием текущего API.
 
+## Расхождение реализации: адаптивный пересчёт по живым срокам теряет `distribution_to_shelf_days` (найдено 2026-08-20)
+
+Правило от `2026-07-30` (запись в Changelog ниже) требует, чтобы буфер
+`distribution_to_shelf_days` (`7` дней) входил и в базовую формулу
+`planning_horizon_days`, и в тиры `speed_horizon_rules`: эффективные потолки
+равны `67`/`77`/`89` дням, а не `60`/`70`/`82`.
+
+`tasks/report_display_auto_order_adaptive_lead_time_comparison.py` этот буфер не
+добавляет: в `build_row_comparison` слагаемое отсутствует и в
+`adaptive_uncapped_effective_days`, и в ограничении
+`min(..., speed_max_effective_target_days)`. Результат пересчёта переносится
+`build_sync_ready_rows` в `display-auto-order-adaptive-sync-ready.csv` и
+перезаписывает `effective_target_days`, `target_stock_qty`,
+`recommended_order_qty`, поэтому в заказ уходит горизонт на `7` дней короче
+утверждённого.
+
+Масштаб на прогоне `2026-08-19`
+(`reports/assortment_lifecycle/2026-08-19/display-auto-order-adaptive-sync-ready.csv`):
+живой срок применён к `1617` строкам из `1643`, в заказ идут `359` строк, из них
+`214` упираются в потолок тира; заказано `7459` шт при недоборе около `2032` шт
+(примерно `27%`). Пример строки: `РБ000035961` (дисплей Apple iPhone Xr,
+поставщик `1031 Venus`, живой срок `28` дней) — `effective_target_days` равен
+`60` вместо `67`.
+
+`tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py`
+закрепляет текущее поведение (`adaptive_effective_target_days` `52`/`60`/`69`
+вместо `59`/`67`/`76`), поэтому переписывается вместе с исправлением.
+
+**Решение 2026-08-20:** расхождение зафиксировано как дефект; код и production
+этой записью не меняются, исправление выполняется отдельной задачей с
+пересчётом до/после на реальных данных.
+
 # Tests
 
 - Документация: `python scripts/validate_project_docs.py pricing-service` из
@@ -1626,6 +1660,11 @@ Confidence должен объясняться вкладом:
 
 ## Changelog
 
+- 2026-08-20 — **зафиксирован дефект: адаптивный пересчёт по живым срокам не
+  добавляет `distribution_to_shelf_days`**, из-за чего горизонт заказа на `7`
+  дней короче правила от `2026-07-30` (`60` вместо `67` для тира `super_fast`).
+  Прогон `2026-08-19`: `359` строк заказа, недобор около `2032` шт (примерно
+  `27%`). Код и production не менялись, исправление — отдельной задачей.
 - 2026-08-17 — **отменена область v1 `только do_not_order` и старое точечное
   подключение `stockout_guard` только к маржинальным медленным карточкам.**
   Принятое правило действует для всех карточек `sale / Растим (ПРОДАЖА)` и

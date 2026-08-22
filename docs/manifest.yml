@@ -429,6 +429,21 @@ documents:
     related_tests:
       - tests/test_site_defect_archive.py
     keywords: [site-defects, old-bitrix, chat69465, archive, smart-process, disk, search]
+  - path: docs/Onepage.SiteServiceRequestsMVP.md
+    title: Site Service And Warranty Requests MVP Onepage
+    doc_type: onepager
+    domain: order_flow
+    status: draft
+    owner: product-and-operations
+    source_of_truth: false
+    related_code:
+      - app/services/site_defect_workflow.py
+      - app/services/expertise_bitrix.py
+      - scripts/ensure_site_defect_archive_bitrix_process.py
+    related_tests:
+      - tests/test_site_defect_workflow.py
+      - tests/test_site_defect_archive.py
+    keywords: [site, service, warranty, tickets, reclamations, expertise, bitrix24, task-3223]
   - path: docs/specs/logistics-control-contour.md
     title: Logistics Control Contour
     doc_type: spec

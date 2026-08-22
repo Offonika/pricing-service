@@ -181,6 +181,7 @@ class Settings(BaseSettings):
     site_service_requests_first_line_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_escalation_user_id: int | None = None
     site_service_requests_finance_user_id: int | None = None
+    site_service_requests_expected_user_names: dict[str, str] = Field(default_factory=dict)
     site_service_requests_timezone: str = "Europe/Moscow"
     site_service_requests_first_response_hours: int = Field(default=4, ge=1, le=24)
     site_service_requests_timestamp_tolerance_seconds: int = Field(

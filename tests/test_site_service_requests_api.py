@@ -363,6 +363,27 @@ def test_event_api_rejects_body_over_configured_limit_without_reserving_nonce(
     assert db_session.scalar(select(func.count(SiteServiceRequestEvent.id))) == 0
 
 
+def test_command_ack_api_rejects_body_over_configured_limit_without_reserving_nonce(
+    client,
+    db_session,
+) -> None:
+    payload = {
+        "schemaVersion": 1,
+        "status": "failed",
+        "errorCode": "message_write_failed",
+        "padding": "x" * 2048,
+    }
+    with _api_dependencies(
+        db_session,
+        _settings(site_service_requests_max_ack_body_bytes=1024),
+    ):
+        response = _post_command_ack(client, 999, payload)
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "request_body_too_large"}
+    assert db_session.scalar(select(func.count(SiteServiceRequestNonce.id))) == 0
+
+
 def test_file_api_stages_binary_idempotently_and_stops_requesting_it(
     client,
     db_session,
@@ -410,6 +431,59 @@ def test_file_api_stages_binary_idempotently_and_stops_requesting_it(
     assert stored_path.read_bytes() == body
     assert "photo.jpg" not in file.temporary_path
     assert stat.S_IMODE(stored_path.stat().st_mode) == 0o600
+
+
+def test_file_upload_identity_includes_event_source_message(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    first_body = b"first-message-file"
+    second_body = b"second-message-file"
+    first = _event_payload()
+    first["history"][0]["files"][0]["size"] = len(first_body)
+    first["history"][0]["files"][0]["sha256"] = hashlib.sha256(first_body).hexdigest()
+    second = json.loads(json.dumps(first))
+    second["eventId"] = "site-support:741:1301"
+    second["eventType"] = "ticket.message_added"
+    second["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T12:01:00+03:00",
+            "text": "Ещё одно вложение",
+            "files": [
+                {
+                    "fileId": 93287,
+                    "name": "second.jpg",
+                    "mimeType": "image/jpeg",
+                    "size": len(second_body),
+                    "sha256": hashlib.sha256(second_body).hexdigest(),
+                }
+            ],
+        }
+    )
+    settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
+
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, first).status_code == 202
+        assert _post_event(client, second).status_code == 202
+        uploaded = _put_file(
+            client,
+            event_id=second["eventId"],
+            file_id=93287,
+            body=second_body,
+            filename="second.jpg",
+        )
+
+    assert uploaded.status_code == 200
+    rows = db_session.scalars(
+        select(SiteServiceRequestFile).order_by(SiteServiceRequestFile.source_message_id)
+    ).all()
+    assert [(row.source_message_id, row.status) for row in rows] == [
+        (1201, "pending"),
+        (1301, "staged"),
+    ]
 
 
 def test_file_api_rejects_unregistered_unsafe_or_changed_content(

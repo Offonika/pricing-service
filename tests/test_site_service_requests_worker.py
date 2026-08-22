@@ -5,6 +5,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 
 from app.core.config import Settings
@@ -25,8 +26,8 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixWriter,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
-    cleanup_uploaded_site_service_request_files,
     choose_site_service_assignee,
+    cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
     contains_exact_order_token,
     create_site_service_request_command,
@@ -34,6 +35,7 @@ from app.services.site_service_requests_worker import (
     next_site_service_request_retry_at,
     normalize_site_service_email,
     normalize_site_service_phone,
+    preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
     render_site_service_request_plans,
     sync_staged_site_service_request_files,
@@ -56,6 +58,17 @@ class FakeBitrixApi:
         self.items: dict[int, dict] = {}
         self.raise_after_item_add = False
         self.disk_files: dict[str, dict] = {}
+        self.users: dict[int, dict] = {
+            1001: {"ID": "1001", "ACTIVE": "Y", "NAME": "Анна", "LAST_NAME": "Гиря"},
+            1002: {"ID": "1002", "ACTIVE": "Y", "NAME": "Ариф", "LAST_NAME": "Рахманов"},
+            1003: {"ID": "1003", "ACTIVE": "Y", "NAME": "Тимур", "LAST_NAME": "Тибилов"},
+            1004: {
+                "ID": "1004",
+                "ACTIVE": "Y",
+                "NAME": "Александра",
+                "LAST_NAME": "Живых",
+            },
+        }
 
     def call(self, method: str, params=None, **_kwargs):
         values = list(params or [])
@@ -112,6 +125,10 @@ class FakeBitrixApi:
         if method == "timeman.status":
             user_id = int(mapped["USER_ID"])
             return {"result": {"STATUS": self.timeman.get(user_id, "ERROR")}}
+        if method == "user.get":
+            user_id = int(mapped["ID"])
+            user = self.users.get(user_id)
+            return {"result": [user] if user else []}
         raise AssertionError(f"unexpected Bitrix method: {method}")
 
     def call_json(self, method: str, payload: dict, **_kwargs):
@@ -207,12 +224,30 @@ def _worker_settings(**overrides) -> Settings:
             "reply_status_pending": "PENDING",
             "reply_status_sent": "SENT",
             "reply_status_error": "ERROR",
+            "sync_status_synced": "SYNCED",
+            "sync_status_client_match_required": "CLIENT_MATCH_REQUIRED",
+            "sync_status_order_match_required": "ORDER_MATCH_REQUIRED",
+            "sync_status_order_not_found": "ORDER_NOT_FOUND",
+            "sync_status_file_sync_error": "FILE_SYNC_ERROR",
+            "sync_status_assignment_waiting": "ASSIGNMENT_WAITING",
             "request_type_warranty": "WARRANTY",
+            "request_type_refund_money": "REFUND_MONEY",
+            "request_type_replacement": "REPLACEMENT",
+            "request_type_delivery_return": "DELIVERY_RETURN",
+            "request_type_consultation": "CONSULTATION",
+            "request_type_other": "OTHER",
         },
         "site_service_requests_bitrix_root_folder_id": 777,
         "site_service_requests_crm_order_field": "UF_CRM_ORDER",
         "site_service_requests_first_line_user_ids": [1001, 1002],
         "site_service_requests_escalation_user_id": 1003,
+        "site_service_requests_finance_user_id": 1004,
+        "site_service_requests_expected_user_names": {
+            "1001": "Анна Гиря",
+            "1002": "Ариф Рахманов",
+            "1003": "Тимур Тибилов",
+            "1004": "Александра Живых",
+        },
     }
     values.update(overrides)
     return Settings(**values)
@@ -263,6 +298,28 @@ def test_normalization_and_exact_order_token() -> None:
     assert normalize_site_service_email(" User@Example.COM ") == "user@example.com"
     assert contains_exact_order_token("Заказ 000001 / сайт", "000001") is True
     assert contains_exact_order_token("Заказ 1000001 / сайт", "000001") is False
+
+
+def test_user_preflight_requires_active_users_with_expected_identity() -> None:
+    api = FakeBitrixApi()
+    settings = _worker_settings()
+
+    result = preflight_site_service_request_users(api=api, settings=settings)
+
+    assert [row["role"] for row in result] == [
+        "first_line_1",
+        "first_line_2",
+        "escalation",
+        "finance",
+    ]
+    api.users[1002]["ACTIVE"] = "N"
+    with pytest.raises(RuntimeError, match="inactive"):
+        preflight_site_service_request_users(api=api, settings=settings)
+
+    mismatched_api = FakeBitrixApi()
+    mismatched_api.users[1001]["ID"] = "9999"
+    with pytest.raises(RuntimeError, match="readback failed"):
+        preflight_site_service_request_users(api=mismatched_api, settings=settings)
 
 
 def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
@@ -574,6 +631,80 @@ def test_worker_coalesces_same_case_per_batch_and_round_robins_distinct_cases(
     assert methods.count("crm.item.add") == 2
 
 
+def test_worker_does_not_overtake_deferred_retry_in_the_same_case(db_session) -> None:
+    cipher = _persist_event(db_session)
+    later = _event_payload()
+    later["eventId"] = "site-support:741:1202"
+    later["eventType"] = "ticket.message_added"
+    later["history"].append(
+        {
+            "messageId": 1202,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T09:01:00+03:00",
+            "text": "Более новое сообщение",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, later, cipher)
+    events = db_session.scalars(
+        select(SiteServiceRequestEvent).order_by(SiteServiceRequestEvent.id)
+    ).all()
+    events[0].status = "retry"
+    events[0].next_retry_at = datetime(2026, 8, 22, 7, 5, tzinfo=UTC)
+    db_session.commit()
+
+    before_retry = build_site_service_request_worker_plans(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(FakeBitrixApi()),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+    after_retry = build_site_service_request_worker_plans(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(FakeBitrixApi()),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 5, tzinfo=UTC),
+    )
+
+    assert before_retry == []
+    assert [plan.event_id for plan in after_retry] == ["site-support:741:1201"]
+
+
+def test_worker_orders_out_of_order_delivery_by_source_message(db_session) -> None:
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    later = _event_payload()
+    later["eventId"] = "site-support:741:1202"
+    later["eventType"] = "ticket.message_added"
+    later["occurredAt"] = "2026-08-22T12:01:00+03:00"
+    later["history"].append(
+        {
+            "messageId": 1202,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T12:01:00+03:00",
+            "text": "Более новое сообщение",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, later, cipher)
+    _persist_payload(db_session, _event_payload(), cipher)
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    assert case.first_seen_at.replace(tzinfo=UTC) == datetime(2026, 8, 22, 6, 0, tzinfo=UTC)
+
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(FakeBitrixApi()),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    assert [plan.event_id for plan in plans] == ["site-support:741:1201"]
+
+
 def test_outbound_command_creation_encrypts_text_and_deduplicates(db_session) -> None:
     _persist_event(db_session)
     case = db_session.scalar(select(SiteServiceRequestCase))
@@ -689,10 +820,14 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     )
     case = db_session.scalar(select(SiteServiceRequestCase))
     assert case is not None and case.bitrix_item_id is not None
+    case.sync_status = "file_sync_error"
+    case.last_error_code = "file_sync_error"
+    db_session.commit()
     api.items[int(case.bitrix_item_id)].update(
         {
             "ufSiteReplyAction": "SEND",
             "ufSiteReplyText": "Ответ из карточки",
+            "ufSiteSyncError": "file_sync_error",
         }
     )
 
@@ -714,6 +849,36 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "PENDING"
     assert api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] == ""
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "file_sync_error"
+
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert command is not None
+    command.status = "applied"
+    api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] = "SEND"
+    db_session.commit()
+    applied_duplicate = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    assert applied_duplicate[0]["duplicate"] is True
+    assert applied_duplicate[0]["status"] == "applied"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "SENT"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "file_sync_error"
+
+    command.status = "failed"
+    command.last_error_code = "message_write_failed"
+    db_session.commit()
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    assert failed[0]["status"] == "failed"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "ERROR"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "message_write_failed"
 
 
 def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
@@ -898,6 +1063,16 @@ def test_direct_support_reply_closes_first_response_without_backend_command(db_s
     payload = _event_payload()
     payload["eventId"] = "site-support:741:1301"
     payload["eventType"] = "ticket.message_added"
+    payload["history"].insert(
+        0,
+        {
+            "messageId": 1101,
+            "authorKind": "support-team",
+            "createdAt": "2026-08-22T08:00:00+03:00",
+            "text": "Старый ответ до начала SLA",
+            "files": [],
+        },
+    )
     payload["history"].append(
         {
             "messageId": 1301,
@@ -958,6 +1133,37 @@ def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> Non
     event = db_session.scalar(select(SiteServiceRequestEvent))
     assert event is not None and event.status == "retry"
     assert event.last_error_code == "bitrix_unavailable"
+
+
+def test_stale_plan_does_not_reopen_event_processed_by_another_worker(db_session) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        cipher=cipher,
+    )
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    event.status = "processed"
+    event.payload_encrypted = None
+    db_session.commit()
+
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert results[0].status == "processed"
+    db_session.refresh(event)
+    assert event.status == "processed"
+    assert event.last_error_code is None
 
 
 def test_dynamic_item_writer_uses_rest_camel_case_and_clears_null_values() -> None:

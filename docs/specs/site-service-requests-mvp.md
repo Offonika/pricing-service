@@ -662,6 +662,11 @@ Rollback:
 
 # Changelog
 
+- 2026-08-22 — выполнен повторный локальный hardening-review: усилены ограничения
+  входящих body, файловые ошибки и readback, последовательность событий одного
+  тикета, worker/round-robin/SLA, outbound ack/status, user preflight, безопасное
+  слияние формы и PHP-контракт `CTicket::Set`; live smoke и внешние изменения не
+  выполнялись.
 - 2026-08-22 — локально реализованы intake API, durable-модели, worker, ensure-скрипт,
   cron-template, site PHP bridge, SUPPORT fields, OpenAPI и автоматические проверки;
   production, Bitrix24 и `master-mobile.ru` не изменялись, controlled live smoke

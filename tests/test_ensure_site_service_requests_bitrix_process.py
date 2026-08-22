@@ -37,7 +37,29 @@ def _field(spec: dict[str, Any], index: int) -> dict[str, Any]:
 
 
 def _all_fields() -> list[dict[str, Any]]:
-    return [_field(spec, index) for index, spec in enumerate(bitrix_setup.FIELD_SPECS, start=1)]
+    fields = [_field(spec, index) for index, spec in enumerate(bitrix_setup.FIELD_SPECS, start=1)]
+    fields.append(_request_type_field())
+    return fields
+
+
+def _request_type_field() -> dict[str, Any]:
+    rows = [
+        ("clarify", "Разобраться"),
+        ("refund_money", "Вернуть деньги"),
+        ("replacement", "Замена товара"),
+        ("expertise", "Нужна экспертиза"),
+        ("logistics_return", "Доставка / возврат"),
+        ("other", "Другое"),
+    ]
+    return {
+        "id": "99",
+        "fieldName": bitrix_setup.REQUEST_TYPE_FIELD_NAME,
+        "userTypeId": "enumeration",
+        "enum": [
+            {"id": str(9900 + index), "xmlId": key, "value": title}
+            for index, (key, title) in enumerate(rows, start=1)
+        ],
+    }
 
 
 def _stages() -> list[dict[str, Any]]:
@@ -45,6 +67,7 @@ def _stages() -> list[dict[str, Any]]:
         {"STATUS_ID": "DT1134_55:NEW", "SEMANTICS": None},
         {"STATUS_ID": "DT1134_55:PREPARATION", "SEMANTICS": None},
         {"STATUS_ID": "DT1134_55:SUCCESS", "SEMANTICS": "S"},
+        {"STATUS_ID": "DT1134_55:FAIL", "SEMANTICS": "F"},
     ]
 
 
@@ -56,12 +79,13 @@ class FakeBitrixApi:
         persist_added_fields: bool = True,
         return_saved_form: bool = True,
         stages: list[dict[str, Any]] | None = None,
+        existing_form: list[dict[str, Any]] | None = None,
     ) -> None:
         self.fields = deepcopy(fields)
         self.persist_added_fields = persist_added_fields
         self.return_saved_form = return_saved_form
         self.stages = deepcopy(stages if stages is not None else _stages())
-        self.saved_form: list[dict[str, Any]] = []
+        self.saved_form: list[dict[str, Any]] = deepcopy(existing_form or [])
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def call_json(
@@ -111,6 +135,7 @@ def test_dry_run_reports_missing_fields_without_writes() -> None:
     assert plan.stage_map == {
         "new": "DT1134_55:NEW",
         "success": "DT1134_55:SUCCESS",
+        "failure": "DT1134_55:FAIL",
     }
     assert _write_methods(api) == []
 
@@ -119,7 +144,7 @@ def test_apply_creates_only_missing_field_and_reads_back_mapping() -> None:
     fields = _all_fields()
     missing_spec = bitrix_setup.FIELD_SPECS[5]
     fields = [
-        field for field in fields if field["xmlId"] != bitrix_setup._xml_id(missing_spec["key"])
+        field for field in fields if field.get("xmlId") != bitrix_setup._xml_id(missing_spec["key"])
     ]
     api = FakeBitrixApi(fields=fields)
 
@@ -131,6 +156,8 @@ def test_apply_creates_only_missing_field_and_reads_back_mapping() -> None:
     assert plan.missing_fields == ()
     assert plan.type_mismatches == ()
     assert plan.enum_map["reply_action_send"] == "9002"
+    assert plan.enum_map["request_type_warranty"] == "9904"
+    assert plan.enum_map["request_type_delivery_return"] == "9905"
     assert _write_methods(api) == [
         "userfieldconfig.add",
         "crm.item.details.configuration.set",
@@ -176,6 +203,49 @@ def test_apply_blocks_missing_required_stage_before_writes() -> None:
         bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
 
     assert _write_methods(api) == []
+
+
+def test_apply_blocks_incomplete_existing_request_type_enum_before_writes() -> None:
+    fields = _all_fields()
+    fields[-1]["enum"] = fields[-1]["enum"][:-1]
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="request_type_enum_mapping_incomplete"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_merges_site_sections_without_replacing_existing_form() -> None:
+    existing_form = [
+        {
+            "name": "main",
+            "title": "Основное",
+            "type": "section",
+            "elements": [
+                {"name": "TITLE", "optionFlags": 1},
+                {"name": "UF_CRM_36_EXISTING", "optionFlags": 1},
+            ],
+        }
+    ]
+    api = FakeBitrixApi(fields=_all_fields(), existing_form=existing_form)
+
+    bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert api.saved_form[0] == existing_form[0]
+    all_names = {
+        element["name"] for section in api.saved_form for element in section.get("elements") or []
+    }
+    assert "UF_CRM_36_EXISTING" in all_names
+    assert "TITLE" in all_names
+    assert (
+        sum(
+            element["name"] == "TITLE"
+            for section in api.saved_form
+            for element in section.get("elements") or []
+        )
+        == 1
+    )
 
 
 def test_userfield_list_reads_all_pages() -> None:

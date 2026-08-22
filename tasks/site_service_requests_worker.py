@@ -24,10 +24,12 @@ from app.services.site_service_requests_worker import (
     build_site_service_request_worker_plans,
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
+    preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
     resolved_site_service_request_field_map,
     safe_site_service_request_plan_dict,
     sync_staged_site_service_request_files,
+    validate_site_service_request_enum_map,
 )
 
 SessionScopeFactory = Callable[..., AbstractContextManager[Session]]
@@ -75,6 +77,11 @@ def main(
         raise SystemExit("site service request worker configuration is incomplete")
 
     resolved_api = api or BitrixRestClient(str(settings.site_service_requests_bitrix_webhook_url))
+    user_preflight = (
+        preflight_site_service_request_users(api=resolved_api, settings=settings)
+        if args.apply
+        else []
+    )
     reader = SiteServiceRequestBitrixReader(resolved_api)
     cipher = build_site_service_request_cipher(settings)
     cleanup_paths: list[Path] = []
@@ -87,9 +94,7 @@ def main(
             cipher=cipher,
             limit=args.limit,
             failure_results=planning_failures if args.apply else None,
-            failure_writer=(
-                SiteServiceRequestBitrixWriter(resolved_api) if args.apply else None
-            ),
+            failure_writer=(SiteServiceRequestBitrixWriter(resolved_api) if args.apply else None),
         )
         if args.apply:
             results = [
@@ -139,6 +144,7 @@ def main(
                 "assignments": assignments,
                 "files": files,
                 "commands": commands,
+                "userPreflight": user_preflight,
             }
         else:
             result = {
@@ -166,6 +172,30 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
     if not settings.site_service_requests_first_line_user_ids:
         errors.append("first_line_users_missing")
     if apply:
+        if settings.site_service_requests_escalation_user_id is None:
+            errors.append("escalation_user_missing")
+        if settings.site_service_requests_finance_user_id is None:
+            errors.append("finance_user_missing")
+        configured_user_ids = {
+            *settings.site_service_requests_first_line_user_ids,
+            *(
+                [settings.site_service_requests_escalation_user_id]
+                if settings.site_service_requests_escalation_user_id is not None
+                else []
+            ),
+            *(
+                [settings.site_service_requests_finance_user_id]
+                if settings.site_service_requests_finance_user_id is not None
+                else []
+            ),
+        }
+        if any(
+            not str(
+                settings.site_service_requests_expected_user_names.get(str(user_id)) or ""
+            ).strip()
+            for user_id in configured_user_ids
+        ):
+            errors.append("expected_user_names_incomplete")
         if not settings.site_service_requests_bitrix_writes_enabled:
             errors.append("bitrix_writes_disabled")
         try:
@@ -173,10 +203,16 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
         except RuntimeError:
             errors.append("bitrix_field_map_incomplete")
             field_map = {}
+        try:
+            validate_site_service_request_enum_map(settings)
+        except RuntimeError:
+            errors.append("bitrix_enum_map_incomplete")
         if not settings.site_service_requests_bitrix_stage_map.get("new"):
             errors.append("bitrix_new_stage_missing")
         if not settings.site_service_requests_bitrix_stage_map.get("success"):
             errors.append("bitrix_success_stage_missing")
+        if not settings.site_service_requests_bitrix_stage_map.get("failure"):
+            errors.append("bitrix_failure_stage_missing")
         if settings.site_service_requests_outbound_replies_enabled:
             if any(
                 not field_map.get(key)
@@ -185,7 +221,12 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
                 errors.append("outbound_field_map_incomplete")
             if any(
                 not settings.site_service_requests_bitrix_enum_map.get(key)
-                for key in ("reply_action_send", "reply_status_pending")
+                for key in (
+                    "reply_action_send",
+                    "reply_status_pending",
+                    "reply_status_sent",
+                    "reply_status_error",
+                )
             ):
                 errors.append("outbound_enum_map_incomplete")
     return {
@@ -207,5 +248,11 @@ def _print_result(result: dict[str, Any], *, compact: bool) -> None:
     )
 
 
+def _cli_exit_code(result: dict[str, Any]) -> int:
+    if result.get("mode") == "check" and not result.get("ready", False):
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_cli_exit_code(main()))

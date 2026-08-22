@@ -1,4 +1,4 @@
 # Disabled rollout template for task #3223.
 # Do not install until pricing-service deploy, Bitrix writes and the pilot schedule
 # have each been approved and verified with readback.
-# * * * * * pricing /opt/MM/pricing-service/infra/cron/site_service_requests_worker.sh
+# * * * * * pricing /opt/MM/pricing-service-task43-current/infra/cron/site_service_requests_worker.sh

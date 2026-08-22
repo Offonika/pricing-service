@@ -11,6 +11,16 @@ from typing import Any, Protocol
 from app.core.config import Settings, get_settings
 from app.services.expertise_bitrix import BitrixRestClient
 
+REQUEST_TYPE_FIELD_NAME = "UF_CRM_36_CUSTOMERREQUESTCHOICE"
+REQUEST_TYPE_ENUM_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "warranty": ("expertise", ("Нужна экспертиза",)),
+    "refund_money": ("refund_money", ("Вернуть деньги", "Возврат денег")),
+    "replacement": ("replacement", ("Замена товара", "Замена")),
+    "delivery_return": ("logistics_return", ("Доставка / возврат",)),
+    "consultation": ("clarify", ("Разобраться", "Консультация")),
+    "other": ("other", ("Другое", "Прочее")),
+}
+
 FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "site_ticket_id", "title": "ID тикета сайта", "type": "string"},
     {"key": "site_ticket_url", "title": "Открыть тикет сайта", "type": "url"},
@@ -101,6 +111,7 @@ FORM_SECTIONS = (
 REQUIRED_STAGE_CODES = {
     "new": "NEW",
     "success": "SUCCESS",
+    "failure": "FAIL",
 }
 
 
@@ -117,6 +128,7 @@ class EnsurePlan:
     missing_fields: tuple[str, ...]
     type_mismatches: tuple[str, ...]
     missing_stages: tuple[str, ...]
+    missing_enum_mappings: tuple[str, ...]
     field_map: dict[str, str]
     enum_map: dict[str, str]
     stage_map: dict[str, str]
@@ -143,6 +155,7 @@ def build_plan(
     category_id: int,
     fields: list[dict[str, Any]],
     stages: list[dict[str, Any]],
+    existing_form: list[dict[str, Any]] | None = None,
 ) -> EnsurePlan:
     entity_id = f"CRM_{type_id}"
     by_xml_id = {str(field.get("xmlId") or ""): field for field in fields}
@@ -163,8 +176,27 @@ def build_plan(
         if field_name:
             field_map[spec["key"]] = field_name
         enum_map.update(_enum_mapping(spec, current))
+    request_type_field = next(
+        (
+            field
+            for field in fields
+            if _normalized_field_name(field.get("fieldName"))
+            == _normalized_field_name(REQUEST_TYPE_FIELD_NAME)
+        ),
+        None,
+    )
+    if request_type_field is not None:
+        field_name = str(request_type_field.get("fieldName") or "").strip()
+        if field_name:
+            field_map["request_type"] = field_name
+        enum_map.update(_request_type_enum_mapping(request_type_field))
     stage_map = _stage_mapping(stages)
-    form = build_form(field_map)
+    form = merge_form(existing_form or [], build_form(field_map))
+    missing_enum_mappings = tuple(
+        f"request_type_{key}"
+        for key in REQUEST_TYPE_ENUM_TARGETS
+        if not enum_map.get(f"request_type_{key}")
+    )
     return EnsurePlan(
         entity_type_id=entity_type_id,
         type_id=type_id,
@@ -173,6 +205,7 @@ def build_plan(
         missing_fields=tuple(missing),
         type_mismatches=tuple(mismatches),
         missing_stages=tuple(key for key in REQUIRED_STAGE_CODES if key not in stage_map),
+        missing_enum_mappings=missing_enum_mappings,
         field_map=field_map,
         enum_map=enum_map,
         stage_map=stage_map,
@@ -191,6 +224,46 @@ def build_form(field_map: dict[str, str]) -> list[dict[str, Any]]:
         if elements:
             sections.append({"name": name, "title": title, "type": "section", "elements": elements})
     return sections
+
+
+def merge_form(
+    existing: list[dict[str, Any]],
+    desired: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = json.loads(json.dumps(existing, ensure_ascii=False))
+    existing_names = {
+        str(element.get("name") or "")
+        for section in merged
+        for element in section.get("elements") or []
+        if isinstance(element, dict)
+    }
+    sections_by_name = {
+        str(section.get("name") or ""): section for section in merged if isinstance(section, dict)
+    }
+    for desired_section in desired:
+        section_name = str(desired_section.get("name") or "")
+        target = sections_by_name.get(section_name)
+        if target is None:
+            target = {
+                **desired_section,
+                "elements": [],
+            }
+            merged.append(target)
+            sections_by_name[section_name] = target
+        target_elements = target.setdefault("elements", [])
+        target_names = {
+            str(element.get("name") or "")
+            for element in target_elements
+            if isinstance(element, dict)
+        }
+        for element in desired_section.get("elements") or []:
+            element_name = str(element.get("name") or "")
+            if not element_name or element_name in existing_names or element_name in target_names:
+                continue
+            target_elements.append(element)
+            target_names.add(element_name)
+            existing_names.add(element_name)
+    return merged
 
 
 def ensure(
@@ -214,12 +287,23 @@ def ensure(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         category_id=settings.site_service_requests_bitrix_working_category_id,
     )
+    existing_form = _configuration_result(
+        api.call_json(
+            "crm.item.details.configuration.get",
+            {
+                "entityTypeId": settings.site_service_requests_bitrix_entity_type_id,
+                "scope": "C",
+                "extras": {"categoryId": settings.site_service_requests_bitrix_working_category_id},
+            },
+        )
+    )
     plan = build_plan(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,
         category_id=settings.site_service_requests_bitrix_working_category_id,
         fields=fields,
         stages=stages,
+        existing_form=existing_form,
     )
     if not apply:
         return plan
@@ -229,6 +313,8 @@ def ensure(
         raise RuntimeError("site_service_request_field_type_mismatch")
     if plan.missing_stages:
         raise RuntimeError("site_service_request_required_stage_missing")
+    if plan.missing_enum_mappings:
+        raise RuntimeError("site_service_request_request_type_enum_mapping_incomplete")
 
     for spec in FIELD_SPECS:
         if spec["key"] not in plan.missing_fields:
@@ -250,8 +336,14 @@ def ensure(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
             category_id=settings.site_service_requests_bitrix_working_category_id,
         ),
+        existing_form=existing_form,
     )
-    if refreshed.missing_fields or refreshed.type_mismatches or refreshed.missing_stages:
+    if (
+        refreshed.missing_fields
+        or refreshed.type_mismatches
+        or refreshed.missing_stages
+        or refreshed.missing_enum_mappings
+    ):
         raise RuntimeError("site_service_request_fields_readback_failed")
     api.call_json(
         "crm.item.details.configuration.set",
@@ -285,6 +377,7 @@ def plan_payload(plan: EnsurePlan, *, applied: bool) -> dict[str, Any]:
         "missingFields": list(plan.missing_fields),
         "typeMismatches": list(plan.type_mismatches),
         "missingStages": list(plan.missing_stages),
+        "missingEnumMappings": list(plan.missing_enum_mappings),
         "fieldMap": plan.field_map,
         "enumMap": plan.enum_map,
         "stageMap": plan.stage_map,
@@ -351,6 +444,7 @@ def _list_stages(
 def _stage_mapping(stages: list[dict[str, Any]]) -> dict[str, str]:
     by_code: dict[str, str] = {}
     success_stage_id = ""
+    failure_stage_id = ""
     for stage in stages:
         stage_id = str(stage.get("STATUS_ID") or stage.get("statusId") or "").strip()
         if not stage_id:
@@ -359,6 +453,8 @@ def _stage_mapping(stages: list[dict[str, Any]]) -> dict[str, str]:
         by_code.setdefault(code, stage_id)
         if str(stage.get("SEMANTICS") or stage.get("semantics") or "").upper() == "S":
             success_stage_id = stage_id
+        if str(stage.get("SEMANTICS") or stage.get("semantics") or "").upper() == "F":
+            failure_stage_id = stage_id
     mapping = {
         logical_key: by_code[code]
         for logical_key, code in REQUIRED_STAGE_CODES.items()
@@ -366,6 +462,8 @@ def _stage_mapping(stages: list[dict[str, Any]]) -> dict[str, str]:
     }
     if "success" not in mapping and success_stage_id:
         mapping["success"] = success_stage_id
+    if "failure" not in mapping and failure_stage_id:
+        mapping["failure"] = failure_stage_id
     return mapping
 
 
@@ -445,6 +543,28 @@ def _enum_mapping(spec: dict[str, Any], field: dict[str, Any]) -> dict[str, str]
             prefix = spec["key"].removeprefix("site_")
             mapping[f"{prefix}_{key}"] = enum_id
     return mapping
+
+
+def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
+    enum_rows = [row for row in field.get("enum") or [] if isinstance(row, dict)]
+    mapping: dict[str, str] = {}
+    for request_type, (logical_xml_id, labels) in REQUEST_TYPE_ENUM_TARGETS.items():
+        for row in enum_rows:
+            enum_id = str(row.get("id") or row.get("ID") or "").strip()
+            xml_id = str(row.get("xmlId") or row.get("XML_ID") or "").strip().lower()
+            value = str(row.get("value") or row.get("VALUE") or "").strip().casefold()
+            if enum_id and (
+                xml_id == logical_xml_id
+                or xml_id.endswith(f"_{logical_xml_id}")
+                or value in {label.casefold() for label in labels}
+            ):
+                mapping[f"request_type_{request_type}"] = enum_id
+                break
+    return mapping
+
+
+def _normalized_field_name(value: Any) -> str:
+    return "".join(character for character in str(value or "").upper() if character.isalnum())
 
 
 def _field_name(entity_id: str, key: str) -> str:

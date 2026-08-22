@@ -223,6 +223,7 @@ def get_commands(
         401: {"description": "Invalid or missing site HMAC authentication"},
         404: {"description": "Command is not registered"},
         409: {"description": "Nonce replay or command acknowledgement conflict"},
+        413: {"description": "Request body exceeds the configured limit"},
         503: {"description": "Command storage is unavailable"},
     },
 )

@@ -168,6 +168,8 @@ def accept_site_service_request_event(
                 )
                 session.add(case)
                 session.flush()
+            elif _as_utc(payload.occurred_at) < _as_utc(case.first_seen_at):
+                case.first_seen_at = _as_utc(payload.occurred_at)
 
             latest_customer_message = max(
                 (
@@ -647,8 +649,7 @@ def _missing_file_ids(
         {
             row.source_file_id
             for row in rows
-            if (row.source_message_id, row.source_file_id) in requested
-            and row.status == "pending"
+            if (row.source_message_id, row.source_file_id) in requested and row.status == "pending"
         }
     )
 

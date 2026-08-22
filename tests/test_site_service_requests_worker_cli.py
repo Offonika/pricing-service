@@ -4,7 +4,7 @@ import base64
 import json
 
 from app.core.config import Settings
-from tasks.site_service_requests_worker import main, parse_args
+from tasks.site_service_requests_worker import _cli_exit_code, main, parse_args
 
 _ENCRYPTION_KEY = base64.urlsafe_b64encode(b"c" * 32).decode("ascii")
 
@@ -45,7 +45,14 @@ def test_cli_apply_check_requires_flags_and_mapping(capsys) -> None:
     checked = main(["--check", "--compact"], settings_override=apply_settings)
     assert checked["ready"] is False
     assert checked["errors"] == [
+        "escalation_user_missing",
+        "finance_user_missing",
+        "expected_user_names_incomplete",
         "bitrix_field_map_incomplete",
+        "bitrix_enum_map_incomplete",
         "bitrix_new_stage_missing",
         "bitrix_success_stage_missing",
+        "bitrix_failure_stage_missing",
     ]
+    assert _cli_exit_code(checked) == 2
+    assert _cli_exit_code({"mode": "check", "ready": True}) == 0

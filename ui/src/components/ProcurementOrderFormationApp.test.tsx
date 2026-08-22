@@ -187,12 +187,38 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     expect(screen.getByText(/Проблема: Высокий процент брака: 12,6%/)).toBeInTheDocument();
     expect(screen.getByText("Брак: 12,6%")).toBeInTheDocument();
     expect(screen.getByText("Рентабельность: 18,4%")).toBeInTheDocument();
+    expect(screen.getByText("Рентабельность: 18,4%")).toHaveAttribute(
+      "title",
+      "Доля прибыли в обороте, 180 дней"
+    );
     expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
     expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );
+  });
+
+  it("показывает причину, когда рентабельность действительно не рассчитана", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          lines: [
+            line({
+              profitability_pct: null,
+              profitability_status: "revenue_missing",
+              profitability_explanation: "Чистая выручка за период отсутствует или равна нулю",
+            }),
+          ],
+        })}
+      />
+    );
+
+    expect(
+      screen.getByText(
+        "Рентабельность: не рассчитана: Чистая выручка за период отсутствует или равна нулю"
+      )
+    ).toBeInTheDocument();
   });
 
   it("скрывает семейную фразу, если количество между SKU не перераспределялось", () => {

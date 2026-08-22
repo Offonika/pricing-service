@@ -353,6 +353,8 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     assert validated.orders[0].supplier_profile.qualification_class == "A"
     assert validated.orders[0].supplier_profile.defect_pct == Decimal("0.8")
     assert validated.orders[0].supplier_profile.updated_at.date() == date(2026, 8, 1)
+    assert validated.orders[0].lines[0].profitability_pct == Decimal("34.6")
+    assert validated.orders[0].lines[0].profitability_calculation_basis is None
     assert validated.orders[0].lines[0].photo_original_url.endswith("/1.jpg")
     assert validated.orders[0].lines[0].product_card_url == (
         "https://master-mobile.ru/catalog/displei/1/"

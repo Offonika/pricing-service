@@ -6071,6 +6071,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SiteServiceRequestEventAcceptedResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay or idempotency conflict
+        '503':
+          description: Ingest, encryption, or storage is unavailable
         '422':
           description: Validation Error
           content:
@@ -6113,6 +6119,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SiteServiceRequestHealthResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay
+        '503':
+          description: Health storage is unavailable
         '422':
           description: Validation Error
           content:
@@ -24046,6 +24058,11 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Profitability Pct
+        profitability_calculation_basis:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Calculation Basis
         profitability_status:
           anyOf:
           - type: string
@@ -27699,7 +27716,6 @@ components:
           type: string
           const: accepted
           title: Status
-          default: accepted
         duplicate:
           type: boolean
           title: Duplicate
@@ -27711,6 +27727,7 @@ components:
       type: object
       required:
       - eventId
+      - status
       - duplicate
       - missingFileIds
       title: SiteServiceRequestEventAcceptedResponse
@@ -27835,8 +27852,10 @@ components:
       - status
       - pendingEvents
       - failedEvents
+      - oldestPendingLagSeconds
       - pendingCommands
       - unlinkedCases
+      - lastSuccessfulExchangeAt
       - ingestEnabled
       - bitrixWritesEnabled
       - outboundRepliesEnabled
@@ -27871,6 +27890,7 @@ components:
       - authorKind
       - createdAt
       - text
+      - files
       title: SiteServiceRequestHistoryMessage
     SiteServiceRequestTicket:
       properties:

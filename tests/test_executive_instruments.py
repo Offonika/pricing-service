@@ -91,6 +91,143 @@ def _snapshot(*, generated_at: datetime) -> dict[str, object]:
     }
 
 
+def _exchange_block(*, generated_at: datetime) -> dict[str, object]:
+    return {
+        "status": "critical",
+        "queue_items": 3600,
+        "queue_status": "critical",
+        "last_success_at": (generated_at - timedelta(hours=2)).isoformat().replace("+00:00", "Z"),
+        "last_error_at": generated_at.isoformat().replace("+00:00", "Z"),
+        "consecutive_failures": 3,
+        "active_job_seconds": 960,
+        "stage_last": "init",
+        "stage_file_missing_cycles": 2,
+        "platform_cpu_pct": 96.5,
+        "source_status": "partial",
+    }
+
+
+def _snapshot_v4(*, generated_at: datetime) -> dict[str, object]:
+    payload = _snapshot(generated_at=generated_at)
+    payload["schema_version"] = 4
+    payload["devices"][0]["exchange"] = _exchange_block(generated_at=generated_at)  # type: ignore[index]
+    return payload
+
+
+def test_loads_v4_snapshot_with_exchange_block(monkeypatch, tmp_path: Path) -> None:
+    now = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+    path = tmp_path / "v4.json"
+    path.write_text(
+        json.dumps(_snapshot_v4(generated_at=now), ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(executive_instruments, "get_settings", lambda: _settings(path))
+
+    result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+    assert result.schema_version == 4
+    exchange = result.devices[0].exchange
+    assert exchange.status == "critical"
+    assert exchange.queue_items == 3600
+    assert exchange.queue_status == "critical"
+    assert exchange.consecutive_failures == 3
+    assert exchange.active_job_seconds == 960
+    assert exchange.stage_last == "init"
+    assert exchange.stage_file_missing_cycles == 2
+    # producer гарантирует только finite >= 0, искусственного потолка 100 нет
+    assert exchange.platform_cpu_pct == 96.5
+    assert exchange.source_status == "partial"
+
+
+def test_v2_and_v3_default_exchange_is_not_configured(monkeypatch, tmp_path: Path) -> None:
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    for version in (2, 3):
+        payload = _snapshot(generated_at=now)
+        payload["schema_version"] = version
+        path = tmp_path / f"v{version}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(
+            executive_instruments, "get_settings", lambda path=path: _settings(path)
+        )
+
+        result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+        exchange = result.devices[0].exchange
+        assert exchange.status == "not_configured"
+        assert exchange.source_status == "not_configured"
+        assert exchange.queue_items is None
+        assert exchange.queue_status is None
+        assert exchange.active_job_seconds is None
+        assert exchange.stage_last is None
+        assert exchange.platform_cpu_pct is None
+        assert exchange.last_success_at is None
+
+
+def test_v4_exchange_with_forbidden_content_is_rejected(monkeypatch, tmp_path: Path) -> None:
+    now = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
+    variants = []
+
+    forbidden_key = _snapshot_v4(generated_at=now)
+    forbidden_key["devices"][0]["exchange"]["endpoint"] = "internal"  # type: ignore[index]
+    variants.append(forbidden_key)
+
+    forbidden_url = _snapshot_v4(generated_at=now)
+    forbidden_url["devices"][0]["exchange"]["note"] = "https://shop.example.com/upload"  # type: ignore[index]
+    variants.append(forbidden_url)
+
+    forbidden_host = _snapshot_v4(generated_at=now)
+    forbidden_host["devices"][0]["exchange"]["note"] = "ut103-1cserv:1541"  # type: ignore[index]
+    variants.append(forbidden_host)
+
+    for absolute_path in (
+        r"C:\temp\noms\1cbitrix",
+        r"\\fileserver\exchange\noms",
+        "/var/log/nginx",
+        "/путь/к/обмену",
+    ):
+        problem_path = _snapshot_v4(generated_at=now)
+        problem_path["devices"][0]["problems"] = [  # type: ignore[index]
+            {
+                "problem_key": "service:ut103_site_exchange",
+                "category": "service",
+                "severity": "critical",
+                "title": "Обмен с сайтом деградировал",
+                "evidence": [absolute_path],
+                "recommended_action": "Проверить очередь обмена",
+            }
+        ]
+        variants.append(problem_path)
+
+    future_exchange = _snapshot_v4(generated_at=now)
+    future_exchange["devices"][0]["exchange"]["last_error_at"] = (  # type: ignore[index]
+        (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+    )
+    variants.append(future_exchange)
+
+    for index, payload in enumerate(variants):
+        path = tmp_path / f"v4-invalid-{index}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        monkeypatch.setattr(
+            executive_instruments, "get_settings", lambda path=path: _settings(path)
+        )
+
+        result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+        assert result.source_status == "source_error"
+        assert result.devices == []
+
+
+def test_sanitizer_does_not_treat_dates_or_safe_evidence_as_paths() -> None:
+    executive_instruments._assert_sanitized(  # noqa: SLF001 - адресный regression test
+        {
+            "observed_date": "/2026/08/06",
+            "evidence": [
+                "Стадия сайта: файл не передан",
+                "Циклов без передачи файла: 2",
+            ],
+        }
+    )
+
+
 def test_loads_sanitized_read_only_snapshot(monkeypatch, tmp_path: Path) -> None:
     now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
     path = tmp_path / "infrastructure.json"

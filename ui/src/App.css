@@ -7642,6 +7642,37 @@
   color: #536279 !important;
 }
 
+.executive-instruments__exchange-status {
+  display: inline-flex;
+  width: max-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #edf1f6;
+  color: #536279;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-instruments__exchange-status--ready {
+  background: #e9f8ef;
+  color: #287343;
+}
+
+.executive-instruments__exchange-status--warning {
+  background: #fff3dc;
+  color: #8b5a00;
+}
+
+.executive-instruments__exchange-status--critical {
+  background: #ffe5e5;
+  color: #a33232;
+}
+
+.executive-instruments__exchange-status--not_configured {
+  background: #edf1f6;
+  color: #536279;
+}
+
 .executive-instruments__row--critical td:first-child {
   box-shadow: inset 3px 0 #c74242;
 }

@@ -192,6 +192,42 @@ class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
     next_review_at: date | None = None
 
 
+ExecutiveInstrumentExchangeStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeQueueStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeStage = Literal[
+    "checkauth",
+    "init",
+    "file",
+    "import",
+    "none",
+]
+ExecutiveInstrumentExchangeSourceStatus = Literal["ready", "partial", "not_configured"]
+
+
+class ExecutiveInstrumentExchange(ExecutiveInstrumentStrictModel):
+    status: ExecutiveInstrumentExchangeStatus = "not_configured"
+    queue_items: int | None = Field(default=None, ge=0)
+    queue_status: ExecutiveInstrumentExchangeQueueStatus | None = None
+    last_success_at: datetime | None = None
+    last_error_at: datetime | None = None
+    consecutive_failures: int = Field(default=0, ge=0)
+    active_job_seconds: int | None = Field(default=None, ge=0)
+    stage_last: ExecutiveInstrumentExchangeStage | None = None
+    stage_file_missing_cycles: int = Field(default=0, ge=0)
+    platform_cpu_pct: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    source_status: ExecutiveInstrumentExchangeSourceStatus = "not_configured"
+
+
 class ExecutiveInstrumentProblem(ExecutiveInstrumentStrictModel):
     problem_key: str
     category: Literal[
@@ -238,6 +274,7 @@ class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
         default_factory=ExecutiveInstrumentIntegration
     )
     access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
+    exchange: ExecutiveInstrumentExchange = Field(default_factory=ExecutiveInstrumentExchange)
     problems: list[ExecutiveInstrumentProblem] = Field(default_factory=list)
     issue: str | None = None
     recommended_action: str | None = None
@@ -261,7 +298,7 @@ class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
 
 
 class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
-    schema_version: Literal[2, 3] = 2
+    schema_version: Literal[2, 3, 4] = 2
     generated_at: datetime
     source_status: ExecutiveInstrumentSourceStatus
     freshness_status: ExecutiveInstrumentFreshnessStatus
@@ -353,6 +390,8 @@ class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
                 device.backup.last_log_backup_at,
                 device.backup.last_restore_test_at,
                 device.integrations.last_success_at,
+                device.exchange.last_success_at,
+                device.exchange.last_error_at,
             ]
             for service in device.services:
                 timestamps.extend([service.last_verified_at, service.last_success_at])

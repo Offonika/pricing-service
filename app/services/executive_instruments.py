@@ -59,6 +59,14 @@ _SECRET_PATTERNS = (
     re.compile(r"\b(?:ssh-config|secret|token|password|username|login)\s*[:=]", re.IGNORECASE),
     re.compile(r"\b(?:логин|пароль)\s*[:=]", re.IGNORECASE),
 )
+_ABSOLUTE_PATH_PATTERNS = (
+    # Windows drive paths and UNC shares. A bare status fragment such as
+    # ``stage:file`` does not match because a slash is mandatory.
+    re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\[^\\\s]+\\[^\\\s]+)"),
+    # POSIX paths with at least two named segments. Numeric dates such as
+    # ``/2026/08/06`` are intentionally ignored to avoid false positives.
+    re.compile(r"(?<![:\w])/(?=[^/\s]*[^\W\d_])[\w.-]+(?:/[\w.-]+)+"),
+)
 _KNOWN_TECHNICAL_IDENTIFIERS = {
     "ai-models-win",
     "arsen",
@@ -107,6 +115,8 @@ def _assert_sanitized(value: Any, *, path: str = "snapshot") -> None:
     if isinstance(value, str):
         if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
             raise ValueError(f"secret-like infrastructure snapshot value at {path}")
+        if any(pattern.search(value) for pattern in _ABSOLUTE_PATH_PATTERNS):
+            raise ValueError(f"absolute path in infrastructure snapshot at {path}")
         if value.strip().casefold() in _KNOWN_TECHNICAL_IDENTIFIERS and not path.endswith(
             ".device_key"
         ):

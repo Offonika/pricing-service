@@ -1830,4 +1830,98 @@ describe("executive instruments tab", () => {
     expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
   });
+
+  it("shows the site exchange block for a v4 device", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "critical",
+      queue_items: 3600,
+      queue_status: "critical",
+      last_success_at: "2026-07-31T07:00:00Z",
+      last_error_at: "2026-07-31T09:00:00Z",
+      consecutive_failures: 3,
+      active_job_seconds: 960,
+      stage_last: "init",
+      stage_file_missing_cycles: 2,
+      platform_cpu_pct: 96.5,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    const dialog = screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" });
+    expect(within(dialog).getByText("Обмен с сайтом")).toBeVisible();
+    expect(within(dialog).getByText("инициализация")).toBeVisible();
+    expect(within(dialog).getByText("Циклов без файла")).toBeVisible();
+    // Общая загрузка платформы 8.2 показывается без искусственного потолка 100%.
+    expect(within(dialog).getByText(/96,5/)).toBeVisible();
+    // Read-only: никаких управляющих кнопок внутри блока обмена.
+    expect(within(dialog).queryByRole("button", { name: /запуск|перезапуск|включить/i })).not.toBeInTheDocument();
+  });
+
+  it("labels the site exchange as not configured for legacy snapshots", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    const dialog = screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" });
+    expect(within(dialog).getByText("Обмен с сайтом")).toBeVisible();
+    expect(within(dialog).getByText("Наблюдение обмена не настроено.")).toBeVisible();
+  });
+
+  it("does not render unknown exchange values as zero", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "warning",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: 0,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: 0,
+      platform_cpu_pct: null,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    const dialog = screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" });
+    const queueRow = within(dialog).getByText("Очередь").closest("div");
+    expect(queueRow).toHaveTextContent("— · —");
+    const stageRow = within(dialog).getByText("Последняя стадия").closest("div");
+    expect(stageRow).toHaveTextContent("—");
+  });
+
+  it("shows platform CPU when the 1C exchange source is not configured", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "warning",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: 0,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: 0,
+      platform_cpu_pct: 70,
+      source_status: "not_configured",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    const dialog = screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" });
+    expect(within(dialog).queryByText("Наблюдение обмена не настроено.")).not.toBeInTheDocument();
+    const cpuRow = within(dialog).getByText("CPU платформы 8.2").closest("div");
+    expect(cpuRow).toHaveTextContent("70");
+    const sourceRow = within(dialog).getByText("Источник").closest("div");
+    expect(sourceRow).toHaveTextContent("не настроено");
+  });
 });

@@ -22,6 +22,7 @@ import {
   type ExecutiveManagementBalanceTurnoverResponse,
   type ExecutiveManagementBalanceView,
   type ExecutiveInstrumentDevice,
+  type ExecutiveInstrumentExchange,
   type ExecutiveInstrumentProblem,
   type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
@@ -4532,6 +4533,28 @@ const INSTRUMENT_PROBLEM_CATEGORY_LABELS: Record<string, string> = {
   configuration: "Конфигурация",
 };
 
+const INSTRUMENT_EXCHANGE_STAGE_LABELS: Record<string, string> = {
+  checkauth: "авторизация",
+  init: "инициализация",
+  file: "передача файла",
+  import: "импорт на сайте",
+  none: "нет данных",
+};
+
+function instrumentExchangeIsMeaningful(
+  exchange?: ExecutiveInstrumentExchange | null
+): exchange is ExecutiveInstrumentExchange {
+  return exchange != null && (
+    exchange.source_status !== "not_configured"
+    || exchange.queue_items != null
+    || exchange.last_success_at != null
+    || exchange.last_error_at != null
+    || exchange.active_job_seconds != null
+    || exchange.stage_last != null
+    || exchange.platform_cpu_pct != null
+  );
+}
+
 function instrumentProblems(device: ExecutiveInstrumentDevice): ExecutiveInstrumentProblem[] {
   if (device.problems?.length) return device.problems;
   if (!device.issue) return [];
@@ -4631,6 +4654,7 @@ function InstrumentDetails({
 }) {
   const problems = instrumentProblems(device);
   const metrics = compactInstrumentMetrics(device);
+  const exchange = device.exchange;
   return (
     <div className="executive-instruments__drawer-layer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <aside
@@ -4693,6 +4717,33 @@ function InstrumentDetails({
             </ul>
           ) : <p className="executive-instruments__muted">Сервисы не зарегистрированы.</p>}
           {device.integrations.count > 0 && <p className="executive-instruments__muted">Интеграции: {statusLabel(device.integrations.status)} · последний успех {formatDateTime(device.integrations.last_success_at)}</p>}
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-exchange-title">
+          <h3 id="instrument-exchange-title">Обмен с сайтом</h3>
+          {instrumentExchangeIsMeaningful(exchange) ? (
+            <dl className="executive-instruments__details-grid">
+              <div>
+                <dt>Состояние</dt>
+                <dd>
+                  <span className={`executive-instruments__exchange-status executive-instruments__exchange-status--${exchange.status}`}>
+                    {statusLabel(exchange.status)}
+                  </span>
+                </dd>
+              </div>
+              <div><dt>Очередь</dt><dd>{exchange.queue_items == null ? "—" : formatPlainNumber(exchange.queue_items)} · {exchange.queue_status == null ? "—" : statusLabel(exchange.queue_status)}</dd></div>
+              <div><dt>Последний успех</dt><dd>{formatDateTime(exchange.last_success_at) || "—"}</dd></div>
+              <div><dt>Последняя ошибка</dt><dd>{formatDateTime(exchange.last_error_at) || "—"}</dd></div>
+              <div><dt>Ошибок подряд</dt><dd>{formatPlainNumber(exchange.consecutive_failures)}</dd></div>
+              <div><dt>Активная работа</dt><dd>{instrumentDuration(exchange.active_job_seconds)}</dd></div>
+              <div><dt>Последняя стадия</dt><dd>{exchange.stage_last == null ? "—" : (INSTRUMENT_EXCHANGE_STAGE_LABELS[exchange.stage_last] || exchange.stage_last)}</dd></div>
+              <div><dt>Циклов без файла</dt><dd>{formatPlainNumber(exchange.stage_file_missing_cycles)}</dd></div>
+              <div><dt>CPU платформы 8.2</dt><dd>{instrumentPercent(exchange.platform_cpu_pct)}</dd></div>
+              <div><dt>Источник</dt><dd>{statusLabel(exchange.source_status)}</dd></div>
+            </dl>
+          ) : (
+            <p className="executive-instruments__muted">Наблюдение обмена не настроено.</p>
+          )}
         </section>
 
         <section className="executive-instruments__drawer-section" aria-labelledby="instrument-backup-title">

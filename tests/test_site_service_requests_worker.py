@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from app.core.config import Settings
 from app.models.site_service_requests import (
@@ -19,6 +20,7 @@ from app.schemas.site_service_requests import SiteServiceRequestEventPayload
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     accept_site_service_request_event,
+    build_site_service_request_health,
 )
 from app.services.site_service_requests_auth import content_sha256
 from app.services.site_service_requests_worker import (
@@ -1172,6 +1174,67 @@ def test_outbound_restore_timeout_retries_without_losing_changed_text(db_session
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 2
 
 
+def test_outbound_database_error_degrades_health_until_successful_retry(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class DatabaseFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Ответ из карточки",
+            }
+            self.get_calls = 0
+            self.fail_once = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get":
+                self.get_calls += 1
+                if self.get_calls == 2 and self.fail_once:
+                    self.fail_once = False
+                    raise OperationalError(
+                        "SELECT site_service_request_command FOR UPDATE",
+                        {},
+                        RuntimeError("deadlock detected"),
+                    )
+            return super().call(method, params, **kwargs)
+
+    api = DatabaseFailureApi()
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    degraded = build_site_service_request_health(db_session, settings=settings)
+
+    assert failed[0]["errorCode"] == "outbound_reconcile_failed"
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["outbound_failure"]
+    assert degraded["outbound_failures"] == 1
+
+    retried = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    recovered = build_site_service_request_health(db_session, settings=settings)
+
+    assert retried[0]["status"] == "pending"
+    assert recovered["status"] == "healthy"
+    assert recovered["alert_codes"] == []
+    assert recovered["outbound_failures"] == 0
+
+
 def test_outbound_clear_readback_requires_action_field_presence(db_session) -> None:
     case = _case(bitrix_item_id=1000)
     db_session.add(case)
@@ -1779,6 +1842,61 @@ def test_assignment_failure_is_recorded_and_does_not_starve_next_case(db_session
     assert first.assignment_last_error_code == "assignment_reconcile_failed"
     assert second.assignment_checked_at is not None
     assert second.assignment_last_error_code is None
+
+
+def test_assignment_database_error_degrades_health_until_successful_retry(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class DatabaseFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {"stageId": "DT1134_55:NEW"}
+            self.fail_once = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get" and self.fail_once:
+                self.fail_once = False
+                raise OperationalError(
+                    "SELECT site_service_request_case FOR UPDATE",
+                    {},
+                    RuntimeError("deadlock detected"),
+                )
+            return super().call(method, params, **kwargs)
+
+    api = DatabaseFailureApi()
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
+    reader = SiteServiceRequestBitrixReader(api)
+    writer = SiteServiceRequestBitrixWriter(api)
+
+    failed = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=writer,
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+    degraded = build_site_service_request_health(db_session, settings=settings)
+
+    assert failed[0]["errorCode"] == "assignment_reconcile_failed"
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["assignment_failure"]
+    assert degraded["assignment_failures"] == 1
+
+    retried = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=writer,
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+    recovered = build_site_service_request_health(db_session, settings=settings)
+
+    assert retried[0].get("errorCode") is None
+    assert recovered["status"] == "healthy"
+    assert recovered["alert_codes"] == []
+    assert recovered["assignment_failures"] == 0
 
 
 def test_escalation_recovers_after_notification_failure_without_duplicate_timeline(

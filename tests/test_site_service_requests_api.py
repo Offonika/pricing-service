@@ -26,7 +26,11 @@ from app.models.site_service_requests import (
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
 )
-from app.services.site_service_requests import SiteServiceRequestCipher
+from app.schemas.site_service_requests import SiteServiceRequestCommandAckPayload
+from app.services.site_service_requests import (
+    SiteServiceRequestCipher,
+    acknowledge_site_service_request_command,
+)
 from app.services.site_service_requests_auth import content_sha256, sign_site_request
 
 _SECRET = "test-only-site-service-request-hmac-secret"
@@ -789,6 +793,59 @@ def test_command_ack_is_idempotent_and_does_not_complete_sla_without_readback(
     assert command.lease_until is None
     assert case.latest_outbound_message_id == 1301
     assert case.first_response_at is None
+
+
+def test_command_ack_locks_case_before_command(client, db_session) -> None:
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, _event_payload()).status_code == 202
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    command = _create_command(db_session, case_id=case.id)
+    command.status = "leased"
+    db_session.commit()
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.statements = []
+            self.results = iter((case.id, case, command))
+            self.flushed = False
+
+        def scalar(self, statement):
+            self.statements.append(statement)
+            return next(self.results)
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    recording_session = RecordingSession()
+    result = acknowledge_site_service_request_command(
+        recording_session,  # type: ignore[arg-type]
+        command_id=command.id,
+        payload=SiteServiceRequestCommandAckPayload.model_validate(
+            {
+                "schemaVersion": 1,
+                "status": "applied",
+                "ticketId": case.source_ticket_id,
+                "messageId": 1301,
+                "appliedAt": "2026-08-22T13:00:00+03:00",
+            }
+        ),
+    )
+
+    entities = [
+        statement.column_descriptions[0]["entity"] for statement in recording_session.statements
+    ]
+    assert entities == [
+        SiteServiceRequestCommand,
+        SiteServiceRequestCase,
+        SiteServiceRequestCommand,
+    ]
+    assert recording_session.statements[0]._for_update_arg is None
+    assert recording_session.statements[1]._for_update_arg is not None
+    assert recording_session.statements[2]._for_update_arg is not None
+    assert recording_session.flushed is True
+    assert result.status == "applied"
+    assert case.latest_outbound_message_id == 1301
 
 
 def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(

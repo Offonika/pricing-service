@@ -674,6 +674,8 @@ Rollback:
 
 # Changelog
 
+- 2026-08-23 — ACK и outbound унифицированы по порядку row locks `case -> command`;
+  ошибки БД worker теперь оставляют durable assignment/outbound health-checkpoint.
 - 2026-08-23 — для outbound выбран MVP hash-guard до/после очистки; новый Bitrix
   UI/action ID не добавляется.
 - 2026-08-23 — локально устранены concurrency/failure findings: assignment и

@@ -427,9 +427,24 @@ def acknowledge_site_service_request_command(
     payload: SiteServiceRequestCommandAckPayload,
     now: datetime | None = None,
 ) -> AcknowledgedSiteServiceRequestCommand:
+    command_case_id = session.scalar(
+        select(SiteServiceRequestCommand.case_id).where(SiteServiceRequestCommand.id == command_id)
+    )
+    if command_case_id is None:
+        raise SiteServiceRequestNotFoundError("command_not_found")
+    case = session.scalar(
+        select(SiteServiceRequestCase)
+        .where(SiteServiceRequestCase.id == command_case_id)
+        .with_for_update()
+    )
+    if case is None:
+        raise SiteServiceRequestNotFoundError("command_not_found")
     command = session.scalar(
         select(SiteServiceRequestCommand)
-        .where(SiteServiceRequestCommand.id == command_id)
+        .where(
+            SiteServiceRequestCommand.id == command_id,
+            SiteServiceRequestCommand.case_id == case.id,
+        )
         .with_for_update()
     )
     if command is None:
@@ -442,7 +457,7 @@ def acknowledge_site_service_request_command(
         assert payload.ticket_id is not None
         assert payload.message_id is not None
         assert payload.applied_at is not None
-        if payload.ticket_id != command.case.source_ticket_id:
+        if payload.ticket_id != case.source_ticket_id:
             raise SiteServiceRequestConflictError("command_ticket_conflict")
         if command.status == "failed":
             raise SiteServiceRequestConflictError("command_ack_conflict")
@@ -460,8 +475,8 @@ def acknowledge_site_service_request_command(
         command.ack_at = _as_utc(payload.applied_at)
         command.last_error_code = None
         command.lease_until = None
-        command.case.latest_outbound_message_id = max(
-            command.case.latest_outbound_message_id or 0,
+        case.latest_outbound_message_id = max(
+            case.latest_outbound_message_id or 0,
             payload.message_id,
         )
         result_status = "applied"

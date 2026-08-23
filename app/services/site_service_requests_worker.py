@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -1517,6 +1517,30 @@ def _collect_site_service_request_outbound_case(
     return result
 
 
+def _checkpoint_site_service_request_reconcile_failure(
+    session: Session,
+    *,
+    case_id: int,
+    lane: str,
+    current_time: datetime,
+) -> SiteServiceRequestCase | None:
+    session.rollback()
+    failed_case = session.get(SiteServiceRequestCase, case_id)
+    if failed_case is None:
+        return None
+    if lane == "assignment":
+        failed_case.assignment_checked_at = current_time
+        failed_case.assignment_last_error_code = "assignment_reconcile_failed"
+    elif lane == "outbound":
+        failed_case.outbound_checked_at = current_time
+        failed_case.outbound_last_error_code = "outbound_reconcile_failed"
+    else:
+        raise ValueError("site service request reconcile lane is invalid")
+    failed_case.updated_at = current_time
+    session.commit()
+    return failed_case
+
+
 def collect_site_service_request_outbound_commands(
     session: Session,
     *,
@@ -1568,7 +1592,8 @@ def collect_site_service_request_outbound_commands(
         if case is None:
             session.rollback()
             break
-        processed_case_ids.add(case.id)
+        case_id = case.id
+        processed_case_ids.add(case_id)
         current_time = _as_utc(now or datetime.now(UTC))
         case.outbound_checked_at = current_time
         case.outbound_last_error_code = None
@@ -1588,22 +1613,23 @@ def collect_site_service_request_outbound_commands(
             )
             if result is not None:
                 results.append(result)
-        except RuntimeError:
-            case_id = case.id
-            session.rollback()
-            failed_case = session.get(SiteServiceRequestCase, case_id)
+        except Exception as exc:
+            failed_case = _checkpoint_site_service_request_reconcile_failure(
+                session,
+                case_id=case_id,
+                lane="outbound",
+                current_time=current_time,
+            )
             if failed_case is not None:
-                failed_case.outbound_checked_at = current_time
-                failed_case.outbound_last_error_code = "outbound_reconcile_failed"
-                failed_case.updated_at = current_time
                 result = {
                     "caseId": failed_case.id,
                     "ticketId": failed_case.source_ticket_id,
                     "status": "retry",
                     "errorCode": "outbound_reconcile_failed",
                 }
-                session.commit()
                 results.append(result)
+            if not isinstance(exc, (RuntimeError, SQLAlchemyError)):
+                raise
     return results
 
 
@@ -1854,14 +1880,14 @@ def reconcile_site_service_request_assignments(
                     "closeReverted": close_reverted,
                 }
             )
-        except RuntimeError:
-            session.rollback()
-            failed_case = session.get(SiteServiceRequestCase, case_id)
+        except Exception as exc:
+            failed_case = _checkpoint_site_service_request_reconcile_failure(
+                session,
+                case_id=case_id,
+                lane="assignment",
+                current_time=current_time,
+            )
             if failed_case is not None:
-                failed_case.assignment_checked_at = current_time
-                failed_case.assignment_last_error_code = "assignment_reconcile_failed"
-                failed_case.updated_at = current_time
-                session.commit()
                 results.append(
                     {
                         "caseId": failed_case.id,
@@ -1873,6 +1899,8 @@ def reconcile_site_service_request_assignments(
                         "errorCode": "assignment_reconcile_failed",
                     }
                 )
+            if not isinstance(exc, (RuntimeError, SQLAlchemyError)):
+                raise
     return results
 
 

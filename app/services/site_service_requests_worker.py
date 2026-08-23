@@ -1455,6 +1455,7 @@ def _collect_site_service_request_outbound_case(
             now=current_time,
             allow_new_after_clear=True,
         )
+        command_clear_checkpoint = command.card_action_cleared_at
         command_id = command.id
         session.commit()
         _lock_site_service_request_outbound_sequence(session)
@@ -1473,6 +1474,9 @@ def _collect_site_service_request_outbound_case(
         )
         if command is None:
             session.rollback()
+            return None
+        if command.card_action_cleared_at != command_clear_checkpoint:
+            session.commit()
             return None
 
     current_item = writer.get_item(
@@ -1566,7 +1570,7 @@ def _checkpoint_site_service_request_reconcile_failure(
     case_id: int | None,
     lane: str,
     current_time: datetime,
-) -> SiteServiceRequestCase | None:
+) -> tuple[SiteServiceRequestCase | None, bool]:
     if lane not in {"assignment", "outbound"}:
         raise ValueError("site service request reconcile lane is invalid")
     session.rollback()
@@ -1584,16 +1588,28 @@ def _checkpoint_site_service_request_reconcile_failure(
     failed_case = session.scalar(failed_case_query.limit(1).with_for_update())
     if failed_case is None:
         session.rollback()
-        return None
+        return None, False
     if lane == "assignment":
+        if (
+            failed_case.assignment_checked_at is not None
+            and _as_utc(failed_case.assignment_checked_at) > current_time
+        ):
+            session.commit()
+            return failed_case, False
         failed_case.assignment_checked_at = current_time
         failed_case.assignment_last_error_code = "assignment_reconcile_failed"
     else:
+        if (
+            failed_case.outbound_checked_at is not None
+            and _as_utc(failed_case.outbound_checked_at) > current_time
+        ):
+            session.commit()
+            return failed_case, False
         failed_case.outbound_checked_at = current_time
         failed_case.outbound_last_error_code = "outbound_reconcile_failed"
     failed_case.updated_at = current_time
     session.commit()
-    return failed_case
+    return failed_case, True
 
 
 def collect_site_service_request_outbound_commands(
@@ -1647,13 +1663,13 @@ def collect_site_service_request_outbound_commands(
                 .with_for_update(skip_locked=True)
             )
         except Exception as exc:
-            failed_case = _checkpoint_site_service_request_reconcile_failure(
+            failed_case, checkpoint_recorded = _checkpoint_site_service_request_reconcile_failure(
                 session,
                 case_id=None,
                 lane="outbound",
                 current_time=current_time,
             )
-            if failed_case is not None:
+            if failed_case is not None and checkpoint_recorded:
                 results.append(
                     {
                         "caseId": failed_case.id,
@@ -1689,13 +1705,13 @@ def collect_site_service_request_outbound_commands(
             if result is not None:
                 results.append(result)
         except Exception as exc:
-            failed_case = _checkpoint_site_service_request_reconcile_failure(
+            failed_case, checkpoint_recorded = _checkpoint_site_service_request_reconcile_failure(
                 session,
                 case_id=case_id,
                 lane="outbound",
                 current_time=current_time,
             )
-            if failed_case is not None:
+            if failed_case is not None and checkpoint_recorded:
                 result = {
                     "caseId": failed_case.id,
                     "ticketId": failed_case.source_ticket_id,
@@ -1813,13 +1829,13 @@ def reconcile_site_service_request_assignments(
                 .with_for_update(skip_locked=True)
             )
         except Exception as exc:
-            failed_case = _checkpoint_site_service_request_reconcile_failure(
+            failed_case, checkpoint_recorded = _checkpoint_site_service_request_reconcile_failure(
                 session,
                 case_id=None,
                 lane="assignment",
                 current_time=current_time,
             )
-            if failed_case is not None:
+            if failed_case is not None and checkpoint_recorded:
                 results.append(
                     {
                         "caseId": failed_case.id,
@@ -1984,13 +2000,13 @@ def reconcile_site_service_request_assignments(
                 }
             )
         except Exception as exc:
-            failed_case = _checkpoint_site_service_request_reconcile_failure(
+            failed_case, checkpoint_recorded = _checkpoint_site_service_request_reconcile_failure(
                 session,
                 case_id=case_id,
                 lane="assignment",
                 current_time=current_time,
             )
-            if failed_case is not None:
+            if failed_case is not None and checkpoint_recorded:
                 results.append(
                     {
                         "caseId": failed_case.id,

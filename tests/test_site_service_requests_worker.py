@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.models.site_service_requests import (
@@ -17,6 +18,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestFile,
 )
 from app.schemas.site_service_requests import SiteServiceRequestEventPayload
+from app.services import site_service_requests_worker as worker_module
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     accept_site_service_request_event,
@@ -1030,6 +1032,112 @@ def test_outbound_command_is_durable_before_card_action_clear(db_session) -> Non
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     db_session.refresh(command)
     assert command.card_action_cleared_at is not None
+
+
+def test_outbound_stale_worker_does_not_clear_repeated_send_after_ack(
+    db_session,
+    monkeypatch,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "Повторяемый ответ",
+    }
+    original_lock = worker_module._lock_site_service_request_outbound_sequence
+    lock_calls = 0
+
+    def finish_command_before_stale_worker_relocks(session) -> None:
+        nonlocal lock_calls
+        lock_calls += 1
+        original_lock(session)
+        if lock_calls != 2:
+            return
+        with Session(db_session.get_bind()) as competing_session:
+            competing_command = competing_session.scalar(
+                select(SiteServiceRequestCommand).with_for_update()
+            )
+            assert competing_command is not None
+            competing_command.status = "applied"
+            competing_command.ack_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+            competing_command.card_action_cleared_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+            competing_session.commit()
+        api.items[1000]["ufSiteReplyAction"] = ""
+        api.items[1000]["ufSiteReplyAction"] = "SEND"
+
+    monkeypatch.setattr(
+        worker_module,
+        "_lock_site_service_request_outbound_sequence",
+        finish_command_before_stale_worker_relocks,
+    )
+    first = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+
+    commands = db_session.scalars(select(SiteServiceRequestCommand)).all()
+    assert first == []
+    assert len(commands) == 1
+    assert commands[0].status == "applied"
+    assert commands[0].card_action_cleared_at is not None
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+
+    second = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 23, 8, 2, tzinfo=UTC),
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+
+    assert second[0]["duplicate"] is False
+    assert len(commands) == 2
+    assert commands[1].status == "pending"
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+
+
+@pytest.mark.parametrize(
+    ("lane", "checked_at_field", "error_field"),
+    [
+        ("assignment", "assignment_checked_at", "assignment_last_error_code"),
+        ("outbound", "outbound_checked_at", "outbound_last_error_code"),
+    ],
+)
+def test_reconcile_failure_checkpoint_does_not_overwrite_newer_success(
+    db_session,
+    lane: str,
+    checked_at_field: str,
+    error_field: str,
+) -> None:
+    newer_time = datetime(2026, 8, 23, 8, 1, tzinfo=UTC)
+    case = _case(bitrix_item_id=1000)
+    setattr(case, checked_at_field, newer_time)
+    setattr(case, error_field, None)
+    db_session.add(case)
+    db_session.commit()
+
+    checkpoint_case, recorded = worker_module._checkpoint_site_service_request_reconcile_failure(
+        db_session,
+        case_id=case.id,
+        lane=lane,
+        current_time=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    stored_time = getattr(case, checked_at_field)
+    assert checkpoint_case is not None and checkpoint_case.id == case.id
+    assert recorded is False
+    assert stored_time is not None and stored_time.replace(tzinfo=UTC) == newer_time
+    assert getattr(case, error_field) is None
 
 
 def test_outbound_text_changed_after_command_commit_is_preserved_for_next_tick(

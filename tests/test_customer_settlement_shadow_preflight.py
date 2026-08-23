@@ -15,8 +15,10 @@ def _settings(**overrides) -> Settings:
         "database_url": "postgresql+psycopg2://stage:secret@127.0.0.1/settlements_stage",
         "onec_database_url": "mssql+pyodbc://readonly:secret@onec/ut",
         "customer_settlements_enabled": False,
+        "customer_settlements_eligibility_enabled": False,
         "customer_settlements_shadow_enabled": True,
-        "customer_settlements_source_validated": True,
+        "customer_settlements_source_validated": False,
+        "customer_settlements_mapping_mode": "crm_readonly",
         "customer_settlements_organization_ref": ORG,
         "customer_settlements_organization_guid": ORG_GUID,
         "customer_settlements_opening_organization_field": "_Fld7005RRef",
@@ -31,9 +33,10 @@ def _facts(**overrides):
     values = {
         "database_dialect": "postgresql",
         "current_database": "settlements_stage",
-        "alembic_revision": "2a4c6e8f0b1d",
+        "alembic_revision": "4c6e8a0b2d3f",
         "alembic_revision_count": 1,
         "active_mapping_source_name": None,
+        "latest_reconciliation_status": None,
         "enabled_pilots": 10,
         "active_mapping_revisions": 0,
         "active_financial_revisions": 0,
@@ -82,7 +85,7 @@ def test_bootstrap_preflight_accepts_empty_fail_closed_staging(monkeypatch) -> N
     assert report["metrics"]["enabled_pilots"] == 10
 
 
-def test_bootstrap_preflight_blocks_client_api_but_manual_mode_does_not_require_crm(
+def test_bootstrap_preflight_blocks_client_and_eligibility_api(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
@@ -90,7 +93,7 @@ def test_bootstrap_preflight_blocks_client_api_but_manual_mode_does_not_require_
     report = preflight.build_shadow_preflight_report(
         _settings(
             customer_settlements_enabled=True,
-            customer_settlements_crm_webhook_url=None,
+            customer_settlements_eligibility_enabled=True,
         ),
         SimpleNamespace(),
         phase="bootstrap",
@@ -102,10 +105,10 @@ def test_bootstrap_preflight_blocks_client_api_but_manual_mode_does_not_require_
 
     assert report["status"] == "blocked"
     assert "client_api_disabled" in report["failed_checks"]
-    assert "mapping_source_configured" not in report["failed_checks"]
+    assert "eligibility_api_disabled" in report["failed_checks"]
 
 
-def test_bootstrap_preflight_requires_crm_only_in_crm_mode(monkeypatch) -> None:
+def test_bootstrap_preflight_requires_crm_readonly_with_webhook(monkeypatch) -> None:
     monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
     report = preflight.build_shadow_preflight_report(
         _settings(
@@ -120,6 +123,33 @@ def test_bootstrap_preflight_requires_crm_only_in_crm_mode(monkeypatch) -> None:
         expected_pilot_count=10,
     )
     assert "mapping_source_configured" in report["failed_checks"]
+
+    manual_report = preflight.build_shadow_preflight_report(
+        _settings(customer_settlements_mapping_mode="manual_confirmed"),
+        SimpleNamespace(),
+        phase="bootstrap",
+        expected_database_name="settlements_stage",
+        expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
+        expected_pilot_count=10,
+    )
+    assert "mapping_source_configured" in manual_report["failed_checks"]
+
+
+def test_bootstrap_preflight_requires_source_gate_closed(monkeypatch) -> None:
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+
+    report = preflight.build_shadow_preflight_report(
+        _settings(customer_settlements_source_validated=True),
+        SimpleNamespace(),
+        phase="bootstrap",
+        expected_database_name="settlements_stage",
+        expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
+        expected_pilot_count=10,
+    )
+
+    assert "source_reconciliation_gate_closed" in report["failed_checks"]
 
 
 def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
@@ -146,7 +176,8 @@ def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
 def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> None:
     ready_facts = _facts(
         active_mapping_revisions=1,
-        active_mapping_source_name="manual_confirmed_pilot",
+        active_mapping_source_name="bitrix_crm_customer_cluster",
+        latest_reconciliation_status="matched",
         active_financial_revisions=1,
         mapping_entries_total=4103,
         financial_balances_total=10,
@@ -175,7 +206,7 @@ def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> Non
     )
 
     report = preflight.build_shadow_preflight_report(
-        _settings(),
+        _settings(customer_settlements_source_validated=True),
         SimpleNamespace(),
         phase="ready",
         expected_database_name="settlements_stage",
@@ -187,6 +218,45 @@ def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> Non
     assert report["status"] == "ready"
     assert report["metrics"]["compatible_pilots"] == 10
     assert report["metrics"]["financial_zero_rows"] == 3
+
+
+def test_ready_preflight_requires_open_gate_and_latest_matched_reconciliation(
+    monkeypatch,
+) -> None:
+    ready_facts = _facts(
+        active_mapping_revisions=1,
+        active_mapping_source_name="bitrix_crm_customer_cluster",
+        active_financial_revisions=1,
+        linked_pilots=10,
+        pilot_counterparties=10,
+        compatible_pilots=10,
+        financial_expected_rows=10,
+        financial_loaded_rows=10,
+        latest_reconciliation_status="mismatched",
+        health={
+            "freshness_status": "ok",
+            "mapping_status": "ok",
+            "expected_rows": 10,
+            "loaded_rows": 10,
+            "zero_rows": 0,
+            "mapping_entries": 10,
+            "ambiguous_entries": 0,
+        },
+    )
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: ready_facts)
+
+    report = preflight.build_shadow_preflight_report(
+        _settings(customer_settlements_source_validated=False),
+        SimpleNamespace(),
+        phase="ready",
+        expected_database_name="settlements_stage",
+        expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
+        expected_pilot_count=10,
+    )
+
+    assert "source_reconciliation_gate_open" in report["failed_checks"]
+    assert "latest_reconciliation_is_matched" in report["failed_checks"]
 
 
 def test_preflight_report_never_contains_connection_strings_or_identifiers(monkeypatch) -> None:

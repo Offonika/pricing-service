@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -10,9 +10,12 @@ from sqlalchemy.orm import Session
 from app.models.customer_settlement import (
     CustomerAccountSiteBinding,
     CustomerAccountSourceBinding,
+    CustomerSettlementAlertOutbox,
     CustomerSettlementAssertionJti,
     CustomerSettlementBalance,
     CustomerSettlementMappingRevision,
+    CustomerSettlementPilotAccess,
+    CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
 from app.services.customer_settlements import (
@@ -22,6 +25,7 @@ from app.services.customer_settlements import (
     activate_mapping_revision,
     cleanup_customer_settlements,
     customer_settlement_health_metrics,
+    get_customer_settlement_eligibility,
     get_customer_settlement_summary,
     mark_financial_revision_failed,
     normalize_money,
@@ -70,11 +74,13 @@ def _activate_mapping(
     entries: list[SettlementMappingInput],
     *,
     checked_at: datetime = BASE_TIME,
+    source_name: str = "bitrix_crm_customer_cluster",
 ) -> None:
     revision, activated = activate_mapping_revision(
         session,
         entries=entries,
         source_checked_at=checked_at,
+        source_name=source_name,
         organization_ref=ORG,
         organization_guid=ORG_GUID,
     )
@@ -221,10 +227,81 @@ def test_summary_covers_debt_advance_zero_and_freshness(db_session: Session) -> 
     assert stale.status == "stale"
     assert stale.is_stale is True
     assert stale.amount == Decimal("14800.00")
-    assert hidden.status == "stale"
-    assert hidden.is_stale is True
+    assert hidden.status == "temporarily_unavailable"
+    assert hidden.is_stale is False
     assert hidden.amount is None
     assert hidden.state is None
+
+
+def test_eligibility_uses_only_pilot_and_fresh_mapping(db_session: Session) -> None:
+    _activate_mapping(db_session, [_linked("111", CP_1)])
+    set_pilot_access(db_session, site_user_id="111", enabled=True)
+    db_session.commit()
+
+    assert (
+        get_customer_settlement_eligibility(
+            db_session,
+            site_user_id="111",
+            enabled=True,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME + timedelta(hours=1),
+        )
+        == "eligible"
+    )
+    assert (
+        get_customer_settlement_eligibility(
+            db_session,
+            site_user_id="999",
+            enabled=True,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME,
+        )
+        == "not_eligible"
+    )
+    assert (
+        get_customer_settlement_eligibility(
+            db_session,
+            site_user_id="111",
+            enabled=True,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME + timedelta(hours=3),
+        )
+        == "temporarily_unavailable"
+    )
+
+    _activate_mapping(
+        db_session,
+        [_linked("111", CP_1)],
+        checked_at=BASE_TIME + timedelta(minutes=1),
+        source_name="manual_confirmed_pilot",
+    )
+    db_session.commit()
+    assert (
+        get_customer_settlement_eligibility(
+            db_session,
+            site_user_id="111",
+            enabled=True,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME + timedelta(days=1),
+        )
+        == "eligible"
+    )
+
+
+def test_pilot_whitelist_rejects_eleventh_enabled_user(db_session: Session) -> None:
+    for user_id in range(1, 11):
+        set_pilot_access(db_session, site_user_id=str(user_id), enabled=True)
+    with pytest.raises(ValueError, match="pilot_whitelist_limit_exceeded"):
+        set_pilot_access(db_session, site_user_id="11", enabled=True)
+
+    assert (
+        db_session.scalar(
+            select(func.count())
+            .select_from(CustomerSettlementPilotAccess)
+            .where(CustomerSettlementPilotAccess.enabled.is_(True))
+        )
+        == 10
+    )
 
 
 def test_onec_reference_guid_round_trip_is_stable() -> None:
@@ -489,6 +566,28 @@ def test_retention_removes_only_old_non_active_revisions_and_expired_jti(
                 expires_at=BASE_TIME,
                 consumed_at=BASE_TIME,
             ),
+            CustomerSettlementReconciliationRun(
+                report_date=date(2026, 6, 19),
+                as_of=old_time,
+                report_hash="c" * 64,
+                status="matched",
+                expected_count=10,
+                matched_count=10,
+                mismatch_count=0,
+                max_abs_difference=Decimal("0.00"),
+                created_at=old_time,
+            ),
+            CustomerSettlementAlertOutbox(
+                event_key="d" * 64,
+                status="sent",
+                severity="warning",
+                message="synthetic safe alert",
+                attempt_count=1,
+                next_attempt_at=old_time,
+                sent_at=old_time,
+                created_at=old_time,
+                updated_at=old_time,
+            ),
         ]
     )
     db_session.commit()
@@ -503,7 +602,14 @@ def test_retention_removes_only_old_non_active_revisions_and_expired_jti(
     db_session.commit()
 
     assert result["financial_revisions"] == 2
+    assert result["reconciliation_runs"] == 1
+    assert result["alert_outbox"] == 1
     assert db_session.get(CustomerSettlementRevision, active.id) is not None
     assert db_session.get(CustomerSettlementMappingRevision, active_mapping.id) is not None
     assert db_session.get(CustomerSettlementMappingRevision, old_mapping_id) is None
     assert db_session.scalar(select(func.count()).select_from(CustomerSettlementAssertionJti)) == 1
+    assert (
+        db_session.scalar(select(func.count()).select_from(CustomerSettlementReconciliationRun))
+        == 0
+    )
+    assert db_session.scalar(select(func.count()).select_from(CustomerSettlementAlertOutbox)) == 0

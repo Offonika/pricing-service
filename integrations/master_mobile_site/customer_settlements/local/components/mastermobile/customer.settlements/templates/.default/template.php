@@ -23,6 +23,14 @@ $formatDate = static function ($raw): string {
 };
 $available = in_array($status, array('available', 'stale'), true)
     && isset($labels[$state], $arResult['amount']);
+$formatAmount = static function ($raw): string {
+    $value = (string)$raw;
+    if (!preg_match('/^(0|[1-9][0-9]*)\.([0-9]{2})$/', $value, $parts)) {
+        return '0,00';
+    }
+    $whole = preg_replace('/\B(?=(\d{3})+(?!\d))/', ' ', $parts[1]);
+    return $whole . ',' . $parts[2];
+};
 ?>
 <section class="mm-settlements" aria-labelledby="mm-settlements-title">
     <div class="profile__item mm-settlements__panel">
@@ -35,7 +43,7 @@ $available = in_array($status, array('available', 'stale'), true)
             <div class="mm-settlements__card mm-settlements__card--<?=htmlspecialchars($state)?>">
                 <div class="mm-settlements__caption"><?=htmlspecialchars($labels[$state])?></div>
                 <div class="mm-settlements__amount">
-                    <?=number_format((float)$arResult['amount'], 2, ',', ' ')?> ₽
+                    <?=htmlspecialchars($formatAmount($arResult['amount']))?> ₽
                 </div>
                 <?php $asOf = $formatDate($arResult['as_of'] ?? ''); ?>
                 <?php if ($asOf !== ''): ?>

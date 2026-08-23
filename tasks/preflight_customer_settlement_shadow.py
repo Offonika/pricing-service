@@ -17,11 +17,12 @@ from app.models.customer_settlement import (
     CustomerSettlementMappingEntry,
     CustomerSettlementMappingRevision,
     CustomerSettlementPilotAccess,
+    CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
 from app.services.customer_settlements import customer_settlement_health_metrics
 
-EXPECTED_ALEMBIC_REVISION = "2a4c6e8f0b1d"
+EXPECTED_ALEMBIC_REVISION = "4c6e8a0b2d3f"
 EXPECTED_ORGANIZATION_FIELD = "_Fld7005RRef"
 EXPECTED_SOURCE_MODE = "onec_canonical_mutual_statement_7002"
 DEFAULT_EXPECTED_DATABASE_NAME = "settlements_stage"
@@ -36,6 +37,7 @@ def _check(name: str, ok: bool) -> dict[str, object]:
 def _configuration_checks(
     settings: Settings,
     *,
+    phase: str,
     expected_organization_ref: str,
     expected_organization_guid: str,
 ) -> list[dict[str, object]]:
@@ -46,17 +48,29 @@ def _configuration_checks(
     return [
         _check("environment_is_staging", settings.environment.strip().lower() == "staging"),
         _check("client_api_disabled", settings.customer_settlements_enabled is False),
+        _check(
+            "eligibility_api_disabled",
+            settings.customer_settlements_eligibility_enabled is False,
+        ),
         _check("shadow_worker_enabled", settings.customer_settlements_shadow_enabled is True),
-        _check("source_reconciliation_gate_open", settings.customer_settlements_source_validated),
+        _check(
+            (
+                "source_reconciliation_gate_closed"
+                if phase == "bootstrap"
+                else "source_reconciliation_gate_open"
+            ),
+            (
+                settings.customer_settlements_source_validated is False
+                if phase == "bootstrap"
+                else settings.customer_settlements_source_validated is True
+            ),
+        ),
         _check("application_database_is_postgresql", database_backend == "postgresql"),
         _check("onec_source_configured", bool(settings.onec_database_url)),
         _check(
             "mapping_source_configured",
-            settings.customer_settlements_mapping_mode == "manual_confirmed"
-            or (
-                settings.customer_settlements_mapping_mode == "crm_readonly"
-                and bool(settings.customer_settlements_crm_webhook_url)
-            ),
+            settings.customer_settlements_mapping_mode == "crm_readonly"
+            and bool(settings.customer_settlements_crm_webhook_url),
         ),
         _check(
             "organization_matches_reconciled_pilot",
@@ -127,6 +141,14 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
         "alembic_revision_count": len(alembic_revisions),
         "active_mapping_source_name": (
             active_mapping.source_name if active_mapping is not None else None
+        ),
+        "latest_reconciliation_status": session.scalar(
+            select(CustomerSettlementReconciliationRun.status)
+            .order_by(
+                CustomerSettlementReconciliationRun.created_at.desc(),
+                CustomerSettlementReconciliationRun.id.desc(),
+            )
+            .limit(1)
         ),
         "enabled_pilots": session.scalar(
             select(func.count())
@@ -347,6 +369,10 @@ def _database_checks(
                 facts["compatible_pilots"] == expected_pilot_count,
             ),
             _check(
+                "latest_reconciliation_is_matched",
+                facts["latest_reconciliation_status"] == "matched",
+            ),
+            _check(
                 "financial_revision_is_complete",
                 facts["financial_expected_rows"] == facts["pilot_counterparties"]
                 and facts["financial_loaded_rows"] == facts["pilot_counterparties"]
@@ -374,20 +400,16 @@ def build_shadow_preflight_report(
 ) -> dict[str, object]:
     checks = _configuration_checks(
         settings,
+        phase=phase,
         expected_organization_ref=expected_organization_ref,
         expected_organization_guid=expected_organization_guid,
     )
     facts = _collect_database_facts(session)
     if phase == "ready":
-        expected_mapping_source = (
-            "manual_confirmed_pilot"
-            if settings.customer_settlements_mapping_mode == "manual_confirmed"
-            else "bitrix_crm_customer_cluster"
-        )
         checks.append(
             _check(
                 "active_mapping_source_matches_mode",
-                facts["active_mapping_source_name"] == expected_mapping_source,
+                facts["active_mapping_source_name"] == "bitrix_crm_customer_cluster",
             )
         )
     checks.extend(
@@ -408,6 +430,7 @@ def build_shadow_preflight_report(
             "current_database",
             "alembic_revision",
             "active_mapping_source_name",
+            "latest_reconciliation_status",
             "health",
         }
     }

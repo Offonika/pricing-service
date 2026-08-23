@@ -8,18 +8,20 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable, Literal, Sequence
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.customer_settlement import (
     CustomerAccount,
     CustomerAccountSiteBinding,
     CustomerAccountSourceBinding,
+    CustomerSettlementAlertOutbox,
     CustomerSettlementAssertionJti,
     CustomerSettlementBalance,
     CustomerSettlementMappingEntry,
     CustomerSettlementMappingRevision,
     CustomerSettlementPilotAccess,
+    CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
 
@@ -40,6 +42,7 @@ DEFAULT_SOURCE_SYSTEM = "ut103"
 DEFAULT_ORGANIZATION_REF = "0xb34a0025901e48ef11e211128227ea80"
 DEFAULT_ORGANIZATION_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
 MANUAL_MAPPING_SOURCE_NAME = "manual_confirmed_pilot"
+MAX_PILOT_USERS = 10
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,9 @@ class SettlementSummary:
     as_of: datetime | None = None
     synced_at: datetime | None = None
     is_stale: bool = False
+
+
+EligibilityStatus = Literal["eligible", "not_eligible", "temporarily_unavailable"]
 
 
 def utc_now() -> datetime:
@@ -471,6 +477,9 @@ def activate_mapping_revision(
     organization_guid: str = DEFAULT_ORGANIZATION_GUID,
 ) -> tuple[CustomerSettlementMappingRevision, bool]:
     checked_at = ensure_utc(source_checked_at or utc_now())
+    normalized_source_name = str(source_name or "").strip()[:64]
+    if not normalized_source_name:
+        raise ValueError("mapping_source_name_is_required")
     normalized_source_system = str(source_system or "").strip().lower()
     if normalized_source_system not in {"ut103", "ka2"}:
         raise ValueError("unsupported_customer_settlement_source_system")
@@ -532,6 +541,7 @@ def activate_mapping_revision(
     normalized_entries.sort(key=lambda item: item.site_user_id)
     source_hash = _canonical_hash(
         {
+            "source_name": normalized_source_name,
             "source_system": normalized_source_system,
             "organization_guid": normalized_organization_guid,
             "entries": [
@@ -594,7 +604,7 @@ def activate_mapping_revision(
 
     revision = CustomerSettlementMappingRevision(
         status="loading",
-        source_name=source_name,
+        source_name=normalized_source_name,
         source_hash=source_hash,
         source_checked_at=checked_at,
         expected_entry_count=len(normalized_entries),
@@ -698,6 +708,14 @@ def set_pilot_access(
             CustomerSettlementPilotAccess.site_user_id == normalized
         )
     )
+    if enabled and (item is None or not item.enabled):
+        enabled_count = session.scalar(
+            select(func.count())
+            .select_from(CustomerSettlementPilotAccess)
+            .where(CustomerSettlementPilotAccess.enabled.is_(True))
+        )
+        if int(enabled_count or 0) >= MAX_PILOT_USERS:
+            raise ValueError("pilot_whitelist_limit_exceeded")
     created = item is None
     if item is None:
         item = CustomerSettlementPilotAccess(site_user_id=normalized)
@@ -749,6 +767,77 @@ def active_pilot_counterparty_refs(session: Session) -> tuple[str, ...]:
         .distinct()
     ).scalars()
     return tuple(sorted(str(value) for value in rows if value))
+
+
+def active_pilot_site_user_ids(session: Session) -> tuple[str, ...]:
+    rows = session.scalars(
+        select(CustomerSettlementPilotAccess.site_user_id).where(
+            CustomerSettlementPilotAccess.enabled.is_(True)
+        )
+    )
+    return tuple(sorted(str(value) for value in rows if value))
+
+
+def get_customer_settlement_eligibility(
+    session: Session,
+    *,
+    site_user_id: str | int,
+    enabled: bool,
+    mapping_stale_after_seconds: int,
+    now: datetime | None = None,
+) -> EligibilityStatus:
+    if not enabled:
+        return "not_eligible"
+    current_time = ensure_utc(now or utc_now())
+    user_id = normalize_site_user_id(site_user_id)
+    pilot = session.scalar(
+        select(CustomerSettlementPilotAccess.id).where(
+            CustomerSettlementPilotAccess.site_user_id == user_id,
+            CustomerSettlementPilotAccess.enabled.is_(True),
+        )
+    )
+    if pilot is None:
+        return "not_eligible"
+    mapping_revision = session.scalar(
+        select(CustomerSettlementMappingRevision).where(
+            CustomerSettlementMappingRevision.status == REVISION_ACTIVE
+        )
+    )
+    if mapping_revision is None:
+        return "temporarily_unavailable"
+    if mapping_revision.source_name != MANUAL_MAPPING_SOURCE_NAME and current_time - ensure_utc(
+        mapping_revision.source_checked_at
+    ) > timedelta(seconds=mapping_stale_after_seconds):
+        return "temporarily_unavailable"
+    mapping = session.scalar(
+        select(CustomerSettlementMappingEntry).where(
+            CustomerSettlementMappingEntry.revision_id == mapping_revision.id,
+            CustomerSettlementMappingEntry.site_user_id == user_id,
+        )
+    )
+    if (
+        mapping is None
+        or mapping.status != MAPPING_LINKED
+        or not mapping.counterparty_ref
+        or not mapping.counterparty_guid
+        or mapping.customer_account_id is None
+        or mapping.source_binding_id is None
+    ):
+        return "not_eligible"
+    account = session.get(CustomerAccount, mapping.customer_account_id)
+    source_binding = session.get(CustomerAccountSourceBinding, mapping.source_binding_id)
+    if (
+        account is None
+        or account.status != "active"
+        or source_binding is None
+        or source_binding.status != "active"
+        or source_binding.customer_account_id != mapping.customer_account_id
+        or source_binding.counterparty_ref != mapping.counterparty_ref
+        or source_binding.counterparty_guid != mapping.counterparty_guid
+        or source_binding.organization_guid != mapping.organization_guid
+    ):
+        return "not_eligible"
+    return "eligible"
 
 
 def get_customer_settlement_summary(
@@ -839,12 +928,7 @@ def get_customer_settlement_summary(
     synced_at = ensure_utc(revision.synced_at)
     age = current_time - synced_at
     if age > timedelta(seconds=hide_after_seconds):
-        return SettlementSummary(
-            status="stale",
-            as_of=ensure_utc(revision.as_of),
-            synced_at=synced_at,
-            is_stale=True,
-        )
+        return SettlementSummary(status="temporarily_unavailable")
     state, amount = settlement_state(Decimal(balance.signed_balance))
     is_stale = age > timedelta(seconds=stale_after_seconds)
     return SettlementSummary(
@@ -1001,6 +1085,36 @@ def cleanup_customer_settlements(
         ).rowcount
         or 0
     )
+    reconciliation_count = (
+        session.execute(
+            delete(CustomerSettlementReconciliationRun).where(
+                (
+                    CustomerSettlementReconciliationRun.status.in_(("matched", "mismatched"))
+                    & (CustomerSettlementReconciliationRun.created_at < success_cutoff)
+                )
+                | (
+                    (CustomerSettlementReconciliationRun.status == "blocked")
+                    & (CustomerSettlementReconciliationRun.created_at < failed_cutoff)
+                )
+            )
+        ).rowcount
+        or 0
+    )
+    alert_outbox_count = (
+        session.execute(
+            delete(CustomerSettlementAlertOutbox).where(
+                (
+                    CustomerSettlementAlertOutbox.status.in_(("sent", "pending"))
+                    & (CustomerSettlementAlertOutbox.created_at < success_cutoff)
+                )
+                | (
+                    (CustomerSettlementAlertOutbox.status == "failed")
+                    & (CustomerSettlementAlertOutbox.updated_at < failed_cutoff)
+                )
+            )
+        ).rowcount
+        or 0
+    )
     session.flush()
     return {
         "financial_revisions": financial_count,
@@ -1008,4 +1122,6 @@ def cleanup_customer_settlements(
         "mapping_revisions": mapping_count,
         "mapping_entries": mapping_entry_count,
         "assertion_jti": jti_count,
+        "reconciliation_runs": reconciliation_count,
+        "alert_outbox": alert_outbox_count,
     }

@@ -24,9 +24,12 @@ from app.services.customer_settlement_source import (
     fetch_customer_settlement_balances,
 )
 from app.services.customer_settlements import (
+    MAX_PILOT_USERS,
+    SettlementMappingInput,
     activate_financial_revision,
     activate_mapping_revision,
     active_pilot_counterparty_refs,
+    active_pilot_site_user_ids,
     cleanup_customer_settlements,
     mark_financial_revision_failed,
     mark_mapping_revision_failed,
@@ -101,6 +104,11 @@ def run_customer_settlement_mapping_sync(
                 and settings.customer_settlements_organization_guid
             ):
                 return {"status": "blocked", "reason": "mapping_organization_not_configured"}
+            pilot_user_ids = active_pilot_site_user_ids(session)
+            if not pilot_user_ids:
+                return {"status": "blocked", "reason": "pilot_users_not_configured"}
+            if len(pilot_user_ids) > MAX_PILOT_USERS:
+                return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             try:
                 onec_engine = build_onec_engine(
                     settings.onec_database_url,
@@ -119,7 +127,18 @@ def run_customer_settlement_mapping_sync(
                     rows,
                     onec_engine=onec_engine,
                 )
-                entries = build_mapping_entries(rows)
+                all_entries = build_mapping_entries(rows)
+                entries_by_user = {item.site_user_id: item for item in all_entries}
+                entries = tuple(
+                    entries_by_user.get(user_id)
+                    or SettlementMappingInput(
+                        site_user_id=user_id,
+                        cluster_id=None,
+                        counterparty_ref=None,
+                        status="not_linked",
+                    )
+                    for user_id in pilot_user_ids
+                )
                 invalid_source_rows = sum(
                     row.has_invalid_site_user_id or row.has_invalid_counterparty_ref for row in rows
                 )
@@ -135,6 +154,7 @@ def run_customer_settlement_mapping_sync(
                     "status": "activated" if activated else "unchanged",
                     "revision_id": revision.id,
                     "source_rows": len(rows),
+                    "pilot_rows": len(entries),
                     "mapping_entries": revision.loaded_entry_count,
                     "ambiguous_entries": revision.ambiguous_count,
                     "invalid_source_rows": invalid_source_rows,
@@ -182,6 +202,8 @@ def run_customer_settlement_financial_sync(
             counterparty_refs = active_pilot_counterparty_refs(session)
             if not counterparty_refs:
                 return {"status": "blocked", "reason": "pilot_counterparties_not_configured"}
+            if len(active_pilot_site_user_ids(session)) > MAX_PILOT_USERS:
+                return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             onec_engine = build_onec_engine(
                 settings.onec_database_url,
                 query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,

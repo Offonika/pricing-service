@@ -2,6 +2,9 @@
 
 define('BX_COMPOSITE_CACHE', false);
 require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/header.php');
+if (class_exists('\\Bitrix\\Main\\Composite\\Engine')) {
+    \Bitrix\Main\Composite\Engine::setEnable(false);
+}
 $APPLICATION->SetTitle('Взаиморасчёты');
 ?>
 

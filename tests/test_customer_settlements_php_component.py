@@ -25,7 +25,7 @@ def test_component_bundle_is_server_side_and_fail_closed() -> None:
         / "local/components/mastermobile/customer.settlements/templates/.default/template.php"
     ).read_text(encoding="utf-8")
 
-    assert "Authorization', 'Bearer '" in client
+    assert "Authorization: Bearer " in client
     assert "site_user_id" not in page
     assert "active_secret" not in template
     assert "BX_COMPOSITE_CACHE" in page
@@ -35,6 +35,36 @@ def test_component_bundle_is_server_side_and_fail_closed() -> None:
     assert "Ваш аванс" in template
     assert "Задолженности нет" in template
     assert "Обновить" not in template
+
+
+def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
+    client = (
+        BUNDLE / "local/components/mastermobile/customer.settlements/lib/client.php"
+    ).read_text(encoding="utf-8")
+    menu_visibility = (
+        BUNDLE / "local/include/personal/customer_settlements_menu_visibility.php"
+    ).read_text(encoding="utf-8")
+    page = (BUNDLE / "personal/settlements/index.php").read_text(encoding="utf-8")
+    template = (
+        BUNDLE
+        / "local/components/mastermobile/customer.settlements/templates/.default/template.php"
+    ).read_text(encoding="utf-8")
+
+    assert "CURLOPT_FOLLOWLOCATION => false" in client
+    assert "CURLOPT_CONNECTTIMEOUT_MS => $probe ? 500 : 2000" in client
+    assert "CURLOPT_TIMEOUT_MS => $probe ? 1000 : 3000" in client
+    assert "CURLOPT_SSL_VERIFYPEER => true" in client
+    assert "CURLOPT_SSL_VERIFYHOST => 2" in client
+    assert "allowed_hosts" in client
+    assert "mock_allowed_user_hashes" in client
+    assert "hash_hmac('sha256', $siteUserId, $salt)" in client
+    assert "hash_equals" in client
+    assert "|eligibility" in client
+    assert "MM_CUSTOMER_SETTLEMENTS_ELIGIBILITY" in menu_visibility
+    assert "time() + 300" in menu_visibility
+    assert "customer-settlements-eligibility|" in menu_visibility
+    assert "Composite\\Engine::setEnable(false)" in page
+    assert "(float)" not in template
 
 
 def test_menu_patch_places_settlements_after_orders() -> None:

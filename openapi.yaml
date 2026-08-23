@@ -5503,6 +5503,19 @@ paths:
                 $ref: '#/components/schemas/CustomerSettlementSummaryResponse'
       security:
       - HTTPBearer: []
+  /api/customer/settlements/eligibility:
+    get:
+      summary: Customer Settlement Eligibility
+      operationId: customer_settlement_eligibility_api_customer_settlements_eligibility_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerSettlementEligibilityResponse'
+      security:
+      - HTTPBearer: []
   /api/expertise/sync/cases:
     post:
       summary: Sync Cases
@@ -14886,6 +14899,20 @@ components:
       - ruleset_version
       - source_status
       title: CustomerPriceTypeWorklistsResponse
+    CustomerSettlementEligibilityResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - eligible
+          - not_eligible
+          - temporarily_unavailable
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: CustomerSettlementEligibilityResponse
     CustomerSettlementSummaryResponse:
       properties:
         status:

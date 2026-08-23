@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -390,4 +391,84 @@ class CustomerSettlementAssertionJti(Base):
     consumed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CustomerSettlementReconciliationRun(Base):
+    __tablename__ = "customer_settlement_reconciliation_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('matched','mismatched','blocked')",
+            name="ck_customer_settlement_reconciliation_status",
+        ),
+        CheckConstraint(
+            "expected_count >= 0 AND matched_count >= 0 AND mismatch_count >= 0",
+            name="ck_customer_settlement_reconciliation_counts",
+        ),
+        UniqueConstraint("report_date", "report_hash", name="uq_customer_settlement_report_run"),
+    )
+
+    report_date: Mapped[date] = mapped_column(Date(), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    mismatch_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_abs_difference: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CustomerSettlementAlertState(Base):
+    __tablename__ = "customer_settlement_alert_state"
+    __table_args__ = (
+        UniqueConstraint("channel", name="uq_customer_settlement_alert_state_channel"),
+        CheckConstraint(
+            "current_level IN ('ok','warning','critical')",
+            name="ck_customer_settlement_alert_state_level",
+        ),
+    )
+
+    channel: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_level: Mapped[str] = mapped_column(String(16), nullable=False)
+    last_notified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CustomerSettlementAlertOutbox(Base):
+    __tablename__ = "customer_settlement_alert_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_customer_settlement_alert_outbox_event"),
+        CheckConstraint(
+            "status IN ('pending','sent','failed')",
+            name="ck_customer_settlement_alert_outbox_status",
+        ),
+        Index("ix_customer_settlement_alert_outbox_pending", "status", "next_attempt_at"),
+    )
+
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    external_ref: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

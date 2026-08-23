@@ -10,13 +10,19 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, security
 from app.core.config import get_settings
-from app.schemas.customer_settlement import CustomerSettlementSummaryResponse
+from app.schemas.customer_settlement import (
+    CustomerSettlementEligibilityResponse,
+    CustomerSettlementSummaryResponse,
+)
 from app.services.customer_settlement_auth import (
     CustomerSettlementAuthConfigError,
     CustomerSettlementAuthError,
     verify_and_consume_customer_settlement_assertion,
 )
-from app.services.customer_settlements import get_customer_settlement_summary
+from app.services.customer_settlements import (
+    get_customer_settlement_eligibility,
+    get_customer_settlement_summary,
+)
 
 router = APIRouter()
 logger = logging.getLogger("app.customer_settlements")
@@ -37,18 +43,11 @@ def _log_event(event: str, **fields: object) -> None:
     logger.info(json.dumps(payload, ensure_ascii=True, sort_keys=True))
 
 
-@router.get(
-    "/api/customer/settlements/summary",
-    response_model=CustomerSettlementSummaryResponse,
-    response_model_exclude_none=True,
-)
-def customer_settlement_summary(
+def _authenticate_customer_request(
     request: Request,
-    response: Response,
-    credentials: HTTPAuthorizationCredentials | None = Security(security),
-    db: Session = Depends(get_db),
-) -> CustomerSettlementSummaryResponse:
-    response.headers.update(_NO_STORE_HEADERS)
+    credentials: HTTPAuthorizationCredentials | None,
+    db: Session,
+):
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=401,
@@ -64,6 +63,7 @@ def customer_settlement_summary(
             settings=settings,
         )
         db.commit()
+        return identity, settings
     except CustomerSettlementAuthError as exc:
         db.rollback()
         _log_event("customer_settlement_auth_failure", reason=exc.code)
@@ -74,15 +74,27 @@ def customer_settlement_summary(
         ) from exc
     except (CustomerSettlementAuthConfigError, ValueError) as exc:
         db.rollback()
-        _log_event(
-            "customer_settlement_auth_config_failure",
-            reason=type(exc).__name__,
-        )
+        _log_event("customer_settlement_auth_config_failure", reason=type(exc).__name__)
         raise HTTPException(
             status_code=503,
             detail="temporarily unavailable",
             headers=_NO_STORE_HEADERS,
         ) from exc
+
+
+@router.get(
+    "/api/customer/settlements/summary",
+    response_model=CustomerSettlementSummaryResponse,
+    response_model_exclude_none=True,
+)
+def customer_settlement_summary(
+    request: Request,
+    response: Response,
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    db: Session = Depends(get_db),
+) -> CustomerSettlementSummaryResponse:
+    response.headers.update(_NO_STORE_HEADERS)
+    identity, settings = _authenticate_customer_request(request, credentials, db)
 
     summary = get_customer_settlement_summary(
         db,
@@ -101,3 +113,32 @@ def customer_settlement_summary(
         ),
     )
     return CustomerSettlementSummaryResponse(**summary.__dict__)
+
+
+@router.get(
+    "/api/customer/settlements/eligibility",
+    response_model=CustomerSettlementEligibilityResponse,
+)
+def customer_settlement_eligibility(
+    request: Request,
+    response: Response,
+    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    db: Session = Depends(get_db),
+) -> CustomerSettlementEligibilityResponse:
+    response.headers.update(_NO_STORE_HEADERS)
+    identity, settings = _authenticate_customer_request(request, credentials, db)
+    status = get_customer_settlement_eligibility(
+        db,
+        site_user_id=identity.site_user_id,
+        enabled=settings.customer_settlements_eligibility_enabled,
+        mapping_stale_after_seconds=settings.customer_settlements_mapping_stale_after_seconds,
+    )
+    _log_event(
+        "customer_settlement_eligibility",
+        status=status,
+        user_hash=_correlation_hash(
+            identity.site_user_id,
+            settings.customer_settlements_correlation_salt,
+        ),
+    )
+    return CustomerSettlementEligibilityResponse(status=status)

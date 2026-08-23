@@ -1,11 +1,14 @@
 {
   "mode": "off",
   "base_url": "https://pricing-staging.example.invalid",
+  "allowed_hosts": ["pricing-staging.example.invalid"],
   "active_kid": "settlements-staging-1",
   "active_secret": "replace-outside-repository",
   "issuer": "master-mobile.ru",
   "audience": "pricing-service:customer-settlements",
   "scope": "customer:settlements:read",
   "mock_query_enabled": false,
+  "mock_user_hash_salt": "replace-outside-repository",
+  "mock_allowed_user_hashes": [],
   "mock_variant": "debt"
 }

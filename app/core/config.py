@@ -295,6 +295,7 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
     customer_settlements_enabled: bool = False
+    customer_settlements_eligibility_enabled: bool = False
     customer_settlements_shadow_enabled: bool = False
     customer_settlements_organization_ref: str | None = None
     customer_settlements_organization_guid: str | None = None
@@ -325,6 +326,10 @@ class Settings(BaseSettings):
     customer_settlements_correlation_salt: str | None = None
     customer_settlements_crm_webhook_url: str | None = None
     customer_settlements_crm_timeout_seconds: float = 6.0
+    customer_settlements_alerts_enabled: bool = False
+    customer_settlements_alert_task_id: str | None = None
+    customer_settlements_alert_webhook_url: str | None = None
+    customer_settlements_alert_repeat_seconds: int = 6 * 60 * 60
     executive_dashboard_finance_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json"
     )

@@ -11,7 +11,9 @@ related_code:
   - app/models/customer_settlement.py
   - app/schemas/customer_settlement.py
   - app/services/customer_settlement_auth.py
+  - app/services/customer_settlement_alerts.py
   - app/services/customer_settlement_mapping.py
+  - app/services/customer_settlement_reconciliation.py
   - app/services/customer_settlement_source.py
   - app/services/customer_settlements.py
   - app/workers/customer_settlements.py
@@ -21,17 +23,21 @@ related_code:
   - tasks/manage_customer_settlement_pilot.py
   - tasks/mock_customer_settlement_client.py
   - tasks/preflight_customer_settlement_shadow.py
+  - tasks/reconcile_customer_settlements.py
   - tasks/sync_customer_settlement_mapping.py
   - tasks/sync_customer_settlements.py
   - infra/cron/customer_settlements.cron
   - alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py
   - alembic/versions/d9e1f3a5b7c9_add_customer_account_guid_mapping.py
+  - alembic/versions/4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py
+  - integrations/master_mobile_site/customer_settlements
 related_tests:
   - tests/test_customer_settlement_api.py
   - tests/test_customer_settlement_auth.py
   - tests/test_customer_settlement_mapping.py
   - tests/test_customer_settlement_migration.py
   - tests/test_customer_settlement_postgres.py
+  - tests/test_customer_settlement_reconciliation_alerts.py
   - tests/test_customer_settlement_shadow_preflight.py
   - tests/test_customer_settlement_source.py
   - tests/test_customer_settlements.py
@@ -42,7 +48,7 @@ depends_on:
   - docs/BI.Receivables.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-13"
+updated_at: "2026-08-22"
 ---
 
 # Назначение
@@ -61,16 +67,19 @@ updated_at: "2026-08-13"
 - одна итоговая сумма по контрагенту без договоров;
 - постоянный `customer_account_id` и GUID mapping
   `site_user_id -> customer_account_id -> source_system + CounterpartyGuid`;
-- ручной pilot importer с live read-only контролями УТ;
+- полный read-only CRM mapping, активируемый только для pilot whitelist;
+- исторический ручной importer как rollback-инструмент, но не источник нового пилота;
 - отдельный pilot whitelist;
 - HMAC assertion между сервером сайта и `pricing-service`;
 - replay-защита, key rotation, retention, advisory locks и health probe;
+- автоматическая сверка новой ведомости на конец дня по Москве и безопасный alert outbox;
+- server-side dev-адаптер личного кабинета с отдельным eligibility endpoint;
 - OpenAPI, synthetic tests, тестовый вектор и безопасный mock-клиент.
 
 Не входит:
 
 - изменение `УТ 10.3`, CRM, production или сервера `master-mobile.ru`;
-- PHP-компонент и frontend личного кабинета;
+- установка адаптера на production `master-mobile.ru`;
 - автоматическая связь по email, телефону, ИНН или названию;
 - вход по телефону — он остаётся отдельной задачей `#2533`;
 - несколько организаций, валют или контрагентов 1С в одном пилотном cluster.
@@ -91,7 +100,8 @@ updated_at: "2026-08-13"
 - [x] Browser не передаёт `site_user_id`, cluster или `counterparty_ref`.
 - [x] Mapping с несколькими cluster/counterparty закрывается как ambiguous.
 - [x] Сумма видна до 6 часов, с 2 до 6 часов помечается stale.
-- [x] После 6 часов API сохраняет `stale/as_of/synced_at`, но скрывает сумму и state.
+- [x] После 6 часов API возвращает только `temporarily_unavailable`, без суммы,
+  state и дат финансового среза.
 - [x] Assertion живёт не более 60 секунд и имеет одноразовый `jti`.
 - [x] Assertion требует отдельный scope `customer:settlements:read`.
 - [x] Ответы API, включая ошибки авторизации, имеют `private, no-store`.
@@ -104,7 +114,7 @@ updated_at: "2026-08-13"
 - [x] Смена `CounterpartyGuid` сохраняет `customer_account_id`, а конфликт двух
   customer accounts и старый financial snapshot закрываются fail-closed.
 - [x] PostgreSQL integration проверяет partial unique index, atomic rollback,
-  advisory lock, конкурентный replay и retention активной revision.
+  advisory lock, конкурентный replay, `SKIP LOCKED` alert outbox и retention.
 - [x] Исходная SQL-сверка выполнена на 10 реальных пилотах на конец
   `2026-07-29`: максимальная разница с ведомостью `0,00 RUB`. Результат остаётся
   доказательством extractor, но сотруднический пилот сверяется отдельно.
@@ -115,33 +125,38 @@ updated_at: "2026-08-13"
   mapping/whitelist ещё не применены.
 - [x] Финальный importer dry-run проверил `10/10`, включая явный нулевой остаток;
   все settlement-таблицы после rollback остались пустыми.
-- [ ] Пройден 72-часовой shadow-run и письменная бухгалтерская приёмка.
-- [ ] Получено отдельное разрешение на установку PHP-адаптера сайта.
+- [x] ОТМЕНЕНО (2026-08-22): shadow-run, начатый в `20:43 MSK` на manual mapping,
+  не засчитывается; cron остановлен, БД и revisions сохранены для диагностики.
+- [ ] Пройден новый 72-часовой shadow-run на `crm_readonly` и письменная
+  бухгалтерская приёмка по новым ведомостям.
+- [x] Server-side mock-адаптер разрешён и подготовлен только для
+  `dev.master-mobile.ru`; production не изменяется.
 
 # Source of Truth
 
 - `УТ 10.3` — источник истины по сумме взаиморасчётов.
 - Согласованный бухгалтерский отчёт — эталон живой сверки SQL.
-- Подтверждённый вручную CSV плюс live read-only controls УТ — источник пилотной
-  связи; `UF_CODE_1C`, ФИО, email и телефон ключами не являются.
+- Полностью прочитанный CRM cluster с service fields и точными Bitrix–1С hashes —
+  источник связи нового пилота; ФИО, email, телефон, ИНН и название ключами не являются.
+- Ручной CSV остаётся историческим rollback-инструментом и не активируется в новом запуске.
 - PostgreSQL `pricing-service` — источник активных revision, whitelist и replay-state.
-- Bitrix/PHP не изменяются в backend-срезе задачи №2883.
+- Production Bitrix/PHP не изменяются; mock-адаптер на `dev.master-mobile.ru`
+  использует тот же API-контракт, но не является финансовым source of truth.
 
 # Data Flow
 
 ```text
-approved CSV + live УТ controls -> durable account/GUID mapping -> atomic activate
-                                                           \
+full CRM read -> pilot whitelist filter -> durable account/GUID mapping -> atomic activate
+                                                                     \
 separate pilot whitelist -> УТ 10.3 (:17) -> financial revision -> atomic activate
                                                        \
-Bitrix $USER session -> 60s HMAC assertion -> summary API -> server-rendered block
+Bitrix $USER session -> eligibility/summary assertion -> server-rendered block
 ```
 
-- `:05` — manual-mode guard: проверяет наличие утверждённой mapping revision и
-  никогда её не перезаписывает;
+- `:05` — полный CRM read и атомарная `crm_readonly` revision только по whitelist;
 - `:17` — полный финансовый срез всех уникальных пилотных контрагентов;
 - при реальной ошибке — один повтор через 600 секунд;
-- `:35` — health probe, exit code `0/1/2` для `ok/warning/critical`;
+- `:35` — health probe и обезличенный transition alert только в Bitrix24 №2883;
 - `03:25` — retention cleanup.
 
 Cron-файлы являются deploy-артефактами. Их установка в production этим spec не
@@ -193,6 +208,20 @@ Pragma: no-cache
 
 Сервер Bitrix показывает одинаковое безопасное сообщение для `not_linked` и
 `ambiguous_link`; различие остаётся доступно только в защищённой диагностике.
+
+## Eligibility
+
+```text
+GET /api/customer/settlements/eligibility
+Authorization: Bearer <server-generated assertion>
+```
+
+Endpoint не принимает query-параметров и возвращает только `eligible`,
+`not_eligible` либо `temporarily_unavailable`. Он проверяет pilot whitelist,
+active account/source binding и свежую CRM mapping revision, но не раскрывает
+сумму, GUID или точную причину отсутствия связи. PHP хранит результат только в
+текущей пользовательской сессии не более 5 минут; общий component/composite cache
+запрещён.
 
 ## Assertion
 
@@ -309,7 +338,10 @@ Mock-клиент не печатает assertion, `site_user_id` или фин�
 - `customer_settlement_mapping_revision`;
 - `customer_settlement_mapping_entry`;
 - `customer_settlement_pilot_access`;
-- `customer_settlement_assertion_jti`.
+- `customer_settlement_assertion_jti`;
+- `customer_settlement_reconciliation_run`;
+- `customer_settlement_alert_state`;
+- `customer_settlement_alert_outbox`.
 
 Внутренние статусы revision: `loading`, `active`, `superseded`, `failed`.
 `superseded` нужен для retention старых успешных срезов; одновременно активна
@@ -321,9 +353,13 @@ site-связь определяет пользователя, активная 
 смене GUID старая source-связь отзывается, новая создаётся для того же account.
 Если site user и новый GUID уже принадлежат разным account, импорт откатывается целиком.
 
-## Manual confirmed mapping
+## Manual confirmed mapping — исторический rollback
 
-Для пилотного запуска используются ровно 10 сотрудников с пользовательским
+ОТМЕНЕНО ДЛЯ НОВОГО ПИЛОТА (2026-08-22): режим `manual_confirmed` и применённая
+им десятка не используются для нового зачётного shadow-run. Раздел ниже сохраняет
+проверяемый rollback-процесс, но активный источник нового запуска — `crm_readonly`.
+
+Для исторического manual-пилота использовались ровно 10 сотрудников с пользовательским
 кабинетом и однозначной связью через точный идентификатор Bitrix–1С. Внешние
 клиенты в пилот не включаются. ИНН не участвует в установлении связи и может
 использоваться только как необязательный дополнительный контроль.
@@ -374,6 +410,8 @@ Retention:
 - successful/superseded — 30 дней;
 - `failed/loading` — 7 дней;
 - replay `jti` — до `exp + 24 часа`;
+- reconciliation runs и отправленные/pending alert events — 30 дней;
+- failed alert events — 7 дней, alert state сохраняется;
 - active revision никогда не удаляется.
 
 # Extractor readiness gate
@@ -484,9 +522,10 @@ mapping/whitelist и независимой сверки всех 10 сотру�
 
 ## Live CRM validation 2026-07-30
 
-Историческая проверка сохранена для совместимого режима `crm_readonly`.
-Для утверждённого backend-среза задачи №2883 этот режим выключен: default
-`manual_confirmed`, webhook не требуется и Bitrix не изменяется.
+ОТМЕНЕНО (2026-08-22): решение держать `crm_readonly` выключенным и использовать
+`manual_confirmed` в новом пилоте. Новый зачётный запуск использует полный
+read-only CRM mapping; webhook разрешён только на время 72-часового shadow-run и
+не даёт прав записи в CRM.
 
 Read-only проверка CRM подтвердила все пять service fields и полный объём
 `50 035` contact rows с `b_user`.
@@ -528,6 +567,8 @@ Read-only проверка CRM подтвердила все пять service fi
   соответствующий `CounterpartyGuid` той же организации.
 - CRM mapping старше 2 часов закрывает API как `temporarily_unavailable`;
   подтверждённый manual mapping остаётся действующим до явного remap/revoke.
+- `source_name` входит в hash mapping revision: одинаковый payload из manual и CRM
+  не может унаследовать чужое правило freshness.
 - Частичная revision никогда не активируется.
 - Feature flag по умолчанию выключен; shadow flag не открывает клиентский API.
 - Секреты существуют только в локальном env/secret-контуре.
@@ -540,14 +581,18 @@ Read-only проверка CRM подтвердила все пять service fi
   принудительное завершение через 5 секунд.
 - Точный повтор payload идемпотентен.
 - Финансовый cron повторяет только `error`; `blocked/disabled` не запускают retry.
-- В `manual_confirmed` mapping cron только проверяет active revision и не пишет mapping.
-- В совместимом `crm_readonly` cron после `error` или внешнего process timeout
+- В историческом `manual_confirmed` mapping cron только проверяет active revision.
+- В активном `crm_readonly` cron после `error` или внешнего process timeout
   выполняет один повтор через 600 секунд; `blocked`, `disabled` и `skipped_lock`
   повтор не запускают.
 - После 2 часов financial health — `warning`, после 6 — `critical`; API скрывает сумму.
 - Stale/missing mapping имеет `critical` health.
 - Health probe возвращает exit code `0/1/2`, чтобы внешний мониторинг мог
   сформировать alert.
+- Alert создаётся только при переходе уровня, recovery или раз в 6 часов при
+  продолжающемся critical; PostgreSQL `FOR UPDATE SKIP LOCKED` исключает двойную
+  отправку параллельными health worker.
+- Внешняя доставка жёстко ограничена HTTPS и задачей Bitrix24 №2883.
 
 # Observability and data safety
 
@@ -561,8 +606,18 @@ Worker/health/importer JSON содержит только:
 - количества и hashes ручного импорта без ID/GUID/названий/ИНН.
 
 API пишет структурированные события `summary`, `auth_failure`, `expired`,
-`future`, `replay`. Для пользователя допустим только необратимый hash с отдельной
-солью.
+`future`, `replay` и `eligibility`. Для пользователя допустим только необратимый
+hash с отдельной солью.
+
+В Bitrix24 №2883 отправляются только level, freshness и агрегаты
+expected/loaded/zero. Финансовые суммы и идентификаторы пилотов в комментарий не
+попадают. Delivery использует outbox, recovery и шестичасовой critical reminder.
+
+Новая бухгалтерская сверка выполняется командой
+`tasks.reconcile_customer_settlements`: ведомость относится к завершённому дню,
+а SQL-срез берётся строго `< 00:00:00` следующего дня по `Europe/Moscow`.
+Сохраняются только дата, SHA-256 файла, counts, status и максимальная абсолютная
+разница; допуск — `0,01 RUB`.
 
 Никогда не логируются сумма, ФИО, email, телефон, полный ID пользователя,
 cluster/counterparty ref, assertion, подпись, сырой `jti` или секрет.
@@ -572,21 +627,26 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - [x] SQLAlchemy models и Alembic migration.
 - [x] Financial/mapping revision lifecycle и retention.
 - [x] CRM importer с полной пагинацией.
+- [x] CRM importer активирует только whitelist и отзывает отсутствующую связь как
+  `not_linked`, не теряя проверку полноты всего источника.
 - [x] Durable customer account и версионные GUID bindings.
 - [x] Manual-confirmed importer с live controls, dry-run/apply gate и лимитом 10.
 - [x] `expected_inn` сделан необязательным; при наличии он по-прежнему сверяется.
 - [x] Pilot whitelist CLI с dry-run, audit timestamp и readback.
 - [x] Assertion verifier, rotation, IP allowlist и replay store.
 - [x] Summary API и OpenAPI schema.
+- [x] Eligibility API без клиентских идентификаторов и PHP-session cache 5 минут.
 - [x] Worker, advisory locks, retry и cron-артефакты.
 - [x] Health probe и безопасные structured events.
+- [x] Reconciliation CLI, operational migration, transition alerts и PostgreSQL outbox.
 - [x] Synthetic regression tests и contract vector.
 - [x] Dedicated assertion scope `customer:settlements:read`.
 - [x] Живая read-only сверка SQL: 10/10 пилотов, максимальная разница `0,00 RUB`.
 - [x] ОТМЕНЕНО (2026-08-11): кандидатная десятка внешних клиентов с обязательным
   валидным ИНН; пилот заменён на сотрудников с точной связью Bitrix–1С.
 - [x] Отбор 10 сотрудников и importer dry-run `10/10` без записи.
-- [x] Apply mapping/whitelist выполнен для 10 сотрудников на изолированном staging.
+- [x] ОТМЕНЕНО (2026-08-22): apply manual mapping/whitelist и начатый на нём
+  shadow-run не входят в новую приёмку.
 - [ ] Бухгалтерская сверка сотруднического пилота на контрольных точках shadow-run.
 - [ ] Shadow-run, security/cache acceptance и бухгалтерская приёмка.
 - [ ] Отдельная установка Bitrix server adapter.
@@ -602,7 +662,8 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - Alembic-цепочка однозначна: базовая revision взаиморасчётов
   `c3d4e5f6a7b9` следует за `b2d4f6a8c0e1`, GUID/account revision
   `d9e1f3a5b7c9` следует за ней, а no-op revision `2a4c6e8f0b1d` объединяет
-  settlement-ветку с активным production-head `1b9d3f5a7c21`.
+  settlement-ветку с активным production-head `1b9d3f5a7c21`; operational revision
+  `4c6e8a0b2d3f` следует за merge и остаётся единственным Alembic head.
 
 # Tests
 
@@ -616,33 +677,39 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - несколько cluster/counterparty, manual mapping и совместимая CRM pagination;
 - issuer/audience/alg/kid/IP/TTL/future/expired/replay/rotation;
 - server-derived identity, отсутствие IDOR-параметров и `no-store`;
+- eligibility states, session-only cache, host/TLS/timeouts и отключение composite cache;
 - точный `< as_of`, temp whitelist, zero SQL и запрет `NOLOCK`;
 - migration upgrade/downgrade и partial unique active indexes;
+- reconciliation end-of-day boundary, duplicate controls/source rows и idempotency;
+- transition alerts, approved task guard, `SKIP LOCKED`, retention operational rows;
 - readiness gate, retry policy, health exit codes и mock-client secrecy.
+- bootstrap с закрытым source gate, запрет `manual_confirmed` для нового запуска и
+  обязательная последняя `matched`-сверка перед ready.
 
-PostgreSQL advisory lock, partial indexes, транзакции и конкурентный `jti`
-должны дополнительно пройти integration suite на PostgreSQL staging.
+PostgreSQL advisory lock, partial indexes, транзакции, конкурентный `jti` и alert
+claim прошли integration suite на изолированной схеме staging (`6 passed`).
 
 # Rollout
 
 1. Применить migration на staging PostgreSQL.
 2. Выполнить synthetic и PostgreSQL integration tests.
-3. Подготовить полный CSV до 10 пилотов и выполнить обязательный dry-run
-   `tasks.import_customer_settlement_mappings`.
-4. После сверки controls применить CSV с `--apply --approved-by` и обоими
-   SHA-256 из dry-run, не включая whitelist.
-5. Отдельно включить согласованный whitelist и однократно сверить read-only SQL
-   с бухгалтерским отчётом.
+3. Создать новую staging-БД на head `4c6e8a0b2d3f`; прежнюю БД и revisions оставить
+   только для диагностики.
+4. Включить согласованный whitelist и выполнить полный `crm_readonly` import;
+   multi-counterparty cluster и неоднозначные связи блокируют пилота.
+5. Сформировать новую ведомость за завершённый день и выполнить
+   `tasks.reconcile_customer_settlements` на одинаковой границе `< next midnight MSK`.
 6. После сверки включить только `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`,
    сохранив клиентский feature flag выключенным.
-7. Выполнить 72-часовой shadow-run по шаблону с financial sync на `:17`.
+7. Выполнить новый 72-часовой shadow-run с CRM sync на `:05`, financial sync на
+   `:17` и health/alerts на `:35`; eligibility и client API оставить выключенными.
 8. Сверить всех пилотов с допуском `0.01 RUB`.
 9. Подготовить чистый backend release candidate от актуальной production-base;
    до прохождения readiness gate сохранять `CUSTOMER_SETTLEMENTS_ENABLED=false`.
 10. Провести security/cache isolation review.
 11. Получить письменную бухгалтерскую приёмку.
-12. Первое подключение server-side Bitrix adapter выполнить на
-    `test.master-mobile.ru`; основной `master-mobile.ru` не изменять.
+12. Проверить server-side Bitrix adapter только на `dev.master-mobile.ru`; основной
+    `master-mobile.ru` не изменять.
 13. После успешной проверки тестового магазина отдельно разрешить подключение
     основного `master-mobile.ru`.
 14. После backend readiness gate поставить frontend-задачу.
@@ -656,9 +723,13 @@ Rollback:
 
 # Changelog
 
-- 2026-08-22 — новый staging-контур поднят на head `2a4c6e8f0b1d`, manual mapping
+- 2026-08-22 — новый пилот переведён на `crm_readonly`; добавлены eligibility API,
+  автоматическая end-of-day сверка, operational retention, outbox alerts только в
+  Bitrix24 №2883 и защита source-aware mapping hash. Прежний manual shadow-run
+  остановлен и не засчитывается.
+- 2026-08-22 — ОТМЕНЕНО: staging-контур поднят на head `2a4c6e8f0b1d`, manual mapping
   и whitelist применены `10/10`, snapshot загрузил `10/10` с одним explicit zero;
-  72-часовой shadow-run запущен в `20:43 MSK`, клиентский API выключен.
+  shadow-run был запущен в `20:43 MSK`, но исключён из новой приёмки.
 - 2026-08-22 — settlement migrations объединены с активным production-head
   `1b9d3f5a7c21` через additive no-op revision `2a4c6e8f0b1d`; новый shadow-run
   обязан начинаться на этой revision.

@@ -74,6 +74,16 @@
       "spec": "docs/specs/customer-settlements-backend-v1.md",
       "remove_after": null
     },
+    "reconcile_customer_settlements.py": {
+      "owner": "receivables",
+      "kind": "maintenance",
+      "dry_run": "not_supported",
+      "idempotency": "verified_by_report_date_and_report_hash",
+      "side_effect_level": "db_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/customer-settlements-backend-v1.md",
+      "remove_after": null
+    },
     "export_competitor_match_review_queue.py": {
       "owner": "matching",
       "kind": "export",

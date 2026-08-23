@@ -8,6 +8,7 @@ final class Client
 {
     private const DEFAULT_CONFIG = '/etc/master-mobile/customer-settlements.json';
     private const SUMMARY_PATH = '/api/customer/settlements/summary';
+    private const ELIGIBILITY_PATH = '/api/customer/settlements/eligibility';
     private const USER_STATUSES = array(
         'available',
         'stale',
@@ -44,8 +45,12 @@ final class Client
             }
 
             if ($mode === 'mock') {
-                $variant = $mockVariant ?: (string)($config['mock_variant'] ?? 'debt');
-                $result = self::mockSummary($variant);
+                if (!self::mockUserAllowed($config, $siteUserId)) {
+                    $result = array('status' => 'pilot_disabled', 'is_stale' => false);
+                } else {
+                    $variant = $mockVariant ?: (string)($config['mock_variant'] ?? 'debt');
+                    $result = self::mockSummary($variant);
+                }
             } elseif ($mode === 'real') {
                 $result = self::fetchRealSummary($config, $siteUserId, $probe);
             } else {
@@ -56,6 +61,50 @@ final class Client
         } catch (\Throwable $error) {
             self::safeLog('client_failure');
             return self::unavailable('client_failure');
+        }
+    }
+
+    /** @return array{status:string} */
+    public static function eligibilityForUser(string $siteUserId): array
+    {
+        if (!preg_match('/^[1-9][0-9]{0,18}$/', $siteUserId)) {
+            return array('status' => 'not_eligible');
+        }
+        try {
+            $config = self::loadConfig();
+            $mode = (string)($config['mode'] ?? 'off');
+            $cacheKey = $siteUserId . '|eligibility';
+            if (isset(self::$requestCache[$cacheKey])) {
+                return self::$requestCache[$cacheKey];
+            }
+            if ($mode === 'mock') {
+                $result = array(
+                    'status' => self::mockUserAllowed($config, $siteUserId)
+                        ? 'eligible'
+                        : 'not_eligible',
+                );
+            } elseif ($mode === 'real') {
+                $payload = self::fetchBackendJson(
+                    $config,
+                    $siteUserId,
+                    self::ELIGIBILITY_PATH,
+                    true
+                );
+                $status = (string)($payload['status'] ?? '');
+                if (!in_array($status, array(
+                    'eligible', 'not_eligible', 'temporarily_unavailable',
+                ), true)) {
+                    throw new \RuntimeException('eligibility_status_invalid');
+                }
+                $result = array('status' => $status);
+            } else {
+                $result = array('status' => 'not_eligible');
+            }
+            self::$requestCache[$cacheKey] = $result;
+            return $result;
+        } catch (\Throwable $error) {
+            self::safeLog('eligibility_failure');
+            return array('status' => 'temporarily_unavailable');
         }
     }
 
@@ -189,49 +238,95 @@ final class Client
         }
     }
 
+    /** @param array<string,mixed> $config */
+    private static function mockUserAllowed(array $config, string $siteUserId): bool
+    {
+        $salt = (string)($config['mock_user_hash_salt'] ?? '');
+        $allowed = $config['mock_allowed_user_hashes'] ?? null;
+        if ($salt === '' || !is_array($allowed)) {
+            return false;
+        }
+        $candidate = hash_hmac('sha256', $siteUserId, $salt);
+        foreach ($allowed as $value) {
+            if (is_string($value) && hash_equals(strtolower($value), $candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** @return array<string,mixed> */
     private static function fetchRealSummary(array $config, string $siteUserId, bool $probe): array
     {
-        $baseUrl = rtrim((string)($config['base_url'] ?? ''), '/');
-        $parts = parse_url($baseUrl);
-        if (
-            !is_array($parts)
-            || ($parts['scheme'] ?? null) !== 'https'
-            || empty($parts['host'])
-            || isset($parts['user'])
-            || isset($parts['pass'])
-        ) {
-            throw new \RuntimeException('base_url_invalid');
-        }
-        if (!class_exists('\\Bitrix\\Main\\Web\\HttpClient')) {
-            throw new \RuntimeException('bitrix_http_client_unavailable');
-        }
-        $jti = self::base64Url(random_bytes(24));
-        $assertion = self::buildAssertion($config, $siteUserId, time(), $jti);
-        $http = new \Bitrix\Main\Web\HttpClient(array(
-            'socketTimeout' => $probe ? 1 : 2,
-            'streamTimeout' => $probe ? 1 : 3,
-            'redirect' => false,
-            'disableSslVerification' => false,
-        ));
-        $http->setHeader('Authorization', 'Bearer ' . $assertion);
-        $http->setHeader('Accept', 'application/json');
-        $body = $http->get($baseUrl . self::SUMMARY_PATH);
-        if ($http->getStatus() !== 200 || !is_string($body)) {
-            self::safeLog('backend_http_failure');
-            return self::unavailable('backend_http_failure');
-        }
-        $decoded = json_decode($body, true);
-        if (!is_array($decoded)) {
-            self::safeLog('backend_json_failure');
-            return self::unavailable('backend_json_failure');
-        }
+        $decoded = self::fetchBackendJson(
+            $config,
+            $siteUserId,
+            self::SUMMARY_PATH,
+            $probe
+        );
         try {
             return self::normalizeSummary($decoded);
         } catch (\Throwable $error) {
             self::safeLog('backend_contract_failure');
             return self::unavailable('backend_contract_failure');
         }
+    }
+
+    /** @return array<string,mixed> */
+    private static function fetchBackendJson(
+        array $config,
+        string $siteUserId,
+        string $path,
+        bool $probe
+    ): array {
+        $baseUrl = rtrim((string)($config['base_url'] ?? ''), '/');
+        $parts = parse_url($baseUrl);
+        $allowedHosts = $config['allowed_hosts'] ?? array();
+        if (
+            !is_array($parts)
+            || ($parts['scheme'] ?? null) !== 'https'
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])
+            || !is_array($allowedHosts)
+            || !in_array(strtolower((string)$parts['host']), array_map('strtolower', $allowedHosts), true)
+        ) {
+            throw new \RuntimeException('base_url_invalid');
+        }
+        if (!function_exists('curl_init')) {
+            throw new \RuntimeException('curl_unavailable');
+        }
+        $jti = self::base64Url(random_bytes(24));
+        $assertion = self::buildAssertion($config, $siteUserId, time(), $jti);
+        $curl = curl_init($baseUrl . $path);
+        if ($curl === false) {
+            throw new \RuntimeException('curl_init_failed');
+        }
+        curl_setopt_array($curl, array(
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT_MS => $probe ? 500 : 2000,
+            CURLOPT_TIMEOUT_MS => $probe ? 1000 : 3000,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_HTTPHEADER => array(
+                'Authorization: Bearer ' . $assertion,
+                'Accept: application/json',
+            ),
+        ));
+        $body = curl_exec($curl);
+        $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        curl_close($curl);
+        if ($status !== 200 || !is_string($body)) {
+            self::safeLog('backend_http_failure');
+            throw new \RuntimeException('backend_http_failure');
+        }
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            self::safeLog('backend_json_failure');
+            throw new \RuntimeException('backend_json_failure');
+        }
+        return $decoded;
     }
 
     /** @return array<string,mixed> */

@@ -11,7 +11,10 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.api.customer_settlements import customer_settlement_summary
+from app.api.customer_settlements import (
+    customer_settlement_eligibility,
+    customer_settlement_summary,
+)
 from app.core.config import Settings
 from app.main import app
 from app.models import Base
@@ -37,6 +40,7 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         customer_settlements_enabled=True,
+        customer_settlements_eligibility_enabled=True,
         customer_settlements_assertion_active_kid="test-key",
         customer_settlements_assertion_active_secret="synthetic-test-secret",
         customer_settlements_allowed_source_ips=["127.0.0.1/32"],
@@ -169,6 +173,30 @@ def test_api_is_server_scoped_replay_safe_and_never_cacheable(
         parameter_names = {parameter["name"] for parameter in operation.get("parameters", [])}
         assert "site_user_id" not in parameter_names
         assert "counterparty_ref" not in parameter_names
+
+        eligibility_token, _ = create_customer_settlement_assertion(
+            site_user_id="101",
+            settings=settings,
+            now=issued_at,
+            jti="api_eligibility_101_12345",
+        )
+        with Session(engine) as session:
+            eligibility_response = Response()
+            eligibility = customer_settlement_eligibility(
+                request=request,
+                response=eligibility_response,
+                credentials=HTTPAuthorizationCredentials(
+                    scheme="Bearer",
+                    credentials=eligibility_token,
+                ),
+                db=session,
+            )
+            assert eligibility.status == "eligible"
+            assert eligibility_response.headers["cache-control"] == "private, no-store"
+        eligibility_operation = app.openapi()["paths"]["/api/customer/settlements/eligibility"][
+            "get"
+        ]
+        assert not eligibility_operation.get("parameters")
         settlement_logs = [
             record.getMessage()
             for record in caplog.records

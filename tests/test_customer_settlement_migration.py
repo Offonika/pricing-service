@@ -136,3 +136,33 @@ def test_customer_settlement_merge_revision_joins_active_production_head() -> No
 
     assert module.revision == "2a4c6e8f0b1d"
     assert set(module.down_revision) == {"1b9d3f5a7c21", "d9e1f3a5b7c9"}
+
+
+def test_customer_settlement_operational_migration_upgrade_and_downgrade(
+    tmp_path: Path,
+) -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py"
+    )
+    spec = importlib.util.spec_from_file_location("settlement_operational_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    engine = create_engine(f"sqlite:///{tmp_path / 'operational-migration.db'}")
+    expected = {
+        "customer_settlement_reconciliation_run",
+        "customer_settlement_alert_state",
+        "customer_settlement_alert_outbox",
+    }
+    try:
+        with engine.begin() as connection:
+            module.op = Operations(MigrationContext.configure(connection))
+            module.upgrade()
+            assert expected.issubset(inspect(connection).get_table_names())
+        with engine.begin() as connection:
+            module.op = Operations(MigrationContext.configure(connection))
+            module.downgrade()
+            assert expected.isdisjoint(inspect(connection).get_table_names())
+    finally:
+        engine.dispose()

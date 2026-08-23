@@ -3,9 +3,9 @@ from __future__ import annotations
 import importlib.util
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
@@ -18,9 +18,12 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
 from app.models.customer_settlement import (
+    CustomerSettlementAlertOutbox,
     CustomerSettlementAssertionJti,
+    CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
+from app.services import customer_settlement_alerts as settlement_alerts
 from app.services.customer_settlement_auth import (
     CustomerSettlementAuthError,
     create_customer_settlement_assertion,
@@ -48,6 +51,9 @@ SETTLEMENT_TABLES = {
     "customer_account",
     "customer_account_site_binding",
     "customer_account_source_binding",
+    "customer_settlement_reconciliation_run",
+    "customer_settlement_alert_state",
+    "customer_settlement_alert_outbox",
 }
 
 
@@ -69,7 +75,11 @@ def _load_settlement_migrations():
         "d9e1f3a5b7c9_add_customer_account_guid_mapping.py",
         "customer_settlement_postgres_account_migration",
     )
-    return base, accounts
+    operational = _load_migration(
+        "4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py",
+        "customer_settlement_postgres_operational_migration",
+    )
+    return base, accounts, operational
 
 
 @pytest.fixture(scope="module")
@@ -90,13 +100,15 @@ def postgres_engine():
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    base_migration, account_migration = _load_settlement_migrations()
+    base_migration, account_migration, operational_migration = _load_settlement_migrations()
     try:
         with engine.begin() as connection:
             base_migration.op = Operations(MigrationContext.configure(connection))
             base_migration.upgrade()
             account_migration.op = Operations(MigrationContext.configure(connection))
             account_migration.upgrade()
+            operational_migration.op = Operations(MigrationContext.configure(connection))
+            operational_migration.upgrade()
         yield engine
     finally:
         engine.dispose()
@@ -153,20 +165,34 @@ def test_postgres_migration_supports_upgrade_and_downgrade(postgres_engine) -> N
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    base_migration, account_migration = _load_settlement_migrations()
-    base_tables = SETTLEMENT_TABLES - {
-        "customer_account",
-        "customer_account_site_binding",
-        "customer_account_source_binding",
+    base_migration, account_migration, operational_migration = _load_settlement_migrations()
+    operational_tables = {
+        "customer_settlement_reconciliation_run",
+        "customer_settlement_alert_state",
+        "customer_settlement_alert_outbox",
     }
+    base_tables = (
+        SETTLEMENT_TABLES
+        - {
+            "customer_account",
+            "customer_account_site_binding",
+            "customer_account_source_binding",
+        }
+        - operational_tables
+    )
     try:
         with engine.begin() as connection:
             base_migration.op = Operations(MigrationContext.configure(connection))
             base_migration.upgrade()
             account_migration.op = Operations(MigrationContext.configure(connection))
             account_migration.upgrade()
+            operational_migration.op = Operations(MigrationContext.configure(connection))
+            operational_migration.upgrade()
             assert SETTLEMENT_TABLES.issubset(inspect(connection).get_table_names())
         with engine.begin() as connection:
+            operational_migration.op = Operations(MigrationContext.configure(connection))
+            operational_migration.downgrade()
+            assert operational_tables.isdisjoint(inspect(connection).get_table_names())
             account_migration.op = Operations(MigrationContext.configure(connection))
             account_migration.downgrade()
             assert base_tables.issubset(inspect(connection).get_table_names())
@@ -277,6 +303,64 @@ def test_postgres_concurrent_jti_consumption_allows_one_request(postgres_engine)
     assert sorted(outcomes) == ["accepted", "replay"]
 
 
+def test_postgres_alert_dispatch_claims_each_outbox_row_once(
+    postgres_engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = Event()
+    release = Event()
+    with Session(postgres_engine) as session:
+        session.add(
+            CustomerSettlementAlertOutbox(
+                event_key=f"postgres-alert-{uuid4().hex}",
+                status="pending",
+                severity="critical",
+                message="synthetic safe alert",
+                attempt_count=0,
+                next_attempt_at=BASE_TIME,
+            )
+        )
+        session.commit()
+
+    def fake_post(**_: object) -> str:
+        started.set()
+        if not release.wait(timeout=10):
+            raise RuntimeError("synthetic_dispatch_timeout")
+        return "synthetic-comment"
+
+    monkeypatch.setattr(settlement_alerts, "_post_bitrix_comment", fake_post)
+
+    def dispatch_first() -> dict[str, int]:
+        with Session(postgres_engine) as session:
+            result = settlement_alerts.dispatch_customer_settlement_alerts(
+                session,
+                webhook_url="https://example.invalid/rest/1/token",
+                task_id="2883",
+                now=BASE_TIME,
+            )
+            session.commit()
+            return result
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_future = executor.submit(dispatch_first)
+        assert started.wait(timeout=5)
+        try:
+            with Session(postgres_engine) as session:
+                second = settlement_alerts.dispatch_customer_settlement_alerts(
+                    session,
+                    webhook_url="https://example.invalid/rest/1/token",
+                    task_id="2883",
+                    now=BASE_TIME,
+                )
+                session.commit()
+            assert second == {"processed": 0, "sent": 0, "failed": 0}
+        finally:
+            release.set()
+        first = first_future.result(timeout=10)
+
+    assert first == {"processed": 1, "sent": 1, "failed": 0}
+
+
 def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> None:
     old_time = BASE_TIME - timedelta(days=40)
     with Session(postgres_engine) as session:
@@ -299,6 +383,32 @@ def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> No
                 consumed_at=old_time,
             )
         )
+        session.add_all(
+            [
+                CustomerSettlementReconciliationRun(
+                    report_date=date(2026, 6, 20),
+                    as_of=old_time,
+                    report_hash="d" * 64,
+                    status="matched",
+                    expected_count=1,
+                    matched_count=1,
+                    mismatch_count=0,
+                    max_abs_difference="0.00",
+                    created_at=old_time,
+                ),
+                CustomerSettlementAlertOutbox(
+                    event_key="postgres-retention-alert",
+                    status="sent",
+                    severity="warning",
+                    message="synthetic safe alert",
+                    attempt_count=1,
+                    next_attempt_at=old_time,
+                    sent_at=old_time,
+                    created_at=old_time,
+                    updated_at=old_time,
+                ),
+            ]
+        )
         session.commit()
         active_id = active_revision.id
 
@@ -318,3 +428,5 @@ def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> No
         assert active.status == "active"
         assert result["financial_revisions"] == 2
         assert result["assertion_jti"] == 1
+        assert result["reconciliation_runs"] == 1
+        assert result["alert_outbox"] == 1

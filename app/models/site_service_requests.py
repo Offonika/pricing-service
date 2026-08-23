@@ -103,6 +103,12 @@ class SiteServiceRequestCase(Base):
         DateTime(timezone=True), nullable=True
     )
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    escalation_timeline_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    escalation_notification_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     latest_inbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latest_outbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -123,6 +129,7 @@ class SiteServiceRequestCase(Base):
     assignment_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    assignment_last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     outbound_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

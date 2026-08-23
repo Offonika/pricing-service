@@ -58,6 +58,7 @@ class FakeBitrixApi:
         self.items: dict[int, dict] = {}
         self.raise_after_item_add = False
         self.disk_files: dict[str, dict] = {}
+        self.timeline_comments: list[dict[str, str]] = []
         self.users: dict[int, dict] = {
             1001: {"ID": "1001", "ACTIVE": "Y", "NAME": "Анна", "LAST_NAME": "Гиря"},
             1002: {"ID": "1002", "ACTIVE": "Y", "NAME": "Ариф", "LAST_NAME": "Рахманов"},
@@ -119,7 +120,23 @@ class FakeBitrixApi:
             item = self.disk_files.get(str(name))
             return {"result": [item] if item else []}
         if method == "crm.timeline.comment.add":
+            self.timeline_comments.append(
+                {
+                    "ENTITY_TYPE_ID": str(mapped["fields[ENTITY_TYPE_ID]"]),
+                    "ENTITY_ID": str(mapped["fields[ENTITY_ID]"]),
+                    "COMMENT": str(mapped["fields[COMMENT]"]),
+                }
+            )
             return {"result": 1}
+        if method == "crm.timeline.comment.list":
+            return {
+                "result": [
+                    row
+                    for row in self.timeline_comments
+                    if row["ENTITY_TYPE_ID"] == mapped["filter[ENTITY_TYPE_ID]"]
+                    and row["ENTITY_ID"] == mapped["filter[ENTITY_ID]"]
+                ]
+            }
         if method == "im.notify.personal.add":
             return {"result": 1}
         if method == "timeman.status":
@@ -735,6 +752,45 @@ def test_outbound_command_creation_encrypts_text_and_deduplicates(db_session) ->
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
 
 
+def test_outbound_command_recovers_from_concurrent_unique_insert(
+    db_session,
+    monkeypatch,
+) -> None:
+    cipher = _persist_event(db_session)
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    existing, duplicate = create_site_service_request_command(
+        db_session,
+        case=case,
+        reply_text="Параллельный ответ",
+        cipher=cipher,
+    )
+    assert duplicate is False
+    db_session.commit()
+
+    original_scalar = db_session.scalar
+    first_lookup = True
+
+    def miss_first_command_lookup(statement, *args, **kwargs):
+        nonlocal first_lookup
+        if first_lookup and "site_service_request_command.command_key" in str(statement):
+            first_lookup = False
+            return None
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", miss_first_command_lookup)
+    recovered, duplicate = create_site_service_request_command(
+        db_session,
+        case=case,
+        reply_text="Параллельный ответ",
+        cipher=cipher,
+    )
+
+    assert duplicate is True
+    assert recovered.id == existing.id
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+
+
 def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     db_session,
     tmp_path,
@@ -933,6 +989,43 @@ def test_outbound_command_is_durable_before_card_action_clear(db_session) -> Non
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     db_session.refresh(command)
     assert command.card_action_cleared_at is not None
+
+
+def test_outbound_clear_readback_requires_action_field_presence(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class MissingActionReadbackApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Ответ из карточки",
+            }
+            self.clear_attempted = False
+
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.update":
+                self.clear_attempted = True
+            if method == "crm.item.get" and self.clear_attempted:
+                response["result"]["item"].pop("ufSiteReplyAction", None)
+            return response
+
+    api = MissingActionReadbackApi()
+    with pytest.raises(RuntimeError, match="bitrix_reply_status_readback_failed"):
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+            writer=SiteServiceRequestBitrixWriter(api),
+            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        )
+
+    db_session.rollback()
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert command is not None
+    assert command.card_action_cleared_at is None
 
 
 def test_outbound_scan_rotates_past_the_first_batch(db_session) -> None:
@@ -1424,6 +1517,94 @@ def test_assignment_scan_rotates_past_the_first_batch(db_session) -> None:
     assert last_case is not None and last_case.assignment_checked_at is not None
 
 
+def test_assignment_failure_is_recorded_and_does_not_starve_next_case(db_session) -> None:
+    first = _case(source_ticket_id=1, bitrix_item_id=1001)
+    second = _case(source_ticket_id=2, bitrix_item_id=1002)
+    db_session.add_all([first, second])
+    db_session.commit()
+
+    class FirstCardFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items = {
+                1001: {"stageId": "DT1134_55:NEW"},
+                1002: {"stageId": "DT1134_55:NEW"},
+            }
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            if method == "crm.item.get" and mapped.get("id") == "1001":
+                raise RuntimeError("poison card")
+            return super().call(method, params, **kwargs)
+
+    api = FirstCardFailureApi()
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        limit=2,
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(first)
+    db_session.refresh(second)
+    assert results[0]["errorCode"] == "assignment_reconcile_failed"
+    assert results[1]["caseId"] == second.id
+    assert first.assignment_checked_at is not None
+    assert first.assignment_last_error_code == "assignment_reconcile_failed"
+    assert second.assignment_checked_at is not None
+    assert second.assignment_last_error_code is None
+
+
+def test_escalation_recovers_after_notification_failure_without_duplicate_timeline(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    case.first_response_due_at = datetime(2026, 8, 23, 7, 0, tzinfo=UTC)
+    db_session.add(case)
+    db_session.commit()
+
+    class NotificationFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {"stageId": "DT1134_55:NEW"}
+            self.fail_notification = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "im.notify.personal.add" and self.fail_notification:
+                self.fail_notification = False
+                self.calls.append((method, list(params or [])))
+                raise RuntimeError("notification timeout")
+            return super().call(method, params, **kwargs)
+
+    api = NotificationFailureApi()
+    settings = _worker_settings()
+    writer = SiteServiceRequestBitrixWriter(api)
+    first = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=writer,
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+    second = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=writer,
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert first[0]["errorCode"] == "assignment_reconcile_failed"
+    assert second[0]["escalated"] is False
+    assert len(api.timeline_comments) == 1
+    assert [method for method, _params in api.calls].count("im.notify.personal.add") == 2
+    assert case.escalation_timeline_delivered_at is not None
+    assert case.escalation_notification_delivered_at is not None
+
+
 def test_hidden_support_note_does_not_close_first_response_sla(db_session) -> None:
     cipher = _persist_event(db_session)
     api = FakeBitrixApi()
@@ -1530,3 +1711,66 @@ def test_worker_clears_stale_deal_and_order_reference_with_readback(db_session) 
 
     assert api.items[int(case.bitrix_item_id)]["ufCrm36Crmdeal"] == ""
     assert api.items[int(case.bitrix_item_id)]["ufCrm36Orderrefs"] == ""
+
+
+def test_worker_rejects_missing_deal_and_order_fields_during_clear_readback(
+    db_session,
+) -> None:
+    cipher = _persist_event(db_session)
+
+    class MissingLinkReadbackApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.omit_link_fields = False
+
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get" and self.omit_link_fields:
+                response["result"]["item"].pop("ufCrm36Crmdeal", None)
+                response["result"]["item"].pop("ufCrm36Orderrefs", None)
+            return response
+
+    api = MissingLinkReadbackApi()
+    settings = _worker_settings()
+    reader = SiteServiceRequestBitrixReader(api)
+    initial = build_site_service_request_worker_plans(
+        db_session, settings=settings, reader=reader, cipher=cipher
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=initial,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    payload = _event_payload()
+    payload["eventId"] = "site-support:741:1301"
+    payload["eventType"] = "ticket.updated"
+    payload["ticket"]["orderNumber"] = None
+    payload["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T11:00:00+03:00",
+            "text": "Заказ не относится к обращению",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, payload, cipher)
+    api.omit_link_fields = True
+    plans = build_site_service_request_worker_plans(
+        db_session, settings=settings, reader=reader, cipher=cipher
+    )
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert results[0].status == "retry"
+    assert results[0].error_code == "bitrix_unavailable"

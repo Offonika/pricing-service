@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -28,6 +29,7 @@ from app.services.site_service_requests import (
 )
 
 _RETRY_DELAYS_SECONDS = (60, 120, 300, 900, 1800)
+_MISSING_ITEM_FIELD = object()
 _DEFAULT_FIELD_MAP = {
     "source": "UF_CRM_36_SOURCE",
     "customer_contact": "UF_CRM_36_CUSTOMERCONTACT",
@@ -370,6 +372,30 @@ class SiteServiceRequestBitrixWriter:
                 ("fields[ENTITY_ID]", str(item_id)),
                 ("fields[COMMENT]", comment),
             ],
+        )
+
+    def timeline_comment_exists(
+        self,
+        *,
+        entity_type_id: int,
+        item_id: int,
+        marker: str,
+    ) -> bool:
+        response = self.api.call(
+            "crm.timeline.comment.list",
+            [
+                ("filter[ENTITY_TYPE_ID]", str(entity_type_id)),
+                ("filter[ENTITY_ID]", str(item_id)),
+                ("order[ID]", "DESC"),
+            ],
+        )
+        result = response.get("result") or []
+        if isinstance(result, dict):
+            result = result.get("items") or result.get("comments") or []
+        return any(
+            marker in str(row.get("COMMENT") or row.get("comment") or "")
+            for row in result
+            if isinstance(row, dict)
         )
 
     def notify_user(self, *, user_id: int, message: str) -> None:
@@ -908,6 +934,23 @@ def apply_site_service_request_worker_plans(
                 now=current_time,
             )
             session.commit()
+            if result.bitrix_item_id is not None:
+                delivered_case_id = session.scalar(
+                    select(SiteServiceRequestCase.id).where(
+                        SiteServiceRequestCase.bitrix_item_id == result.bitrix_item_id
+                    )
+                )
+                if delivered_case_id is not None:
+                    try:
+                        _deliver_site_service_request_escalation(
+                            session,
+                            case_id=delivered_case_id,
+                            settings=settings,
+                            writer=writer,
+                            now=current_time,
+                        )
+                    except RuntimeError:
+                        session.rollback()
         except SiteServiceRequestPermanentError as exc:
             session.rollback()
             result = _record_site_service_request_failure(
@@ -1003,9 +1046,20 @@ def create_site_service_request_command(
         created_at=current_time,
         updated_at=current_time,
     )
-    session.add(command)
-    session.flush()
-    return command, False
+    try:
+        with session.begin_nested():
+            session.add(command)
+            session.flush()
+        return command, False
+    except IntegrityError:
+        existing = session.scalar(
+            select(SiteServiceRequestCommand).where(
+                SiteServiceRequestCommand.command_key == command_key
+            )
+        )
+        if existing is None:
+            raise
+        return existing, True
 
 
 def sync_staged_site_service_request_files(
@@ -1223,19 +1277,30 @@ def collect_site_service_request_outbound_commands(
             "site service request outbound enum mapping is incomplete"
         )
 
-    cases = session.scalars(
-        select(SiteServiceRequestCase)
-        .where(SiteServiceRequestCase.bitrix_item_id.is_not(None))
-        .order_by(
-            SiteServiceRequestCase.outbound_checked_at.asc().nulls_first(),
-            SiteServiceRequestCase.id,
-        )
-        .limit(limit or settings.site_service_requests_worker_batch_size)
-    ).all()
+    batch_limit = limit or settings.site_service_requests_worker_batch_size
+    processed_case_ids: set[int] = set()
     results: list[dict[str, Any]] = []
-    for case in cases:
-        case.outbound_checked_at = _as_utc(now or datetime.now(UTC))
-        session.commit()
+    while len(processed_case_ids) < batch_limit:
+        _lock_site_service_request_outbound_sequence(session)
+        query = select(SiteServiceRequestCase).where(
+            SiteServiceRequestCase.bitrix_item_id.is_not(None)
+        )
+        if processed_case_ids:
+            query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
+        case = session.scalar(
+            query.order_by(
+                SiteServiceRequestCase.outbound_checked_at.asc().nulls_first(),
+                SiteServiceRequestCase.id,
+            )
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        if case is None:
+            session.rollback()
+            break
+        processed_case_ids.add(case.id)
+        current_time = _as_utc(now or datetime.now(UTC))
+        case.outbound_checked_at = current_time
         item = writer.get_item(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
             item_id=int(case.bitrix_item_id),
@@ -1278,7 +1343,7 @@ def collect_site_service_request_outbound_commands(
                 },
             )
             if (
-                str(_item_field_value(updated_item, field_map["site_reply_action"]) or "")
+                not _item_field_is_cleared(updated_item, field_map["site_reply_action"])
                 or str(_item_field_value(updated_item, field_map["site_reply_status"]) or "")
                 != error_value
             ):
@@ -1291,14 +1356,17 @@ def collect_site_service_request_outbound_commands(
                     "duplicate": True,
                 }
             )
+            session.commit()
             continue
         duplicate = uncleared_command is not None
         command = uncleared_command
         if command is None:
             if str(action or "") != send_value:
+                session.commit()
                 continue
             reply_text = str(_item_field_value(item, field_map["site_reply_text"]) or "").strip()
             if not reply_text:
+                session.commit()
                 continue
             command, duplicate = create_site_service_request_command(
                 session,
@@ -1310,6 +1378,24 @@ def collect_site_service_request_outbound_commands(
             # The local command is the durable hand-off. Never clear SEND before
             # this commit succeeds.
             session.commit()
+            _lock_site_service_request_outbound_sequence(session)
+            locked_case = session.scalar(
+                select(SiteServiceRequestCase)
+                .where(SiteServiceRequestCase.id == case.id)
+                .with_for_update()
+            )
+            if locked_case is None:
+                session.rollback()
+                continue
+            case = locked_case
+            command = session.scalar(
+                select(SiteServiceRequestCommand)
+                .where(SiteServiceRequestCommand.id == command.id)
+                .with_for_update()
+            )
+            if command is None:
+                session.rollback()
+                continue
 
         assert command is not None
         reply_status = {
@@ -1330,12 +1416,12 @@ def collect_site_service_request_outbound_commands(
             fields=update_fields,
         )
         if (
-            str(_item_field_value(updated_item, field_map["site_reply_action"]) or "")
+            not _item_field_is_cleared(updated_item, field_map["site_reply_action"])
             or str(_item_field_value(updated_item, field_map["site_reply_status"]) or "")
             != reply_status
         ):
             raise RuntimeError("bitrix_reply_status_readback_failed")
-        command.card_action_cleared_at = _as_utc(now or datetime.now(UTC))
+        command.card_action_cleared_at = current_time
         session.commit()
         results.append(
             {
@@ -1346,6 +1432,57 @@ def collect_site_service_request_outbound_commands(
             }
         )
     return results
+
+
+def _deliver_site_service_request_escalation(
+    session: Session,
+    *,
+    case_id: int,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime,
+) -> None:
+    _lock_site_service_request_assignment_sequence(session)
+    case = session.scalar(
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.id == case_id).with_for_update()
+    )
+    if case is None or case.escalated_at is None or case.bitrix_item_id is None:
+        session.commit()
+        return
+    marker = f"[site-service-escalation:{case.id}]"
+    if case.escalation_timeline_delivered_at is None:
+        if not writer.timeline_comment_exists(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=int(case.bitrix_item_id),
+            marker=marker,
+        ):
+            writer.add_timeline_comment(
+                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                comment=(
+                    "SLA первого ответа просрочен. Ответственность передана резерву. " f"{marker}"
+                ),
+            )
+        if not writer.timeline_comment_exists(
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            item_id=int(case.bitrix_item_id),
+            marker=marker,
+        ):
+            raise RuntimeError("bitrix_escalation_timeline_readback_failed")
+        case.escalation_timeline_delivered_at = now
+    if (
+        settings.site_service_requests_escalation_user_id is not None
+        and case.escalation_notification_delivered_at is None
+    ):
+        writer.notify_user(
+            user_id=settings.site_service_requests_escalation_user_id,
+            message=(
+                "Просрочен SLA первого ответа по сервисному обращению "
+                f"сайта #{case.source_ticket_id}."
+            ),
+        )
+        case.escalation_notification_delivered_at = now
+    session.commit()
 
 
 def reconcile_site_service_request_assignments(
@@ -1359,7 +1496,6 @@ def reconcile_site_service_request_assignments(
 ) -> list[dict[str, Any]]:
     if not settings.site_service_requests_bitrix_writes_enabled:
         return []
-    _lock_site_service_request_assignment_sequence(session)
     field_map = resolved_site_service_request_field_map(settings)
     success_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("success") or "")
     failure_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("failure") or "")
@@ -1367,139 +1503,163 @@ def reconcile_site_service_request_assignments(
     fallback_open_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("new") or "")
     current_time = _as_utc(now or datetime.now(UTC))
     statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
-    cases = session.scalars(
-        select(SiteServiceRequestCase)
-        .where(
+    batch_limit = limit or settings.site_service_requests_worker_batch_size
+    processed_case_ids: set[int] = set()
+    results: list[dict[str, Any]] = []
+    while len(processed_case_ids) < batch_limit:
+        _lock_site_service_request_assignment_sequence(session)
+        query = select(SiteServiceRequestCase).where(
             SiteServiceRequestCase.bitrix_item_id.is_not(None),
             SiteServiceRequestCase.first_response_at.is_(None),
         )
-        .order_by(
-            SiteServiceRequestCase.assignment_checked_at.asc().nulls_first(),
-            SiteServiceRequestCase.id,
-        )
-        .limit(limit or settings.site_service_requests_worker_batch_size)
-        .with_for_update(skip_locked=True)
-    ).all()
-    last_assignment = session.scalar(
-        select(SiteServiceRequestCase)
-        .where(SiteServiceRequestCase.assigned_user_id.is_not(None))
-        .order_by(SiteServiceRequestCase.round_robin_seq.desc())
-        .limit(1)
-    )
-    max_sequence = int(
-        session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0
-    )
-    virtual_last_assigned_user_id = (
-        last_assignment.assigned_user_id if last_assignment is not None else None
-    )
-    next_round_robin_seq = max_sequence + 1
-    results: list[dict[str, Any]] = []
-    for case in cases:
-        was_escalated = case.escalated_at is not None
-        previous_assigned_user_id = case.assigned_user_id
-        item = writer.get_item(
-            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-            item_id=int(case.bitrix_item_id),
-        )
-        current_stage_id = str(_item_field_value(item, "stageId") or "")
-        close_reverted = False
-        if current_stage_id and current_stage_id not in closed_stage_ids:
-            case.last_open_stage_id = current_stage_id
-        decision = decide_site_service_assignment(
-            case=case,
-            configured_user_ids=settings.site_service_requests_first_line_user_ids,
-            timeman_statuses=statuses,
-            last_assigned_user_id=virtual_last_assigned_user_id,
-            next_round_robin_seq=next_round_robin_seq,
-            escalation_user_id=settings.site_service_requests_escalation_user_id,
-            first_response_hours=settings.site_service_requests_first_response_hours,
-            timezone_name=settings.site_service_requests_timezone,
-            allow_reassignment=current_stage_id == fallback_open_stage_id,
-            now=current_time,
-        )
-        if previous_assigned_user_id != decision.assigned_user_id:
-            virtual_last_assigned_user_id = decision.assigned_user_id
-            next_round_robin_seq += 1
-        case.assigned_user_id = decision.assigned_user_id
-        case.assignment_state = decision.state
-        case.intake_mode = decision.intake_mode
-        case.first_response_due_at = decision.first_response_due_at
-        case.sla_paused_at = decision.sla_paused_at
-        case.escalated_at = decision.escalated_at
-        case.round_robin_seq = decision.round_robin_seq
-        case.assignment_checked_at = current_time
-        _apply_assignment_base_status(case, assignment_state=decision.state)
-        case.updated_at = current_time
-        fields: dict[str, Any] = {
-            field_map["first_response_due_at"]: decision.first_response_due_at,
-        }
-        if case.sync_status in {
-            "synced",
-            "client_match_required",
-            "order_match_required",
-            "order_not_found",
-            "file_sync_error",
-            "assignment_waiting",
-        }:
-            fields[field_map["site_sync_status"]] = _site_service_request_enum_value(
-                settings,
-                f"sync_status_{case.sync_status}",
+        if processed_case_ids:
+            query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
+        case = session.scalar(
+            query.order_by(
+                SiteServiceRequestCase.assignment_checked_at.asc().nulls_first(),
+                SiteServiceRequestCase.id,
             )
-            fields[field_map["site_sync_error"]] = case.last_error_code
-        if current_stage_id in closed_stage_ids:
-            return_stage_id = case.last_open_stage_id or fallback_open_stage_id
-            if return_stage_id:
-                fields["stageId"] = return_stage_id
-                close_reverted = True
-        if decision.assigned_user_id is not None:
-            fields["assignedById"] = decision.assigned_user_id
-        updated_item = writer.update_item_fields(
-            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-            item_id=int(case.bitrix_item_id),
-            fields=fields,
+            .limit(1)
+            .with_for_update(skip_locked=True)
         )
-        if close_reverted and str(_item_field_value(updated_item, "stageId") or "") != str(
-            fields["stageId"]
-        ):
-            raise RuntimeError("bitrix_close_gate_readback_failed")
-        if (
-            decision.assigned_user_id is not None
-            and _positive_int(_item_field_value(updated_item, "assignedById"))
-            != decision.assigned_user_id
-        ):
-            raise RuntimeError("bitrix_assignment_readback_failed")
-        if field_map["site_sync_status"] in fields:
-            expected_sync_status = str(fields[field_map["site_sync_status"]])
-            if str(_item_field_value(updated_item, field_map["site_sync_status"]) or "") != (
-                expected_sync_status
-            ):
-                raise RuntimeError("bitrix_assignment_status_readback_failed")
-        escalated_now = not was_escalated and decision.escalated_at is not None
-        if escalated_now:
-            writer.add_timeline_comment(
+        if case is None:
+            session.rollback()
+            break
+        case_id = case.id
+        processed_case_ids.add(case_id)
+        try:
+            last_assignment = session.scalar(
+                select(SiteServiceRequestCase)
+                .where(
+                    SiteServiceRequestCase.assigned_user_id.is_not(None),
+                    SiteServiceRequestCase.id != case.id,
+                )
+                .order_by(SiteServiceRequestCase.round_robin_seq.desc())
+                .limit(1)
+            )
+            next_round_robin_seq = (
+                int(session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0)
+                + 1
+            )
+            was_escalated = case.escalated_at is not None
+            item = writer.get_item(
                 entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
                 item_id=int(case.bitrix_item_id),
-                comment="SLA первого ответа просрочен. Ответственность передана резерву.",
             )
-            if settings.site_service_requests_escalation_user_id is not None:
-                writer.notify_user(
-                    user_id=settings.site_service_requests_escalation_user_id,
-                    message=(
-                        "Просрочен SLA первого ответа по сервисному обращению "
-                        f"сайта #{case.source_ticket_id}."
-                    ),
-                )
-        results.append(
-            {
-                "caseId": case.id,
-                "ticketId": case.source_ticket_id,
-                "assignmentState": decision.state,
-                "assignedUserId": decision.assigned_user_id,
-                "escalated": escalated_now,
-                "closeReverted": close_reverted,
+            current_stage_id = str(_item_field_value(item, "stageId") or "")
+            if current_stage_id and current_stage_id not in closed_stage_ids:
+                case.last_open_stage_id = current_stage_id
+            decision = decide_site_service_assignment(
+                case=case,
+                configured_user_ids=settings.site_service_requests_first_line_user_ids,
+                timeman_statuses=statuses,
+                last_assigned_user_id=(
+                    last_assignment.assigned_user_id if last_assignment is not None else None
+                ),
+                next_round_robin_seq=next_round_robin_seq,
+                escalation_user_id=settings.site_service_requests_escalation_user_id,
+                first_response_hours=settings.site_service_requests_first_response_hours,
+                timezone_name=settings.site_service_requests_timezone,
+                allow_reassignment=current_stage_id == fallback_open_stage_id,
+                now=current_time,
+            )
+            case.assigned_user_id = decision.assigned_user_id
+            case.assignment_state = decision.state
+            case.intake_mode = decision.intake_mode
+            case.first_response_due_at = decision.first_response_due_at
+            case.sla_paused_at = decision.sla_paused_at
+            case.escalated_at = decision.escalated_at
+            case.round_robin_seq = decision.round_robin_seq
+            case.assignment_checked_at = current_time
+            case.assignment_last_error_code = None
+            _apply_assignment_base_status(case, assignment_state=decision.state)
+            case.updated_at = current_time
+            close_reverted = False
+            fields: dict[str, Any] = {
+                field_map["first_response_due_at"]: decision.first_response_due_at,
             }
-        )
-        session.commit()
+            if case.sync_status in {
+                "synced",
+                "client_match_required",
+                "order_match_required",
+                "order_not_found",
+                "file_sync_error",
+                "assignment_waiting",
+            }:
+                fields[field_map["site_sync_status"]] = _site_service_request_enum_value(
+                    settings, f"sync_status_{case.sync_status}"
+                )
+                fields[field_map["site_sync_error"]] = case.last_error_code
+            if current_stage_id in closed_stage_ids:
+                return_stage_id = case.last_open_stage_id or fallback_open_stage_id
+                if return_stage_id:
+                    fields["stageId"] = return_stage_id
+                    close_reverted = True
+            if decision.assigned_user_id is not None:
+                fields["assignedById"] = decision.assigned_user_id
+            escalated_now = not was_escalated and decision.escalated_at is not None
+            ticket_id = case.source_ticket_id
+            bitrix_item_id = int(case.bitrix_item_id)
+            session.commit()
+
+            updated_item = writer.update_item_fields(
+                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                item_id=bitrix_item_id,
+                fields=fields,
+            )
+            if close_reverted and str(_item_field_value(updated_item, "stageId") or "") != str(
+                fields["stageId"]
+            ):
+                raise RuntimeError("bitrix_close_gate_readback_failed")
+            if (
+                decision.assigned_user_id is not None
+                and _positive_int(_item_field_value(updated_item, "assignedById"))
+                != decision.assigned_user_id
+            ):
+                raise RuntimeError("bitrix_assignment_readback_failed")
+            if field_map["site_sync_status"] in fields:
+                expected_sync_status = str(fields[field_map["site_sync_status"]])
+                if (
+                    str(_item_field_value(updated_item, field_map["site_sync_status"]) or "")
+                    != expected_sync_status
+                ):
+                    raise RuntimeError("bitrix_assignment_status_readback_failed")
+            _deliver_site_service_request_escalation(
+                session,
+                case_id=case_id,
+                settings=settings,
+                writer=writer,
+                now=current_time,
+            )
+            results.append(
+                {
+                    "caseId": case_id,
+                    "ticketId": ticket_id,
+                    "assignmentState": decision.state,
+                    "assignedUserId": decision.assigned_user_id,
+                    "escalated": escalated_now,
+                    "closeReverted": close_reverted,
+                }
+            )
+        except RuntimeError:
+            session.rollback()
+            failed_case = session.get(SiteServiceRequestCase, case_id)
+            if failed_case is not None:
+                failed_case.assignment_checked_at = current_time
+                failed_case.assignment_last_error_code = "assignment_reconcile_failed"
+                failed_case.updated_at = current_time
+                session.commit()
+                results.append(
+                    {
+                        "caseId": failed_case.id,
+                        "ticketId": failed_case.source_ticket_id,
+                        "assignmentState": failed_case.assignment_state,
+                        "assignedUserId": failed_case.assigned_user_id,
+                        "escalated": False,
+                        "closeReverted": False,
+                        "errorCode": "assignment_reconcile_failed",
+                    }
+                )
     return results
 
 
@@ -1589,7 +1749,6 @@ def _apply_site_service_request_worker_plan(
         session.scalar(select(func.max(SiteServiceRequestCase.round_robin_seq))) or 0
     )
     timeman_statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
-    was_escalated = case.escalated_at is not None
     current_stage_id = stage_id
     if case.bitrix_item_id is not None:
         current_item = writer.get_item(
@@ -1669,13 +1828,12 @@ def _apply_site_service_request_worker_plan(
         raise RuntimeError("bitrix_first_response_readback_failed")
     for clearable_field in (field_map["crm_deal"], field_map["order_refs"]):
         expected_value = fields.get(clearable_field)
-        actual_value = _item_field_value(readback_item, clearable_field)
-        if expected_value is None and actual_value not in (None, "", [], {}):
+        if expected_value is None and not _item_field_is_cleared(readback_item, clearable_field):
             raise RuntimeError("bitrix_order_link_clear_readback_failed")
     if confirmed_outbound_reply:
         sent_value = _site_service_request_enum_value(settings, "reply_status_sent")
         if (
-            str(_item_field_value(readback_item, field_map["site_reply_action"]) or "")
+            not _item_field_is_cleared(readback_item, field_map["site_reply_action"])
             or str(_item_field_value(readback_item, field_map["site_reply_status"]) or "")
             != sent_value
         ):
@@ -1695,21 +1853,6 @@ def _apply_site_service_request_worker_plan(
     event.processed_at = now
     event.updated_at = now
     event.payload_encrypted = None
-    escalated_now = not was_escalated and assignment.escalated_at is not None
-    if escalated_now:
-        writer.add_timeline_comment(
-            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-            item_id=item_id,
-            comment="SLA первого ответа просрочен. Ответственность передана резерву.",
-        )
-        if settings.site_service_requests_escalation_user_id is not None:
-            writer.notify_user(
-                user_id=settings.site_service_requests_escalation_user_id,
-                message=(
-                    "Просрочен SLA первого ответа по сервисному обращению "
-                    f"сайта #{case.source_ticket_id}."
-                ),
-            )
     session.flush()
     return SiteServiceRequestWorkerResult(
         event_id=event.event_id,
@@ -2063,12 +2206,22 @@ def _disk_file_from_payload(payload: dict[str, Any]) -> tuple[str, str | None] |
     return str(file_id), str(url) if url else None
 
 
-def _item_field_value(item: dict[str, Any], field_name: str) -> Any:
+def _item_field_value(
+    item: dict[str, Any],
+    field_name: str,
+    *,
+    default: Any = None,
+) -> Any:
     expected = _normalized_field_key(field_name)
     for key, value in item.items():
         if _normalized_field_key(str(key)) == expected:
             return value
-    return None
+    return default
+
+
+def _item_field_is_cleared(item: dict[str, Any], field_name: str) -> bool:
+    value = _item_field_value(item, field_name, default=_MISSING_ITEM_FIELD)
+    return value is not _MISSING_ITEM_FIELD and value in (None, "", 0, "0", [], {})
 
 
 def _item_field_contains(item: dict[str, Any], field_name: str, expected_id: str) -> bool:
@@ -2122,6 +2275,15 @@ def _lock_site_service_request_assignment_sequence(session: Session) -> None:
         session.execute(
             text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": 3_223_001_134},
+        )
+
+
+def _lock_site_service_request_outbound_sequence(session: Session) -> None:
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": 3_223_001_135},
         )
 
 

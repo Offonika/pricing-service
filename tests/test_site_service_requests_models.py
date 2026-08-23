@@ -57,6 +57,18 @@ def _load_hardening_migration():
     return migration
 
 
+def _load_delivery_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/5f7a9c1e3b24_harden_site_service_request_delivery.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_delivery", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -244,4 +256,72 @@ def test_hardening_migration_backfills_status_and_is_reversible(tmp_path: Path) 
         assert "base_sync_status" not in case_columns
 
     assert hardening_migration.down_revision == "3d5e7f901b34"
+    engine.dispose()
+
+
+def test_delivery_migration_backfills_command_marker_and_is_reversible(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-delivery.db'}")
+    base_migration = _load_migration()
+    open_stage_migration = _load_open_stage_migration()
+    hardening_migration = _load_hardening_migration()
+    delivery_migration = _load_delivery_migration()
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in (
+            base_migration,
+            open_stage_migration,
+            hardening_migration,
+            delivery_migration,
+        ):
+            migration.op = operations
+        base_migration.upgrade()
+        open_stage_migration.upgrade()
+        hardening_migration.upgrade()
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_case "
+            "(source_ticket_id, assignment_state, round_robin_seq, first_seen_at, "
+            "escalated_at, sync_status, base_sync_status, version, created_at, updated_at) VALUES "
+            "(741, 'escalated', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+            "'synced', 'synced', 1, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_command "
+            "(case_id, command_key, reply_encrypted, reply_sha256, status, attempts, "
+            "created_at, updated_at) VALUES "
+            "(1, 'site-support-reply:741:test', X'01', 'abc', 'pending', 0, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+
+        delivery_migration.upgrade()
+
+        marker = connection.exec_driver_sql(
+            "SELECT card_action_cleared_at FROM site_service_request_command"
+        ).scalar_one()
+        assert marker is not None
+        escalation_markers = connection.exec_driver_sql(
+            "SELECT escalation_timeline_delivered_at, "
+            "escalation_notification_delivered_at FROM site_service_request_case"
+        ).one()
+        assert escalation_markers[0] is not None
+        assert escalation_markers[1] is not None
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert {
+            "assignment_last_error_code",
+            "escalation_timeline_delivered_at",
+            "escalation_notification_delivered_at",
+        } <= columns
+
+        delivery_migration.downgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "escalation_timeline_delivered_at" not in columns
+
+    assert delivery_migration.down_revision == "4e6f80912c45"
     engine.dispose()

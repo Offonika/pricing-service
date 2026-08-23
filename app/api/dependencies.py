@@ -196,28 +196,45 @@ class SiteServiceRequestBodyLimitMiddleware:
                 )(scope, receive, send)
                 return
 
-        received = 0
-
-        async def limited_receive():
-            nonlocal received
+        buffered = bytearray()
+        while True:
             message = await receive()
-            if message.get("type") == "http.request":
-                received += len(message.get("body") or b"")
-                if received > limit:
-                    raise _SiteServiceRequestBodyTooLarge
-            return message
+            if message.get("type") != "http.request":
+                await self.app(scope, _single_message_receive(message, receive), send)
+                return
+            chunk = message.get("body") or b""
+            remaining = limit + 1 - len(buffered)
+            buffered.extend(chunk[:remaining])
+            if len(chunk) > remaining or len(buffered) > limit:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "request_body_too_large"},
+                )(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
 
-        try:
-            await self.app(scope, limited_receive, send)
-        except _SiteServiceRequestBodyTooLarge:
-            await JSONResponse(
-                status_code=413,
-                content={"detail": "request_body_too_large"},
-            )(scope, receive, send)
+        await self.app(
+            scope,
+            _single_message_receive(
+                {"type": "http.request", "body": bytes(buffered), "more_body": False},
+                receive,
+            ),
+            send,
+        )
 
 
-class _SiteServiceRequestBodyTooLarge(Exception):
-    pass
+def _single_message_receive(first_message, receive):
+    delivered = False
+
+    async def replay():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return first_message
+        return await receive()
+
+    return replay
 
 
 def require_management_internal_token(

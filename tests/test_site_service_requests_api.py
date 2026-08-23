@@ -413,6 +413,24 @@ def test_streaming_body_limit_stops_chunked_request_without_content_length() -> 
     assert sent[0]["status"] == 413
 
 
+def test_real_app_returns_413_for_chunked_oversized_json(client) -> None:
+    body = json.dumps(
+        {"padding": "x" * (4 * 1024 * 1024)},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = _signed_headers(method="POST", path=_EVENT_PATH, body=body)
+    headers.pop("Content-Length", None)
+
+    response = client.post(
+        _EVENT_PATH,
+        content=iter((body[: 2 * 1024 * 1024], body[2 * 1024 * 1024 :])),
+        headers=headers,
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "request_body_too_large"}
+
+
 def test_command_ack_api_rejects_body_over_configured_limit_without_reserving_nonce(
     client,
     db_session,

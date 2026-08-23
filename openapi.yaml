@@ -28153,6 +28153,9 @@ components:
             enum:
             - event_lag
             - dead_letter
+            - assignment_failure
+            - outbound_failure
+            - escalation_delivery_pending
           type: array
           title: Alertcodes
         pendingEvents:
@@ -28177,6 +28180,18 @@ components:
           type: integer
           minimum: 0.0
           title: Unlinkedcases
+        assignmentFailures:
+          type: integer
+          minimum: 0.0
+          title: Assignmentfailures
+        outboundFailures:
+          type: integer
+          minimum: 0.0
+          title: Outboundfailures
+        pendingEscalationDeliveries:
+          type: integer
+          minimum: 0.0
+          title: Pendingescalationdeliveries
         lastSuccessfulExchangeAt:
           anyOf:
           - type: string
@@ -28201,6 +28216,9 @@ components:
       - oldestPendingLagSeconds
       - pendingCommands
       - unlinkedCases
+      - assignmentFailures
+      - outboundFailures
+      - pendingEscalationDeliveries
       - lastSuccessfulExchangeAt
       - ingestEnabled
       - bitrixWritesEnabled

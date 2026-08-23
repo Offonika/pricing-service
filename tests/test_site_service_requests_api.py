@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import func, select
 
 from app.api.dependencies import (
@@ -853,6 +854,9 @@ def test_health_contains_only_safe_technical_aggregates(client, db_session) -> N
     assert result["failedEvents"] == 0
     assert result["pendingCommands"] == 0
     assert result["unlinkedCases"] == 1
+    assert result["assignmentFailures"] == 0
+    assert result["outboundFailures"] == 0
+    assert result["pendingEscalationDeliveries"] == 0
     assert result["lastSuccessfulExchangeAt"] is None
     assert result["ingestEnabled"] is True
     rendered = json.dumps(result, ensure_ascii=False)
@@ -893,6 +897,74 @@ def test_health_degrades_with_safe_lag_and_dead_letter_alerts(client, db_session
     assert result["status"] == "degraded"
     assert result["alertCodes"] == ["dead_letter", "event_lag"]
     assert result["failedEvents"] == 1
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "alert_code", "counter_name"),
+    [
+        ("assignment", "assignment_failure", "assignmentFailures"),
+        ("outbound", "outbound_failure", "outboundFailures"),
+        (
+            "escalation",
+            "escalation_delivery_pending",
+            "pendingEscalationDeliveries",
+        ),
+    ],
+)
+def test_health_degrades_for_worker_failure_and_recovers_after_retry(
+    client,
+    db_session,
+    failure_kind: str,
+    alert_code: str,
+    counter_name: str,
+) -> None:
+    settings = _settings(site_service_requests_escalation_user_id=1003)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        if failure_kind == "assignment":
+            case.assignment_last_error_code = "PRIVATE-ASSIGNMENT-DETAIL"
+        elif failure_kind == "outbound":
+            case.outbound_last_error_code = "PRIVATE-OUTBOUND-DETAIL"
+        else:
+            case.escalated_at = datetime.now(UTC)
+        db_session.commit()
+
+        degraded = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+        if failure_kind == "assignment":
+            case.assignment_last_error_code = None
+        elif failure_kind == "outbound":
+            case.outbound_last_error_code = None
+        else:
+            delivered_at = datetime.now(UTC)
+            case.escalation_timeline_delivered_at = delivered_at
+            case.escalation_notification_delivered_at = delivered_at
+        db_session.commit()
+
+        recovered = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    assert degraded.status_code == 200
+    degraded_result = degraded.json()
+    assert degraded_result["status"] == "degraded"
+    assert degraded_result["alertCodes"] == [alert_code]
+    assert degraded_result[counter_name] == 1
+    assert "PRIVATE-" not in degraded.text
+
+    assert recovered.status_code == 200
+    recovered_result = recovered.json()
+    assert recovered_result["status"] == "healthy"
+    assert recovered_result["alertCodes"] == []
+    assert recovered_result["assignmentFailures"] == 0
+    assert recovered_result["outboundFailures"] == 0
+    assert recovered_result["pendingEscalationDeliveries"] == 0
 
 
 def test_validation_error_does_not_echo_customer_payload(client, db_session) -> None:

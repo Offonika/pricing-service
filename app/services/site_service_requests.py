@@ -525,6 +525,31 @@ def build_site_service_request_health(
         SiteServiceRequestCase,
         SiteServiceRequestCase.bitrix_item_id.is_(None),
     )
+    assignment_failures = _count(
+        session,
+        SiteServiceRequestCase,
+        SiteServiceRequestCase.assignment_last_error_code.is_not(None),
+    )
+    outbound_failures = _count(
+        session,
+        SiteServiceRequestCase,
+        SiteServiceRequestCase.outbound_last_error_code.is_not(None),
+    )
+    pending_escalation_predicates = [
+        SiteServiceRequestCase.escalation_timeline_delivered_at.is_(None)
+    ]
+    if settings.site_service_requests_escalation_user_id is not None:
+        pending_escalation_predicates.append(
+            SiteServiceRequestCase.escalation_notification_delivered_at.is_(None)
+        )
+    pending_escalation_deliveries = _count(
+        session,
+        SiteServiceRequestCase,
+        and_(
+            SiteServiceRequestCase.escalated_at.is_not(None),
+            or_(*pending_escalation_predicates),
+        ),
+    )
     last_successful_exchange_at = session.scalar(
         select(func.max(SiteServiceRequestEvent.processed_at)).where(
             SiteServiceRequestEvent.status == "processed"
@@ -545,11 +570,17 @@ def build_site_service_request_health(
         and oldest_pending_lag_seconds >= settings.site_service_requests_health_lag_alert_seconds
     ):
         alert_codes.append("event_lag")
+    if assignment_failures:
+        alert_codes.append("assignment_failure")
+    if outbound_failures:
+        alert_codes.append("outbound_failure")
+    if pending_escalation_deliveries:
+        alert_codes.append("escalation_delivery_pending")
 
-    if not settings.site_service_requests_ingest_enabled:
-        status = "disabled"
-    elif alert_codes:
+    if alert_codes:
         status = "degraded"
+    elif not settings.site_service_requests_ingest_enabled:
+        status = "disabled"
     else:
         status = "healthy"
 
@@ -561,6 +592,9 @@ def build_site_service_request_health(
         "oldest_pending_lag_seconds": oldest_pending_lag_seconds,
         "pending_commands": pending_commands,
         "unlinked_cases": unlinked_cases,
+        "assignment_failures": assignment_failures,
+        "outbound_failures": outbound_failures,
+        "pending_escalation_deliveries": pending_escalation_deliveries,
         "last_successful_exchange_at": (
             _as_utc(last_successful_exchange_at)
             if last_successful_exchange_at is not None

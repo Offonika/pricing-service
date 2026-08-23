@@ -69,6 +69,18 @@ def _load_delivery_migration():
     return migration
 
 
+def _load_outbound_error_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/6a8c0e2f4b35_add_site_request_outbound_error.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_outbound_error", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -324,4 +336,36 @@ def test_delivery_migration_backfills_command_marker_and_is_reversible(tmp_path:
         assert "escalation_timeline_delivered_at" not in columns
 
     assert delivery_migration.down_revision == "4e6f80912c45"
+    engine.dispose()
+
+
+def test_outbound_error_migration_is_reversible(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-outbound-error.db'}")
+    migrations = (
+        _load_migration(),
+        _load_open_stage_migration(),
+        _load_hardening_migration(),
+        _load_delivery_migration(),
+        _load_outbound_error_migration(),
+    )
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in migrations:
+            migration.op = operations
+            migration.upgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "outbound_last_error_code" in columns
+
+        migrations[-1].downgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+        assert "outbound_last_error_code" not in columns
+
+    assert migrations[-1].down_revision == "5f7a9c1e3b24"
     engine.dispose()

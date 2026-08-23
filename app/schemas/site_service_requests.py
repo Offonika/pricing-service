@@ -208,7 +208,15 @@ class SiteServiceRequestHealthResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     status: Literal["healthy", "degraded", "disabled"]
-    alert_codes: list[Literal["event_lag", "dead_letter"]] = Field(alias="alertCodes")
+    alert_codes: list[
+        Literal[
+            "event_lag",
+            "dead_letter",
+            "assignment_failure",
+            "outbound_failure",
+            "escalation_delivery_pending",
+        ]
+    ] = Field(alias="alertCodes")
     pending_events: int = Field(alias="pendingEvents", ge=0)
     failed_events: int = Field(alias="failedEvents", ge=0)
     oldest_pending_lag_seconds: int | None = Field(
@@ -217,6 +225,9 @@ class SiteServiceRequestHealthResponse(BaseModel):
     )
     pending_commands: int = Field(alias="pendingCommands", ge=0)
     unlinked_cases: int = Field(alias="unlinkedCases", ge=0)
+    assignment_failures: int = Field(alias="assignmentFailures", ge=0)
+    outbound_failures: int = Field(alias="outboundFailures", ge=0)
+    pending_escalation_deliveries: int = Field(alias="pendingEscalationDeliveries", ge=0)
     last_successful_exchange_at: datetime | None = Field(
         alias="lastSuccessfulExchangeAt",
     )

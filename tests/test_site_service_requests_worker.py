@@ -59,6 +59,7 @@ class FakeBitrixApi:
         self.raise_after_item_add = False
         self.disk_files: dict[str, dict] = {}
         self.timeline_comments: list[dict[str, str]] = []
+        self.timeline_page_size: int | None = None
         self.users: dict[int, dict] = {
             1001: {"ID": "1001", "ACTIVE": "Y", "NAME": "Анна", "LAST_NAME": "Гиря"},
             1002: {"ID": "1002", "ACTIVE": "Y", "NAME": "Ариф", "LAST_NAME": "Рахманов"},
@@ -122,21 +123,25 @@ class FakeBitrixApi:
         if method == "crm.timeline.comment.add":
             self.timeline_comments.append(
                 {
-                    "ENTITY_TYPE_ID": str(mapped["fields[ENTITY_TYPE_ID]"]),
+                    "ENTITY_TYPE": str(mapped["fields[ENTITY_TYPE]"]),
                     "ENTITY_ID": str(mapped["fields[ENTITY_ID]"]),
                     "COMMENT": str(mapped["fields[COMMENT]"]),
                 }
             )
             return {"result": 1}
         if method == "crm.timeline.comment.list":
-            return {
-                "result": [
-                    row
-                    for row in self.timeline_comments
-                    if row["ENTITY_TYPE_ID"] == mapped["filter[ENTITY_TYPE_ID]"]
-                    and row["ENTITY_ID"] == mapped["filter[ENTITY_ID]"]
-                ]
-            }
+            matching = [
+                row
+                for row in reversed(self.timeline_comments)
+                if row["ENTITY_TYPE"] == mapped["filter[ENTITY_TYPE]"]
+                and row["ENTITY_ID"] == mapped["filter[ENTITY_ID]"]
+            ]
+            start = int(mapped.get("start") or 0)
+            page_size = self.timeline_page_size or max(1, len(matching))
+            response = {"result": matching[start : start + page_size]}
+            if start + page_size < len(matching):
+                response["next"] = start + page_size
+            return response
         if method == "im.notify.personal.add":
             return {"result": 1}
         if method == "timeman.status":
@@ -967,15 +972,15 @@ def test_outbound_command_is_durable_before_card_action_clear(db_session) -> Non
 
     api = FailingClearApi()
     settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
-    with pytest.raises(RuntimeError, match="temporary clear failure"):
-        collect_site_service_request_outbound_commands(
-            db_session,
-            settings=settings,
-            writer=SiteServiceRequestBitrixWriter(api),
-            cipher=cipher,
-        )
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
 
     command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert failed[0]["status"] == "retry"
     assert command is not None
     assert command.card_action_cleared_at is None
     retried = collect_site_service_request_outbound_commands(
@@ -989,6 +994,182 @@ def test_outbound_command_is_durable_before_card_action_clear(db_session) -> Non
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     db_session.refresh(command)
     assert command.card_action_cleared_at is not None
+
+
+def test_outbound_text_changed_after_command_commit_is_preserved_for_next_tick(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class EditBeforeGuardReadApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Первый ответ",
+            }
+            self.get_calls = 0
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get":
+                self.get_calls += 1
+                if self.get_calls == 2:
+                    self.items[1000]["ufSiteReplyText"] = "Исправленный ответ"
+            return super().call(method, params, **kwargs)
+
+    api = EditBeforeGuardReadApi()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    first = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    first_command = db_session.scalar(select(SiteServiceRequestCommand))
+
+    assert first[0]["duplicate"] is False
+    assert first_command is not None and first_command.card_action_cleared_at is not None
+    assert api.items[1000]["ufSiteReplyText"] == "Исправленный ответ"
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+
+    second = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+
+    assert second[0]["duplicate"] is False
+    assert len(commands) == 2
+    assert commands[0].reply_sha256 != commands[1].reply_sha256
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+
+
+def test_outbound_text_changed_during_clear_restores_send(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class EditDuringClearApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Первый ответ",
+            }
+            self.changed_during_clear = False
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            response = super().call(method, params, **kwargs)
+            if (
+                method == "crm.item.update"
+                and mapped.get("fields[ufSiteReplyAction]") == ""
+                and not self.changed_during_clear
+            ):
+                self.changed_during_clear = True
+                self.items[1000]["ufSiteReplyText"] = "Ответ во время очистки"
+            return response
+
+    api = EditDuringClearApi()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    first_command = db_session.scalar(select(SiteServiceRequestCommand))
+
+    assert first_command is not None and first_command.card_action_cleared_at is not None
+    assert api.items[1000]["ufSiteReplyText"] == "Ответ во время очистки"
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+
+    collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 2
+
+
+def test_outbound_restore_timeout_retries_without_losing_changed_text(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class RestoreTimeoutApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Первый ответ",
+            }
+            self.changed_during_clear = False
+            self.fail_restore_once = True
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            if method == "crm.item.update":
+                response = super().call(method, params, **kwargs)
+                action = mapped.get("fields[ufSiteReplyAction]")
+                if action == "" and not self.changed_during_clear:
+                    self.changed_during_clear = True
+                    self.items[1000]["ufSiteReplyText"] = "Сохранённый новый ответ"
+                elif action == "SEND" and self.fail_restore_once:
+                    self.fail_restore_once = False
+                    raise RuntimeError("restore timeout after update")
+                return response
+            return super().call(method, params, **kwargs)
+
+    api = RestoreTimeoutApi()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+
+    assert failed[0]["status"] == "retry"
+    assert command is not None and command.card_action_cleared_at is None
+    assert api.items[1000]["ufSiteReplyText"] == "Сохранённый новый ответ"
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+
+    restored = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    db_session.refresh(command)
+    assert restored[0]["commandId"] == command.id
+    assert command.card_action_cleared_at is not None
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+
+    collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 2
 
 
 def test_outbound_clear_readback_requires_action_field_presence(db_session) -> None:
@@ -1014,16 +1195,15 @@ def test_outbound_clear_readback_requires_action_field_presence(db_session) -> N
             return response
 
     api = MissingActionReadbackApi()
-    with pytest.raises(RuntimeError, match="bitrix_reply_status_readback_failed"):
-        collect_site_service_request_outbound_commands(
-            db_session,
-            settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
-            writer=SiteServiceRequestBitrixWriter(api),
-            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
-        )
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
 
-    db_session.rollback()
     command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert failed[0]["status"] == "retry"
     assert command is not None
     assert command.card_action_cleared_at is None
 
@@ -1086,19 +1266,63 @@ def test_later_outbound_card_failure_cannot_rollback_previous_command(db_session
             return super().call(method, params, **kwargs)
 
     api = SecondCardFailureApi()
-    with pytest.raises(RuntimeError, match="second card unavailable"):
-        collect_site_service_request_outbound_commands(
-            db_session,
-            settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
-            writer=SiteServiceRequestBitrixWriter(api),
-            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
-            limit=2,
-        )
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        limit=2,
+    )
 
     commands = db_session.scalars(select(SiteServiceRequestCommand)).all()
     assert len(commands) == 1
     assert commands[0].case_id == first_case.id
     assert commands[0].card_action_cleared_at is not None
+    assert results[1]["status"] == "retry"
+    db_session.refresh(second_case)
+    assert second_case.outbound_checked_at is not None
+    assert second_case.outbound_last_error_code == "outbound_reconcile_failed"
+
+
+def test_first_outbound_card_failure_does_not_starve_next_case(db_session) -> None:
+    first = _case(source_ticket_id=1, bitrix_item_id=1001)
+    second = _case(source_ticket_id=2, bitrix_item_id=1002)
+    db_session.add_all([first, second])
+    db_session.commit()
+
+    class FirstCardFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items = {
+                1001: {},
+                1002: {
+                    "ufSiteReplyAction": "SEND",
+                    "ufSiteReplyText": "Второй ответ",
+                },
+            }
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            if method == "crm.item.get" and mapped.get("id") == "1001":
+                raise RuntimeError("poison outbound card")
+            return super().call(method, params, **kwargs)
+
+    api = FirstCardFailureApi()
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        limit=2,
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(first)
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+    assert results[0]["status"] == "retry"
+    assert results[1]["ticketId"] == second.source_ticket_id
+    assert first.outbound_last_error_code == "outbound_reconcile_failed"
+    assert command is not None and command.case_id == second.id
 
 
 def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
@@ -1603,6 +1827,116 @@ def test_escalation_recovers_after_notification_failure_without_duplicate_timeli
     assert [method for method, _params in api.calls].count("im.notify.personal.add") == 2
     assert case.escalation_timeline_delivered_at is not None
     assert case.escalation_notification_delivered_at is not None
+
+
+def test_pending_escalation_delivery_retries_after_first_response(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    case.assigned_user_id = 1003
+    case.assignment_state = "escalated"
+    case.escalated_at = datetime(2026, 8, 23, 7, 0, tzinfo=UTC)
+    case.first_response_at = datetime(2026, 8, 23, 7, 30, tzinfo=UTC)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": "DT1134_55:WORK"}
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["deliveryRetried"] is True
+    assert case.escalation_timeline_delivered_at is not None
+    assert case.escalation_notification_delivered_at is not None
+    assert len(api.timeline_comments) == 1
+
+
+def test_timeline_writer_uses_dynamic_entity_type_and_follows_pagination() -> None:
+    api = FakeBitrixApi()
+    api.timeline_page_size = 1
+    api.timeline_comments = [
+        {"ENTITY_TYPE": "dynamic_1134", "ENTITY_ID": "1000", "COMMENT": "marker"},
+        {"ENTITY_TYPE": "dynamic_1134", "ENTITY_ID": "1000", "COMMENT": "newer"},
+    ]
+    writer = SiteServiceRequestBitrixWriter(api)
+
+    assert writer.timeline_comment_exists(
+        entity_type_id=1134,
+        item_id=1000,
+        marker="marker",
+    )
+    writer.add_timeline_comment(
+        entity_type_id=1134,
+        item_id=1000,
+        comment="contract",
+    )
+
+    list_calls = [params for method, params in api.calls if method == "crm.timeline.comment.list"]
+    add_call = next(params for method, params in api.calls if method == "crm.timeline.comment.add")
+    assert dict(list_calls[0])["filter[ENTITY_TYPE]"] == "dynamic_1134"
+    assert dict(list_calls[1])["start"] == "1"
+    assert dict(add_call)["fields[ENTITY_TYPE]"] == "dynamic_1134"
+
+
+def test_timeline_writer_follows_nested_result_next() -> None:
+    class NestedNextApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.timeline.comment.list":
+                values = list(params or [])
+                self.calls.append((method, values))
+                start = int(dict(values).get("start") or 0)
+                if start == 0:
+                    return {"result": {"items": [{"COMMENT": "newer"}], "next": 1}}
+                return {"result": {"items": [{"COMMENT": "nested marker"}]}}
+            return super().call(method, params, **kwargs)
+
+    writer = SiteServiceRequestBitrixWriter(NestedNextApi())
+
+    assert writer.timeline_comment_exists(
+        entity_type_id=1134,
+        item_id=1000,
+        marker="nested marker",
+    )
+
+
+def test_timeline_writer_rejects_repeated_offset_fail_closed() -> None:
+    class RepeatedOffsetApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.timeline.comment.list":
+                self.calls.append((method, list(params or [])))
+                return {"result": {"items": [], "next": 0}}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_timeline_pagination_cycle"):
+        SiteServiceRequestBitrixWriter(RepeatedOffsetApi()).timeline_comment_exists(
+            entity_type_id=1134,
+            item_id=1000,
+            marker="missing marker",
+        )
+
+
+def test_timeline_writer_rejects_more_than_100_pages_fail_closed() -> None:
+    class EndlessPaginationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.timeline.comment.list":
+                values = list(params or [])
+                self.calls.append((method, values))
+                start = int(dict(values).get("start") or 0)
+                return {"result": {"items": [], "next": start + 1}}
+            return super().call(method, params, **kwargs)
+
+    api = EndlessPaginationApi()
+    with pytest.raises(RuntimeError, match="bitrix_timeline_pagination_limit"):
+        SiteServiceRequestBitrixWriter(api).timeline_comment_exists(
+            entity_type_id=1134,
+            item_id=1000,
+            marker="missing marker",
+        )
+    assert len(api.calls) == 100
 
 
 def test_hidden_support_note_does_not_close_first_response_sla(db_session) -> None:

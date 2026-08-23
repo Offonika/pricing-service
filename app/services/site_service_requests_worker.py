@@ -1059,20 +1059,60 @@ def create_site_service_request_command(
     reply_text: str,
     cipher: SiteServiceRequestCipher,
     now: datetime | None = None,
+    allow_new_after_clear: bool = False,
 ) -> tuple[SiteServiceRequestCommand, bool]:
     normalized_reply = reply_text.strip()
     if not normalized_reply:
         raise SiteServiceRequestPermanentError("reply_text_empty")
     reply = normalized_reply.encode("utf-8")
     reply_sha256 = hashlib.sha256(reply).hexdigest()
-    command_key = f"site-support-reply:{case.source_ticket_id}:{reply_sha256}"
-    existing = session.scalar(
-        select(SiteServiceRequestCommand).where(
-            SiteServiceRequestCommand.command_key == command_key
+    base_command_key = f"site-support-reply:{case.source_ticket_id}:{reply_sha256}"
+    command_key = base_command_key
+    if allow_new_after_clear:
+        existing = session.scalar(
+            select(SiteServiceRequestCommand)
+            .where(
+                SiteServiceRequestCommand.case_id == case.id,
+                SiteServiceRequestCommand.reply_sha256 == reply_sha256,
+            )
+            .order_by(
+                SiteServiceRequestCommand.created_at.desc(),
+                SiteServiceRequestCommand.id.desc(),
+            )
+            .limit(1)
         )
-    )
+    else:
+        existing = session.scalar(
+            select(SiteServiceRequestCommand).where(
+                SiteServiceRequestCommand.command_key == command_key
+            )
+        )
     if existing is not None:
-        return existing, True
+        if (
+            not allow_new_after_clear
+            or existing.card_action_cleared_at is None
+            or existing.status in {"pending", "leased"}
+        ):
+            return existing, True
+        generation = (
+            int(
+                session.scalar(
+                    select(func.count(SiteServiceRequestCommand.id)).where(
+                        SiteServiceRequestCommand.case_id == case.id
+                    )
+                )
+                or 0
+            )
+            + 1
+        )
+        command_key = f"{base_command_key}:{generation}"
+        existing = session.scalar(
+            select(SiteServiceRequestCommand).where(
+                SiteServiceRequestCommand.command_key == command_key
+            )
+        )
+        if existing is not None:
+            return existing, True
 
     current_time = _as_utc(now or datetime.now(UTC))
     command = SiteServiceRequestCommand(
@@ -1413,6 +1453,7 @@ def _collect_site_service_request_outbound_case(
             reply_text=reply_text,
             cipher=cipher,
             now=current_time,
+            allow_new_after_clear=True,
         )
         command_id = command.id
         session.commit()
@@ -1471,8 +1512,10 @@ def _collect_site_service_request_outbound_case(
     }
     if command.status == "failed":
         update_fields[field_map["site_sync_error"]] = command.last_error_code
-    elif case.sync_status == "synced":
-        update_fields[field_map["site_sync_error"]] = None
+    else:
+        update_fields[field_map["site_sync_error"]] = (
+            None if case.sync_status == "synced" else case.last_error_code
+        )
     updated_item = writer.update_item_fields(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         item_id=int(case.bitrix_item_id),
@@ -1520,22 +1563,34 @@ def _collect_site_service_request_outbound_case(
 def _checkpoint_site_service_request_reconcile_failure(
     session: Session,
     *,
-    case_id: int,
+    case_id: int | None,
     lane: str,
     current_time: datetime,
 ) -> SiteServiceRequestCase | None:
+    if lane not in {"assignment", "outbound"}:
+        raise ValueError("site service request reconcile lane is invalid")
     session.rollback()
-    failed_case = session.get(SiteServiceRequestCase, case_id)
+    if lane == "assignment":
+        _lock_site_service_request_assignment_sequence(session)
+    else:
+        _lock_site_service_request_outbound_sequence(session)
+    failed_case_query = select(SiteServiceRequestCase)
+    if case_id is None:
+        failed_case_query = failed_case_query.where(
+            SiteServiceRequestCase.bitrix_item_id.is_not(None)
+        ).order_by(SiteServiceRequestCase.id)
+    else:
+        failed_case_query = failed_case_query.where(SiteServiceRequestCase.id == case_id)
+    failed_case = session.scalar(failed_case_query.limit(1).with_for_update())
     if failed_case is None:
+        session.rollback()
         return None
     if lane == "assignment":
         failed_case.assignment_checked_at = current_time
         failed_case.assignment_last_error_code = "assignment_reconcile_failed"
-    elif lane == "outbound":
+    else:
         failed_case.outbound_checked_at = current_time
         failed_case.outbound_last_error_code = "outbound_reconcile_failed"
-    else:
-        raise ValueError("site service request reconcile lane is invalid")
     failed_case.updated_at = current_time
     session.commit()
     return failed_case
@@ -1575,26 +1630,46 @@ def collect_site_service_request_outbound_commands(
     processed_case_ids: set[int] = set()
     results: list[dict[str, Any]] = []
     while len(processed_case_ids) < batch_limit:
-        _lock_site_service_request_outbound_sequence(session)
-        query = select(SiteServiceRequestCase).where(
-            SiteServiceRequestCase.bitrix_item_id.is_not(None)
-        )
-        if processed_case_ids:
-            query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
-        case = session.scalar(
-            query.order_by(
-                SiteServiceRequestCase.outbound_checked_at.asc().nulls_first(),
-                SiteServiceRequestCase.id,
+        current_time = _as_utc(now or datetime.now(UTC))
+        try:
+            _lock_site_service_request_outbound_sequence(session)
+            query = select(SiteServiceRequestCase).where(
+                SiteServiceRequestCase.bitrix_item_id.is_not(None)
             )
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
+            if processed_case_ids:
+                query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
+            case = session.scalar(
+                query.order_by(
+                    SiteServiceRequestCase.outbound_checked_at.asc().nulls_first(),
+                    SiteServiceRequestCase.id,
+                )
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+        except Exception as exc:
+            failed_case = _checkpoint_site_service_request_reconcile_failure(
+                session,
+                case_id=None,
+                lane="outbound",
+                current_time=current_time,
+            )
+            if failed_case is not None:
+                results.append(
+                    {
+                        "caseId": failed_case.id,
+                        "ticketId": failed_case.source_ticket_id,
+                        "status": "retry",
+                        "errorCode": "outbound_reconcile_failed",
+                    }
+                )
+            if failed_case is None or not isinstance(exc, (RuntimeError, SQLAlchemyError)):
+                raise
+            break
         if case is None:
             session.rollback()
             break
         case_id = case.id
         processed_case_ids.add(case_id)
-        current_time = _as_utc(now or datetime.now(UTC))
         case.outbound_checked_at = current_time
         case.outbound_last_error_code = None
         try:
@@ -1701,7 +1776,7 @@ def reconcile_site_service_request_assignments(
     closed_stage_ids = {value for value in (success_stage_id, failure_stage_id) if value}
     fallback_open_stage_id = str(settings.site_service_requests_bitrix_stage_map.get("new") or "")
     current_time = _as_utc(now or datetime.now(UTC))
-    statuses = reader.timeman_statuses(settings.site_service_requests_first_line_user_ids)
+    statuses: dict[int, str] | None = None
     batch_limit = limit or settings.site_service_requests_worker_batch_size
     processed_case_ids: set[int] = set()
     results: list[dict[str, Any]] = []
@@ -1717,24 +1792,48 @@ def reconcile_site_service_request_assignments(
         or_(*pending_delivery_conditions),
     )
     while len(processed_case_ids) < batch_limit:
-        _lock_site_service_request_assignment_sequence(session)
-        query = select(SiteServiceRequestCase).where(
-            SiteServiceRequestCase.bitrix_item_id.is_not(None),
-            or_(
-                SiteServiceRequestCase.first_response_at.is_(None),
-                escalation_delivery_pending,
-            ),
-        )
-        if processed_case_ids:
-            query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
-        case = session.scalar(
-            query.order_by(
-                SiteServiceRequestCase.assignment_checked_at.asc().nulls_first(),
-                SiteServiceRequestCase.id,
+        try:
+            _lock_site_service_request_assignment_sequence(session)
+            query = select(SiteServiceRequestCase).where(
+                SiteServiceRequestCase.bitrix_item_id.is_not(None),
+                or_(
+                    SiteServiceRequestCase.first_response_at.is_(None),
+                    escalation_delivery_pending,
+                    SiteServiceRequestCase.assignment_last_error_code.is_not(None),
+                ),
             )
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
+            if processed_case_ids:
+                query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
+            case = session.scalar(
+                query.order_by(
+                    SiteServiceRequestCase.assignment_checked_at.asc().nulls_first(),
+                    SiteServiceRequestCase.id,
+                )
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+        except Exception as exc:
+            failed_case = _checkpoint_site_service_request_reconcile_failure(
+                session,
+                case_id=None,
+                lane="assignment",
+                current_time=current_time,
+            )
+            if failed_case is not None:
+                results.append(
+                    {
+                        "caseId": failed_case.id,
+                        "ticketId": failed_case.source_ticket_id,
+                        "assignmentState": failed_case.assignment_state,
+                        "assignedUserId": failed_case.assigned_user_id,
+                        "escalated": False,
+                        "closeReverted": False,
+                        "errorCode": "assignment_reconcile_failed",
+                    }
+                )
+            if failed_case is None or not isinstance(exc, (RuntimeError, SQLAlchemyError)):
+                raise
+            break
         if case is None:
             session.rollback()
             break
@@ -1767,6 +1866,10 @@ def reconcile_site_service_request_assignments(
                     }
                 )
                 continue
+            if statuses is None:
+                statuses = reader.timeman_statuses(
+                    settings.site_service_requests_first_line_user_ids
+                )
             last_assignment = session.scalar(
                 select(SiteServiceRequestCase)
                 .where(

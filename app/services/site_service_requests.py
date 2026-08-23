@@ -432,6 +432,7 @@ def acknowledge_site_service_request_command(
     )
     if command_case_id is None:
         raise SiteServiceRequestNotFoundError("command_not_found")
+    # Keep the case -> command row-lock order aligned with outbound reconciliation.
     case = session.scalar(
         select(SiteServiceRequestCase)
         .where(SiteServiceRequestCase.id == command_case_id)

@@ -923,22 +923,40 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
 
     command = db_session.scalar(select(SiteServiceRequestCommand))
     assert command is not None
-    command.status = "applied"
     api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] = "SEND"
-    db_session.commit()
-    applied_duplicate = collect_site_service_request_outbound_commands(
+    pending_duplicate = collect_site_service_request_outbound_commands(
         db_session,
         settings=settings,
         writer=SiteServiceRequestBitrixWriter(api),
         cipher=cipher,
     )
-    assert applied_duplicate[0]["duplicate"] is True
-    assert applied_duplicate[0]["status"] == "applied"
-    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "SENT"
+    assert pending_duplicate[0]["duplicate"] is True
+    assert pending_duplicate[0]["status"] == "pending"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+
+    command.status = "applied"
+    api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] = "SEND"
+    db_session.commit()
+    repeated_applied_text = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+    assert repeated_applied_text[0]["duplicate"] is False
+    assert repeated_applied_text[0]["status"] == "pending"
+    assert len(commands) == 2
+    assert commands[0].status == "applied"
+    assert commands[1].status == "pending"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "PENDING"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "file_sync_error"
 
-    command.status = "failed"
-    command.last_error_code = "message_write_failed"
+    repeated_command = commands[1]
+    repeated_command.status = "failed"
+    repeated_command.last_error_code = "message_write_failed"
     db_session.commit()
     failed = collect_site_service_request_outbound_commands(
         db_session,
@@ -949,6 +967,22 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     assert failed[0]["status"] == "failed"
     assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "ERROR"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "message_write_failed"
+
+    api.items[int(case.bitrix_item_id)]["ufSiteReplyAction"] = "SEND"
+    retried_failed_text = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+    assert retried_failed_text[0]["duplicate"] is False
+    assert retried_failed_text[0]["status"] == "pending"
+    assert len(commands) == 3
+    assert api.items[int(case.bitrix_item_id)]["ufSiteReplyStatus"] == "PENDING"
+    assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "file_sync_error"
 
 
 def test_outbound_command_is_durable_before_card_action_clear(db_session) -> None:
@@ -1233,6 +1267,96 @@ def test_outbound_database_error_degrades_health_until_successful_retry(db_sessi
     assert recovered["status"] == "healthy"
     assert recovered["alert_codes"] == []
     assert recovered["outbound_failures"] == 0
+
+
+def test_outbound_selection_database_error_checkpoints_health(
+    db_session,
+    monkeypatch,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    api = FakeBitrixApi()
+    api.items[1000] = {}
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+    original_scalar = db_session.scalar
+    fail_selection_once = True
+
+    def fail_first_lane_selection(statement, *args, **kwargs):
+        nonlocal fail_selection_once
+        rendered = str(statement)
+        if (
+            fail_selection_once
+            and "site_service_request_case.outbound_checked_at" in rendered
+            and "ORDER BY" in rendered
+        ):
+            fail_selection_once = False
+            raise OperationalError(
+                "SELECT site_service_request_case FOR UPDATE",
+                {},
+                RuntimeError("connection reset"),
+            )
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", fail_first_lane_selection)
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    degraded = build_site_service_request_health(db_session, settings=settings)
+
+    assert failed[0]["errorCode"] == "outbound_reconcile_failed"
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["outbound_failure"]
+
+    collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    recovered = build_site_service_request_health(db_session, settings=settings)
+    assert recovered["status"] == "healthy"
+    assert recovered["outbound_failures"] == 0
+
+
+def test_unexpected_outbound_error_checkpoints_health_before_reraise(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class UnexpectedFailureApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {}
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get":
+                raise ValueError("unexpected parser failure")
+            return super().call(method, params, **kwargs)
+
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+    with pytest.raises(ValueError, match="unexpected parser failure"):
+        collect_site_service_request_outbound_commands(
+            db_session,
+            settings=settings,
+            writer=SiteServiceRequestBitrixWriter(UnexpectedFailureApi()),
+            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        )
+
+    degraded = build_site_service_request_health(db_session, settings=settings)
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["outbound_failure"]
+    assert degraded["outbound_failures"] == 1
 
 
 def test_outbound_clear_readback_requires_action_field_presence(db_session) -> None:
@@ -1896,6 +2020,76 @@ def test_assignment_database_error_degrades_health_until_successful_retry(db_ses
     assert retried[0].get("errorCode") is None
     assert recovered["status"] == "healthy"
     assert recovered["alert_codes"] == []
+    assert recovered["assignment_failures"] == 0
+
+
+def test_assignment_failure_clears_after_first_response(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    case.assignment_last_error_code = "assignment_reconcile_failed"
+    case.first_response_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+    db_session.add(case)
+    db_session.commit()
+
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": "DT1134_55:NEW"}
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+    health = build_site_service_request_health(db_session, settings=settings)
+
+    db_session.refresh(case)
+    assert results[0]["deliveryRetried"] is True
+    assert case.assignment_last_error_code is None
+    assert health["status"] == "healthy"
+    assert health["assignment_failures"] == 0
+
+
+def test_unexpected_timeman_error_checkpoints_health_before_reraise(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class UnexpectedTimemanApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {"stageId": "DT1134_55:NEW"}
+            self.fail_timeman = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "timeman.status" and self.fail_timeman:
+                self.fail_timeman = False
+                raise ValueError("unexpected timeman payload")
+            return super().call(method, params, **kwargs)
+
+    api = UnexpectedTimemanApi()
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
+    with pytest.raises(ValueError, match="unexpected timeman payload"):
+        reconcile_site_service_request_assignments(
+            db_session,
+            settings=settings,
+            reader=SiteServiceRequestBitrixReader(api),
+            writer=SiteServiceRequestBitrixWriter(api),
+            now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+        )
+
+    degraded = build_site_service_request_health(db_session, settings=settings)
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["assignment_failure"]
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+    recovered = build_site_service_request_health(db_session, settings=settings)
+    assert recovered["status"] == "healthy"
     assert recovered["assignment_failures"] == 0
 
 

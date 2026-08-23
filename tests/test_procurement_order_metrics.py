@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.services.procurement_order_metrics import (
     _contract_rows_to_terms,
+    _normalize_currency,
     _price_rows_to_metrics,
     build_line_metric_payload,
     defect_confidence,
@@ -51,6 +52,10 @@ def test_price_currency_mismatch_has_explicit_evidence() -> None:
     assert payload["price_change_status"] == "currency_mismatch"
     assert payload["price_history_expected_currency"] == "RUB"
     assert payload["price_history_available_currencies"] == ["CNY", "USD"]
+
+
+def test_aed_currency_uses_iso_alpha_code_instead_of_numeric_code() -> None:
+    assert _normalize_currency("784", "AED", "0xcurrency-aed") == "AED"
 
 
 def test_price_history_uses_distinct_orders_and_keeps_currencies_separate() -> None:

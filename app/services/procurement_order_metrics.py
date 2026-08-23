@@ -586,6 +586,8 @@ def _normalize_currency(*values: Any) -> str:
         "840": "USD",
         "USD": "USD",
         "ДОЛЛАРСША": "USD",
+        "784": "AED",
+        "AED": "AED",
         "978": "EUR",
         "EUR": "EUR",
         "ЕВРО": "EUR",

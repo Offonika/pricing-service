@@ -474,6 +474,20 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.queryByText("Конфликты: accepted_matching_review")).not.toBeInTheDocument();
   });
 
+  it("показывает буквенный код AED вместо числового кода валюты 784", async () => {
+    const data = assistantData();
+    data.orders[0].lines[0].price_change_pct = null;
+    data.orders[0].lines[0].price_change_status = "currency_mismatch";
+    data.orders[0].lines[0].price_history_expected_currency = "RUB";
+    data.orders[0].lines[0].price_history_available_currencies = ["784", "USD"];
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(await screen.findByText("Нет истории в RUB; есть AED, USD")).toBeInTheDocument();
+    expect(screen.queryByText("Нет истории в RUB; есть 784, USD")).not.toBeInTheDocument();
+  });
+
   it("показывает skeleton с признаком занятости во время загрузки", () => {
     vi.mocked(fetchProcurementOrderAssistant).mockReturnValue(new Promise(() => undefined));
 

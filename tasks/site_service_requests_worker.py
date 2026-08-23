@@ -181,6 +181,8 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
             errors.append("escalation_user_missing")
         if settings.site_service_requests_finance_user_id is None:
             errors.append("finance_user_missing")
+        if settings.site_service_requests_bitrix_root_folder_id is None:
+            errors.append("bitrix_root_folder_missing")
         configured_user_ids = {
             *settings.site_service_requests_first_line_user_ids,
             *(

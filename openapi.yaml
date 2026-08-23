@@ -6127,6 +6127,15 @@ paths:
             minimum: 0
           - type: 'null'
           title: Content-Length
+      - name: X-MM-Site-File-Error
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            const: file_unavailable
+          - type: 'null'
+          title: X-Mm-Site-File-Error
       - name: X-MM-Site-Timestamp
         in: header
         required: true
@@ -27912,6 +27921,11 @@ components:
           type: integer
           const: 1
           title: Schemaversion
+        leaseToken:
+          type: string
+          maxLength: 128
+          minLength: 32
+          title: Leasetoken
         status:
           type: string
           enum:
@@ -27948,6 +27962,7 @@ components:
       type: object
       required:
       - schemaVersion
+      - leaseToken
       - status
       title: SiteServiceRequestCommandAckPayload
     SiteServiceRequestCommandAckResponse:
@@ -27995,6 +28010,11 @@ components:
           type: string
           format: date-time
           title: Leaseuntil
+        leaseToken:
+          type: string
+          maxLength: 128
+          minLength: 32
+          title: Leasetoken
       type: object
       required:
       - commandId
@@ -28002,6 +28022,7 @@ components:
       - ticketId
       - replyText
       - leaseUntil
+      - leaseToken
       title: SiteServiceRequestCommandPayload
     SiteServiceRequestCommandsResponse:
       properties:
@@ -28127,10 +28148,17 @@ components:
           enum:
           - staged
           - uploaded
+          - failed
           title: Status
         duplicate:
           type: boolean
           title: Duplicate
+        errorCode:
+          anyOf:
+          - type: string
+            const: file_unavailable
+          - type: 'null'
+          title: Errorcode
       type: object
       required:
       - eventId

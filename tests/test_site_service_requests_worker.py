@@ -58,6 +58,7 @@ class FakeBitrixApi:
         self.fallback_deals: list[dict] = []
         self.timeman: dict[int, str] = {1001: "OPENED", 1002: "CLOSED"}
         self.next_contact_id = 900
+        self.raise_after_contact_add = False
         self.next_item_id = 1000
         self.items: dict[int, dict] = {}
         self.raise_after_item_add = False
@@ -88,8 +89,26 @@ class FakeBitrixApi:
         if method == "crm.contact.add":
             contact_id = self.next_contact_id
             self.next_contact_id += 1
-            self.contacts[contact_id] = {"ID": str(contact_id), "ACTIVE": "Y"}
+            self.contacts[contact_id] = {
+                "ID": str(contact_id),
+                "ACTIVE": "Y",
+                "ORIGINATOR_ID": mapped.get("fields[ORIGINATOR_ID]"),
+                "ORIGIN_ID": mapped.get("fields[ORIGIN_ID]"),
+            }
+            if self.raise_after_contact_add:
+                self.raise_after_contact_add = False
+                raise RuntimeError("simulated timeout after contact add")
             return {"result": contact_id}
+        if method == "crm.contact.list":
+            originator_id = mapped.get("filter[=ORIGINATOR_ID]")
+            origin_id = mapped.get("filter[=ORIGIN_ID]")
+            rows = [
+                {"ID": str(contact_id)}
+                for contact_id, contact in self.contacts.items()
+                if contact.get("ORIGINATOR_ID") == originator_id
+                and contact.get("ORIGIN_ID") == origin_id
+            ]
+            return {"result": rows}
         if method == "crm.deal.list":
             is_exact = any(key.startswith("filter[=") for key, _value in values)
             return {"result": self.exact_deals if is_exact else self.fallback_deals}
@@ -119,7 +138,15 @@ class FakeBitrixApi:
             return {"result": {"item": {"id": item_id}}}
         if method == "crm.item.get":
             item_id = int(mapped["id"])
-            return {"result": {"item": {"id": item_id, **self.items[item_id]}}}
+            return {
+                "result": {
+                    "item": {
+                        "id": item_id,
+                        "ufSiteReplyAction": "",
+                        **self.items[item_id],
+                    }
+                }
+            }
         if method == "disk.folder.getchildren":
             name = mapped.get("filter[NAME]")
             item = self.disk_files.get(str(name))
@@ -381,6 +408,80 @@ def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
     )
     assert fallback.status == "matched"
     assert fallback.deal_id == 802
+
+
+def test_order_fallback_deduplicates_same_deal_across_pages() -> None:
+    class RepeatedDealApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                values = list(params or [])
+                self.calls.append((method, values))
+                if any(key.startswith("filter[=") for key, _value in values):
+                    return {"result": []}
+                start = int(dict(values).get("start") or 0)
+                row = {"ID": "802", "TITLE": "Заказ 000001"}
+                if start == 0:
+                    return {"result": {"items": [row], "next": 50}}
+                return {"result": {"items": [row]}}
+            return super().call(method, params, **kwargs)
+
+    match = SiteServiceRequestBitrixReader(RepeatedDealApi()).find_order(
+        contact_id=501,
+        order_number="000001",
+        order_field="UF_CRM_ORDER",
+    )
+
+    assert match.status == "matched"
+    assert match.candidate_ids == (802,)
+
+
+def test_deal_pagination_cycle_fails_closed() -> None:
+    class CyclicDealApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                self.calls.append((method, list(params or [])))
+                return {"result": {"items": [], "next": 0}}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_pagination_cycle"):
+        SiteServiceRequestBitrixReader(CyclicDealApi()).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+
+
+def test_deal_pagination_stops_after_100_pages() -> None:
+    class EndlessDealApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                values = list(params or [])
+                self.calls.append((method, values))
+                start = int(dict(values).get("start") or 0)
+                return {"result": {"items": [], "next": start + 1}}
+            return super().call(method, params, **kwargs)
+
+    api = EndlessDealApi()
+    with pytest.raises(RuntimeError, match="bitrix_deal_pagination_invalid"):
+        SiteServiceRequestBitrixReader(api).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+    assert len(api.calls) == 100
+
+
+def test_contact_create_timeout_recovers_by_origin_id() -> None:
+    api = FakeBitrixApi()
+    api.raise_after_contact_add = True
+    payload = SiteServiceRequestEventPayload.model_validate(_event_payload())
+
+    contact_id = SiteServiceRequestBitrixWriter(api).create_contact(payload)
+
+    assert contact_id == 900
+    methods = [method for method, _params in api.calls]
+    assert methods.count("crm.contact.add") == 1
+    assert methods.count("crm.contact.list") == 1
 
 
 def test_assignment_round_robin_outside_shift_pause_and_escalation() -> None:
@@ -869,6 +970,94 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
 
 
+def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:
+    case = _case(
+        bitrix_item_id=1000,
+        base_sync_status="synced",
+        sync_status="file_sync_error",
+    )
+    case.last_error_code = "file_unavailable"
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="attachment-93287.bin",
+        mime_type="application/octet-stream",
+        byte_size=0,
+        sha256="0" * 64,
+        status="failed",
+        last_error_code="file_unavailable",
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {}
+    settings = _worker_settings()
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert first[0]["errorReported"] is True
+    assert second == []
+    db_session.refresh(file)
+    assert file.bitrix_error_reported_at is not None
+    assert api.items[1000]["ufSiteSyncStatus"] == "FILE_SYNC_ERROR"
+    assert api.items[1000]["ufSiteSyncError"] == "file_sync_error"
+
+
+def test_event_file_error_preserves_underlying_base_status_for_recovery(db_session) -> None:
+    cipher = _persist_event(db_session)
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="attachment-93287.bin",
+        mime_type="application/octet-stream",
+        byte_size=0,
+        sha256="0" * 64,
+        status="failed",
+        last_error_code="file_unavailable",
+    )
+    db_session.add(file)
+    db_session.commit()
+    api = FakeBitrixApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 22, 7, 1, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert case.sync_status == "file_sync_error"
+    assert case.last_error_code == "file_sync_error"
+    assert case.base_sync_status == "synced"
+    assert case.base_error_code is None
+
+
 def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session) -> None:
     cipher = _persist_event(db_session)
     api = FakeBitrixApi()
@@ -1105,6 +1294,45 @@ def test_outbound_stale_worker_does_not_clear_repeated_send_after_ack(
     assert api.items[1000]["ufSiteReplyAction"] == ""
 
 
+def test_applied_outbound_status_reconciles_without_reowning_idle_action(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.flush()
+    command, _duplicate = create_site_service_request_command(
+        db_session,
+        case=case,
+        reply_text="Старый доставленный ответ",
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    command.status = "applied"
+    command.source_message_id = 1301
+    command.ack_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+    command.card_action_cleared_at = None
+    db_session.commit()
+
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "",
+        "ufSiteReplyText": "Позднее редактирование без SEND",
+        "ufSiteReplyStatus": "PENDING",
+    }
+    result = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    assert result[0]["status"] == "applied"
+    assert result[0]["duplicate"] is True
+    assert api.items[1000]["ufSiteReplyStatus"] == "SENT"
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+    assert api.items[1000]["ufSiteReplyText"] == "Позднее редактирование без SEND"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+    db_session.refresh(command)
+    assert command.card_action_cleared_at is not None
+
+
 @pytest.mark.parametrize(
     ("lane", "checked_at_field", "error_field"),
     [
@@ -1112,7 +1340,7 @@ def test_outbound_stale_worker_does_not_clear_repeated_send_after_ack(
         ("outbound", "outbound_checked_at", "outbound_last_error_code"),
     ],
 )
-def test_reconcile_failure_checkpoint_does_not_overwrite_newer_success(
+def test_reconcile_failure_checkpoint_does_not_overwrite_same_time_success(
     db_session,
     lane: str,
     checked_at_field: str,
@@ -1129,7 +1357,7 @@ def test_reconcile_failure_checkpoint_does_not_overwrite_newer_success(
         db_session,
         case_id=case.id,
         lane=lane,
-        current_time=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+        current_time=newer_time,
     )
 
     db_session.refresh(case)
@@ -1503,6 +1731,35 @@ def test_outbound_clear_readback_requires_action_field_presence(db_session) -> N
     assert command.card_action_cleared_at is None
 
 
+def test_outbound_initial_readback_requires_action_field_presence(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class MissingInitialActionApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {"ufSiteReplyText": "Ответ из карточки"}
+
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get":
+                response["result"]["item"].pop("ufSiteReplyAction", None)
+            return response
+
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(MissingInitialActionApi()),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["status"] == "retry"
+    assert case.outbound_last_error_code == "outbound_reconcile_failed"
+    assert db_session.scalar(select(SiteServiceRequestCommand.id)) is None
+
+
 def test_outbound_scan_rotates_past_the_first_batch(db_session) -> None:
     api = FakeBitrixApi()
     for ticket_id in range(1, 22):
@@ -1732,7 +1989,7 @@ def test_support_message_readback_is_required_before_first_response_is_recorded(
     payload_dict["history"].append(
         {
             "messageId": 1301,
-            "authorKind": "support-team",
+            "authorKind": "support",
             "createdAt": "2026-08-22T11:00:00+03:00",
             "text": "Ответ клиенту",
             "files": [],
@@ -1905,6 +2162,38 @@ def test_stale_plan_does_not_reopen_event_processed_by_another_worker(db_session
     assert event.last_error_code is None
 
 
+def test_stale_plan_does_not_process_event_already_marked_needs_attention(
+    db_session,
+) -> None:
+    cipher = _persist_event(db_session)
+    api = FakeBitrixApi()
+    settings = _worker_settings()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        cipher=cipher,
+    )
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    event.status = "needs_attention"
+    event.last_error_code = "manual_review_required"
+    db_session.commit()
+
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert results[0].status == "needs_attention"
+    assert results[0].error_code == "manual_review_required"
+    assert api.items == {}
+
+
 def test_dynamic_item_writer_uses_rest_camel_case_and_clears_null_values() -> None:
     api = FakeBitrixApi()
     api.items[1000] = {}
@@ -1923,8 +2212,10 @@ def test_timeman_exception_creates_card_in_assignment_waiting(db_session) -> Non
     cipher = _persist_event(db_session)
 
     class TimemanFailureApi(FakeBitrixApi):
+        fail_timeman = True
+
         def call(self, method: str, params=None, **kwargs):
-            if method == "timeman.status":
+            if method == "timeman.status" and self.fail_timeman:
                 raise RuntimeError("timeman unavailable")
             return super().call(method, params, **kwargs)
 
@@ -1952,8 +2243,92 @@ def test_timeman_exception_creates_card_in_assignment_waiting(db_session) -> Non
     assert results[0].status == "processed"
     assert case is not None and case.bitrix_item_id is not None
     assert case.assignment_state == "waiting"
+    assert case.assignment_last_error_code == "timeman_unavailable"
     assert case.sync_status == "assignment_waiting"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ASSIGNMENT_WAITING"
+    assert api.items[int(case.bitrix_item_id)]["assignedById"] == ""
+    degraded = build_site_service_request_health(db_session, settings=settings)
+    assert degraded["status"] == "degraded"
+    assert degraded["assignment_failures"] == 1
+
+    api.fail_timeman = False
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 2, tzinfo=UTC),
+    )
+    db_session.refresh(case)
+    assert case.assignment_last_error_code is None
+    recovered = build_site_service_request_health(db_session, settings=settings)
+    assert recovered["status"] == "healthy"
+
+
+def test_assignment_reconcile_clears_stale_assignee_when_every_shift_is_closed(
+    db_session,
+) -> None:
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": "DT1134_55:NEW", "assignedById": "1001"}
+    api.timeman = {1001: "CLOSED", 1002: "CLOSED"}
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert case.assignment_state == "waiting"
+    assert case.assigned_user_id is None
+    assert api.items[1000]["assignedById"] == ""
+
+
+def test_assignment_clear_readback_requires_assignee_field_presence(db_session) -> None:
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    class MissingAssigneeReadbackApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {"stageId": "DT1134_55:NEW", "assignedById": "1001"}
+            self.timeman = {1001: "CLOSED", 1002: "CLOSED"}
+            self.updated = False
+
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.update":
+                self.updated = True
+            if method == "crm.item.get" and self.updated:
+                response["result"]["item"].pop("assignedById", None)
+            return response
+
+    api = MissingAssigneeReadbackApi()
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["errorCode"] == "assignment_reconcile_failed"
+    assert case.assignment_last_error_code == "assignment_reconcile_failed"
 
 
 def test_assignment_reassigns_only_while_card_is_new(db_session) -> None:
@@ -2409,6 +2784,77 @@ def test_hidden_support_note_does_not_close_first_response_sla(db_session) -> No
 
     case = db_session.scalar(select(SiteServiceRequestCase))
     assert case is not None and case.first_response_at is None
+
+
+def test_permanent_failure_counter_is_consecutive_and_resets_on_transient_failure(
+    db_session,
+) -> None:
+    _persist_event(db_session)
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    started_at = worker_module._as_utc(event.updated_at) + timedelta(minutes=1)
+
+    for attempt in range(4):
+        result = worker_module._record_site_service_request_failure(
+            db_session,
+            event_id=event.event_id,
+            error_code="permanent_failure",
+            permanent=True,
+            now=started_at + timedelta(minutes=attempt),
+        )
+        db_session.commit()
+        assert result.status == "retry"
+    db_session.refresh(event)
+    assert event.consecutive_permanent_failures == 4
+
+    worker_module._record_site_service_request_failure(
+        db_session,
+        event_id=event.event_id,
+        error_code="temporary_failure",
+        permanent=False,
+        now=started_at + timedelta(minutes=5),
+    )
+    db_session.commit()
+    db_session.refresh(event)
+    assert event.consecutive_permanent_failures == 0
+
+    for attempt in range(5):
+        result = worker_module._record_site_service_request_failure(
+            db_session,
+            event_id=event.event_id,
+            error_code="permanent_failure",
+            permanent=True,
+            now=started_at + timedelta(minutes=6 + attempt),
+        )
+        db_session.commit()
+    assert result.status == "needs_attention"
+    db_session.refresh(event)
+    assert event.consecutive_permanent_failures == 5
+
+
+def test_stale_failure_checkpoint_does_not_regress_processed_event(db_session) -> None:
+    _persist_event(db_session)
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    processed_at = datetime(2026, 8, 22, 8, 0, tzinfo=UTC)
+    event.status = "processed"
+    event.payload_encrypted = None
+    event.processed_at = processed_at
+    event.updated_at = processed_at
+    db_session.commit()
+
+    result = worker_module._record_site_service_request_failure(
+        db_session,
+        event_id=event.event_id,
+        error_code="stale_failure",
+        permanent=True,
+        now=processed_at - timedelta(minutes=1),
+    )
+
+    assert result.status == "processed"
+    db_session.refresh(event)
+    assert event.status == "processed"
+    assert event.last_error_code is None
 
 
 def test_worker_clears_stale_deal_and_order_reference_with_readback(db_session) -> None:

@@ -206,7 +206,8 @@ updated_at: "2026-08-23"
 - `first_seen_at`, `first_response_due_at`, `sla_paused_at`;
 - `first_response_at`, `escalated_at`;
 - `latest_inbound_message_id`, `latest_outbound_message_id`;
-- `sync_status`, `last_error_code`, `version`;
+- `base_sync_status/base_error_code` хранят underlying результат без временного
+  файлового overlay; `sync_status`, `last_error_code`, `version`;
 - `created_at`, `updated_at`.
 
 ### `site_service_request_event`
@@ -214,7 +215,10 @@ updated_at: "2026-08-23"
 - уникальный `event_id` из `event_key` сайта;
 - `case_id`, `source_message_id`, `event_type`, `direction`;
 - `payload_encrypted`, `payload_sha256`;
-- `status`, `attempts`, `next_retry_at`, `last_error_code`;
+- `source_message_sha256` для устойчивого dedupe при изменении текущих полей
+  карточки тикета между сетевыми повторами;
+- `status`, `attempts`, `consecutive_permanent_failures`, `next_retry_at`,
+  `last_error_code`;
 - `processed_at`, `created_at`, `updated_at`.
 
 Payload шифруется отдельным ключом
@@ -227,6 +231,7 @@ Payload шифруется отдельным ключом
 - безопасное имя, MIME, размер, SHA-256;
 - состояние загрузки;
 - ID файла/объекта Bitrix после загрузки;
+- `bitrix_error_reported_at` для retry/readback поздней файловой ошибки;
 - временный путь хранится только до успешной загрузки и затем очищается.
 
 ### `site_service_request_command`
@@ -234,7 +239,8 @@ Payload шифруется отдельным ключом
 - `case_id`, уникальный `command_key`;
 - зашифрованный текст ответа;
 - `status`: `pending`, `leased`, `applied`, `failed`;
-- `attempts`, `lease_until`, `source_message_id`, `ack_at`;
+- `attempts`, `lease_until`, уникальный для каждой аренды `lease_token`;
+- `source_message_id`, `ack_at`, `card_action_cleared_at`;
 - `last_error_code`, `created_at`, `updated_at`.
 
 Все изменения схемы `pricing-service` выполняются новой Alembic-миграцией.
@@ -250,7 +256,9 @@ Payload шифруется отдельным ключом
 4. если карточки нет, выполняет один `crm.item.add` в category 55/stage `NEW`;
 5. после timeout или неоднозначного ответа сначала повторно читает карточку по
    техническому ключу и только затем решает, нужен ли новый `add`;
-6. повторное клиентское сообщение обновляет историю и файлы этой же карточки.
+6. после timeout `crm.contact.add` также перечитывает контакт по отдельному
+   `ORIGINATOR_ID + ORIGIN_ID`; несколько результатов завершаются fail-closed;
+7. повторное клиентское сообщение обновляет историю и файлы этой же карточки.
 
 Полная история тикета передаётся как нормализованный snapshot и заменяет поле
 истории целиком. Она не дописывается строкой, поэтому повтор события не создаёт
@@ -286,8 +294,18 @@ Site Agent получает команду, проверяет её повтор
 
 После получения `MID` Agent отправляет ack. `pricing-service` перечитывает событие
 поддержки, фиксирует `first_response_at`, обновляет историю, очищает поле действия
-и показывает статус «Отправлено». Факт REST-ответа без `MID` и последующего
-readback не считается доставкой клиенту.
+и показывает статус «Отправлено». Если inbound event задержан, applied ACK уже
+позволяет reconcile обновить только terminal-статус, не возвращая старой команде
+владение очищенным action. Факт REST-ответа без `MID` и последующего readback не
+считается доставкой клиенту.
+
+Каждая выдача command получает новый случайный `leaseToken`. ACK принимается
+только с токеном текущей аренды; запоздалый ACK предыдущей аренды получает
+`409 command_lease_conflict` и не может завершить повторно выданную команду.
+Повреждённый текст одной команды не блокирует выдачу валидных команд: строка
+карантинируется только если ключ шифрования подтверждён другой успешно
+аутентифицированной строкой; при возможной ошибке общего ключа выдача завершается
+fail-closed без терминального изменения команд.
 
 Повторная доставка той же команды на сайт возвращает уже существующий `MID` и не
 создаёт второе сообщение.
@@ -375,7 +393,11 @@ v1
 ```
 
 Повтор с тем же `eventId` и тем же payload hash возвращает `duplicate=true`.
-Тот же `eventId` с другим hash возвращает `409 event_payload_conflict`.
+Изменение текущих полей тикета между повторами также считается duplicate, если
+неизменны ID, время, автор, видимость, текст и набор file ID исходного сообщения.
+Имя, MIME, размер и hash файла могут восстановиться вместе с удалённой записью
+`b_file` и отдельно проверяются файловым endpoint.
+Изменение самого исходного сообщения возвращает `409 event_payload_conflict`.
 
 ## `PUT /events/{event_id}/files/{file_id}`
 
@@ -383,14 +405,28 @@ Binary body загружается отдельно. Дополнительно 
 размер и SHA-256. Сервер сверяет размер/hash, запрещает path traversal и удаляет
 временный файл после загрузки в Bitrix. Максимум MVP — 10 МБ на файл.
 
+Если файл уже отсутствует или недоступен на сайте, bridge передаёт в event
+нулевой SHA-256 placeholder и затем выполняет подписанный пустой `PUT` с
+`X-MM-Site-File-Error: file_unavailable`. Backend сохраняет контролируемую
+`file_sync_error`; если файл восстановился между повторами, только нулевой
+placeholder позволяет атомарно заменить имя, MIME, размер и hash при полноценной
+загрузке. Более поздний snapshot истории не меняет placeholder старого сообщения:
+замена разрешена только бинарному `PUT` исходного event. Такой placeholder повторно
+включается в `missingFileIds`. Временная
+ошибка чтения/hash уже зарегистрированного файла не превращается в окончательный
+`file_unavailable`: site outbox повторяет доставку. UTF-8 имя передаётся через
+RFC 5987 `filename*` без конкурирующего ASCII fallback.
+
 ## `GET /commands`
 
-Возвращает не более 20 pending-команд с lease на 5 минут. Повтор после окончания
-lease допустим и безопасен за счёт `command_key` и `EXTERNAL_FIELD_1`.
+Возвращает не более 20 pending-команд с lease на 5 минут и новым `leaseToken`.
+Повтор после окончания lease допустим и безопасен за счёт `command_key`,
+`EXTERNAL_FIELD_1` и ротации lease-token.
 
 ## `POST /commands/{command_id}/ack`
 
-Успешный ack содержит `ticketId`, `messageId`, `appliedAt`. Ошибка содержит только
+Любой ack содержит `leaseToken` текущей аренды. Успешный ack дополнительно содержит
+`ticketId`, `messageId`, `appliedAt`. Ошибка содержит только
 стабильный код, например `ticket_not_found`, `support_user_invalid`,
 `message_write_failed`; stack trace и содержимое сообщения не возвращаются.
 
@@ -407,6 +443,9 @@ Durable checkpoint охватывает также ошибки lane до нач
 чтобы успешный контрольный tick снял устаревший failure и вернул health в `healthy`.
 Checkpoint монотонен по `assignment_checked_at`/`outbound_checked_at`: failure от
 старой попытки не перезаписывает более новый успешный tick и не создаёт ложный alert.
+Поля API называются `assignmentFailures`, `outboundFailures` и
+`pendingEscalationDeliveries`; ненулевые значения добавляют соответственно
+`assignment_failure`, `outbound_failure`, `escalation_delivery_pending`.
 
 # Маппинг карточки 1134
 
@@ -544,6 +583,8 @@ ID существует, активен и соответствует ожида
   одного раза в час до 24 часов;
 - событие старше 24 часов или пять последовательных permanent errors получает
   `needs_attention` и попадает в health/внутреннее уведомление;
+- transient failure и успешная обработка сбрасывают счётчик последовательных
+  permanent errors;
 - невалидная подпись, старый timestamp, повтор nonce и hash conflict не
   ретраятся как временная ошибка;
 - недоступный TimeMan не приводит к случайному назначению: карточка остаётся
@@ -686,6 +727,23 @@ Rollback:
 
 # Changelog
 
+- 2026-08-23 — form ensure теперь отклоняет malformed readback до слияния/записи;
+  временные file read/hash failures остаются в retry, UTF-8 filename сохраняется
+  между event/upload, старый file placeholder не потребляется новым snapshot, а
+  файловый spool не выполняет SQL после атомарной записи; поздняя file error
+  получила отдельный Bitrix delivery-checkpoint/readback.
+- 2026-08-23 — placeholder удалённой записи `b_file` получил безопасное
+  восстановление всей файловой меты; первичный outbound action и очистка assignee
+  теперь требуют присутствия полей в readback и fail-closed при их отсутствии.
+- 2026-08-23 — дополнительный hardening-аудит закрыл ложный event hash-conflict
+  при изменении текущих полей тикета, сделал `file_unavailable` достижимым,
+  добавил ротацию lease-token/stale-ACK guard, quarantine повреждённой command,
+  timeout-readback контакта и fail-closed pagination ensure/deal/timeline.
+- 2026-08-23 — финальная миграция исправляет ошибочный marker-backfill для всех
+  commands старого worker; terminal-команда с уже пустым action выполняет только
+  status-readback и не превращает позднее редактирование текста в новый `SEND`.
+  Health последней failed delivery сохраняется, даже если новая command ожидает
+  отправки.
 - 2026-08-23 — закрыты две межworker-гонки: устаревшая outbound-попытка не очищает
   новый повторный `SEND`, а старый failure-checkpoint не затирает более новый success.
 - 2026-08-23 — ранние assignment/outbound failures включены в durable checkpoint;

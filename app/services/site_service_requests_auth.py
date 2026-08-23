@@ -129,7 +129,14 @@ def verify_site_request(
         session,
         nonce=nonce,
         now=current_time,
-        ttl_seconds=settings.site_service_requests_nonce_ttl_seconds,
+        expires_at=max(
+            current_time
+            + timedelta(seconds=settings.site_service_requests_nonce_ttl_seconds),
+            datetime.fromtimestamp(timestamp, UTC)
+            + timedelta(
+                seconds=settings.site_service_requests_timestamp_tolerance_seconds + 1
+            ),
+        ),
     )
     return VerifiedSiteRequest(
         timestamp=timestamp,
@@ -188,7 +195,7 @@ def _reserve_nonce(
     *,
     nonce: str,
     now: datetime,
-    ttl_seconds: int,
+    expires_at: datetime,
 ) -> None:
     session.execute(
         delete(SiteServiceRequestNonce).where(SiteServiceRequestNonce.expires_at <= now)
@@ -198,7 +205,7 @@ def _reserve_nonce(
             session.add(
                 SiteServiceRequestNonce(
                     nonce=nonce,
-                    expires_at=now + timedelta(seconds=ttl_seconds),
+                    expires_at=expires_at,
                 )
             )
             session.flush()

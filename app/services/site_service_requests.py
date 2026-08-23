@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
+import secrets
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +28,8 @@ from app.schemas.site_service_requests import (
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestEventPayload,
 )
+
+_UNAVAILABLE_FILE_SHA256 = "0" * 64
 
 
 class SiteServiceRequestConfigurationError(RuntimeError):
@@ -71,6 +75,7 @@ class StagedSiteServiceRequestFile:
     duplicate: bool
     storage_path: str | None = None
     cleanup_on_failure: bool = False
+    error_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class LeasedSiteServiceRequestCommand:
     ticket_id: int
     reply_text: str
     lease_until: datetime
+    lease_token: str
 
 
 @dataclass(frozen=True)
@@ -157,9 +163,9 @@ def accept_site_service_request_event(
     try:
         with session.begin_nested():
             case = session.scalar(
-                select(SiteServiceRequestCase).where(
-                    SiteServiceRequestCase.source_ticket_id == payload.ticket.id
-                )
+                select(SiteServiceRequestCase)
+                .where(SiteServiceRequestCase.source_ticket_id == payload.ticket.id)
+                .with_for_update()
             )
             if case is None:
                 case = SiteServiceRequestCase(
@@ -186,8 +192,6 @@ def accept_site_service_request_event(
                 )
             case.sync_status = "pending"
             case.last_error_code = None
-            case.base_sync_status = "pending"
-            case.base_error_code = None
             case.updated_at = current_time
 
             event = SiteServiceRequestEvent(
@@ -198,6 +202,7 @@ def accept_site_service_request_event(
                 direction="inbound",
                 payload_encrypted=cipher.encrypt(raw_body, event_id=payload.event_id),
                 payload_sha256=payload_sha256,
+                source_message_sha256=_source_message_payload_sha256(payload),
                 status="pending",
                 created_at=current_time,
                 updated_at=current_time,
@@ -251,20 +256,33 @@ def stage_site_service_request_file(
     max_file_bytes: int,
     now: datetime | None = None,
 ) -> StagedSiteServiceRequestFile:
-    event = session.scalar(
-        select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == event_id)
+    event_identity = session.execute(
+        select(
+            SiteServiceRequestEvent.case_id,
+            SiteServiceRequestEvent.source_message_id,
+        ).where(SiteServiceRequestEvent.event_id == event_id)
+    ).one_or_none()
+    if event_identity is None:
+        raise SiteServiceRequestNotFoundError("event_not_found")
+
+    case_id, source_message_id = event_identity
+    case = session.scalar(
+        select(SiteServiceRequestCase)
+        .where(SiteServiceRequestCase.id == case_id)
+        .with_for_update()
     )
-    if event is None:
+    if case is None:
         raise SiteServiceRequestNotFoundError("event_not_found")
 
     files = session.scalars(
         select(SiteServiceRequestFile)
         .where(
-            SiteServiceRequestFile.case_id == event.case_id,
-            SiteServiceRequestFile.source_message_id == event.source_message_id,
+            SiteServiceRequestFile.case_id == case.id,
+            SiteServiceRequestFile.source_message_id == source_message_id,
             SiteServiceRequestFile.source_file_id == file_id,
         )
         .limit(2)
+        .with_for_update()
     ).all()
     if not files:
         raise SiteServiceRequestNotFoundError("file_not_registered")
@@ -296,13 +314,18 @@ def stage_site_service_request_file(
         if calculated_sha256 != body_sha256:
             raise SiteServiceRequestPayloadError("file_hash_mismatch")
 
+        unavailable_placeholder = (
+            file.sha256 == _UNAVAILABLE_FILE_SHA256
+            and file.status in {"pending", "failed"}
+            and file.last_error_code in {None, "file_unavailable"}
+        )
         if (
             file.safe_filename != normalized_filename
             or file.mime_type.strip().lower() != normalized_mime_type
             or file.byte_size != declared_size
-        ):
+        ) and not unavailable_placeholder:
             raise SiteServiceRequestConflictError("file_metadata_conflict")
-        if file.sha256 != calculated_sha256:
+        if file.sha256 != calculated_sha256 and not unavailable_placeholder:
             raise SiteServiceRequestPayloadError("file_hash_mismatch")
     except (SiteServiceRequestPayloadError, SiteServiceRequestConflictError) as exc:
         _mark_file_sync_error(file, error_code=exc.code, now=now)
@@ -325,27 +348,42 @@ def stage_site_service_request_file(
                 storage_path=str(existing_path),
             )
 
+    # Resolve the remaining case-level file error before touching the filesystem.
+    # This keeps every fallible SQL operation ahead of the atomic spool write, so
+    # a database read failure cannot leave an untracked payload behind.
+    remaining_file_error_code = _case_file_error_code(
+        session,
+        case_id=file.case_id,
+        exclude_file_id=file.id,
+    )
+    had_existing_payload = existing_path is not None and existing_path.is_file()
     target_path = _write_site_service_request_file(
         spool_dir=spool_dir,
-        case_id=event.case_id,
+        case_id=case.id,
         file_row_id=file.id,
         body=body,
     )
+    if unavailable_placeholder:
+        file.safe_filename = normalized_filename
+        file.mime_type = normalized_mime_type
+        file.byte_size = declared_size
+        file.sha256 = calculated_sha256
     file.temporary_path = str(target_path)
     file.status = "staged"
     file.last_error_code = None
+    file.bitrix_error_reported_at = None
     file.updated_at = _as_utc(now or datetime.now(UTC))
-    if _case_file_error_code(session, case_id=file.case_id) is None:
-        if file.case.sync_status == "file_sync_error":
-            file.case.sync_status = file.case.base_sync_status
-            file.case.last_error_code = file.case.base_error_code
+    if remaining_file_error_code is None:
+        if case.sync_status == "file_sync_error":
+            case.sync_status = case.base_sync_status
+            case.last_error_code = case.base_error_code
     return StagedSiteServiceRequestFile(
         event_id=event_id,
         file_id=file_id,
         status="staged",
         duplicate=False,
         storage_path=str(target_path),
-        cleanup_on_failure=True,
+        cleanup_on_failure=not had_existing_payload,
     )
 
 
@@ -356,6 +394,76 @@ def cleanup_staged_site_service_request_file(result: StagedSiteServiceRequestFil
         Path(result.storage_path).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def fail_site_service_request_file(
+    session: Session,
+    *,
+    event_id: str,
+    file_id: int,
+    error_code: str,
+    now: datetime | None = None,
+) -> StagedSiteServiceRequestFile:
+    if error_code != "file_unavailable":
+        raise SiteServiceRequestPayloadError("file_error_code_invalid")
+    event_identity = session.execute(
+        select(
+            SiteServiceRequestEvent.case_id,
+            SiteServiceRequestEvent.source_message_id,
+        ).where(SiteServiceRequestEvent.event_id == event_id)
+    ).one_or_none()
+    if event_identity is None:
+        raise SiteServiceRequestNotFoundError("event_not_found")
+    case_id, source_message_id = event_identity
+    case = session.scalar(
+        select(SiteServiceRequestCase)
+        .where(SiteServiceRequestCase.id == case_id)
+        .with_for_update()
+    )
+    if case is None:
+        raise SiteServiceRequestNotFoundError("event_not_found")
+    files = session.scalars(
+        select(SiteServiceRequestFile)
+        .where(
+            SiteServiceRequestFile.case_id == case.id,
+            SiteServiceRequestFile.source_message_id == source_message_id,
+            SiteServiceRequestFile.source_file_id == file_id,
+        )
+        .limit(2)
+        .with_for_update()
+    ).all()
+    if not files:
+        raise SiteServiceRequestNotFoundError("file_not_registered")
+    if len(files) != 1:
+        raise SiteServiceRequestConflictError("file_identity_ambiguous")
+    file = files[0]
+    if file.status in {"staged", "uploaded"}:
+        return StagedSiteServiceRequestFile(
+            event_id=event_id,
+            file_id=file_id,
+            status=file.status,
+            duplicate=True,
+        )
+    duplicate = file.status == "failed" and file.last_error_code == error_code
+    if file.sha256 != _UNAVAILABLE_FILE_SHA256:
+        file.sha256 = _UNAVAILABLE_FILE_SHA256
+        file.updated_at = _as_utc(now or datetime.now(UTC))
+    if duplicate:
+        # A repeated signed report must not erase the durable Bitrix readback
+        # checkpoint and trigger another identical card update.
+        case.sync_status = "file_sync_error"
+        case.last_error_code = error_code
+        case.updated_at = _as_utc(now or datetime.now(UTC))
+    else:
+        _mark_file_sync_error(file, error_code=error_code, now=now)
+    session.flush()
+    return StagedSiteServiceRequestFile(
+        event_id=event_id,
+        file_id=file_id,
+        status="failed",
+        duplicate=duplicate,
+        error_code=error_code,
+    )
 
 
 def lease_site_service_request_commands(
@@ -370,6 +478,7 @@ def lease_site_service_request_commands(
     if not enabled:
         return []
     current_time = _as_utc(now or datetime.now(UTC))
+    lease_limit = min(max(limit, 1), 20)
     available = or_(
         SiteServiceRequestCommand.status == "pending",
         and_(
@@ -384,28 +493,39 @@ def lease_site_service_request_commands(
         select(SiteServiceRequestCommand)
         .where(available)
         .order_by(SiteServiceRequestCommand.created_at, SiteServiceRequestCommand.id)
-        .limit(min(max(limit, 1), 20))
+        # Read ahead so one damaged row does not hide otherwise deliverable
+        # commands behind the public batch limit.
+        .limit(100)
         .with_for_update(skip_locked=True)
     ).all()
     lease_until = current_time + timedelta(seconds=lease_seconds)
     leased: list[LeasedSiteServiceRequestCommand] = []
+    invalid_text_commands: list[SiteServiceRequestCommand] = []
+    crypto_error_commands: list[SiteServiceRequestCommand] = []
+    first_crypto_error: SiteServiceRequestConfigurationError | None = None
     for command in commands:
+        if len(leased) >= lease_limit:
+            break
         try:
             reply_text = cipher.decrypt(
                 command.reply_encrypted,
                 event_id=command.command_key,
             ).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SiteServiceRequestConfigurationError(
-                "site service request command text is invalid"
-            ) from exc
+        except SiteServiceRequestConfigurationError as exc:
+            crypto_error_commands.append(command)
+            if first_crypto_error is None:
+                first_crypto_error = exc
+            continue
+        except UnicodeDecodeError:
+            invalid_text_commands.append(command)
+            continue
         if not reply_text:
-            raise SiteServiceRequestConfigurationError(
-                "site service request command text is invalid"
-            )
+            invalid_text_commands.append(command)
+            continue
         command.status = "leased"
         command.attempts += 1
         command.lease_until = lease_until
+        command.lease_token = secrets.token_urlsafe(32)
         command.updated_at = current_time
         leased.append(
             LeasedSiteServiceRequestCommand(
@@ -414,8 +534,27 @@ def lease_site_service_request_commands(
                 ticket_id=command.case.source_ticket_id,
                 reply_text=reply_text,
                 lease_until=lease_until,
+                lease_token=command.lease_token,
             )
         )
+
+    # A successfully authenticated ciphertext proves that the configured key is
+    # valid. Only then may other invalid rows be quarantined as corruption; if
+    # every row fails authentication, fail closed so a wrong global key cannot
+    # terminally discard all pending replies.
+    key_is_proven = bool(leased or invalid_text_commands)
+    if crypto_error_commands and not key_is_proven:
+        assert first_crypto_error is not None
+        raise first_crypto_error
+    for command in [*invalid_text_commands, *crypto_error_commands]:
+        command.status = "failed"
+        command.attempts += 1
+        command.lease_until = None
+        command.lease_token = None
+        command.ack_at = current_time
+        command.card_action_cleared_at = current_time
+        command.last_error_code = "command_payload_invalid"
+        command.updated_at = current_time
     session.flush()
     return leased
 
@@ -452,6 +591,19 @@ def acknowledge_site_service_request_command(
         raise SiteServiceRequestNotFoundError("command_not_found")
     if command.status == "pending":
         raise SiteServiceRequestConflictError("command_not_leased")
+    if not command.lease_token or payload.lease_token != command.lease_token:
+        raise SiteServiceRequestConflictError("command_lease_conflict")
+
+    latest_command_id = session.scalar(
+        select(SiteServiceRequestCommand.id)
+        .where(SiteServiceRequestCommand.case_id == case.id)
+        .order_by(
+            SiteServiceRequestCommand.created_at.desc(),
+            SiteServiceRequestCommand.id.desc(),
+        )
+        .limit(1)
+    )
+    is_latest_command = latest_command_id == command.id
 
     current_time = _as_utc(now or datetime.now(UTC))
     if payload.status == "applied":
@@ -480,6 +632,9 @@ def acknowledge_site_service_request_command(
             case.latest_outbound_message_id or 0,
             payload.message_id,
         )
+        if is_latest_command:
+            case.outbound_checked_at = current_time
+            case.outbound_last_error_code = None
         result_status = "applied"
     else:
         assert payload.error_code is not None
@@ -497,6 +652,9 @@ def acknowledge_site_service_request_command(
         command.ack_at = current_time
         command.last_error_code = payload.error_code
         command.lease_until = None
+        if is_latest_command:
+            case.outbound_checked_at = current_time
+            case.outbound_last_error_code = payload.error_code
         result_status = "failed"
 
     command.updated_at = current_time
@@ -629,12 +787,20 @@ def _existing_event_result(
     payload: SiteServiceRequestEventPayload,
     payload_sha256: str,
 ) -> AcceptedSiteServiceRequestEvent:
-    if event.payload_sha256 != payload_sha256:
+    same_source_message = (
+        event.source_message_sha256 is not None
+        and event.source_message_sha256 == _source_message_payload_sha256(payload)
+    )
+    if event.payload_sha256 != payload_sha256 and not same_source_message:
         raise SiteServiceRequestConflictError("event_payload_conflict")
     return AcceptedSiteServiceRequestEvent(
         event_id=event.event_id,
         duplicate=True,
-        missing_file_ids=_missing_file_ids(session, event.case_id, payload),
+        missing_file_ids=_missing_file_ids(
+            session,
+            case_id=event.case_id,
+            source_message_id=event.source_message_id,
+        ),
     )
 
 
@@ -657,11 +823,42 @@ def _upsert_file_metadata(
                 )
             )
             if existing is not None:
-                if existing.sha256 != file.sha256 or existing.byte_size != file.size:
+                unavailable_placeholder = (
+                    existing.sha256 == _UNAVAILABLE_FILE_SHA256
+                    and existing.status in {"pending", "failed"}
+                    and existing.last_error_code in {None, "file_unavailable"}
+                )
+                metadata_changed = (
+                    existing.safe_filename != file.name
+                    or existing.mime_type != file.mime_type
+                    or existing.byte_size != file.size
+                    or existing.sha256 != file.sha256
+                )
+                if metadata_changed and not unavailable_placeholder:
                     raise SiteServiceRequestConflictError("file_metadata_conflict")
+                if unavailable_placeholder:
+                    # A later event may contain restored metadata for a file from
+                    # an older history message, but its upload endpoint is scoped
+                    # to the later event's own source message. Keep the explicit
+                    # zero placeholder until the original event performs the
+                    # full binary PUT, where metadata and content are validated
+                    # and replaced atomically.
+                    if message.message_id == payload.source_message_id:
+                        if is_oversized:
+                            existing.status = "failed"
+                            existing.last_error_code = "file_too_large"
+                            existing.bitrix_error_reported_at = None
+                            existing.updated_at = current_time
+                        elif existing.status == "pending" or (
+                            existing.status == "failed"
+                            and existing.last_error_code == "file_unavailable"
+                        ):
+                            missing_file_ids.add(file.file_id)
+                    continue
                 if is_oversized and existing.status != "uploaded":
                     existing.status = "failed"
                     existing.last_error_code = "file_too_large"
+                    existing.bitrix_error_reported_at = None
                     existing.updated_at = current_time
                 elif (
                     message.message_id == payload.source_message_id and existing.status == "pending"
@@ -690,27 +887,53 @@ def _upsert_file_metadata(
 
 def _missing_file_ids(
     session: Session,
+    *,
     case_id: int,
-    payload: SiteServiceRequestEventPayload,
+    source_message_id: int,
 ) -> list[int]:
-    requested = {
-        (message.message_id, file.file_id)
+    rows = session.scalars(
+        select(SiteServiceRequestFile).where(
+            SiteServiceRequestFile.case_id == case_id,
+            SiteServiceRequestFile.source_message_id == source_message_id,
+            or_(
+                SiteServiceRequestFile.status == "pending",
+                and_(
+                    SiteServiceRequestFile.status == "failed",
+                    SiteServiceRequestFile.last_error_code == "file_unavailable",
+                    SiteServiceRequestFile.sha256 == _UNAVAILABLE_FILE_SHA256,
+                ),
+            ),
+        )
+    ).all()
+    return sorted({row.source_file_id for row in rows})
+
+
+def _source_message_payload_sha256(payload: SiteServiceRequestEventPayload) -> str:
+    source_message = next(
+        message
         for message in payload.history
         if message.message_id == payload.source_message_id
-        for file in message.files
-    }
-    if not requested:
-        return []
-    rows = session.scalars(
-        select(SiteServiceRequestFile).where(SiteServiceRequestFile.case_id == case_id)
-    ).all()
-    return sorted(
-        {
-            row.source_file_id
-            for row in rows
-            if (row.source_message_id, row.source_file_id) in requested and row.status == "pending"
-        }
     )
+    canonical_message = source_message.model_dump(mode="json", by_alias=True)
+    # A deleted/unavailable b_file row has only its durable attachment ID. Name,
+    # MIME, size and hash may all reappear between retries, so only file identity
+    # participates in semantic event dedupe; the upload endpoint validates the
+    # recovered metadata and content against the explicit zero placeholder.
+    canonical_message["files"] = [
+        {"fileId": file_id}
+        for file_id in sorted(
+            file_payload.get("fileId")
+            for file_payload in canonical_message.get("files", [])
+            if isinstance(file_payload, dict)
+        )
+    ]
+    canonical = json.dumps(
+        canonical_message,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _mark_file_sync_error(
@@ -722,20 +945,29 @@ def _mark_file_sync_error(
     current_time = _as_utc(now or datetime.now(UTC))
     file.status = "failed"
     file.last_error_code = error_code
+    file.bitrix_error_reported_at = None
     file.updated_at = current_time
     file.case.sync_status = "file_sync_error"
     file.case.last_error_code = error_code
     file.case.updated_at = current_time
 
 
-def _case_file_error_code(session: Session, *, case_id: int) -> str | None:
+def _case_file_error_code(
+    session: Session,
+    *,
+    case_id: int,
+    exclude_file_id: int | None = None,
+) -> str | None:
+    predicates = [
+        SiteServiceRequestFile.case_id == case_id,
+        SiteServiceRequestFile.status == "failed",
+        SiteServiceRequestFile.last_error_code.is_not(None),
+    ]
+    if exclude_file_id is not None:
+        predicates.append(SiteServiceRequestFile.id != exclude_file_id)
     return session.scalar(
         select(SiteServiceRequestFile.last_error_code)
-        .where(
-            SiteServiceRequestFile.case_id == case_id,
-            SiteServiceRequestFile.status == "failed",
-            SiteServiceRequestFile.last_error_code.is_not(None),
-        )
+        .where(*predicates)
         .order_by(SiteServiceRequestFile.updated_at.desc(), SiteServiceRequestFile.id.desc())
         .limit(1)
     )
@@ -783,7 +1015,8 @@ def _write_site_service_request_file(
         target_path = case_dir / f"{file_row_id}.bin"
         os.replace(temporary_path, target_path)
         temporary_path = None
-        os.chmod(target_path, 0o600)
+        # The temporary file already has mode 0600; os.replace preserves it.
+        # Avoid a second fallible filesystem operation after the atomic replace.
         return target_path
     except OSError as exc:
         if temporary_path:

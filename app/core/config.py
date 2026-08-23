@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     site_service_requests_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
     site_service_requests_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
     site_service_requests_bitrix_enum_map: dict[str, str] = Field(default_factory=dict)
-    site_service_requests_bitrix_root_folder_id: int | None = None
+    site_service_requests_bitrix_root_folder_id: int | None = Field(default=None, gt=0)
     site_service_requests_crm_order_field: str | None = None
     site_service_requests_first_line_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_escalation_user_id: int | None = None

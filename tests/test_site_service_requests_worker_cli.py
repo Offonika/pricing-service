@@ -47,6 +47,7 @@ def test_cli_apply_check_requires_flags_and_mapping(capsys) -> None:
     assert checked["errors"] == [
         "escalation_user_missing",
         "finance_user_missing",
+        "bitrix_root_folder_missing",
         "expected_user_names_incomplete",
         "bitrix_field_map_incomplete",
         "bitrix_enum_map_incomplete",

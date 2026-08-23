@@ -174,6 +174,10 @@ class SiteServiceRequestEvent(Base):
             "attempts >= 0",
             name="ck_site_service_request_event_attempts",
         ),
+        CheckConstraint(
+            "consecutive_permanent_failures >= 0",
+            name="ck_site_service_request_event_permanent_failures",
+        ),
         Index(
             "ix_site_service_request_event_case_message",
             "case_id",
@@ -196,6 +200,7 @@ class SiteServiceRequestEvent(Base):
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     payload_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_message_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -203,6 +208,12 @@ class SiteServiceRequestEvent(Base):
         server_default="pending",
     )
     attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    consecutive_permanent_failures: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
@@ -263,6 +274,9 @@ class SiteServiceRequestFile(Base):
     )
     bitrix_file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bitrix_object_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bitrix_error_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     temporary_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -300,6 +314,10 @@ class SiteServiceRequestCommand(Base):
             "status",
             "lease_until",
         ),
+        Index(
+            "ix_site_service_request_command_case",
+            "case_id",
+        ),
     )
 
     case_id: Mapped[int] = mapped_column(
@@ -322,6 +340,7 @@ class SiteServiceRequestCommand(Base):
         server_default="0",
     )
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     card_action_cleared_at: Mapped[datetime | None] = mapped_column(

@@ -234,11 +234,18 @@ def merge_form(
     existing_names = {
         str(element.get("name") or "")
         for section in merged
-        for element in section.get("elements") or []
+        if isinstance(section, dict)
+        for element in (
+            section.get("elements") if isinstance(section.get("elements"), list) else []
+        )
         if isinstance(element, dict)
     }
     sections_by_name = {
-        str(section.get("name") or ""): section for section in merged if isinstance(section, dict)
+        str(section.get("name") or ""): section
+        for section in merged
+        if isinstance(section, dict)
+        and section.get("type") == "section"
+        and isinstance(section.get("elements"), list)
     }
     for desired_section in desired:
         section_name = str(desired_section.get("name") or "")
@@ -296,7 +303,12 @@ def ensure(
         "crm.item.details.configuration.get",
         configuration_payload,
     )
-    existing_form = _configuration_result(configuration_response)
+    if apply:
+        if not settings.site_service_requests_bitrix_writes_enabled:
+            raise RuntimeError("site_service_request_bitrix_writes_disabled")
+        existing_form = _require_recognized_form(configuration_response)
+    else:
+        existing_form = _configuration_result(configuration_response)
     plan = build_plan(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,
@@ -307,9 +319,6 @@ def ensure(
     )
     if not apply:
         return plan
-    if not settings.site_service_requests_bitrix_writes_enabled:
-        raise RuntimeError("site_service_request_bitrix_writes_disabled")
-    _require_recognized_form(configuration_response)
     if plan.type_mismatches:
         raise RuntimeError("site_service_request_field_type_mismatch")
     if plan.missing_stages:
@@ -372,7 +381,7 @@ def ensure(
             "extras": {"categoryId": refreshed.category_id},
         },
     )
-    if not _form_contains(refreshed.form, _configuration_result(form_readback)):
+    if not _form_contains(refreshed.form, _require_recognized_form(form_readback)):
         raise RuntimeError("site_service_request_form_readback_failed")
     return refreshed
 
@@ -416,19 +425,31 @@ def main(argv: list[str] | None = None) -> int:
 def _list_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
     payload: dict[str, Any] = {"moduleId": "crm", "filter": {"entityId": entity_id}}
     fields: list[dict[str, Any]] = []
-    seen_starts: set[int] = set()
+    seen_starts: set[int] = {0}
+    page_count = 0
     while True:
+        page_count += 1
         response = api.call_json("userfieldconfig.list", payload)
-        result = response.get("result") or {}
-        page = result.get("fields") if isinstance(result, dict) else None
-        if isinstance(page, list):
-            fields.extend(item for item in page if isinstance(item, dict))
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("fields"), list):
+            raise RuntimeError("site_service_request_fields_readback_unrecognized")
+        page = result["fields"]
+        if any(not isinstance(item, dict) for item in page):
+            raise RuntimeError("site_service_request_fields_readback_unrecognized")
+        fields.extend(page)
         next_start = response.get("next")
         if next_start is None and isinstance(result, dict):
             next_start = result.get("next")
         if next_start is None:
             return fields
-        start = int(next_start)
+        if page_count >= 100 or isinstance(next_start, bool):
+            raise RuntimeError("site_service_request_fields_pagination_invalid")
+        try:
+            start = int(next_start)
+        except (TypeError, ValueError):
+            raise RuntimeError("site_service_request_fields_pagination_invalid") from None
+        if start < 0:
+            raise RuntimeError("site_service_request_fields_pagination_invalid")
         if start in seen_starts:
             raise RuntimeError("site_service_request_fields_pagination_loop")
         seen_starts.add(start)
@@ -478,24 +499,38 @@ def _stage_mapping(stages: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def _configuration_result(response: dict[str, Any]) -> list[dict[str, Any]]:
-    result: Any = response.get("result")
-    if isinstance(result, dict):
-        result = result.get("data") or result.get("configuration") or []
+    result = _raw_configuration_result(response)
     return [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
 
 
 def _require_recognized_form(response: dict[str, Any]) -> list[dict[str, Any]]:
-    form = _configuration_result(response)
-    if not form:
+    form = _raw_configuration_result(response)
+    if not isinstance(form, list) or not form:
         raise RuntimeError("site_service_request_form_readback_unrecognized")
     for section in form:
         if (
-            not str(section.get("name") or "").strip()
+            not isinstance(section, dict)
+            or not str(section.get("name") or "").strip()
             or section.get("type") != "section"
             or not isinstance(section.get("elements"), list)
+            or any(
+                not isinstance(element, dict)
+                for element in section.get("elements") or []
+            )
         ):
             raise RuntimeError("site_service_request_form_readback_unrecognized")
     return form
+
+
+def _raw_configuration_result(response: dict[str, Any]) -> Any:
+    result: Any = response.get("result")
+    if isinstance(result, dict):
+        if "data" in result:
+            return result["data"]
+        if "configuration" in result:
+            return result["configuration"]
+        return None
+    return result
 
 
 def _form_contains(

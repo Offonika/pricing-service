@@ -136,8 +136,12 @@ class SiteServiceRequestFileStagedResponse(BaseModel):
 
     event_id: str = Field(alias="eventId")
     file_id: int = Field(alias="fileId", gt=0)
-    status: Literal["staged", "uploaded"]
+    status: Literal["staged", "uploaded", "failed"]
     duplicate: bool
+    error_code: Literal["file_unavailable"] | None = Field(
+        default=None,
+        alias="errorCode",
+    )
 
 
 class SiteServiceRequestCommandPayload(BaseModel):
@@ -148,6 +152,7 @@ class SiteServiceRequestCommandPayload(BaseModel):
     ticket_id: int = Field(alias="ticketId", gt=0)
     reply_text: str = Field(alias="replyText", min_length=1, max_length=200_000)
     lease_until: datetime = Field(alias="leaseUntil")
+    lease_token: str = Field(alias="leaseToken", min_length=32, max_length=128)
 
 
 class SiteServiceRequestCommandsResponse(BaseModel):
@@ -161,6 +166,7 @@ class SiteServiceRequestCommandAckPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     schema_version: Literal[1] = Field(alias="schemaVersion")
+    lease_token: str = Field(alias="leaseToken", min_length=32, max_length=128)
     status: Literal["applied", "failed"]
     ticket_id: int | None = Field(default=None, alias="ticketId", gt=0)
     message_id: int | None = Field(default=None, alias="messageId", gt=0)

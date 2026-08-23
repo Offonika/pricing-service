@@ -81,6 +81,18 @@ def _load_outbound_error_migration():
     return migration
 
 
+def _load_finalize_hardening_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/7b9d1f3a5c46_finalize_site_request_hardening.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_finalize", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -241,14 +253,20 @@ def test_hardening_migration_backfills_status_and_is_reversible(tmp_path: Path) 
             "(source_ticket_id, assignment_state, round_robin_seq, first_seen_at, "
             "sync_status, last_error_code, version, created_at, updated_at) VALUES "
             "(741, 'waiting', 0, CURRENT_TIMESTAMP, 'order_not_found', "
-            "'order_not_found', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "'order_not_found', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+            "(742, 'waiting', 0, CURRENT_TIMESTAMP, 'file_sync_error', "
+            "'file_unavailable', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
         hardening_migration.upgrade()
 
-        row = connection.exec_driver_sql(
-            "SELECT base_sync_status, base_error_code FROM site_service_request_case"
-        ).one()
-        assert row == ("order_not_found", "order_not_found")
+        rows = connection.exec_driver_sql(
+            "SELECT base_sync_status, base_error_code "
+            "FROM site_service_request_case ORDER BY source_ticket_id"
+        ).all()
+        assert rows == [
+            ("order_not_found", "order_not_found"),
+            ("pending", None),
+        ]
         case_columns = {
             column["name"]
             for column in inspect(connection).get_columns("site_service_request_case")
@@ -368,4 +386,97 @@ def test_outbound_error_migration_is_reversible(tmp_path: Path) -> None:
         assert "outbound_last_error_code" not in columns
 
     assert migrations[-1].down_revision == "5f7a9c1e3b24"
+    engine.dispose()
+
+
+def test_finalize_hardening_migration_corrects_delivery_backfills(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-finalize.db'}")
+    migrations = (
+        _load_migration(),
+        _load_open_stage_migration(),
+        _load_hardening_migration(),
+        _load_delivery_migration(),
+        _load_outbound_error_migration(),
+        _load_finalize_hardening_migration(),
+    )
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in migrations:
+            migration.op = operations
+        for migration in migrations[:-1]:
+            migration.upgrade()
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_case "
+            "(source_ticket_id, assignment_state, round_robin_seq, first_seen_at, "
+            "escalated_at, escalation_timeline_delivered_at, "
+            "escalation_notification_delivered_at, sync_status, base_sync_status, "
+            "version, created_at, updated_at) VALUES "
+            "(741, 'escalated', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'synced', 'synced', 1, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_event "
+            "(event_id, case_id, source_message_id, event_type, direction, "
+            "payload_sha256, status, attempts, created_at, updated_at) VALUES "
+            "('site-support:741:1201', 1, 1201, 'ticket.created', 'inbound', "
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', "
+            "'processed', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO site_service_request_command "
+            "(case_id, command_key, reply_encrypted, reply_sha256, status, attempts, "
+            "card_action_cleared_at, last_error_code, created_at, updated_at) VALUES "
+            "(1, 'site-support-reply:741:failed', X'01', 'abc', 'failed', 1, "
+            "CURRENT_TIMESTAMP, 'message_write_failed', "
+            "'2026-08-23 10:00:00', '2026-08-23 10:00:00'), "
+            "(1, 'site-support-reply:741:pending', X'02', 'def', 'pending', 0, "
+            "CURRENT_TIMESTAMP, NULL, "
+            "'2026-08-23 11:00:00', '2026-08-23 11:00:00')"
+        )
+
+        migrations[-1].upgrade()
+
+        event_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_event")
+        }
+        assert {"consecutive_permanent_failures", "source_message_sha256"} <= event_columns
+        command_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_command")
+        }
+        assert "lease_token" in command_columns
+        file_columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_file")
+        }
+        assert "bitrix_error_reported_at" in file_columns
+        assert {
+            index["name"]
+            for index in inspect(connection).get_indexes("site_service_request_command")
+        } >= {"ix_site_service_request_command_case"}
+        cleared_markers = connection.exec_driver_sql(
+            "SELECT card_action_cleared_at FROM site_service_request_command ORDER BY id"
+        ).all()
+        assert cleared_markers[0][0] is not None
+        assert cleared_markers[1] == (None,)
+        case_state = connection.exec_driver_sql(
+            "SELECT escalation_notification_delivered_at, outbound_last_error_code "
+            "FROM site_service_request_case"
+        ).one()
+        assert case_state == (None, "message_write_failed")
+
+        migrations[-1].downgrade()
+        assert "lease_token" not in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_command")
+        }
+        assert "bitrix_error_reported_at" not in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_file")
+        }
+
+    assert migrations[-1].down_revision == "6a8c0e2f4b35"
     engine.dispose()

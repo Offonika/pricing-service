@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -25,12 +25,13 @@ _BODY = b'{"schemaVersion":1,"eventId":"site-support:741:1201"}'
 
 
 def _settings(**overrides) -> Settings:
-    return Settings(
-        site_service_requests_hmac_secret=_SECRET,
-        site_service_requests_timestamp_tolerance_seconds=300,
-        site_service_requests_nonce_ttl_seconds=600,
-        **overrides,
-    )
+    values = {
+        "site_service_requests_hmac_secret": _SECRET,
+        "site_service_requests_timestamp_tolerance_seconds": 300,
+        "site_service_requests_nonce_ttl_seconds": 600,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def _headers(*, body: bytes = _BODY, timestamp: int = _TIMESTAMP, nonce: str = _NONCE):
@@ -99,6 +100,49 @@ def test_valid_signature_reserves_nonce_and_replay_is_rejected() -> None:
                 **_headers(),
             )
         assert exc_info.value.code == "nonce_replay"
+
+    engine.dispose()
+
+
+def test_nonce_survives_full_timestamp_window_when_ttl_is_shorter() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    signed_timestamp = _TIMESTAMP + 899
+    settings = _settings(
+        site_service_requests_timestamp_tolerance_seconds=900,
+        site_service_requests_nonce_ttl_seconds=300,
+    )
+
+    with Session(engine) as session:
+        verify_site_request(
+            session,
+            method="POST",
+            path=_PATH,
+            body=_BODY,
+            settings=settings,
+            now=_NOW,
+            **_headers(timestamp=signed_timestamp),
+        )
+        session.commit()
+        nonce = session.scalar(select(SiteServiceRequestNonce))
+        assert nonce is not None
+        expires_at = (
+            nonce.expires_at.replace(tzinfo=UTC)
+            if nonce.expires_at.tzinfo is None
+            else nonce.expires_at.astimezone(UTC)
+        )
+        assert expires_at == datetime.fromtimestamp(signed_timestamp, UTC) + timedelta(seconds=901)
+
+        with pytest.raises(SiteServiceRequestAuthError, match="nonce_replay"):
+            verify_site_request(
+                session,
+                method="POST",
+                path=_PATH,
+                body=_BODY,
+                settings=settings,
+                now=_NOW + timedelta(seconds=301),
+                **_headers(timestamp=signed_timestamp),
+            )
 
     engine.dispose()
 

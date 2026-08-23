@@ -42,7 +42,14 @@ def upgrade() -> None:
     op.execute(
         sa.text(
             "UPDATE site_service_request_case "
-            "SET base_sync_status = sync_status, base_error_code = last_error_code"
+            "SET base_sync_status = CASE "
+            "      WHEN sync_status = 'file_sync_error' THEN 'pending' "
+            "      ELSE sync_status "
+            "    END, "
+            "    base_error_code = CASE "
+            "      WHEN sync_status = 'file_sync_error' THEN NULL "
+            "      ELSE last_error_code "
+            "    END"
         )
     )
     op.create_index(

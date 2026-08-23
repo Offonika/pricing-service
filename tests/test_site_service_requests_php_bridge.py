@@ -37,8 +37,31 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "'support-team'" in source
     assert "'isVisibleToCustomer'" in source
     assert "`IS_HIDDEN`" in source
+    assert " AND `ID` <= " in source
+    assert "'leaseToken' => $leaseToken" in source
+    assert "payloadFileIsUnavailable" in source
+    assert "X-MM-Site-File-Error: file_unavailable" in source
+    assert "str_repeat('0', 64)" in source
+    assert "LEFT JOIN `b_file`" in source
+    assert "`ATTACHED_FILE_ID`" in source
     assert "rawurlencode((string) $eventKey)" not in source
+    assert "filename*=UTF-8" in source
+    assert "file_response_mismatch" in source
+    assert "file_error_report_response_mismatch" in source
+    assert source.count("throw new BridgeFailure('file_api_unavailable');") == 1
+    assert source.count("throw new BridgeFailure('file_hash_failed');") == 1
+    assert "array(\n                                'file_not_found'" not in source
     assert "$isPermanentHttpError" in source
+    assert "array(408, 413, 425, 429)" in source
+
+
+def test_bridge_hardening_keeps_ambiguous_writes_and_field_repair_idempotent() -> None:
+    source = BRIDGE.read_text(encoding="utf-8")
+
+    assert source.count("findExistingCommandMessageId($ticketId, $marker)") >= 3
+    assert "support_user_field_update_failed" in source
+    assert "ensureSupportFieldEnum" in source
+    assert "support_user_field_enum_readback_failed" in source
 
 
 def test_event_handlers_preserve_bitrix_event_chain_contract() -> None:

@@ -7,6 +7,7 @@ import json
 import stat
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 from uuid import uuid4
 
 import pytest
@@ -158,6 +159,7 @@ def _put_file(
     body: bytes,
     filename: str = "photo.jpg",
     mime_type: str = "image/jpeg",
+    content_disposition: str | None = None,
 ):
     path = f"{_EVENT_PATH}/{event_id}/files/{file_id}"
     return client.put(
@@ -169,8 +171,33 @@ def _put_file(
             body=body,
             content_type=mime_type,
             extra={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": (
+                    content_disposition or f'attachment; filename="{filename}"'
+                ),
                 "Content-Length": str(len(body)),
+            },
+        ),
+    )
+
+
+def _report_file_unavailable(
+    client,
+    *,
+    event_id: str,
+    file_id: int,
+):
+    path = f"{_EVENT_PATH}/{event_id}/files/{file_id}"
+    return client.put(
+        path,
+        content=b"",
+        headers=_signed_headers(
+            method="PUT",
+            path=path,
+            body=b"",
+            content_type="application/octet-stream",
+            extra={
+                "Content-Length": "0",
+                "X-MM-Site-File-Error": "file_unavailable",
             },
         ),
     )
@@ -238,6 +265,8 @@ def test_event_api_accepts_encrypted_payload_and_returns_missing_files(
     assert case is not None and case.source_ticket_id == 741
     assert case.latest_inbound_message_id == 1201
     assert event is not None and event.payload_encrypted is not None
+    assert event.source_message_sha256 is not None
+    assert len(event.source_message_sha256) == 64
     assert body not in event.payload_encrypted
     assert (
         SiteServiceRequestCipher(_ENCRYPTION_KEY).decrypt(
@@ -266,7 +295,7 @@ def test_event_api_returns_idempotent_duplicate_without_extra_rows(client, db_se
     assert db_session.scalar(select(func.count(SiteServiceRequestNonce.id))) == 2
 
 
-def test_event_api_rejects_payload_conflict_without_overwriting_event(
+def test_event_api_accepts_changed_ticket_metadata_for_same_source_message(
     client,
     db_session,
 ) -> None:
@@ -275,14 +304,29 @@ def test_event_api_rejects_payload_conflict_without_overwriting_event(
     changed["ticket"]["title"] = "Другой текст"
     with _api_dependencies(db_session, _settings()):
         assert _post_event(client, original).status_code == 202
-        conflict = _post_event(client, changed)
+        duplicate = _post_event(client, changed)
 
-    assert conflict.status_code == 409
-    assert conflict.json() == {"detail": "event_payload_conflict"}
+    assert duplicate.status_code == 202
+    assert duplicate.json()["duplicate"] is True
     assert db_session.scalar(select(func.count(SiteServiceRequestEvent.id))) == 1
     event = db_session.scalar(select(SiteServiceRequestEvent))
     assert event is not None
     assert event.payload_sha256 == content_sha256(_json_body(original))
+
+
+def test_event_api_rejects_changed_source_message_for_same_event_id(
+    client,
+    db_session,
+) -> None:
+    original = _event_payload()
+    changed = _event_payload()
+    changed["history"][0]["text"] = "Другой текст исходного сообщения"
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, original).status_code == 202
+        conflict = _post_event(client, changed)
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "event_payload_conflict"}
 
 
 def test_event_api_rejects_nonce_replay_before_idempotent_event_check(
@@ -506,6 +550,191 @@ def test_file_api_stages_binary_idempotently_and_stops_requesting_it(
     assert stat.S_IMODE(stored_path.stat().st_mode) == 0o600
 
 
+def test_file_api_preserves_rfc5987_unicode_filename(client, db_session, tmp_path) -> None:
+    body = b"unicode-file-name"
+    filename = "фото устройства.jpg"
+    payload = _event_payload()
+    payload["history"][0]["files"][0].update(
+        {
+            "name": filename,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+    )
+    settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
+
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, payload).status_code == 202
+        uploaded = _put_file(
+            client,
+            event_id=payload["eventId"],
+            file_id=93287,
+            body=body,
+            content_disposition=f"attachment; filename*=UTF-8''{quote(filename)}",
+        )
+
+    assert uploaded.status_code == 200
+    file = db_session.scalar(select(SiteServiceRequestFile))
+    assert file is not None and file.safe_filename == filename
+
+
+def test_file_unavailable_is_durable_and_zero_hash_placeholder_can_recover(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    body = b"recovered-file"
+    payload = _event_payload()
+    payload["history"][0]["files"][0].update(
+        {
+            "name": "attachment-93287.bin",
+            "mimeType": "application/octet-stream",
+            "size": 0,
+            "sha256": "0" * 64,
+        }
+    )
+    recovered_payload = json.loads(json.dumps(payload))
+    recovered_payload["history"][0]["files"][0].update(
+        {
+            "name": "photo.jpg",
+            "mimeType": "image/jpeg",
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+    )
+    settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
+
+    with _api_dependencies(db_session, settings):
+        accepted = _post_event(client, payload)
+        failed = _report_file_unavailable(
+            client,
+            event_id=payload["eventId"],
+            file_id=93287,
+        )
+        file = db_session.scalar(select(SiteServiceRequestFile))
+        assert file is not None
+        reported_at = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+        file.bitrix_error_reported_at = reported_at
+        db_session.commit()
+        duplicate_failure = _report_file_unavailable(
+            client,
+            event_id=payload["eventId"],
+            file_id=93287,
+        )
+        db_session.refresh(file)
+        assert file.bitrix_error_reported_at is not None
+        assert file.bitrix_error_reported_at.replace(tzinfo=UTC) == reported_at
+        recovered_event = _post_event(client, recovered_payload)
+        recovered = _put_file(
+            client,
+            event_id=payload["eventId"],
+            file_id=93287,
+            body=body,
+        )
+
+    assert accepted.status_code == 202
+    assert failed.status_code == 200
+    assert failed.json() == {
+        "eventId": payload["eventId"],
+        "fileId": 93287,
+        "status": "failed",
+        "duplicate": False,
+        "errorCode": "file_unavailable",
+    }
+    assert duplicate_failure.status_code == 200
+    assert duplicate_failure.json()["duplicate"] is True
+    assert recovered_event.status_code == 202
+    assert recovered_event.json()["duplicate"] is True
+    assert recovered_event.json()["missingFileIds"] == [93287]
+    assert recovered.status_code == 200
+    file = db_session.scalar(select(SiteServiceRequestFile))
+    assert file is not None
+    assert file.status == "staged"
+    assert file.safe_filename == "photo.jpg"
+    assert file.mime_type == "image/jpeg"
+    assert file.byte_size == len(body)
+    assert file.sha256 == hashlib.sha256(body).hexdigest()
+    assert file.last_error_code is None
+    assert file.case.sync_status == file.case.base_sync_status
+
+
+def test_later_history_snapshot_does_not_consume_recoverable_file_placeholder(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    body = b"restored-after-later-message"
+    first = _event_payload()
+    first["history"][0]["files"][0].update(
+        {
+            "name": "attachment-93287.bin",
+            "mimeType": "application/octet-stream",
+            "size": 0,
+            "sha256": "0" * 64,
+        }
+    )
+    recovered_first = json.loads(json.dumps(first))
+    recovered_first["history"][0]["files"][0].update(
+        {
+            "name": "фото.jpg",
+            "mimeType": "image/jpeg",
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+    )
+    later = json.loads(json.dumps(recovered_first))
+    later["eventId"] = "site-support:741:1301"
+    later["eventType"] = "ticket.message_added"
+    later["occurredAt"] = "2026-08-22T12:01:00+03:00"
+    later["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T12:01:00+03:00",
+            "text": "Файл восстановлен",
+            "files": [],
+        }
+    )
+    settings = _settings(site_service_requests_file_spool_dir=str(tmp_path))
+
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, first).status_code == 202
+        assert (
+            _report_file_unavailable(
+                client,
+                event_id=first["eventId"],
+                file_id=93287,
+            ).status_code
+            == 200
+        )
+        assert _post_event(client, later).status_code == 202
+        placeholder = db_session.scalar(
+            select(SiteServiceRequestFile).where(
+                SiteServiceRequestFile.source_message_id == 1201
+            )
+        )
+        assert placeholder is not None
+        assert placeholder.sha256 == "0" * 64
+        assert placeholder.last_error_code == "file_unavailable"
+
+        repeated = _post_event(client, recovered_first)
+        uploaded = _put_file(
+            client,
+            event_id=first["eventId"],
+            file_id=93287,
+            body=body,
+            content_disposition=f"attachment; filename*=UTF-8''{quote('фото.jpg')}",
+        )
+
+    assert repeated.status_code == 202
+    assert repeated.json()["missingFileIds"] == [93287]
+    assert uploaded.status_code == 200
+    db_session.refresh(placeholder)
+    assert placeholder.status == "staged"
+    assert placeholder.safe_filename == "фото.jpg"
+    assert placeholder.sha256 == hashlib.sha256(body).hexdigest()
+
+
 def test_file_upload_identity_includes_event_source_message(
     client,
     db_session,
@@ -696,6 +925,8 @@ def test_commands_api_leases_decrypted_command_and_releases_it_after_expiry(
 
     assert first.status_code == 200
     assert first.json()["schemaVersion"] == 1
+    first_lease_token = first.json()["commands"][0]["leaseToken"]
+    second_lease_token = after_expiry.json()["commands"][0]["leaseToken"]
     assert first.json()["commands"] == [
         {
             "commandId": command.id,
@@ -703,15 +934,117 @@ def test_commands_api_leases_decrypted_command_and_releases_it_after_expiry(
             "ticketId": 741,
             "replyText": "Проверочный ответ клиенту",
             "leaseUntil": first.json()["commands"][0]["leaseUntil"],
+            "leaseToken": first_lease_token,
         }
     ]
     assert second.status_code == 200
     assert second.json()["commands"] == []
     assert after_expiry.status_code == 200
     assert len(after_expiry.json()["commands"]) == 1
+    assert second_lease_token != first_lease_token
     db_session.refresh(command)
     assert command.status == "leased"
     assert command.attempts == 2
+
+
+def test_command_ack_rejects_stale_lease_token_after_rotation(client, db_session) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        command = _create_command(db_session, case_id=case.id)
+        first = _get_commands(client)
+        first_token = first.json()["commands"][0]["leaseToken"]
+        command.lease_until = datetime(2020, 1, 1, tzinfo=UTC)
+        db_session.commit()
+        second = _get_commands(client)
+        second_token = second.json()["commands"][0]["leaseToken"]
+        ack_payload = {
+            "schemaVersion": 1,
+            "status": "applied",
+            "ticketId": 741,
+            "messageId": 1301,
+            "appliedAt": "2026-08-22T13:00:00+03:00",
+        }
+        stale = _post_command_ack(
+            client,
+            command.id,
+            {**ack_payload, "leaseToken": first_token},
+        )
+        applied = _post_command_ack(
+            client,
+            command.id,
+            {**ack_payload, "leaseToken": second_token},
+        )
+
+    assert first_token != second_token
+    assert stale.status_code == 409
+    assert stale.json() == {"detail": "command_lease_conflict"}
+    assert applied.status_code == 200
+
+
+def test_invalid_command_text_is_quarantined_without_blocking_valid_batch(
+    client,
+    db_session,
+) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        invalid_key = "site-support-reply:741:invalid"
+        invalid = SiteServiceRequestCommand(
+            case_id=case.id,
+            command_key=invalid_key,
+            reply_encrypted=SiteServiceRequestCipher(_ENCRYPTION_KEY).encrypt(
+                b"\xff",
+                event_id=invalid_key,
+            ),
+            reply_sha256=hashlib.sha256(b"\xff").hexdigest(),
+            status="pending",
+        )
+        db_session.add(invalid)
+        db_session.commit()
+        valid = _create_command(
+            db_session,
+            case_id=case.id,
+            command_key="site-support-reply:741:valid",
+        )
+        response = _get_commands(client)
+
+    assert response.status_code == 200
+    assert [row["commandId"] for row in response.json()["commands"]] == [valid.id]
+    db_session.refresh(invalid)
+    assert invalid.status == "failed"
+    assert invalid.last_error_code == "command_payload_invalid"
+    assert invalid.card_action_cleared_at is not None
+
+
+def test_wrong_global_command_key_fails_closed_without_discarding_command(
+    client,
+    db_session,
+) -> None:
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, _event_payload()).status_code == 202
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None
+    command = _create_command(db_session, case_id=case.id)
+    wrong_key = base64.urlsafe_b64encode(b"z" * 32).decode("ascii")
+
+    with _api_dependencies(
+        db_session,
+        _settings(
+            site_service_requests_outbound_replies_enabled=True,
+            site_service_requests_event_encryption_key=wrong_key,
+        ),
+    ):
+        response = _get_commands(client)
+
+    assert response.status_code == 503
+    db_session.refresh(command)
+    assert command.status == "pending"
+    assert command.last_error_code is None
 
 
 def test_commands_api_returns_at_most_twenty_and_disabled_mode_does_not_lease(
@@ -763,9 +1096,12 @@ def test_command_ack_is_idempotent_and_does_not_complete_sla_without_readback(
         case = db_session.scalar(select(SiteServiceRequestCase))
         assert case is not None
         command = _create_command(db_session, case_id=case.id)
-        assert _get_commands(client).status_code == 200
+        leased = _get_commands(client)
+        assert leased.status_code == 200
+        lease_token = leased.json()["commands"][0]["leaseToken"]
         ack_payload = {
             "schemaVersion": 1,
+            "leaseToken": lease_token,
             "status": "applied",
             "ticketId": 741,
             "messageId": 1301,
@@ -802,12 +1138,13 @@ def test_command_ack_locks_case_before_command(client, db_session) -> None:
     assert case is not None
     command = _create_command(db_session, case_id=case.id)
     command.status = "leased"
+    command.lease_token = "l" * 32
     db_session.commit()
 
     class RecordingSession:
         def __init__(self) -> None:
             self.statements = []
-            self.results = iter((case.id, case, command))
+            self.results = iter((case.id, case, command, command.id))
             self.flushed = False
 
         def scalar(self, statement):
@@ -824,6 +1161,7 @@ def test_command_ack_locks_case_before_command(client, db_session) -> None:
         payload=SiteServiceRequestCommandAckPayload.model_validate(
             {
                 "schemaVersion": 1,
+                "leaseToken": command.lease_token,
                 "status": "applied",
                 "ticketId": case.source_ticket_id,
                 "messageId": 1301,
@@ -839,10 +1177,12 @@ def test_command_ack_locks_case_before_command(client, db_session) -> None:
         SiteServiceRequestCommand,
         SiteServiceRequestCase,
         SiteServiceRequestCommand,
+        SiteServiceRequestCommand,
     ]
     assert recording_session.statements[0]._for_update_arg is None
     assert recording_session.statements[1]._for_update_arg is not None
     assert recording_session.statements[2]._for_update_arg is not None
+    assert recording_session.statements[3]._for_update_arg is None
     assert recording_session.flushed is True
     assert result.status == "applied"
     assert case.latest_outbound_message_id == 1301
@@ -858,9 +1198,12 @@ def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(
         case = db_session.scalar(select(SiteServiceRequestCase))
         assert case is not None
         command = _create_command(db_session, case_id=case.id)
-        assert _get_commands(client).status_code == 200
+        leased = _get_commands(client)
+        assert leased.status_code == 200
+        lease_token = leased.json()["commands"][0]["leaseToken"]
         ack_payload = {
             "schemaVersion": 1,
+            "leaseToken": lease_token,
             "status": "failed",
             "errorCode": "message_write_failed",
         }
@@ -871,6 +1214,7 @@ def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(
             command.id,
             {
                 "schemaVersion": 1,
+                "leaseToken": lease_token,
                 "status": "applied",
                 "ticketId": 741,
                 "messageId": 1301,
@@ -891,6 +1235,62 @@ def test_command_failed_ack_has_allowlisted_error_and_is_idempotent(
     db_session.refresh(command)
     assert command.status == "failed"
     assert command.last_error_code == "message_write_failed"
+
+
+def test_failed_outbound_health_stays_degraded_until_replacement_is_applied(
+    client,
+    db_session,
+) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        failed_command = _create_command(db_session, case_id=case.id)
+        failed_lease = _get_commands(client).json()["commands"][0]
+        assert _post_command_ack(
+            client,
+            failed_command.id,
+            {
+                "schemaVersion": 1,
+                "leaseToken": failed_lease["leaseToken"],
+                "status": "failed",
+                "errorCode": "message_write_failed",
+            },
+        ).status_code == 200
+        replacement = _create_command(
+            db_session,
+            case_id=case.id,
+            command_key="site-support-reply:741:replacement",
+            reply_text="Исправленный ответ",
+        )
+        pending_health = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+        replacement_lease = _get_commands(client).json()["commands"][0]
+        assert replacement_lease["commandId"] == replacement.id
+        assert _post_command_ack(
+            client,
+            replacement.id,
+            {
+                "schemaVersion": 1,
+                "leaseToken": replacement_lease["leaseToken"],
+                "status": "applied",
+                "ticketId": 741,
+                "messageId": 1302,
+                "appliedAt": "2026-08-22T13:05:00+03:00",
+            },
+        ).status_code == 200
+        recovered_health = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    assert pending_health.json()["status"] == "degraded"
+    assert pending_health.json()["outboundFailures"] == 1
+    assert recovered_health.json()["status"] == "healthy"
+    assert recovered_health.json()["outboundFailures"] == 0
 
 
 def test_health_contains_only_safe_technical_aggregates(client, db_session) -> None:

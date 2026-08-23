@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from email.message import Message
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,6 +34,7 @@ from app.services.site_service_requests import (
     build_site_service_request_cipher,
     build_site_service_request_health,
     cleanup_staged_site_service_request_file,
+    fail_site_service_request_file,
     lease_site_service_request_commands,
     stage_site_service_request_file,
 )
@@ -95,6 +96,7 @@ def accept_event(
 @router.put(
     "/events/{event_id}/files/{file_id}",
     response_model=SiteServiceRequestFileStagedResponse,
+    response_model_exclude_none=True,
     responses={
         401: {"description": "Invalid or missing site HMAC authentication"},
         404: {"description": "Event or file metadata is not registered"},
@@ -116,41 +118,60 @@ def upload_event_file(
     ] = None,
     content_type: Annotated[str | None, Header(alias="Content-Type")] = None,
     content_length: Annotated[int | None, Header(alias="Content-Length", ge=0)] = None,
+    file_error: Annotated[
+        Literal["file_unavailable"] | None,
+        Header(alias="X-MM-Site-File-Error"),
+    ] = None,
 ) -> SiteServiceRequestFileStagedResponse:
     if not settings.site_service_requests_ingest_enabled:
         raise HTTPException(status_code=503, detail="ingest_disabled")
-    filename = _filename_from_content_disposition(content_disposition)
-    if content_type is None or content_length is None:
-        raise HTTPException(status_code=422, detail="file_metadata_invalid")
+    if file_error is None:
+        filename = _filename_from_content_disposition(content_disposition)
+        if content_type is None or content_length is None:
+            raise HTTPException(status_code=422, detail="file_metadata_invalid")
+    else:
+        filename = ""
 
     result = None
     try:
-        result = stage_site_service_request_file(
-            db,
-            event_id=event_id,
-            file_id=file_id,
-            body=verified.body,
-            safe_filename=filename,
-            mime_type=content_type,
-            declared_size=content_length,
-            body_sha256=verified.content_sha256,
-            spool_dir=settings.site_service_requests_file_spool_dir,
-            max_file_bytes=settings.site_service_requests_max_file_bytes,
-        )
+        if file_error is not None:
+            if verified.body:
+                raise SiteServiceRequestPayloadError("file_error_body_invalid")
+            result = fail_site_service_request_file(
+                db,
+                event_id=event_id,
+                file_id=file_id,
+                error_code=file_error,
+            )
+        else:
+            assert content_type is not None
+            assert content_length is not None
+            result = stage_site_service_request_file(
+                db,
+                event_id=event_id,
+                file_id=file_id,
+                body=verified.body,
+                safe_filename=filename,
+                mime_type=content_type,
+                declared_size=content_length,
+                body_sha256=verified.content_sha256,
+                spool_dir=settings.site_service_requests_file_spool_dir,
+                max_file_bytes=settings.site_service_requests_max_file_bytes,
+            )
         db.commit()
     except SiteServiceRequestNotFoundError as exc:
         db.rollback()
         raise HTTPException(status_code=404, detail=exc.code) from exc
     except SiteServiceRequestPayloadError as exc:
         if exc.persist_state:
-            db.commit()
+            _commit_site_service_request_file_failure(db)
         else:
             db.rollback()
         code = 413 if exc.code == "file_too_large" else 422
         raise HTTPException(status_code=code, detail=exc.code) from exc
     except SiteServiceRequestConflictError as exc:
         if exc.persist_state:
-            db.commit()
+            _commit_site_service_request_file_failure(db)
         else:
             db.rollback()
         raise HTTPException(status_code=409, detail=exc.code) from exc
@@ -168,6 +189,7 @@ def upload_event_file(
         file_id=result.file_id,
         status=result.status,
         duplicate=result.duplicate,
+        error_code=result.error_code,
     )
 
 
@@ -210,6 +232,7 @@ def get_commands(
                 ticket_id=command.ticket_id,
                 reply_text=command.reply_text,
                 lease_until=command.lease_until,
+                lease_token=command.lease_token,
             )
             for command in commands
         ]
@@ -288,3 +311,11 @@ def _filename_from_content_disposition(value: str | None) -> str:
     if not filename:
         raise HTTPException(status_code=422, detail="file_metadata_invalid")
     return filename
+
+
+def _commit_site_service_request_file_failure(db: Session) -> None:
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="file_storage_unavailable") from exc

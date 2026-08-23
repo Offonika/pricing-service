@@ -206,6 +206,31 @@ def test_apply_fails_closed_when_existing_form_readback_is_empty() -> None:
     assert _write_methods(api) == []
 
 
+def test_apply_fails_closed_when_existing_form_contains_unknown_rows() -> None:
+    class MalformedFormApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            if method == "crm.item.details.configuration.get":
+                return {
+                    "result": [
+                        {
+                            "name": "main",
+                            "title": "Основное",
+                            "type": "section",
+                            "elements": [{"name": "TITLE", "optionFlags": 1}],
+                        },
+                        "unexpected-row",
+                    ]
+                }
+            return super().call_json(method, payload, **kwargs)
+
+    api = MalformedFormApi(fields=_all_fields())
+
+    with pytest.raises(RuntimeError, match="form_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_blocks_missing_required_stage_before_writes() -> None:
     api = FakeBitrixApi(fields=_all_fields(), stages=_stages()[:-1])
 
@@ -305,3 +330,58 @@ def test_userfield_list_reads_all_pages() -> None:
         {"moduleId": "crm", "filter": {"entityId": "CRM_36"}},
         {"moduleId": "crm", "filter": {"entityId": "CRM_36"}, "start": 50},
     ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"result": []},
+        {"result": {"fields": "not-a-list"}},
+        {"result": {"fields": ["unknown-row"]}},
+    ],
+)
+def test_userfield_list_rejects_malformed_page(response: dict[str, Any]) -> None:
+    class MalformedApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            assert method == "userfieldconfig.list"
+            return response
+
+    with pytest.raises(RuntimeError, match="fields_readback_unrecognized"):
+        bitrix_setup._list_fields(MalformedApi(), entity_id="CRM_36")
+
+
+@pytest.mark.parametrize("next_value", [False, -1, "invalid"])
+def test_userfield_list_rejects_invalid_next_offset(next_value: object) -> None:
+    class InvalidPaginationApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            assert method == "userfieldconfig.list"
+            return {"result": {"fields": []}, "next": next_value}
+
+    with pytest.raises(RuntimeError, match="fields_pagination_invalid"):
+        bitrix_setup._list_fields(InvalidPaginationApi(), entity_id="CRM_36")
+
+
+def test_userfield_list_rejects_repeated_offset() -> None:
+    class RepeatedPaginationApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            assert method == "userfieldconfig.list"
+            return {"result": {"fields": [], "next": 50}}
+
+    with pytest.raises(RuntimeError, match="fields_pagination_loop"):
+        bitrix_setup._list_fields(RepeatedPaginationApi(), entity_id="CRM_36")
+
+
+def test_userfield_list_stops_after_100_pages() -> None:
+    calls = 0
+
+    class EndlessPaginationApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            nonlocal calls
+            assert method == "userfieldconfig.list"
+            calls += 1
+            return {"result": {"fields": [], "next": calls}}
+
+    with pytest.raises(RuntimeError, match="fields_pagination_invalid"):
+        bitrix_setup._list_fields(EndlessPaginationApi(), entity_id="CRM_36")
+    assert calls == 100

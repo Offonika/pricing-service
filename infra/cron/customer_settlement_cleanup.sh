@@ -13,6 +13,8 @@ if [[ -f "${ENV_FILE}" ]]; then
   load_env_file_preserve_json "${ENV_FILE}"
 fi
 
+: "${CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME:?expected database is required}"
+
 JOB_TIMEOUT_SECONDS="${CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS:-120}"
 
 timeout --signal=TERM --kill-after=5s "${JOB_TIMEOUT_SECONDS}s" \

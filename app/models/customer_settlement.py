@@ -405,12 +405,30 @@ class CustomerSettlementReconciliationRun(Base):
             "expected_count >= 0 AND matched_count >= 0 AND mismatch_count >= 0",
             name="ck_customer_settlement_reconciliation_counts",
         ),
-        UniqueConstraint("report_date", "report_hash", name="uq_customer_settlement_report_run"),
+        CheckConstraint(
+            "expected_count = matched_count + mismatch_count " "AND max_abs_difference >= 0",
+            name="ck_customer_settlement_reconciliation_totals",
+        ),
+        CheckConstraint(
+            "(status = 'matched' AND mismatch_count = 0) OR "
+            "(status = 'mismatched' AND mismatch_count > 0) OR status = 'blocked'",
+            name="ck_customer_settlement_reconciliation_status_counts",
+        ),
+        CheckConstraint(
+            "(context_hash IS NULL OR length(context_hash) = 64) AND "
+            "(source_hash IS NULL OR length(source_hash) = 64) AND "
+            "(input_hash IS NULL OR length(input_hash) = 64)",
+            name="ck_customer_settlement_reconciliation_hashes",
+        ),
+        UniqueConstraint("input_hash", name="uq_customer_settlement_reconciliation_input"),
     )
 
     report_date: Mapped[date] = mapped_column(Date(), nullable=False)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    input_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
     matched_count: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import distinct, func, select, text
@@ -20,9 +21,16 @@ from app.models.customer_settlement import (
     CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
-from app.services.customer_settlements import customer_settlement_health_metrics
+from app.services.customer_settlement_reconciliation import (
+    CustomerSettlementReconciliationError,
+    customer_settlement_reconciliation_context_hash,
+)
+from app.services.customer_settlements import (
+    active_pilot_counterparty_refs,
+    customer_settlement_health_metrics,
+)
 
-EXPECTED_ALEMBIC_REVISION = "4c6e8a0b2d3f"
+EXPECTED_ALEMBIC_REVISION = "6e8f0a2b4c6d"
 EXPECTED_ORGANIZATION_FIELD = "_Fld7005RRef"
 EXPECTED_SOURCE_MODE = "onec_canonical_mutual_statement_7002"
 DEFAULT_EXPECTED_DATABASE_NAME = "settlements_stage"
@@ -38,6 +46,7 @@ def _configuration_checks(
     settings: Settings,
     *,
     phase: str,
+    expected_database_name: str,
     expected_organization_ref: str,
     expected_organization_guid: str,
 ) -> list[dict[str, object]]:
@@ -66,6 +75,11 @@ def _configuration_checks(
             ),
         ),
         _check("application_database_is_postgresql", database_backend == "postgresql"),
+        _check(
+            "expected_database_guard_matches_staging",
+            str(settings.customer_settlements_expected_database_name or "").strip()
+            == expected_database_name,
+        ),
         _check("onec_source_configured", bool(settings.onec_database_url)),
         _check(
             "mapping_source_configured",
@@ -116,7 +130,7 @@ def _configuration_checks(
     ]
 
 
-def _collect_database_facts(session: Session) -> dict[str, Any]:
+def _collect_database_facts(session: Session, settings: Settings) -> dict[str, Any]:
     bind = session.get_bind()
     alembic_revisions = tuple(
         session.execute(text("SELECT version_num FROM alembic_version")).scalars()
@@ -129,6 +143,33 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
     active_financial = session.scalar(
         select(CustomerSettlementRevision).where(CustomerSettlementRevision.status == "active")
     )
+    latest_reconciliation = session.scalar(
+        select(CustomerSettlementReconciliationRun)
+        .order_by(
+            CustomerSettlementReconciliationRun.created_at.desc(),
+            CustomerSettlementReconciliationRun.id.desc(),
+        )
+        .limit(1)
+    )
+    pilot_counterparty_refs = active_pilot_counterparty_refs(session)
+    expected_reconciliation_context_hash = None
+    if active_mapping is not None and pilot_counterparty_refs:
+        try:
+            expected_reconciliation_context_hash = customer_settlement_reconciliation_context_hash(
+                mapping_source_hash=active_mapping.source_hash,
+                organization_ref=str(settings.customer_settlements_organization_ref or ""),
+                organization_guid=str(settings.customer_settlements_organization_guid or ""),
+                source_mode=settings.customer_settlements_source_mode,
+                opening_organization_field=str(
+                    settings.customer_settlements_opening_organization_field or ""
+                ),
+                movement_organization_field=str(
+                    settings.customer_settlements_movement_organization_field or ""
+                ),
+                counterparty_refs=pilot_counterparty_refs,
+            )
+        except CustomerSettlementReconciliationError:
+            expected_reconciliation_context_hash = None
 
     facts: dict[str, Any] = {
         "database_dialect": bind.dialect.name,
@@ -142,14 +183,31 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
         "active_mapping_source_name": (
             active_mapping.source_name if active_mapping is not None else None
         ),
-        "latest_reconciliation_status": session.scalar(
-            select(CustomerSettlementReconciliationRun.status)
-            .order_by(
-                CustomerSettlementReconciliationRun.created_at.desc(),
-                CustomerSettlementReconciliationRun.id.desc(),
-            )
-            .limit(1)
+        "latest_reconciliation_status": (
+            latest_reconciliation.status if latest_reconciliation is not None else None
         ),
+        "latest_reconciliation_context_hash": (
+            latest_reconciliation.context_hash if latest_reconciliation is not None else None
+        ),
+        "latest_reconciliation_has_complete_hashes": bool(
+            latest_reconciliation is not None
+            and latest_reconciliation.context_hash
+            and latest_reconciliation.source_hash
+            and latest_reconciliation.input_hash
+        ),
+        "reconciliation_expected_count": (
+            latest_reconciliation.expected_count if latest_reconciliation is not None else 0
+        ),
+        "reconciliation_matched_count": (
+            latest_reconciliation.matched_count if latest_reconciliation is not None else 0
+        ),
+        "reconciliation_mismatch_count": (
+            latest_reconciliation.mismatch_count if latest_reconciliation is not None else 0
+        ),
+        "latest_reconciliation_max_abs_difference": (
+            latest_reconciliation.max_abs_difference if latest_reconciliation is not None else None
+        ),
+        "expected_reconciliation_context_hash": expected_reconciliation_context_hash,
         "enabled_pilots": session.scalar(
             select(func.count())
             .select_from(CustomerSettlementPilotAccess)
@@ -373,6 +431,21 @@ def _database_checks(
                 facts["latest_reconciliation_status"] == "matched",
             ),
             _check(
+                "latest_reconciliation_matches_active_context",
+                facts["expected_reconciliation_context_hash"] is not None
+                and facts["latest_reconciliation_context_hash"]
+                == facts["expected_reconciliation_context_hash"],
+            ),
+            _check(
+                "latest_reconciliation_is_complete_match",
+                facts["latest_reconciliation_has_complete_hashes"] is True
+                and facts["reconciliation_expected_count"] == facts["pilot_counterparties"]
+                and facts["reconciliation_matched_count"] == facts["pilot_counterparties"]
+                and facts["reconciliation_mismatch_count"] == 0
+                and facts["latest_reconciliation_max_abs_difference"] is not None
+                and Decimal(facts["latest_reconciliation_max_abs_difference"]) <= Decimal("0.01"),
+            ),
+            _check(
                 "financial_revision_is_complete",
                 facts["financial_expected_rows"] == facts["pilot_counterparties"]
                 and facts["financial_loaded_rows"] == facts["pilot_counterparties"]
@@ -401,10 +474,11 @@ def build_shadow_preflight_report(
     checks = _configuration_checks(
         settings,
         phase=phase,
+        expected_database_name=expected_database_name,
         expected_organization_ref=expected_organization_ref,
         expected_organization_guid=expected_organization_guid,
     )
-    facts = _collect_database_facts(session)
+    facts = _collect_database_facts(session, settings)
     if phase == "ready":
         checks.append(
             _check(
@@ -431,6 +505,9 @@ def build_shadow_preflight_report(
             "alembic_revision",
             "active_mapping_source_name",
             "latest_reconciliation_status",
+            "latest_reconciliation_context_hash",
+            "expected_reconciliation_context_hash",
+            "latest_reconciliation_max_abs_difference",
             "health",
         }
     }

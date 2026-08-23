@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 
 from app.core.config import get_settings
 from app.infrastructure.db import get_application_session_factory
-from app.services.customer_settlements import normalize_site_user_id, set_pilot_access
+from app.services.customer_settlements import (
+    CustomerSettlementRuntimeGuardError,
+    assert_expected_application_database,
+    normalize_site_user_id,
+    set_pilot_access,
+)
 
 
 def _user_hash(site_user_id: str, salt: str | None) -> str:
@@ -41,8 +46,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 0
 
-    session = get_application_session_factory()()
+    session = None
     try:
+        session = get_application_session_factory()()
+        assert_expected_application_database(
+            session,
+            expected_database_name=settings.customer_settlements_expected_database_name,
+        )
         item, created = set_pilot_access(
             session,
             site_user_id=site_user_id,
@@ -60,8 +70,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return 0 if summary["readback_ok"] else 1
+    except CustomerSettlementRuntimeGuardError:
+        if session is not None:
+            session.rollback()
+        summary.update({"status": "blocked", "error_code": "runtime_database_guard_failed"})
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 2
+    except Exception:
+        if session is not None:
+            session.rollback()
+        summary.update({"status": "error", "error_code": "pilot_update_failed"})
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 1
     finally:
-        session.close()
+        if session is not None:
+            session.close()
 
 
 if __name__ == "__main__":

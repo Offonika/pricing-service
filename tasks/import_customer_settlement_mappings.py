@@ -25,8 +25,10 @@ from app.services.customer_settlement_source import (
     fetch_manual_customer_settlement_controls,
 )
 from app.services.customer_settlements import (
+    CustomerSettlementRuntimeGuardError,
     SettlementMappingInput,
     activate_mapping_revision,
+    assert_expected_application_database,
     normalize_guid,
     normalize_site_user_id,
     onec_guid_to_ref,
@@ -331,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
             poolclass=NullPool,
         )
         session = get_application_session_factory()()
+        assert_expected_application_database(
+            session,
+            expected_database_name=settings.customer_settlements_expected_database_name,
+        )
         result = import_manual_customer_settlement_mappings(
             session,
             onec_engine,
@@ -346,9 +352,36 @@ def main(argv: list[str] | None = None) -> int:
     except (ManualMappingImportError, CustomerSettlementSourceError) as exc:
         if session is not None:
             session.rollback()
+        error_code = exc.code if isinstance(exc, ManualMappingImportError) else str(exc)[:96]
         print(
             json.dumps(
-                {"status": "blocked", "mode": mode, "error_code": exc.code},
+                {"status": "blocked", "mode": mode, "error_code": error_code},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    except CustomerSettlementRuntimeGuardError:
+        if session is not None:
+            session.rollback()
+        print(
+            json.dumps(
+                {
+                    "status": "blocked",
+                    "mode": mode,
+                    "error_code": "runtime_database_guard_failed",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    except Exception:
+        if session is not None:
+            session.rollback()
+        print(
+            json.dumps(
+                {"status": "blocked", "mode": mode, "error_code": "mapping_import_failed"},
                 ensure_ascii=False,
                 sort_keys=True,
             )

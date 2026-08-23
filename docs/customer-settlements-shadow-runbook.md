@@ -67,12 +67,14 @@ apply mapping/whitelist и бухгалтерской сверки десятк�
 `manual_confirmed`. Новый зачётный запуск использует полный `crm_readonly` read,
 но активирует только пользователей из отдельного pilot whitelist.
 
-## Release integration 2026-08-22
+## Release integration 2026-08-22 — 2026-08-23
 
 Settlement migrations объединены с фактически активным production-head
 `1b9d3f5a7c21` новой no-op revision `2a4c6e8f0b1d`. Operational migration
-`4c6e8a0b2d3f` добавляет reconciliation и alert outbox и является единственным
-head. Новый staging runtime должен выполнять `alembic upgrade 4c6e8a0b2d3f`;
+`4c6e8a0b2d3f` добавляет reconciliation и alert outbox. Revision
+`6e8f0a2b4c6d` привязывает сверку к точному mapping/source context и является
+единственным head. Новый staging runtime должен выполнять
+`alembic upgrade 6e8f0a2b4c6d`;
 прежняя БД и runtime на `d9e1f3a5b7c9` доказательством нового 72-часового запуска
 не являются.
 
@@ -101,6 +103,7 @@ staging-БД, новый cron-файл, `crm_readonly` и четыре новы�
 ```dotenv
 ENVIRONMENT=staging
 DATABASE_URL=postgresql+psycopg2://settlements_stage:<password>@127.0.0.1:55439/settlements_stage
+CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME=settlements_stage
 ONEC_DATABASE_URL=mssql+pyodbc://<readonly-user>:<password>@<t13-host>/<ut-database>
 
 CUSTOMER_SETTLEMENTS_ENABLED=false
@@ -166,6 +169,9 @@ cd "${REPO_DIR}"
 другая БД, другая организация или mapping mode не `crm_readonly`. На bootstrap
 `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED` обязан оставаться `false`, eligibility
 также обязана быть выключена; прежний `manual_confirmed` preflight не проходит.
+`CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME` обязателен, загружается из того же
+secret-файла и должен дословно совпасть с PostgreSQL `current_database()`.
+Несовпадение блокирует preflight, worker, health и cleanup до любых изменений БД.
 
 ## 3. Первый ручной цикл
 
@@ -194,8 +200,13 @@ counterparty дают `ambiguous` и блокируют ready gate. Email, те�
 
 Reconciliation принимает ведомость только за один завершённый день. Технический
 срез — строго `< 00:00:00` следующего дня по Москве, допуск `0,01 RUB`. Команда не
-пишет в 1С и сохраняет лишь дату, hash файла и агрегаты сверки. Историческая
-ведомость `2026-07-29` не заменяет ни одну из новых контрольных ведомостей.
+пишет в 1С и сохраняет лишь дату, безопасные hashes и агрегаты сверки. Результат
+привязан к hash активной mapping revision, организации, режиму и полям SQL-источника,
+точному набору контрагентов, прочитанному SQL-срезу и файлу ведомости. Изменение
+пилота, mapping или настроек источника требует новой ведомости и новой полной
+сверки: одинаковый файл не может повторно разрешить изменившийся контекст.
+Историческая ведомость `2026-07-29` не заменяет ни одну из новых контрольных
+ведомостей.
 
 Financial sync должен вернуть ровно все уникальные контрагенты включённых пилотов,
 включая явные нулевые строки.
@@ -205,7 +216,8 @@ Financial sync должен вернуть ровно все уникальны�
 - ровно одну свежую active financial revision;
 - 10 linked и 0 ambiguous пилотов;
 - совместимую финансовую строку для каждого пилота;
-- последнюю сохранённую сверку ведомости со статусом `matched`;
+- последнюю сохранённую сверку ведомости со статусом `matched` именно для текущего
+  mapping/source context и полного текущего набора пилотов;
 - совпадение expected/loaded и отсутствие зависших loading revision;
 - `freshness_status=ok` и `mapping_status=ok`.
 
@@ -221,6 +233,10 @@ revision не удалять.
 Перед установкой cron зафиксировать clean commit и использовать один выделенный
 staging checkout. Settlement-обёртки принимают отдельный secret-файл через
 `CUSTOMER_SETTLEMENTS_ENV_FILE`; production `.env` не нужен.
+Все обёртки сначала переходят в зафиксированный `REPO_DIR`, безопасно загружают
+env, требуют ожидаемое имя БД и запускают job с внешним timeout. Ошибка `cd`,
+невалидное имя env-переменной, несовпадение БД или timeout завершают job ненулевым
+кодом; checkpoint также ограничен тем же process timeout.
 
 ```cron
 CRON_TZ=Europe/Moscow

@@ -6,7 +6,10 @@ from app.workers.customer_settlements import run_customer_settlement_mapping_syn
 
 
 def main() -> int:
-    result = run_customer_settlement_mapping_sync()
+    try:
+        result = run_customer_settlement_mapping_sync()
+    except Exception:
+        result = {"status": "error", "reason": "mapping_sync_failed"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     status = result.get("status")
     if status in {"activated", "unchanged", "skipped_lock", "disabled"}:

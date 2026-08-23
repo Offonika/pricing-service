@@ -166,3 +166,75 @@ def test_customer_settlement_operational_migration_upgrade_and_downgrade(
             assert expected.isdisjoint(inspect(connection).get_table_names())
     finally:
         engine.dispose()
+
+
+def test_customer_settlement_reconciliation_context_migration_upgrade_and_downgrade(
+    tmp_path: Path,
+) -> None:
+    versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+
+    def load(filename: str, module_name: str):
+        spec = importlib.util.spec_from_file_location(module_name, versions / filename)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        return module
+
+    operational = load(
+        "4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py",
+        "settlement_operational_for_context",
+    )
+    context = load(
+        "6e8f0a2b4c6d_bind_settlement_reconciliation_context.py",
+        "settlement_reconciliation_context",
+    )
+    engine = create_engine(f"sqlite:///{tmp_path / 'reconciliation-context.db'}")
+    try:
+        with engine.begin() as connection:
+            operational.op = Operations(MigrationContext.configure(connection))
+            operational.upgrade()
+            context.op = Operations(MigrationContext.configure(connection))
+            context.upgrade()
+            columns = {
+                item["name"]
+                for item in inspect(connection).get_columns(
+                    "customer_settlement_reconciliation_run"
+                )
+            }
+            assert {"context_hash", "source_hash", "input_hash"}.issubset(columns)
+
+        reconciliation = Table(
+            "customer_settlement_reconciliation_run",
+            MetaData(),
+            autoload_with=engine,
+        )
+        values = {
+            "report_date": datetime(2026, 8, 22, tzinfo=UTC).date(),
+            "as_of": datetime(2026, 8, 22, 21, 0, tzinfo=UTC),
+            "report_hash": "a" * 64,
+            "context_hash": "b" * 64,
+            "source_hash": "c" * 64,
+            "status": "matched",
+            "expected_count": 10,
+            "matched_count": 10,
+            "mismatch_count": 0,
+            "max_abs_difference": 0,
+        }
+        with engine.begin() as connection:
+            connection.execute(reconciliation.insert().values(**values, input_hash="d" * 64))
+            connection.execute(reconciliation.insert().values(**values, input_hash="e" * 64))
+            with pytest.raises(IntegrityError):
+                connection.execute(reconciliation.insert().values(**values, input_hash="d" * 64))
+
+        with engine.begin() as connection:
+            context.op = Operations(MigrationContext.configure(connection))
+            context.downgrade()
+            columns = {
+                item["name"]
+                for item in inspect(connection).get_columns(
+                    "customer_settlement_reconciliation_run"
+                )
+            }
+            assert {"context_hash", "source_hash", "input_hash"}.isdisjoint(columns)
+    finally:
+        engine.dispose()

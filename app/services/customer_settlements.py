@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable, Literal, Sequence
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, distinct, func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.models.customer_settlement import (
@@ -43,6 +43,10 @@ DEFAULT_ORGANIZATION_REF = "0xb34a0025901e48ef11e211128227ea80"
 DEFAULT_ORGANIZATION_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
 MANUAL_MAPPING_SOURCE_NAME = "manual_confirmed_pilot"
 MAX_PILOT_USERS = 10
+
+
+class CustomerSettlementRuntimeGuardError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,24 @@ EligibilityStatus = Literal["eligible", "not_eligible", "temporarily_unavailable
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def assert_expected_application_database(
+    session: Session,
+    *,
+    expected_database_name: str | None,
+) -> None:
+    """Fail closed before a settlement job can touch an unexpected database."""
+
+    expected = str(expected_database_name or "").strip()
+    if not expected:
+        return
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        raise CustomerSettlementRuntimeGuardError("runtime_database_guard_failed")
+    current = session.scalar(text("SELECT current_database()"))
+    if not isinstance(current, str) or current != expected:
+        raise CustomerSettlementRuntimeGuardError("runtime_database_guard_failed")
 
 
 def ensure_utc(value: datetime) -> datetime:
@@ -246,6 +268,35 @@ def activate_financial_revision(
         )
     )
     if existing is not None:
+        stored_rows = tuple(
+            session.scalars(
+                select(CustomerSettlementBalance).where(
+                    CustomerSettlementBalance.revision_id == existing.id
+                )
+            )
+        )
+        stored_by_ref = {item.counterparty_ref: item for item in stored_rows}
+        expected_by_ref = {item.counterparty_ref: item for item in normalized_rows}
+        stored_zero_count = sum(
+            1 for item in stored_rows if normalize_money(item.signed_balance) == 0
+        )
+        payload_matches = (
+            existing.status in {REVISION_ACTIVE, REVISION_SUPERSEDED}
+            and existing.expected_row_count == len(expected_refs)
+            and existing.loaded_row_count == len(normalized_rows)
+            and existing.zero_row_count == stored_zero_count
+            and len(stored_by_ref) == len(stored_rows) == len(expected_by_ref)
+            and all(
+                stored_by_ref[ref].counterparty_guid == str(item.counterparty_guid)
+                and normalize_money(stored_by_ref[ref].signed_balance) == item.signed_balance
+                and stored_by_ref[ref].currency == "RUB"
+                for ref, item in expected_by_ref.items()
+                if ref in stored_by_ref
+            )
+            and set(stored_by_ref) == set(expected_by_ref)
+        )
+        if not payload_matches:
+            raise ValueError("financial_revision_payload_mismatch")
         return existing, False
 
     revision = CustomerSettlementRevision(
@@ -367,6 +418,36 @@ def _materialize_linked_customer_account(
             CustomerAccountSourceBinding.status == "active",
         )
     )
+    if site_binding is not None and identity_binding is None:
+        current_account_source = session.scalar(
+            select(CustomerAccountSourceBinding).where(
+                CustomerAccountSourceBinding.customer_account_id
+                == site_binding.customer_account_id,
+                CustomerAccountSourceBinding.source_system == source_system,
+                CustomerAccountSourceBinding.organization_guid == organization_guid,
+                CustomerAccountSourceBinding.status == "active",
+            )
+        )
+        if (
+            current_account_source is not None
+            and current_account_source.counterparty_guid != counterparty_guid
+        ):
+            other_active_site_bindings = session.scalar(
+                select(func.count())
+                .select_from(CustomerAccountSiteBinding)
+                .where(
+                    CustomerAccountSiteBinding.customer_account_id
+                    == site_binding.customer_account_id,
+                    CustomerAccountSiteBinding.status == "active",
+                    CustomerAccountSiteBinding.id != site_binding.id,
+                )
+            )
+            if int(other_active_site_bindings or 0) > 0:
+                site_binding.status = "revoked"
+                site_binding.valid_to = checked_at
+                site_binding.updated_at = checked_at
+                session.flush()
+                site_binding = None
     account_ids = {
         value
         for value in (
@@ -466,6 +547,27 @@ def _materialize_linked_customer_account(
     return account_id, source_binding.id, counterparty_guid
 
 
+def _revoke_site_bindings_outside_linked_mapping(
+    session: Session,
+    *,
+    linked_site_user_ids: set[str],
+    checked_at: datetime,
+) -> None:
+    statement = select(CustomerAccountSiteBinding).where(
+        CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+        CustomerAccountSiteBinding.status == "active",
+    )
+    if linked_site_user_ids:
+        statement = statement.where(
+            CustomerAccountSiteBinding.site_user_id.not_in(linked_site_user_ids)
+        )
+    for binding in session.scalars(statement):
+        binding.status = "revoked"
+        binding.valid_to = checked_at
+        binding.updated_at = checked_at
+    session.flush()
+
+
 def activate_mapping_revision(
     session: Session,
     *,
@@ -562,6 +664,43 @@ def activate_mapping_revision(
         )
     )
     if existing is not None:
+        existing_entries = {
+            row.site_user_id: row
+            for row in session.scalars(
+                select(CustomerSettlementMappingEntry).where(
+                    CustomerSettlementMappingEntry.revision_id == existing.id
+                )
+            )
+        }
+        expected_entries = {item.site_user_id: item for item in normalized_entries}
+        payload_matches = (
+            existing.status in {REVISION_ACTIVE, REVISION_SUPERSEDED}
+            and existing.expected_entry_count == len(normalized_entries)
+            and existing.loaded_entry_count == len(normalized_entries)
+            and existing.ambiguous_count
+            == sum(1 for item in normalized_entries if item.status == MAPPING_AMBIGUOUS)
+            and set(existing_entries) == set(expected_entries)
+            and all(
+                existing_entries[user_id].cluster_id == item.cluster_id
+                and existing_entries[user_id].counterparty_ref == item.counterparty_ref
+                and existing_entries[user_id].counterparty_guid == item.counterparty_guid
+                and existing_entries[user_id].status == item.status
+                and existing_entries[user_id].source_system
+                == (normalized_source_system if item.status == MAPPING_LINKED else None)
+                and existing_entries[user_id].organization_guid
+                == (normalized_organization_guid if item.status == MAPPING_LINKED else None)
+                for user_id, item in expected_entries.items()
+            )
+        )
+        if not payload_matches:
+            raise ValueError("mapping_revision_payload_mismatch")
+        _revoke_site_bindings_outside_linked_mapping(
+            session,
+            linked_site_user_ids={
+                item.site_user_id for item in normalized_entries if item.status == MAPPING_LINKED
+            },
+            checked_at=checked_at,
+        )
         existing.source_checked_at = checked_at
         existing.updated_at = checked_at
         if existing.status != REVISION_ACTIVE:
@@ -573,17 +712,12 @@ def activate_mapping_revision(
             session.flush()
             existing.status = REVISION_ACTIVE
             existing.activated_at = checked_at
-        existing_entries = {
-            row.site_user_id: row
-            for row in session.scalars(
-                select(CustomerSettlementMappingEntry).where(
-                    CustomerSettlementMappingEntry.revision_id == existing.id
-                )
-            )
-        }
         for item in normalized_entries:
             row = existing_entries.get(item.site_user_id)
-            if row is None or item.status != MAPPING_LINKED:
+            if row is None:
+                raise ValueError("mapping_revision_payload_mismatch")
+            row.source_updated_at = item.source_updated_at
+            if item.status != MAPPING_LINKED:
                 continue
             account_id, source_binding_id, counterparty_guid = _materialize_linked_customer_account(
                 session,
@@ -602,6 +736,13 @@ def activate_mapping_revision(
         session.flush()
         return existing, False
 
+    _revoke_site_bindings_outside_linked_mapping(
+        session,
+        linked_site_user_ids={
+            item.site_user_id for item in normalized_entries if item.status == MAPPING_LINKED
+        },
+        checked_at=checked_at,
+    )
     revision = CustomerSettlementMappingRevision(
         status="loading",
         source_name=normalized_source_name,
@@ -746,6 +887,11 @@ def active_pilot_counterparty_refs(session: Session) -> tuple[str, ...]:
             CustomerAccountSourceBinding.id == CustomerSettlementMappingEntry.source_binding_id,
         )
         .join(
+            CustomerAccountSiteBinding,
+            CustomerAccountSiteBinding.customer_account_id
+            == CustomerSettlementMappingEntry.customer_account_id,
+        )
+        .join(
             CustomerAccount,
             CustomerAccount.id == CustomerSettlementMappingEntry.customer_account_id,
         )
@@ -761,6 +907,11 @@ def active_pilot_counterparty_refs(session: Session) -> tuple[str, ...]:
             == CustomerSettlementMappingEntry.counterparty_guid,
             CustomerAccountSourceBinding.counterparty_ref
             == CustomerSettlementMappingEntry.counterparty_ref,
+            CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+            CustomerAccountSiteBinding.site_user_id == CustomerSettlementMappingEntry.site_user_id,
+            CustomerAccountSiteBinding.status == "active",
+            CustomerAccountSiteBinding.cluster_id == CustomerSettlementMappingEntry.cluster_id,
+            CustomerAccountSiteBinding.mapping_revision_id == mapping_revision.id,
             CustomerAccount.status == "active",
             CustomerSettlementPilotAccess.enabled.is_(True),
         )
@@ -826,6 +977,14 @@ def get_customer_settlement_eligibility(
         return "not_eligible"
     account = session.get(CustomerAccount, mapping.customer_account_id)
     source_binding = session.get(CustomerAccountSourceBinding, mapping.source_binding_id)
+    site_binding = session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.customer_account_id == mapping.customer_account_id,
+            CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+            CustomerAccountSiteBinding.site_user_id == user_id,
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
     if (
         account is None
         or account.status != "active"
@@ -835,6 +994,9 @@ def get_customer_settlement_eligibility(
         or source_binding.counterparty_ref != mapping.counterparty_ref
         or source_binding.counterparty_guid != mapping.counterparty_guid
         or source_binding.organization_guid != mapping.organization_guid
+        or site_binding is None
+        or site_binding.cluster_id != mapping.cluster_id
+        or site_binding.mapping_revision_id != mapping_revision.id
     ):
         return "not_eligible"
     return "eligible"
@@ -895,6 +1057,14 @@ def get_customer_settlement_summary(
 
     account = session.get(CustomerAccount, mapping.customer_account_id)
     source_binding = session.get(CustomerAccountSourceBinding, mapping.source_binding_id)
+    site_binding = session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.customer_account_id == mapping.customer_account_id,
+            CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+            CustomerAccountSiteBinding.site_user_id == user_id,
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
     if (
         account is None
         or account.status != "active"
@@ -904,6 +1074,9 @@ def get_customer_settlement_summary(
         or source_binding.counterparty_guid != mapping.counterparty_guid
         or source_binding.counterparty_ref != mapping.counterparty_ref
         or source_binding.organization_guid != mapping.organization_guid
+        or site_binding is None
+        or site_binding.cluster_id != mapping.cluster_id
+        or site_binding.mapping_revision_id != mapping_revision.id
     ):
         return SettlementSummary(status="ambiguous_link")
 
@@ -971,6 +1144,85 @@ def customer_settlement_health_metrics(
         if mapping is not None
         else None
     )
+    enabled_pilots = (
+        session.scalar(
+            select(func.count())
+            .select_from(CustomerSettlementPilotAccess)
+            .where(CustomerSettlementPilotAccess.enabled.is_(True))
+        )
+        or 0
+    )
+    mapping_entries = 0
+    ambiguous_entries = 0
+    linked_pilots = 0
+    if mapping is not None:
+        mapping_entries = (
+            session.scalar(
+                select(func.count())
+                .select_from(CustomerSettlementMappingEntry)
+                .where(CustomerSettlementMappingEntry.revision_id == mapping.id)
+            )
+            or 0
+        )
+        ambiguous_entries = (
+            session.scalar(
+                select(func.count())
+                .select_from(CustomerSettlementMappingEntry)
+                .where(
+                    CustomerSettlementMappingEntry.revision_id == mapping.id,
+                    CustomerSettlementMappingEntry.status == MAPPING_AMBIGUOUS,
+                )
+            )
+            or 0
+        )
+        linked_pilots = (
+            session.scalar(
+                select(func.count(distinct(CustomerSettlementPilotAccess.site_user_id)))
+                .select_from(CustomerSettlementPilotAccess)
+                .join(
+                    CustomerSettlementMappingEntry,
+                    CustomerSettlementMappingEntry.site_user_id
+                    == CustomerSettlementPilotAccess.site_user_id,
+                )
+                .join(
+                    CustomerAccountSourceBinding,
+                    CustomerAccountSourceBinding.id
+                    == CustomerSettlementMappingEntry.source_binding_id,
+                )
+                .join(
+                    CustomerAccountSiteBinding,
+                    CustomerAccountSiteBinding.customer_account_id
+                    == CustomerSettlementMappingEntry.customer_account_id,
+                )
+                .join(
+                    CustomerAccount,
+                    CustomerAccount.id == CustomerSettlementMappingEntry.customer_account_id,
+                )
+                .where(
+                    CustomerSettlementPilotAccess.enabled.is_(True),
+                    CustomerSettlementMappingEntry.revision_id == mapping.id,
+                    CustomerSettlementMappingEntry.status == MAPPING_LINKED,
+                    CustomerAccount.status == "active",
+                    CustomerAccountSourceBinding.status == "active",
+                    CustomerAccountSourceBinding.customer_account_id
+                    == CustomerSettlementMappingEntry.customer_account_id,
+                    CustomerAccountSourceBinding.counterparty_ref
+                    == CustomerSettlementMappingEntry.counterparty_ref,
+                    CustomerAccountSourceBinding.counterparty_guid
+                    == CustomerSettlementMappingEntry.counterparty_guid,
+                    CustomerAccountSourceBinding.organization_guid
+                    == CustomerSettlementMappingEntry.organization_guid,
+                    CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+                    CustomerAccountSiteBinding.site_user_id
+                    == CustomerSettlementMappingEntry.site_user_id,
+                    CustomerAccountSiteBinding.status == "active",
+                    CustomerAccountSiteBinding.cluster_id
+                    == CustomerSettlementMappingEntry.cluster_id,
+                    CustomerAccountSiteBinding.mapping_revision_id == mapping.id,
+                )
+            )
+            or 0
+        )
     if financial_age is None or financial_age > hide_after_seconds:
         freshness_status = "critical"
     elif financial_age > stale_after_seconds:
@@ -978,10 +1230,18 @@ def customer_settlement_health_metrics(
     else:
         freshness_status = "ok"
     mapping_status = "critical"
-    if mapping is not None and (
+    mapping_is_fresh = mapping is not None and (
         mapping.source_name == MANUAL_MAPPING_SOURCE_NAME
         or (mapping_age is not None and mapping_age <= mapping_stale_after_seconds)
-    ):
+    )
+    mapping_is_complete = (
+        mapping is not None
+        and mapping.expected_entry_count == enabled_pilots
+        and mapping.loaded_entry_count == mapping_entries == enabled_pilots
+        and mapping.ambiguous_count == ambiguous_entries == 0
+        and linked_pilots == enabled_pilots
+    )
+    if mapping_is_fresh and mapping_is_complete:
         mapping_status = "ok"
     return {
         "freshness_status": freshness_status,
@@ -991,8 +1251,10 @@ def customer_settlement_health_metrics(
         "expected_rows": financial.expected_row_count if financial else 0,
         "loaded_rows": financial.loaded_row_count if financial else 0,
         "zero_rows": financial.zero_row_count if financial else 0,
-        "mapping_entries": mapping.loaded_entry_count if mapping else 0,
-        "ambiguous_entries": mapping.ambiguous_count if mapping else 0,
+        "enabled_pilots": int(enabled_pilots),
+        "linked_pilots": int(linked_pilots),
+        "mapping_entries": int(mapping_entries),
+        "ambiguous_entries": int(ambiguous_entries),
     }
 
 

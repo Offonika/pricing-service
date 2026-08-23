@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/opt/MM/pricing-service}"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_DIR}/.venv/bin/python}"
@@ -12,6 +12,8 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_LOADER}"
   load_env_file_preserve_json "${ENV_FILE}"
 fi
+
+: "${CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME:?expected database is required}"
 
 RETRY_DELAY_SECONDS="${CUSTOMER_SETTLEMENTS_RETRY_DELAY_SECONDS:-600}"
 JOB_TIMEOUT_SECONDS="${CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS:-90}"
@@ -26,4 +28,8 @@ if run_sync; then
 fi
 
 sleep "${RETRY_DELAY_SECONDS}"
-run_sync
+if run_sync; then
+  exit 0
+else
+  exit $?
+fi

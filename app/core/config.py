@@ -297,6 +297,7 @@ class Settings(BaseSettings):
     customer_settlements_enabled: bool = False
     customer_settlements_eligibility_enabled: bool = False
     customer_settlements_shadow_enabled: bool = False
+    customer_settlements_expected_database_name: str | None = None
     customer_settlements_organization_ref: str | None = None
     customer_settlements_organization_guid: str | None = None
     customer_settlements_opening_organization_field: str | None = None

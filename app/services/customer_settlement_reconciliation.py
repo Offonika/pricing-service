@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -22,6 +25,7 @@ from app.services.importers.onec_mutual_settlements import (
 )
 
 RECONCILIATION_TOLERANCE = Decimal("0.01")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class CustomerSettlementReconciliationError(RuntimeError):
@@ -33,6 +37,9 @@ class CustomerSettlementReconciliationResult:
     report_date: date
     as_of: datetime
     report_hash: str
+    context_hash: str
+    source_hash: str
+    input_hash: str
     status: str
     expected_count: int
     matched_count: int
@@ -53,14 +60,82 @@ def _canonical_name(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value or "")).split()).casefold()
 
 
+def _payload_hash(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def customer_settlement_reconciliation_context_hash(
+    *,
+    mapping_source_hash: str,
+    organization_ref: str,
+    organization_guid: str,
+    source_mode: str,
+    opening_organization_field: str,
+    movement_organization_field: str,
+    counterparty_refs: Sequence[str],
+) -> str:
+    normalized_mapping_hash = str(mapping_source_hash or "").strip().lower()
+    if not _SHA256_RE.fullmatch(normalized_mapping_hash):
+        raise CustomerSettlementReconciliationError("mapping_source_hash_is_invalid")
+    normalized_refs = tuple(sorted({str(value).strip().lower() for value in counterparty_refs}))
+    if not normalized_refs:
+        raise CustomerSettlementReconciliationError("pilot_scope_is_empty")
+    return _payload_hash(
+        {
+            "mapping_source_hash": normalized_mapping_hash,
+            "organization_ref": str(organization_ref or "").strip().lower(),
+            "organization_guid": str(organization_guid or "").strip().lower(),
+            "source_mode": str(source_mode or "").strip(),
+            "opening_organization_field": str(opening_organization_field or "").strip(),
+            "movement_organization_field": str(movement_organization_field or "").strip(),
+            "counterparty_refs": normalized_refs,
+        }
+    )
+
+
+def customer_settlement_reconciliation_source_hash(
+    source: CustomerSettlementSourceResult,
+) -> str:
+    rows = sorted(source.balances, key=lambda item: str(item.counterparty_ref).lower())
+    return _payload_hash(
+        {
+            "as_of": source.as_of.isoformat(),
+            "balances": [
+                {
+                    "counterparty_ref": str(item.counterparty_ref).strip().lower(),
+                    "counterparty_guid": str(item.counterparty_guid or "").strip().lower(),
+                    "signed_balance": format(normalize_money(item.signed_balance), ".2f"),
+                    "currency": item.currency,
+                    "exists": bool(item.exists),
+                    "marked_deleted": bool(item.marked_deleted),
+                }
+                for item in rows
+            ],
+        }
+    )
+
+
 def reconcile_customer_settlement_rows(
     *,
     report_hash: str,
+    context_hash: str,
     report_rows: list[OneCMutualSettlementCurrentBalanceRow],
     controls: tuple[ManualCustomerSettlementControl, ...],
     source: CustomerSettlementSourceResult,
     tolerance: Decimal = RECONCILIATION_TOLERANCE,
 ) -> CustomerSettlementReconciliationResult:
+    normalized_report_hash = str(report_hash or "").strip().lower()
+    normalized_context_hash = str(context_hash or "").strip().lower()
+    if not _SHA256_RE.fullmatch(normalized_report_hash):
+        raise CustomerSettlementReconciliationError("report_hash_is_invalid")
+    if not _SHA256_RE.fullmatch(normalized_context_hash):
+        raise CustomerSettlementReconciliationError("reconciliation_context_hash_is_invalid")
     report_dates = {item.snapshot_date for item in report_rows}
     if len(report_dates) != 1:
         raise CustomerSettlementReconciliationError("report_date_is_missing_or_ambiguous")
@@ -101,10 +176,21 @@ def reconcile_customer_settlement_rows(
     matched_count = sum(value <= tolerance for value in differences)
     mismatch_count = len(differences) - matched_count
     max_difference = max(differences, default=Decimal("0.00"))
+    source_hash = customer_settlement_reconciliation_source_hash(source)
+    input_hash = _payload_hash(
+        {
+            "report_hash": normalized_report_hash,
+            "context_hash": normalized_context_hash,
+            "source_hash": source_hash,
+        }
+    )
     return CustomerSettlementReconciliationResult(
         report_date=report_date,
         as_of=expected_as_of,
-        report_hash=report_hash,
+        report_hash=normalized_report_hash,
+        context_hash=normalized_context_hash,
+        source_hash=source_hash,
+        input_hash=input_hash,
         status="matched" if mismatch_count == 0 else "mismatched",
         expected_count=len(controls),
         matched_count=matched_count,
@@ -123,8 +209,7 @@ def store_reconciliation_result(
 ) -> CustomerSettlementReconciliationRun:
     existing = session.scalar(
         select(CustomerSettlementReconciliationRun).where(
-            CustomerSettlementReconciliationRun.report_date == result.report_date,
-            CustomerSettlementReconciliationRun.report_hash == result.report_hash,
+            CustomerSettlementReconciliationRun.input_hash == result.input_hash,
         )
     )
     if existing is not None:
@@ -133,6 +218,9 @@ def store_reconciliation_result(
         report_date=result.report_date,
         as_of=result.as_of,
         report_hash=result.report_hash,
+        context_hash=result.context_hash,
+        source_hash=result.source_hash,
+        input_hash=result.input_hash,
         status=result.status,
         expected_count=result.expected_count,
         matched_count=result.matched_count,

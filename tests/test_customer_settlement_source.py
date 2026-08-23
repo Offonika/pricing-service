@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -359,6 +361,40 @@ def test_health_task_exposes_monitoring_exit_codes(
     assert check_customer_settlement_health.main() == exit_code
 
 
+def test_health_task_blocks_enabled_alerts_without_approved_delivery_config(
+    monkeypatch,
+    capsys,
+) -> None:
+    class FakeSession:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        check_customer_settlement_health,
+        "get_settings",
+        lambda: Settings(_env_file=None, customer_settlements_alerts_enabled=True),
+    )
+    monkeypatch.setattr(
+        check_customer_settlement_health,
+        "get_application_session_factory",
+        lambda: lambda: FakeSession(),
+    )
+    monkeypatch.setattr(
+        check_customer_settlement_health,
+        "customer_settlement_health_metrics",
+        lambda *args, **kwargs: {
+            "freshness_status": "critical",
+            "mapping_status": "critical",
+            "expected_rows": 0,
+            "loaded_rows": 0,
+            "zero_rows": 0,
+        },
+    )
+
+    assert check_customer_settlement_health.main() == 2
+    assert json.loads(capsys.readouterr().out)["error_code"] == ("alert_delivery_not_configured")
+
+
 def test_mock_client_dry_run_never_prints_assertion_or_user_id(
     monkeypatch,
     capsys,
@@ -452,6 +488,7 @@ raise SystemExit(exit_codes[min(call_number, len(exit_codes) - 1)])
         "REPO_DIR": str(project_root),
         "PYTHON_BIN": str(fake_python),
         "CUSTOMER_SETTLEMENTS_ENV_FILE": str(tmp_path / "missing.env"),
+        "CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME": "settlements-test",
         "CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS": "5",
         "CUSTOMER_SETTLEMENTS_RETRY_DELAY_SECONDS": "0",
         "FAKE_MAPPING_CALL_COUNTER": str(call_counter),
@@ -468,3 +505,89 @@ raise SystemExit(exit_codes[min(call_number, len(exit_codes) - 1)])
 
     assert result.returncode == expected_exit_code
     assert int(call_counter.read_text()) == expected_calls
+
+
+def test_shadow_checkpoint_loads_expected_database_from_secret_env(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    fake_python = tmp_path / "fake-python"
+    calls = tmp_path / "calls"
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-" ]]; then
+  exec "${REAL_PYTHON}" "$@"
+fi
+printf '%s\n' "$*" >> "${FAKE_CHECKPOINT_CALLS}"
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    env_file = tmp_path / "shadow.env"
+    env_file.write_text(
+        "CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME=settlements-shadow-test\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(project_root / "infra/cron/customer_settlement_shadow_checkpoint.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "REPO_DIR": str(project_root),
+            "PYTHON_BIN": str(fake_python),
+            "REAL_PYTHON": sys.executable,
+            "FAKE_CHECKPOINT_CALLS": str(calls),
+            "CUSTOMER_SETTLEMENTS_ENV_FILE": str(env_file),
+        },
+    )
+
+    assert result.returncode == 0
+    invocations = calls.read_text(encoding="utf-8")
+    assert "--expected-database-name settlements-shadow-test" in invocations
+    assert "tasks.check_customer_settlement_health" in invocations
+
+
+def test_env_loader_rejects_shell_metacharacters_in_variable_name(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    marker = tmp_path / "must-not-exist"
+    env_file = tmp_path / "invalid.env"
+    env_file.write_text(
+        f"BAD$(touch {marker})=value\n",
+        encoding="utf-8",
+    )
+    command = (
+        f'source "{project_root / "infra/cron/load_env.sh"}"; '
+        f'load_env_file_preserve_json "{env_file}"'
+    )
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHON_BIN": sys.executable},
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
+    assert "BAD" not in result.stderr
+
+
+def test_env_loader_propagates_parser_failure_without_errexit(tmp_path: Path) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    env_file = tmp_path / "invalid.env"
+    env_file.write_text("INVALID-NAME=value\n", encoding="utf-8")
+    command = (
+        f'source "{project_root / "infra/cron/load_env.sh"}"; '
+        f'load_env_file_preserve_json "{env_file}"'
+    )
+    result = subprocess.run(
+        ["bash", "-uo", "pipefail", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHON_BIN": sys.executable},
+    )
+
+    assert result.returncode != 0
+    assert "INVALID-NAME" not in result.stderr

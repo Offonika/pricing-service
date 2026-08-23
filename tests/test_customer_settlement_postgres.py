@@ -30,8 +30,10 @@ from app.services.customer_settlement_auth import (
     verify_and_consume_customer_settlement_assertion,
 )
 from app.services.customer_settlements import (
+    CustomerSettlementRuntimeGuardError,
     SettlementBalanceInput,
     activate_financial_revision,
+    assert_expected_application_database,
     cleanup_customer_settlements,
     mark_financial_revision_failed,
 )
@@ -79,7 +81,11 @@ def _load_settlement_migrations():
         "4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py",
         "customer_settlement_postgres_operational_migration",
     )
-    return base, accounts, operational
+    reconciliation_context = _load_migration(
+        "6e8f0a2b4c6d_bind_settlement_reconciliation_context.py",
+        "customer_settlement_postgres_reconciliation_context_migration",
+    )
+    return base, accounts, operational, reconciliation_context
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +106,12 @@ def postgres_engine():
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    base_migration, account_migration, operational_migration = _load_settlement_migrations()
+    (
+        base_migration,
+        account_migration,
+        operational_migration,
+        reconciliation_context_migration,
+    ) = _load_settlement_migrations()
     try:
         with engine.begin() as connection:
             base_migration.op = Operations(MigrationContext.configure(connection))
@@ -109,6 +120,8 @@ def postgres_engine():
             account_migration.upgrade()
             operational_migration.op = Operations(MigrationContext.configure(connection))
             operational_migration.upgrade()
+            reconciliation_context_migration.op = Operations(MigrationContext.configure(connection))
+            reconciliation_context_migration.upgrade()
         yield engine
     finally:
         engine.dispose()
@@ -165,7 +178,12 @@ def test_postgres_migration_supports_upgrade_and_downgrade(postgres_engine) -> N
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    base_migration, account_migration, operational_migration = _load_settlement_migrations()
+    (
+        base_migration,
+        account_migration,
+        operational_migration,
+        reconciliation_context_migration,
+    ) = _load_settlement_migrations()
     operational_tables = {
         "customer_settlement_reconciliation_run",
         "customer_settlement_alert_state",
@@ -188,8 +206,12 @@ def test_postgres_migration_supports_upgrade_and_downgrade(postgres_engine) -> N
             account_migration.upgrade()
             operational_migration.op = Operations(MigrationContext.configure(connection))
             operational_migration.upgrade()
+            reconciliation_context_migration.op = Operations(MigrationContext.configure(connection))
+            reconciliation_context_migration.upgrade()
             assert SETTLEMENT_TABLES.issubset(inspect(connection).get_table_names())
         with engine.begin() as connection:
+            reconciliation_context_migration.op = Operations(MigrationContext.configure(connection))
+            reconciliation_context_migration.downgrade()
             operational_migration.op = Operations(MigrationContext.configure(connection))
             operational_migration.downgrade()
             assert operational_tables.isdisjoint(inspect(connection).get_table_names())
@@ -207,6 +229,21 @@ def test_postgres_migration_supports_upgrade_and_downgrade(postgres_engine) -> N
         with administration_engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         administration_engine.dispose()
+
+
+def test_postgres_runtime_database_guard_checks_actual_database(postgres_engine) -> None:
+    with Session(postgres_engine) as session:
+        actual_database = session.scalar(text("SELECT current_database()"))
+        assert isinstance(actual_database, str)
+        assert_expected_application_database(
+            session,
+            expected_database_name=actual_database,
+        )
+        with pytest.raises(CustomerSettlementRuntimeGuardError):
+            assert_expected_application_database(
+                session,
+                expected_database_name=f"{actual_database}_wrong",
+            )
 
 
 def test_postgres_partial_unique_index_and_atomic_activation_rollback(
@@ -353,12 +390,12 @@ def test_postgres_alert_dispatch_claims_each_outbox_row_once(
                     now=BASE_TIME,
                 )
                 session.commit()
-            assert second == {"processed": 0, "sent": 0, "failed": 0}
+            assert second == {"processed": 0, "sent": 0, "failed": 0, "exhausted": 0}
         finally:
             release.set()
         first = first_future.result(timeout=10)
 
-    assert first == {"processed": 1, "sent": 1, "failed": 0}
+    assert first == {"processed": 1, "sent": 1, "failed": 0, "exhausted": 0}
 
 
 def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> None:

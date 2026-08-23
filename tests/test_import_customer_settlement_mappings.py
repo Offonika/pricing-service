@@ -15,7 +15,10 @@ from app.models.customer_settlement import (
     CustomerSettlementMappingRevision,
     CustomerSettlementPilotAccess,
 )
-from app.services.customer_settlement_source import ManualCustomerSettlementControl
+from app.services.customer_settlement_source import (
+    CustomerSettlementSourceError,
+    ManualCustomerSettlementControl,
+)
 from app.services.customer_settlements import onec_ref_to_guid
 from app.workers.customer_settlements import run_customer_settlement_mapping_sync
 from tasks import import_customer_settlement_mappings as importer
@@ -323,3 +326,26 @@ def test_manual_mapping_csv_has_exact_contract_and_ten_row_limit(tmp_path: Path)
     with pytest.raises(importer.ManualMappingImportError) as exc:
         importer.load_manual_mapping_csv(csv_path)
     assert exc.value.code == "manual_mapping_batch_limit_exceeded"
+
+
+def test_manual_import_cli_masks_source_driver_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        importer,
+        "get_settings",
+        lambda: Settings(_env_file=None, onec_database_url="mssql+pyodbc://synthetic"),
+    )
+    monkeypatch.setattr(importer, "load_manual_mapping_csv", lambda path: (_row(),))
+
+    def fail_engine(*args, **kwargs):
+        raise CustomerSettlementSourceError("customer_settlement_query_timeout")
+
+    monkeypatch.setattr(importer, "build_onec_engine", fail_engine)
+
+    assert importer.main([str(tmp_path / "private-pilot.csv")]) == 2
+    output = capsys.readouterr().out
+    assert "customer_settlement_query_timeout" in output
+    assert "private-pilot.csv" not in output

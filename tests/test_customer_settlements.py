@@ -13,6 +13,7 @@ from app.models.customer_settlement import (
     CustomerSettlementAlertOutbox,
     CustomerSettlementAssertionJti,
     CustomerSettlementBalance,
+    CustomerSettlementMappingEntry,
     CustomerSettlementMappingRevision,
     CustomerSettlementPilotAccess,
     CustomerSettlementReconciliationRun,
@@ -23,8 +24,10 @@ from app.services.customer_settlements import (
     SettlementMappingInput,
     activate_financial_revision,
     activate_mapping_revision,
+    active_pilot_counterparty_refs,
     cleanup_customer_settlements,
     customer_settlement_health_metrics,
+    ensure_utc,
     get_customer_settlement_eligibility,
     get_customer_settlement_summary,
     mark_financial_revision_failed,
@@ -117,6 +120,65 @@ def test_financial_revision_requires_every_expected_counterparty(db_session: Ses
         )
 
     assert db_session.scalar(select(func.count()).select_from(CustomerSettlementRevision)) == 0
+
+
+def test_identical_financial_payload_does_not_refresh_corrupted_revision(
+    db_session: Session,
+) -> None:
+    revision = _activate_balances(db_session, [_balance(CP_1, "10.00")])
+    db_session.commit()
+    stored = db_session.scalar(
+        select(CustomerSettlementBalance).where(
+            CustomerSettlementBalance.revision_id == revision.id
+        )
+    )
+    assert stored is not None
+    db_session.delete(stored)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="financial_revision_payload_mismatch"):
+        activate_financial_revision(
+            db_session,
+            organization_ref=ORG,
+            as_of=BASE_TIME,
+            source_db_time=BASE_TIME,
+            source_mode="synthetic-test",
+            expected_counterparty_refs=[CP_1],
+            balances=[_balance(CP_1, "10.00")],
+            synced_at=BASE_TIME + timedelta(minutes=5),
+        )
+
+
+def test_identical_mapping_payload_does_not_refresh_corrupted_revision(
+    db_session: Session,
+) -> None:
+    entry = _linked("100", CP_1)
+    revision, activated = activate_mapping_revision(
+        db_session,
+        entries=[entry],
+        source_checked_at=BASE_TIME,
+        organization_ref=ORG,
+        organization_guid=ORG_GUID,
+    )
+    assert activated is True
+    db_session.commit()
+    stored = db_session.scalar(
+        select(CustomerSettlementMappingEntry).where(
+            CustomerSettlementMappingEntry.revision_id == revision.id
+        )
+    )
+    assert stored is not None
+    db_session.delete(stored)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="mapping_revision_payload_mismatch"):
+        activate_mapping_revision(
+            db_session,
+            entries=[entry],
+            source_checked_at=BASE_TIME + timedelta(minutes=5),
+            organization_ref=ORG,
+            organization_guid=ORG_GUID,
+        )
 
 
 def test_zero_balance_is_stored_and_new_revision_atomically_supersedes_old(
@@ -365,6 +427,59 @@ def test_customer_account_survives_guid_remap_and_old_snapshot_is_not_reused(
     assert summary.amount is None
 
 
+def test_remap_splits_shared_account_without_breaking_other_site_user(
+    db_session: Session,
+) -> None:
+    _activate_mapping(
+        db_session,
+        [_linked("551", CP_1, cluster="shared"), _linked("552", CP_1, cluster="shared")],
+    )
+    db_session.commit()
+    initial_bindings = list(
+        db_session.scalars(
+            select(CustomerAccountSiteBinding).where(CustomerAccountSiteBinding.status == "active")
+        )
+    )
+    assert len({item.customer_account_id for item in initial_bindings}) == 1
+
+    _activate_mapping(
+        db_session,
+        [_linked("551", CP_2, cluster="moved"), _linked("552", CP_1, cluster="shared")],
+        checked_at=BASE_TIME + timedelta(minutes=30),
+    )
+    _activate_balances(
+        db_session,
+        [_balance(CP_1, "10.00"), _balance(CP_2, "20.00")],
+        as_of=BASE_TIME + timedelta(hours=1),
+        synced_at=BASE_TIME + timedelta(hours=1),
+    )
+    for user_id in ("551", "552"):
+        set_pilot_access(db_session, site_user_id=user_id, enabled=True)
+    db_session.commit()
+
+    current_bindings = list(
+        db_session.scalars(
+            select(CustomerAccountSiteBinding).where(CustomerAccountSiteBinding.status == "active")
+        )
+    )
+    assert len(current_bindings) == 2
+    assert len({item.customer_account_id for item in current_bindings}) == 2
+    summaries = {
+        user_id: get_customer_settlement_summary(
+            db_session,
+            site_user_id=user_id,
+            enabled=True,
+            stale_after_seconds=7200,
+            hide_after_seconds=21600,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME + timedelta(hours=1, minutes=5),
+        )
+        for user_id in ("551", "552")
+    }
+    assert summaries["551"].amount == Decimal("20.00")
+    assert summaries["552"].amount == Decimal("10.00")
+
+
 def test_mapping_conflict_between_two_durable_accounts_fails_closed(
     db_session: Session,
 ) -> None:
@@ -385,6 +500,77 @@ def test_mapping_conflict_between_two_durable_accounts_fails_closed(
         )
     )
     assert len(active_bindings) == 2
+
+
+def test_revoked_site_binding_cannot_reuse_current_mapping_entry(
+    db_session: Session,
+) -> None:
+    _activate_mapping(db_session, [_linked("650", CP_1)])
+    _activate_balances(db_session, [_balance(CP_1, "10.00")])
+    set_pilot_access(db_session, site_user_id="650", enabled=True)
+    db_session.commit()
+    site_binding = db_session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.site_user_id == "650",
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
+    assert site_binding is not None
+    site_binding.status = "revoked"
+    site_binding.valid_to = BASE_TIME + timedelta(minutes=1)
+    db_session.commit()
+
+    summary = get_customer_settlement_summary(
+        db_session,
+        site_user_id="650",
+        enabled=True,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(minutes=5),
+    )
+    eligibility = get_customer_settlement_eligibility(
+        db_session,
+        site_user_id="650",
+        enabled=True,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(minutes=5),
+    )
+    health = customer_settlement_health_metrics(
+        db_session,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(minutes=5),
+    )
+
+    assert summary.status == "ambiguous_link"
+    assert eligibility == "not_eligible"
+    assert active_pilot_counterparty_refs(db_session) == ()
+    assert health["mapping_status"] == "critical"
+
+
+def test_not_linked_mapping_revokes_previous_site_binding(db_session: Session) -> None:
+    _activate_mapping(db_session, [_linked("651", CP_1)])
+    db_session.commit()
+    _activate_mapping(
+        db_session,
+        [SettlementMappingInput("651", None, None, "not_linked")],
+        checked_at=BASE_TIME + timedelta(minutes=30),
+    )
+    db_session.commit()
+
+    bindings = list(
+        db_session.scalars(
+            select(CustomerAccountSiteBinding).where(
+                CustomerAccountSiteBinding.site_user_id == "651"
+            )
+        )
+    )
+    assert len(bindings) == 1
+    assert bindings[0].status == "revoked"
+    assert bindings[0].valid_to is not None
+    assert ensure_utc(bindings[0].valid_to) == BASE_TIME + timedelta(minutes=30)
 
 
 def test_manual_confirmed_mapping_does_not_expire_without_explicit_remap(
@@ -522,6 +708,30 @@ def test_health_metrics_report_warning_and_critical_without_financial_amounts(
     assert warning["zero_rows"] == 0
     assert "amount" not in warning
     assert critical["freshness_status"] == "critical"
+
+
+def test_health_marks_fresh_but_incomplete_pilot_mapping_critical(
+    db_session: Session,
+) -> None:
+    _activate_mapping(
+        db_session,
+        [SettlementMappingInput("352", None, None, "not_linked")],
+    )
+    set_pilot_access(db_session, site_user_id="352", enabled=True)
+    db_session.commit()
+
+    metrics = customer_settlement_health_metrics(
+        db_session,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(minutes=5),
+    )
+
+    assert metrics["mapping_age_seconds"] == 300
+    assert metrics["mapping_status"] == "critical"
+    assert metrics["enabled_pilots"] == 1
+    assert metrics["linked_pilots"] == 0
 
 
 def test_retention_removes_only_old_non_active_revisions_and_expired_jti(

@@ -30,6 +30,7 @@ related_code:
   - alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py
   - alembic/versions/d9e1f3a5b7c9_add_customer_account_guid_mapping.py
   - alembic/versions/4c6e8a0b2d3f_add_settlement_reconciliation_alerts.py
+  - alembic/versions/6e8f0a2b4c6d_bind_settlement_reconciliation_context.py
   - integrations/master_mobile_site/customer_settlements
 related_tests:
   - tests/test_customer_settlement_api.py
@@ -48,7 +49,7 @@ depends_on:
   - docs/BI.Receivables.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-22"
+updated_at: "2026-08-23"
 ---
 
 # Назначение
@@ -352,6 +353,10 @@ site-связь определяет пользователя, активная 
 `CounterpartyGuid`, технический ref организации и контрольный hash. При подтверждённой
 смене GUID старая source-связь отзывается, новая создаётся для того же account.
 Если site user и новый GUID уже принадлежат разным account, импорт откатывается целиком.
+Если общий account использовали несколько site users, remap одного пользователя
+на другой GUID безопасно отделяет его в новый account и не меняет связь остальных.
+Удаление пользователя из linked mapping, `not_linked` или `ambiguous` отзывает его
+активную site-связь; отозванная связь не участвует в API, financial scope и health.
 
 ## Manual confirmed mapping — исторический rollback
 
@@ -569,6 +574,14 @@ Read-only проверка CRM подтвердила все пять service fi
   подтверждённый manual mapping остаётся действующим до явного remap/revoke.
 - `source_name` входит в hash mapping revision: одинаковый payload из manual и CRM
   не может унаследовать чужое правило freshness.
+- Последняя `matched`-сверка действительна только для точного context hash: hash
+  активной mapping revision, организация, режим/поля SQL-источника и полный набор
+  контрагентов. Изменение любого элемента требует новой полной сверки.
+- Hash сверки дополнительно включает фактически прочитанный SQL-срез; одинаковый
+  файл ведомости не переиспользует прежний результат после изменения источника.
+- Повторное использование одинакового hash financial/mapping revision разрешено
+  только после проверки фактических строк, counts, GUID, сумм и статусов; повреждённая
+  или неполная revision блокирует активацию.
 - Частичная revision никогда не активируется.
 - Feature flag по умолчанию выключен; shadow flag не открывает клиентский API.
 - Секреты существуют только в локальном env/secret-контуре.
@@ -577,6 +590,9 @@ Read-only проверка CRM подтвердила все пять service fi
 
 - Ошибка обновления сохраняет предыдущую active revision.
 - Advisory lock исключает параллельный запуск.
+- Settlement worker/CLI сверяет PostgreSQL `current_database()` с обязательным для
+  cron `CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME` и fail-closed блокирует job при
+  несовпадении, не раскрывая connection details.
 - Каждый cron-артефакт ограничен внешним process timeout; после TERM применяется
   принудительное завершение через 5 секунд.
 - Точный повтор payload идемпотентен.
@@ -587,11 +603,17 @@ Read-only проверка CRM подтвердила все пять service fi
   повтор не запускают.
 - После 2 часов financial health — `warning`, после 6 — `critical`; API скрывает сумму.
 - Stale/missing mapping имеет `critical` health.
+- Свежий, но неполный (`not_linked`, `ambiguous` или отозванная site-связь) pilot
+  mapping также имеет `critical` health.
+- Неизвестное или неполное значение health metric трактуется как `critical`, а в
+  alert-текст попадают только нормализованные уровни и неотрицательные counts.
 - Health probe возвращает exit code `0/1/2`, чтобы внешний мониторинг мог
   сформировать alert.
 - Alert создаётся только при переходе уровня, recovery или раз в 6 часов при
   продолжающемся critical; PostgreSQL `FOR UPDATE SKIP LOCKED` исключает двойную
   отправку параллельными health worker.
+- Включённые alerts без утверждённой задачи/webhook, ошибка доставки и exhausted
+  outbox после пяти попыток дают `critical` и остаются видимыми оператору.
 - Внешняя доставка жёстко ограничена HTTPS и задачей Bitrix24 №2883.
 
 # Observability and data safety
@@ -616,8 +638,10 @@ expected/loaded/zero. Финансовые суммы и идентификат�
 Новая бухгалтерская сверка выполняется командой
 `tasks.reconcile_customer_settlements`: ведомость относится к завершённому дню,
 а SQL-срез берётся строго `< 00:00:00` следующего дня по `Europe/Moscow`.
-Сохраняются только дата, SHA-256 файла, counts, status и максимальная абсолютная
-разница; допуск — `0,01 RUB`.
+Сохраняются только дата, SHA-256 файла, context/source/input hashes, counts, status
+и максимальная абсолютная разница; допуск — `0,01 RUB`. Финансовый worker принимает
+только последнюю полную `matched`-сверку, чей context hash совпадает с текущими
+mapping, организацией, SQL-настройками и точным набором пилотных контрагентов.
 
 Никогда не логируются сумма, ФИО, email, телефон, полный ID пользователя,
 cluster/counterparty ref, assertion, подпись, сырой `jti` или секрет.
@@ -663,7 +687,8 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
   `c3d4e5f6a7b9` следует за `b2d4f6a8c0e1`, GUID/account revision
   `d9e1f3a5b7c9` следует за ней, а no-op revision `2a4c6e8f0b1d` объединяет
   settlement-ветку с активным production-head `1b9d3f5a7c21`; operational revision
-  `4c6e8a0b2d3f` следует за merge и остаётся единственным Alembic head.
+  `4c6e8a0b2d3f` следует за merge, а context-binding revision `6e8f0a2b4c6d`
+  следует за ней и остаётся единственным Alembic head.
 
 # Tests
 
@@ -681,6 +706,11 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - точный `< as_of`, temp whitelist, zero SQL и запрет `NOLOCK`;
 - migration upgrade/downgrade и partial unique active indexes;
 - reconciliation end-of-day boundary, duplicate controls/source rows и idempotency;
+- reconciliation context/source binding и запрет повторного допуска при изменении
+  пилотов, mapping либо SQL-среза;
+- отзыв site-binding, безопасное разделение общего account при remap и запрет
+  повторного использования повреждённых revision;
+- runtime database guard и обезличивание ошибок драйвера;
 - transition alerts, approved task guard, `SKIP LOCKED`, retention operational rows;
 - readiness gate, retry policy, health exit codes и mock-client secrecy.
 - bootstrap с закрытым source gate, запрет `manual_confirmed` для нового запуска и
@@ -693,7 +723,7 @@ claim прошли integration suite на изолированной схеме 
 
 1. Применить migration на staging PostgreSQL.
 2. Выполнить synthetic и PostgreSQL integration tests.
-3. Создать новую staging-БД на head `4c6e8a0b2d3f`; прежнюю БД и revisions оставить
+3. Создать новую staging-БД на head `6e8f0a2b4c6d`; прежнюю БД и revisions оставить
    только для диагностики.
 4. Включить согласованный whitelist и выполнить полный `crm_readonly` import;
    multi-counterparty cluster и неоднозначные связи блокируют пилота.
@@ -723,6 +753,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-23 — сверка привязана к mapping/source/pilot context и фактическому
+  SQL-срезу; добавлены runtime guard ожидаемой PostgreSQL БД, проверка целостности
+  повторно используемых revision, отзыв устаревших site bindings, безопасный split
+  общего account, fail-closed health и Alembic head `6e8f0a2b4c6d`.
 - 2026-08-22 — новый пилот переведён на `crm_readonly`; добавлены eligibility API,
   автоматическая end-of-day сверка, operational retention, outbox alerts только в
   Bitrix24 №2883 и защита source-aware mapping hash. Прежний manual shadow-run

@@ -17,6 +17,7 @@ def _settings(**overrides) -> Settings:
         "customer_settlements_enabled": False,
         "customer_settlements_eligibility_enabled": False,
         "customer_settlements_shadow_enabled": True,
+        "customer_settlements_expected_database_name": "settlements_stage",
         "customer_settlements_source_validated": False,
         "customer_settlements_mapping_mode": "crm_readonly",
         "customer_settlements_organization_ref": ORG,
@@ -33,10 +34,17 @@ def _facts(**overrides):
     values = {
         "database_dialect": "postgresql",
         "current_database": "settlements_stage",
-        "alembic_revision": "4c6e8a0b2d3f",
+        "alembic_revision": "6e8f0a2b4c6d",
         "alembic_revision_count": 1,
         "active_mapping_source_name": None,
         "latest_reconciliation_status": None,
+        "latest_reconciliation_context_hash": None,
+        "expected_reconciliation_context_hash": None,
+        "latest_reconciliation_has_complete_hashes": False,
+        "reconciliation_expected_count": 0,
+        "reconciliation_matched_count": 0,
+        "reconciliation_mismatch_count": 0,
+        "latest_reconciliation_max_abs_difference": None,
         "enabled_pilots": 10,
         "active_mapping_revisions": 0,
         "active_financial_revisions": 0,
@@ -68,7 +76,7 @@ def _facts(**overrides):
 
 
 def test_bootstrap_preflight_accepts_empty_fail_closed_staging(monkeypatch) -> None:
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session, settings: _facts())
 
     report = preflight.build_shadow_preflight_report(
         _settings(),
@@ -88,7 +96,7 @@ def test_bootstrap_preflight_accepts_empty_fail_closed_staging(monkeypatch) -> N
 def test_bootstrap_preflight_blocks_client_and_eligibility_api(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session, settings: _facts())
 
     report = preflight.build_shadow_preflight_report(
         _settings(
@@ -109,7 +117,7 @@ def test_bootstrap_preflight_blocks_client_and_eligibility_api(
 
 
 def test_bootstrap_preflight_requires_crm_readonly_with_webhook(monkeypatch) -> None:
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session, settings: _facts())
     report = preflight.build_shadow_preflight_report(
         _settings(
             customer_settlements_mapping_mode="crm_readonly",
@@ -137,7 +145,7 @@ def test_bootstrap_preflight_requires_crm_readonly_with_webhook(monkeypatch) -> 
 
 
 def test_bootstrap_preflight_requires_source_gate_closed(monkeypatch) -> None:
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session, settings: _facts())
 
     report = preflight.build_shadow_preflight_report(
         _settings(customer_settlements_source_validated=True),
@@ -156,7 +164,7 @@ def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
     monkeypatch.setattr(
         preflight,
         "_collect_database_facts",
-        lambda session: _facts(alembic_revision=None, alembic_revision_count=2),
+        lambda session, settings: _facts(alembic_revision=None, alembic_revision_count=2),
     )
 
     report = preflight.build_shadow_preflight_report(
@@ -178,6 +186,12 @@ def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> Non
         active_mapping_revisions=1,
         active_mapping_source_name="bitrix_crm_customer_cluster",
         latest_reconciliation_status="matched",
+        latest_reconciliation_context_hash="e" * 64,
+        expected_reconciliation_context_hash="e" * 64,
+        latest_reconciliation_has_complete_hashes=True,
+        reconciliation_expected_count=10,
+        reconciliation_matched_count=10,
+        latest_reconciliation_max_abs_difference=0,
         active_financial_revisions=1,
         mapping_entries_total=4103,
         financial_balances_total=10,
@@ -202,7 +216,7 @@ def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> Non
     monkeypatch.setattr(
         preflight,
         "_collect_database_facts",
-        lambda session: ready_facts,
+        lambda session, settings: ready_facts,
     )
 
     report = preflight.build_shadow_preflight_report(
@@ -233,6 +247,13 @@ def test_ready_preflight_requires_open_gate_and_latest_matched_reconciliation(
         financial_expected_rows=10,
         financial_loaded_rows=10,
         latest_reconciliation_status="mismatched",
+        latest_reconciliation_context_hash="e" * 64,
+        expected_reconciliation_context_hash="e" * 64,
+        latest_reconciliation_has_complete_hashes=True,
+        reconciliation_expected_count=10,
+        reconciliation_matched_count=9,
+        reconciliation_mismatch_count=1,
+        latest_reconciliation_max_abs_difference=1,
         health={
             "freshness_status": "ok",
             "mapping_status": "ok",
@@ -243,7 +264,11 @@ def test_ready_preflight_requires_open_gate_and_latest_matched_reconciliation(
             "ambiguous_entries": 0,
         },
     )
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: ready_facts)
+    monkeypatch.setattr(
+        preflight,
+        "_collect_database_facts",
+        lambda session, settings: ready_facts,
+    )
 
     report = preflight.build_shadow_preflight_report(
         _settings(customer_settlements_source_validated=False),
@@ -261,7 +286,7 @@ def test_ready_preflight_requires_open_gate_and_latest_matched_reconciliation(
 
 def test_preflight_report_never_contains_connection_strings_or_identifiers(monkeypatch) -> None:
     settings = _settings()
-    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session, settings: _facts())
 
     report = preflight.build_shadow_preflight_report(
         settings,

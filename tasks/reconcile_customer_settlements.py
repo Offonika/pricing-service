@@ -4,12 +4,15 @@ import argparse
 import json
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.infrastructure.db import build_onec_engine, get_application_session_factory
+from app.models.customer_settlement import CustomerSettlementMappingRevision
 from app.services.customer_settlement_reconciliation import (
     CustomerSettlementReconciliationError,
+    customer_settlement_reconciliation_context_hash,
     end_of_day_boundary_utc,
     reconcile_customer_settlement_rows,
     report_sha256,
@@ -21,7 +24,9 @@ from app.services.customer_settlement_source import (
     fetch_manual_customer_settlement_controls,
 )
 from app.services.customer_settlements import (
+    CustomerSettlementRuntimeGuardError,
     active_pilot_counterparty_refs,
+    assert_expected_application_database,
     onec_ref_to_guid,
 )
 from app.services.importers.onec_mutual_settlements import (
@@ -53,9 +58,33 @@ def main(argv: list[str] | None = None) -> int:
             raise CustomerSettlementReconciliationError("report_has_no_counterparties")
         report_date = report_rows[0].snapshot_date
         session = get_application_session_factory()()
+        assert_expected_application_database(
+            session,
+            expected_database_name=settings.customer_settlements_expected_database_name,
+        )
+        active_mapping = session.scalar(
+            select(CustomerSettlementMappingRevision).where(
+                CustomerSettlementMappingRevision.status == "active"
+            )
+        )
+        if active_mapping is None:
+            raise CustomerSettlementReconciliationError("active_mapping_is_missing")
         refs = active_pilot_counterparty_refs(session)
         if not refs or len(refs) > 10:
             raise CustomerSettlementReconciliationError("pilot_count_is_invalid")
+        context_hash = customer_settlement_reconciliation_context_hash(
+            mapping_source_hash=active_mapping.source_hash,
+            organization_ref=str(settings.customer_settlements_organization_ref or ""),
+            organization_guid=str(settings.customer_settlements_organization_guid or ""),
+            source_mode=settings.customer_settlements_source_mode,
+            opening_organization_field=str(
+                settings.customer_settlements_opening_organization_field or ""
+            ),
+            movement_organization_field=str(
+                settings.customer_settlements_movement_organization_field or ""
+            ),
+            counterparty_refs=refs,
+        )
         onec_engine = build_onec_engine(
             settings.onec_database_url,
             query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
@@ -89,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             raise CustomerSettlementReconciliationError("report_changed_during_reconciliation")
         result = reconcile_customer_settlement_rows(
             report_hash=initial_report_hash,
+            context_hash=context_hash,
             report_rows=report_rows,
             controls=controls,
             source=source,
@@ -109,6 +139,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if result.mismatch_count == 0 else 2
+    except CustomerSettlementRuntimeGuardError:
+        if session is not None:
+            session.rollback()
+        print(
+            json.dumps(
+                {"status": "blocked", "error_code": "runtime_database_guard_failed"},
+                sort_keys=True,
+            )
+        )
+        return 2
     except (CustomerSettlementReconciliationError, CustomerSettlementSourceError, OSError) as exc:
         if session is not None:
             session.rollback()

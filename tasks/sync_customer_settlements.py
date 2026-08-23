@@ -6,7 +6,10 @@ from app.workers.customer_settlements import run_customer_settlement_financial_s
 
 
 def main() -> int:
-    result = run_customer_settlement_financial_sync()
+    try:
+        result = run_customer_settlement_financial_sync()
+    except Exception:
+        result = {"status": "error", "reason": "financial_sync_failed"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     # The cron wrapper retries only a real source/sync error. Configuration and
     # rollout gates are operator actions and must not create a second noisy run.

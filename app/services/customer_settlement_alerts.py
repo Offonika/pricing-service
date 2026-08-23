@@ -8,7 +8,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.customer_settlement import (
@@ -19,15 +19,30 @@ from app.services.customer_settlements import ensure_utc, utc_now
 
 ALERT_CHANNEL = "bitrix_task_2883"
 ALERT_TASK_ID = "2883"
+_HEALTH_LEVELS = {"ok", "warning", "critical"}
 
 
 def overall_health_status(metrics: dict[str, Any]) -> str:
-    values = {str(metrics.get("freshness_status")), str(metrics.get("mapping_status"))}
+    values = {metrics.get("freshness_status"), metrics.get("mapping_status")}
+    if not values.issubset(_HEALTH_LEVELS):
+        return "critical"
     return "critical" if "critical" in values else "warning" if "warning" in values else "ok"
 
 
 def _event_key(*parts: object) -> str:
     return hashlib.sha256("|".join(map(str, parts)).encode("utf-8")).hexdigest()
+
+
+def _safe_health_level(value: Any) -> str:
+    return str(value) if value in _HEALTH_LEVELS else "unknown"
+
+
+def _safe_health_count(value: Any) -> str:
+    return (
+        str(value)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else "unknown"
+    )
 
 
 def _safe_health_message(level: str, metrics: dict[str, Any], *, recovered: bool) -> str:
@@ -37,10 +52,11 @@ def _safe_health_message(level: str, metrics: dict[str, Any], *, recovered: bool
     return "\n".join(
         (
             title,
-            f"Свежесть финансового среза: {metrics.get('freshness_status')}",
-            f"Свежесть mapping: {metrics.get('mapping_status')}",
-            f"Строк expected/loaded/zero: {metrics.get('expected_rows')}/"
-            f"{metrics.get('loaded_rows')}/{metrics.get('zero_rows')}",
+            f"Свежесть финансового среза: {_safe_health_level(metrics.get('freshness_status'))}",
+            f"Свежесть mapping: {_safe_health_level(metrics.get('mapping_status'))}",
+            f"Строк expected/loaded/zero: {_safe_health_count(metrics.get('expected_rows'))}/"
+            f"{_safe_health_count(metrics.get('loaded_rows'))}/"
+            f"{_safe_health_count(metrics.get('zero_rows'))}",
             "Финансовые суммы и идентификаторы клиентов намеренно не включены.",
         )
     )
@@ -189,4 +205,20 @@ def dispatch_customer_settlement_alerts(
             failed += 1
         row.updated_at = current_time
     session.flush()
-    return {"processed": len(rows), "sent": sent, "failed": failed}
+    exhausted = (
+        session.scalar(
+            select(func.count())
+            .select_from(CustomerSettlementAlertOutbox)
+            .where(
+                CustomerSettlementAlertOutbox.status == "failed",
+                CustomerSettlementAlertOutbox.attempt_count >= max_attempts,
+            )
+        )
+        or 0
+    )
+    return {
+        "processed": len(rows),
+        "sent": sent,
+        "failed": failed,
+        "exhausted": int(exhausted),
+    }

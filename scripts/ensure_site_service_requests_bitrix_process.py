@@ -158,9 +158,18 @@ def build_plan(
     existing_form: list[dict[str, Any]] | None = None,
 ) -> EnsurePlan:
     entity_id = f"CRM_{type_id}"
+    expected_xml_id_by_field_name = {
+        _normalized_field_name(_field_name(entity_id, spec["key"])): _xml_id(spec["key"])
+        for spec in FIELD_SPECS
+    }
     by_xml_id: dict[str, dict[str, Any]] = {}
     for field in fields:
-        xml_id = str(field.get("xmlId") or "").strip()
+        normalized_field_name = _normalized_field_name(field.get("fieldName"))
+        expected_xml_id = expected_xml_id_by_field_name.get(normalized_field_name)
+        raw_xml_id = _strict_aliased_string(field, "xmlId", "XML_ID")
+        if expected_xml_id is not None and raw_xml_id != expected_xml_id:
+            raise RuntimeError("site_service_request_field_readback_unrecognized")
+        xml_id = (raw_xml_id or "").strip()
         if not xml_id:
             continue
         if xml_id in by_xml_id:
@@ -211,7 +220,11 @@ def build_plan(
         else:
             enum_map.update(_request_type_enum_mapping(request_type_field))
         field_map["request_type"] = field_name
-    stage_map = _stage_mapping(stages)
+    stage_map = _stage_mapping(
+        stages,
+        entity_type_id=entity_type_id,
+        category_id=category_id,
+    )
     form = merge_form(existing_form or [], build_form(field_map))
     required_enum_mappings = [
         f"{spec['key'].removeprefix('site_')}_{key}"
@@ -219,9 +232,7 @@ def build_plan(
         if spec["type"] == "enumeration" and spec["key"] not in missing
         for key, _title in spec["enum"]
     ]
-    required_enum_mappings.extend(
-        f"request_type_{key}" for key in REQUEST_TYPE_ENUM_TARGETS
-    )
+    required_enum_mappings.extend(f"request_type_{key}" for key in REQUEST_TYPE_ENUM_TARGETS)
     missing_enum_mappings = tuple(
         mapping_key for mapping_key in required_enum_mappings if not enum_map.get(mapping_key)
     )
@@ -349,8 +360,7 @@ def ensure(
     if plan.missing_stages:
         raise RuntimeError("site_service_request_required_stage_missing")
     if any(
-        not mapping_key.startswith("request_type_")
-        for mapping_key in plan.missing_enum_mappings
+        not mapping_key.startswith("request_type_") for mapping_key in plan.missing_enum_mappings
     ):
         raise RuntimeError("site_service_request_enum_mapping_incomplete")
     if plan.missing_enum_mappings:
@@ -496,6 +506,7 @@ def _list_stages(
     entity_type_id: int,
     category_id: int,
 ) -> list[dict[str, Any]]:
+    expected_prefix = f"DT{entity_type_id}_{category_id}:"
     payload: dict[str, Any] = {
         "filter": {"ENTITY_ID": f"DYNAMIC_{entity_type_id}_STAGE_{category_id}"}
     }
@@ -517,12 +528,10 @@ def _list_stages(
             nested_next = result.get("next")
         else:
             raise RuntimeError("site_service_request_stages_readback_unrecognized")
-        if any(
-            not isinstance(item, dict)
-            or not str(item.get("STATUS_ID") or item.get("statusId") or "").strip()
-            for item in page
-        ):
-            raise RuntimeError("site_service_request_stages_readback_unrecognized")
+        for item in page:
+            if not isinstance(item, dict):
+                raise RuntimeError("site_service_request_stages_readback_unrecognized")
+            _strict_stage_id(item, expected_prefix=expected_prefix)
         stages.extend(page)
         start = _resolve_pagination_offset(
             top_next=response.get("next"),
@@ -539,15 +548,21 @@ def _list_stages(
         payload = {**payload, "start": start}
 
 
-def _stage_mapping(stages: list[dict[str, Any]]) -> dict[str, str]:
+def _stage_mapping(
+    stages: list[dict[str, Any]],
+    *,
+    entity_type_id: int,
+    category_id: int,
+) -> dict[str, str]:
+    expected_prefix = f"DT{entity_type_id}_{category_id}:"
     by_code: dict[str, str] = {}
     seen_stage_ids: set[str] = set()
     success_stage_ids: set[str] = set()
     failure_stage_ids: set[str] = set()
     for stage in stages:
-        stage_id = str(stage.get("STATUS_ID") or stage.get("statusId") or "").strip()
-        if not stage_id:
+        if not isinstance(stage, dict):
             raise RuntimeError("site_service_request_stages_readback_unrecognized")
+        stage_id = _strict_stage_id(stage, expected_prefix=expected_prefix)
         if stage_id in seen_stage_ids:
             raise RuntimeError("site_service_request_stage_mapping_ambiguous")
         seen_stage_ids.add(stage_id)
@@ -585,15 +600,17 @@ def _require_recognized_form(response: dict[str, Any]) -> list[dict[str, Any]]:
     section_names: set[str] = set()
     element_names: set[str] = set()
     for section in form:
-        section_name = str(section.get("name") or "").strip() if isinstance(section, dict) else ""
+        section_name = section.get("name") if isinstance(section, dict) else None
         if (
             not isinstance(section, dict)
-            or not section_name
+            or not isinstance(section_name, str)
+            or not section_name.strip()
             or section.get("type") != "section"
             or not isinstance(section.get("elements"), list)
             or any(
                 not isinstance(element, dict)
-                or not str(element.get("name") or "").strip()
+                or not isinstance(element.get("name"), str)
+                or not element["name"].strip()
                 for element in section.get("elements") or []
             )
         ):
@@ -602,7 +619,7 @@ def _require_recognized_form(response: dict[str, Any]) -> list[dict[str, Any]]:
             raise RuntimeError("site_service_request_form_readback_ambiguous")
         section_names.add(section_name)
         for element in section["elements"]:
-            element_name = str(element["name"]).strip()
+            element_name = element["name"].strip()
             if element_name in element_names:
                 raise RuntimeError("site_service_request_form_readback_ambiguous")
             element_names.add(element_name)
@@ -701,8 +718,7 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         exact_rows = [
             row
             for row in enum_rows
-            if str(row.get("xmlId") or row.get("XML_ID") or "").strip().lower()
-            == logical_xml_id
+            if str(row.get("xmlId") or row.get("XML_ID") or "").strip().lower() == logical_xml_id
         ]
         suffix_rows = [
             row
@@ -715,8 +731,7 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         label_rows = [
             row
             for row in enum_rows
-            if str(row.get("value") or row.get("VALUE") or "").strip().casefold()
-            in label_values
+            if str(row.get("value") or row.get("VALUE") or "").strip().casefold() in label_values
         ]
         candidates = exact_rows or suffix_rows or label_rows
         enum_ids = {
@@ -763,6 +778,28 @@ def _require_enum_rows(field: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _strict_aliased_string(item: dict[str, Any], *field_names: str) -> str | None:
+    values = [item[field_name] for field_name in field_names if field_name in item]
+    if not values or any(not isinstance(value, str) for value in values):
+        return None
+    first_value = values[0]
+    if any(value != first_value for value in values[1:]):
+        return None
+    return first_value
+
+
+def _strict_stage_id(item: dict[str, Any], *, expected_prefix: str) -> str:
+    stage_id = _strict_aliased_string(item, "STATUS_ID", "statusId")
+    if (
+        stage_id is None
+        or not stage_id
+        or stage_id.strip() != stage_id
+        or not stage_id.startswith(expected_prefix)
+    ):
+        raise RuntimeError("site_service_request_stages_readback_unrecognized")
+    return stage_id
+
+
 def _positive_int(value: Any) -> int | None:
     if type(value) is int:
         parsed = value
@@ -779,12 +816,7 @@ def _positive_int(value: Any) -> int | None:
 def _strict_pagination_offset(value: Any, *, error_code: str) -> int:
     if type(value) is int:
         parsed = value
-    elif (
-        isinstance(value, str)
-        and value
-        and value.isascii()
-        and value.isdigit()
-    ):
+    elif isinstance(value, str) and value and value.isascii() and value.isdigit():
         parsed = int(value)
     else:
         raise RuntimeError(error_code)
@@ -800,20 +832,14 @@ def _resolve_pagination_offset(
     error_code: str,
 ) -> int | None:
     parsed_top = (
-        _strict_pagination_offset(top_next, error_code=error_code)
-        if top_next is not None
-        else None
+        _strict_pagination_offset(top_next, error_code=error_code) if top_next is not None else None
     )
     parsed_nested = (
         _strict_pagination_offset(nested_next, error_code=error_code)
         if nested_next is not None
         else None
     )
-    if (
-        parsed_top is not None
-        and parsed_nested is not None
-        and parsed_top != parsed_nested
-    ):
+    if parsed_top is not None and parsed_nested is not None and parsed_top != parsed_nested:
         raise RuntimeError(error_code)
     return parsed_nested if parsed_nested is not None else parsed_top
 

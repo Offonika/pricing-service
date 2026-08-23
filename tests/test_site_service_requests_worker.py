@@ -426,6 +426,51 @@ def test_contact_lookup_rejects_missing_contract_fields() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "malformed_active",
+    ["", "UNKNOWN", True, ["Y"], {"value": "Y"}],
+)
+def test_contact_lookup_rejects_malformed_active_status(
+    malformed_active: object,
+) -> None:
+    api = FakeBitrixApi()
+    api.contacts[501]["ACTIVE"] = malformed_active
+
+    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
+        SiteServiceRequestBitrixReader(api).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "malformed_company_id",
+    [True, 601.5, "601.5", [601], {"id": 601}],
+)
+def test_contact_lookup_rejects_malformed_company_id(
+    malformed_company_id: object,
+) -> None:
+    api = FakeBitrixApi()
+    api.contacts[501]["COMPANY_ID"] = malformed_company_id
+
+    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
+        SiteServiceRequestBitrixReader(api).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
+
+
+def test_contact_lookup_rejects_conflicting_company_id_aliases() -> None:
+    api = FakeBitrixApi()
+    api.contacts[501]["companyId"] = "602"
+
+    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
+        SiteServiceRequestBitrixReader(api).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
+
+
 def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
     api = FakeBitrixApi()
     reader = SiteServiceRequestBitrixReader(api)
@@ -1552,6 +1597,64 @@ def test_outbound_empty_send_error_survives_cancel_with_terminal_history(
     assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
 
 
+def test_outbound_empty_send_concurrent_cancel_preserves_durable_error(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class ConcurrentCancelApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "",
+            }
+            self.cancelled = False
+
+        def call(self, method: str, params=None, **kwargs):
+            mapped = dict(params or [])
+            if (
+                method == "crm.item.update"
+                and mapped.get("fields[ufSiteReplyStatus]") == "ERROR"
+                and not self.cancelled
+            ):
+                self.cancelled = True
+                self.items[1000]["ufSiteReplyAction"] = ""
+            return super().call(method, params, **kwargs)
+
+    api = ConcurrentCancelApi()
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    repeated = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    health = build_site_service_request_health(db_session, settings=settings)
+    assert failed[0]["errorCode"] == "reply_text_empty"
+    assert repeated == []
+    assert case.outbound_last_error_code == "reply_text_empty"
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+    assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
+    assert api.items[1000]["ufSiteSyncError"] == "reply_text_empty"
+    assert health["status"] == "degraded"
+    assert health["alert_codes"] == ["outbound_failure"]
+
+
 def test_outbound_success_checkpoint_never_moves_backward(db_session) -> None:
     newer_time = datetime(2026, 8, 23, 9, 0, tzinfo=UTC)
     case = _case(bitrix_item_id=1000, outbound_checked_at=newer_time)
@@ -1813,9 +1916,7 @@ def test_terminal_status_reconcile_preserves_concurrent_new_send(
         cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
     )
     command.status = terminal_status
-    command.last_error_code = (
-        "message_write_failed" if terminal_status == "failed" else None
-    )
+    command.last_error_code = "message_write_failed" if terminal_status == "failed" else None
     command.card_action_cleared_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
     db_session.commit()
 
@@ -2996,6 +3097,19 @@ def test_dynamic_item_writer_uses_rest_camel_case_and_clears_null_values() -> No
     assert api.items[1000] == {"ufCrm36SiteReplyAction": ""}
 
 
+@pytest.mark.parametrize(
+    "malformed_status",
+    ["", "UNKNOWN", True, ["OPENED"], {"STATUS": "OPENED"}],
+)
+def test_timeman_reader_maps_malformed_status_to_error(
+    malformed_status: object,
+) -> None:
+    api = FakeBitrixApi()
+    api.timeman[1001] = malformed_status
+
+    assert SiteServiceRequestBitrixReader(api).timeman_statuses([1001]) == {1001: "ERROR"}
+
+
 def test_timeman_exception_creates_card_in_assignment_waiting(db_session) -> None:
     cipher = _persist_event(db_session)
 
@@ -3320,6 +3434,36 @@ def test_assignment_failure_clears_after_first_response(db_session) -> None:
     assert health["assignment_failures"] == 0
 
 
+@pytest.mark.parametrize(
+    "malformed_stage",
+    [55, True, ["DT1134_55:NEW"], {"value": "DT1134_55:NEW"}],
+)
+def test_assignment_reconcile_rejects_non_string_stage_without_saving_it(
+    db_session,
+    malformed_stage: object,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    case.last_open_stage_id = "DT1134_55:PREPARATION"
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": malformed_stage}
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 23, 8, 1, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["errorCode"] == "assignment_reconcile_failed"
+    assert case.assignment_last_error_code == "assignment_reconcile_failed"
+    assert case.last_open_stage_id == "DT1134_55:PREPARATION"
+
+
 def test_unexpected_timeman_error_checkpoints_health_before_reraise(db_session) -> None:
     case = _case(bitrix_item_id=1000)
     db_session.add(case)
@@ -3410,6 +3554,26 @@ def test_escalation_recovers_after_notification_failure_without_duplicate_timeli
     assert [method for method, _params in api.calls].count("im.notify.personal.add") == 2
     assert case.escalation_timeline_delivered_at is not None
     assert case.escalation_notification_delivered_at is not None
+
+
+@pytest.mark.parametrize(
+    "malformed_result",
+    [None, False, 0, "", "0", 1.5, "accepted", [1], {"id": 1}],
+)
+def test_notification_rejects_malformed_success_result(
+    malformed_result: object,
+) -> None:
+    class MalformedNotificationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "im.notify.personal.add":
+                return {"result": malformed_result}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_notification_failed"):
+        SiteServiceRequestBitrixWriter(MalformedNotificationApi()).notify_user(
+            user_id=1003,
+            message="Тестовое уведомление",
+        )
 
 
 def test_pending_escalation_delivery_retries_after_first_response(db_session) -> None:
@@ -3508,6 +3672,8 @@ def test_timeline_writer_rejects_conflicting_offsets() -> None:
         {"result": None},
         {"result": {}},
         {"result": {"items": [], "comments": []}},
+        {"result": {"items": None}},
+        {"result": {"comments": 1}},
         {"result": {"items": ["unknown-row"]}},
         {"result": [{"ID": "1"}]},
         {"result": [{"COMMENT": ["missing marker"]}]},

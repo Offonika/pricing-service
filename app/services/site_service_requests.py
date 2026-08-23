@@ -267,9 +267,7 @@ def stage_site_service_request_file(
 
     case_id, source_message_id = event_identity
     case = session.scalar(
-        select(SiteServiceRequestCase)
-        .where(SiteServiceRequestCase.id == case_id)
-        .with_for_update()
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.id == case_id).with_for_update()
     )
     if case is None:
         raise SiteServiceRequestNotFoundError("event_not_found")
@@ -416,9 +414,7 @@ def fail_site_service_request_file(
         raise SiteServiceRequestNotFoundError("event_not_found")
     case_id, source_message_id = event_identity
     case = session.scalar(
-        select(SiteServiceRequestCase)
-        .where(SiteServiceRequestCase.id == case_id)
-        .with_for_update()
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.id == case_id).with_for_update()
     )
     if case is None:
         raise SiteServiceRequestNotFoundError("event_not_found")
@@ -489,12 +485,39 @@ def lease_site_service_request_commands(
             ),
         ),
     )
+    candidate_case_ids = list(
+        dict.fromkeys(
+            session.scalars(
+                select(SiteServiceRequestCommand.case_id)
+                .where(available)
+                .order_by(
+                    SiteServiceRequestCommand.created_at,
+                    SiteServiceRequestCommand.id,
+                )
+                # Read ahead so one damaged row does not hide otherwise deliverable
+                # commands behind the public batch limit.
+                .limit(100)
+            ).all()
+        )
+    )
+    if not candidate_case_ids:
+        return []
+    locked_cases = session.scalars(
+        select(SiteServiceRequestCase)
+        .where(SiteServiceRequestCase.id.in_(candidate_case_ids))
+        .order_by(SiteServiceRequestCase.id)
+        .with_for_update(skip_locked=True)
+    ).all()
+    locked_case_ids = [case.id for case in locked_cases]
+    if not locked_case_ids:
+        return []
     commands = session.scalars(
         select(SiteServiceRequestCommand)
-        .where(available)
+        .where(
+            available,
+            SiteServiceRequestCommand.case_id.in_(locked_case_ids),
+        )
         .order_by(SiteServiceRequestCommand.created_at, SiteServiceRequestCommand.id)
-        # Read ahead so one damaged row does not hide otherwise deliverable
-        # commands behind the public batch limit.
         .limit(100)
         .with_for_update(skip_locked=True)
     ).all()
@@ -922,9 +945,7 @@ def _missing_file_ids(
 
 def _source_message_payload_sha256(payload: SiteServiceRequestEventPayload) -> str:
     source_message = next(
-        message
-        for message in payload.history
-        if message.message_id == payload.source_message_id
+        message for message in payload.history if message.message_id == payload.source_message_id
     )
     canonical_message = source_message.model_dump(mode="json", by_alias=True)
     # A deleted/unavailable b_file row has only its durable attachment ID. Name,

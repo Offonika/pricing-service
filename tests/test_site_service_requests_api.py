@@ -31,6 +31,7 @@ from app.schemas.site_service_requests import SiteServiceRequestCommandAckPayloa
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     acknowledge_site_service_request_command,
+    lease_site_service_request_commands,
 )
 from app.services.site_service_requests_auth import content_sha256, sign_site_request
 
@@ -709,9 +710,7 @@ def test_later_history_snapshot_does_not_consume_recoverable_file_placeholder(
         )
         assert _post_event(client, later).status_code == 202
         placeholder = db_session.scalar(
-            select(SiteServiceRequestFile).where(
-                SiteServiceRequestFile.source_message_id == 1201
-            )
+            select(SiteServiceRequestFile).where(SiteServiceRequestFile.source_message_id == 1201)
         )
         assert placeholder is not None
         assert placeholder.sha256 == "0" * 64
@@ -945,6 +944,59 @@ def test_commands_api_leases_decrypted_command_and_releases_it_after_expiry(
     db_session.refresh(command)
     assert command.status == "leased"
     assert command.attempts == 2
+
+
+def test_command_lease_locks_case_before_command(db_session) -> None:
+    case = SiteServiceRequestCase(
+        source_ticket_id=741,
+        sync_status="pending",
+    )
+    db_session.add(case)
+    db_session.flush()
+    command = _create_command(db_session, case_id=case.id)
+    assert command.case is case
+
+    class ScalarRows:
+        def __init__(self, rows) -> None:
+            self.rows = rows
+
+        def all(self):
+            return self.rows
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.statements = []
+            self.results = iter(([case.id], [case], [command]))
+            self.flushed = False
+
+        def scalars(self, statement):
+            self.statements.append(statement)
+            return ScalarRows(next(self.results))
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    recording_session = RecordingSession()
+    leased = lease_site_service_request_commands(
+        recording_session,  # type: ignore[arg-type]
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        enabled=True,
+        lease_seconds=300,
+    )
+
+    entities = [
+        statement.column_descriptions[0]["entity"] for statement in recording_session.statements
+    ]
+    assert entities == [
+        SiteServiceRequestCommand,
+        SiteServiceRequestCase,
+        SiteServiceRequestCommand,
+    ]
+    assert recording_session.statements[0]._for_update_arg is None
+    assert recording_session.statements[1]._for_update_arg is not None
+    assert recording_session.statements[2]._for_update_arg is not None
+    assert recording_session.flushed is True
+    assert [row.command_id for row in leased] == [command.id]
 
 
 def test_command_ack_rejects_stale_lease_token_after_rotation(client, db_session) -> None:
@@ -1276,16 +1328,19 @@ def test_failed_outbound_health_stays_degraded_until_replacement_is_applied(
         assert case is not None
         failed_command = _create_command(db_session, case_id=case.id)
         failed_lease = _get_commands(client).json()["commands"][0]
-        assert _post_command_ack(
-            client,
-            failed_command.id,
-            {
-                "schemaVersion": 1,
-                "leaseToken": failed_lease["leaseToken"],
-                "status": "failed",
-                "errorCode": "message_write_failed",
-            },
-        ).status_code == 200
+        assert (
+            _post_command_ack(
+                client,
+                failed_command.id,
+                {
+                    "schemaVersion": 1,
+                    "leaseToken": failed_lease["leaseToken"],
+                    "status": "failed",
+                    "errorCode": "message_write_failed",
+                },
+            ).status_code
+            == 200
+        )
         replacement = _create_command(
             db_session,
             case_id=case.id,
@@ -1298,18 +1353,21 @@ def test_failed_outbound_health_stays_degraded_until_replacement_is_applied(
         )
         replacement_lease = _get_commands(client).json()["commands"][0]
         assert replacement_lease["commandId"] == replacement.id
-        assert _post_command_ack(
-            client,
-            replacement.id,
-            {
-                "schemaVersion": 1,
-                "leaseToken": replacement_lease["leaseToken"],
-                "status": "applied",
-                "ticketId": 741,
-                "messageId": 1302,
-                "appliedAt": "2026-08-22T13:05:00+03:00",
-            },
-        ).status_code == 200
+        assert (
+            _post_command_ack(
+                client,
+                replacement.id,
+                {
+                    "schemaVersion": 1,
+                    "leaseToken": replacement_lease["leaseToken"],
+                    "status": "applied",
+                    "ticketId": 741,
+                    "messageId": 1302,
+                    "appliedAt": "2026-08-22T13:05:00+03:00",
+                },
+            ).status_code
+            == 200
+        )
         recovered_health = client.get(
             _HEALTH_PATH,
             headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),

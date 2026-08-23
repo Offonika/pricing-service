@@ -185,6 +185,40 @@ def test_apply_blocks_existing_field_type_mismatch_before_writes() -> None:
     assert _write_methods(api) == []
 
 
+@pytest.mark.parametrize(
+    "malformed_xml_id",
+    [
+        None,
+        "WRONG_XML_ID",
+        " MM_SITE_SERVICE_SITE_TICKET_ID ",
+        ["MM_SITE_SERVICE_SITE_TICKET_ID"],
+        {"value": "xml"},
+    ],
+)
+def test_apply_rejects_target_field_with_malformed_xml_id_before_writes(
+    malformed_xml_id: object,
+) -> None:
+    fields = _all_fields()
+    fields[0]["xmlId"] = malformed_xml_id
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="field_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_conflicting_target_xml_id_aliases_before_writes() -> None:
+    fields = _all_fields()
+    fields[0]["XML_ID"] = "WRONG_XML_ID"
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="field_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_requires_created_field_readback() -> None:
     api = FakeBitrixApi(
         fields=_all_fields()[1:],
@@ -231,6 +265,38 @@ def test_apply_fails_closed_when_existing_form_contains_unknown_rows() -> None:
     assert _write_methods(api) == []
 
 
+@pytest.mark.parametrize(
+    "existing_form",
+    [
+        [
+            {
+                "name": ["main"],
+                "title": "Основное",
+                "type": "section",
+                "elements": [{"name": "TITLE", "optionFlags": 1}],
+            }
+        ],
+        [
+            {
+                "name": "main",
+                "title": "Основное",
+                "type": "section",
+                "elements": [{"name": ["TITLE"], "optionFlags": 1}],
+            }
+        ],
+    ],
+)
+def test_apply_rejects_non_string_form_names_before_writes(
+    existing_form: list[dict[str, Any]],
+) -> None:
+    api = FakeBitrixApi(fields=_all_fields(), existing_form=existing_form)
+
+    with pytest.raises(RuntimeError, match="form_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_blocks_missing_required_stage_before_writes() -> None:
     api = FakeBitrixApi(fields=_all_fields(), stages=_stages()[:-1])
 
@@ -254,9 +320,7 @@ def test_apply_blocks_incomplete_existing_request_type_enum_before_writes() -> N
 def test_apply_blocks_incomplete_site_enum_before_writes() -> None:
     fields = _all_fields()
     sync_status = next(
-        field
-        for field in fields
-        if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
+        field for field in fields if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
     )
     sync_status["enum"] = sync_status["enum"][:-1]
     api = FakeBitrixApi(fields=fields)
@@ -302,6 +366,8 @@ def test_apply_rejects_malformed_process_type_before_writes(response: dict[str, 
         {"result": {}},
         {"result": {"statuses": "not-a-list"}},
         {"result": ["unknown-row"]},
+        {"result": [{"STATUS_ID": ["DT1134_55:NEW"]}]},
+        {"result": [{"STATUS_ID": "DT1134_56:NEW"}]},
     ],
 )
 def test_apply_rejects_malformed_stages_before_writes(response: dict[str, Any]) -> None:
@@ -312,6 +378,17 @@ def test_apply_rejects_malformed_stages_before_writes(response: dict[str, Any]) 
             return super().call_json(method, payload, **kwargs)
 
     api = MalformedStagesApi(fields=_all_fields())
+
+    with pytest.raises(RuntimeError, match="stages_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_conflicting_stage_id_aliases_before_writes() -> None:
+    stages = _stages()
+    stages[0]["statusId"] = "DT1134_55:PREPARATION"
+    api = FakeBitrixApi(fields=_all_fields(), stages=stages)
 
     with pytest.raises(RuntimeError, match="stages_readback_unrecognized"):
         bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
@@ -492,11 +569,7 @@ def test_userfield_list_reads_all_pages() -> None:
         {"result": []},
         {"result": {"fields": "not-a-list"}},
         {"result": {"fields": ["unknown-row"]}},
-        {
-            "result": {
-                "fields": [{"id": "1", "fieldName": "", "userTypeId": "string"}]
-            }
-        },
+        {"result": {"fields": [{"id": "1", "fieldName": "", "userTypeId": "string"}]}},
         {
             "result": {
                 "fields": [

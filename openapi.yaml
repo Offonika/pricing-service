@@ -6132,8 +6132,8 @@ paths:
         required: false
         schema:
           anyOf:
-          - type: string
-            const: file_unavailable
+          - const: file_unavailable
+            type: string
           - type: 'null'
           title: X-Mm-Site-File-Error
       - name: X-MM-Site-Timestamp

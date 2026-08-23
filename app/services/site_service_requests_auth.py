@@ -130,12 +130,9 @@ def verify_site_request(
         nonce=nonce,
         now=current_time,
         expires_at=max(
-            current_time
-            + timedelta(seconds=settings.site_service_requests_nonce_ttl_seconds),
+            current_time + timedelta(seconds=settings.site_service_requests_nonce_ttl_seconds),
             datetime.fromtimestamp(timestamp, UTC)
-            + timedelta(
-                seconds=settings.site_service_requests_timestamp_tolerance_seconds + 1
-            ),
+            + timedelta(seconds=settings.site_service_requests_timestamp_tolerance_seconds + 1),
         ),
     )
     return VerifiedSiteRequest(

@@ -1021,6 +1021,34 @@ def test_invalid_command_text_is_quarantined_without_blocking_valid_batch(
     assert invalid.card_action_cleared_at is not None
 
 
+def test_latest_invalid_command_degrades_outbound_health(client, db_session) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        invalid_key = "site-support-reply:741:invalid-latest"
+        invalid = SiteServiceRequestCommand(
+            case_id=case.id,
+            command_key=invalid_key,
+            reply_encrypted=SiteServiceRequestCipher(_ENCRYPTION_KEY).encrypt(
+                b"\xff",
+                event_id=invalid_key,
+            ),
+            reply_sha256=hashlib.sha256(b"\xff").hexdigest(),
+            status="pending",
+        )
+        db_session.add(invalid)
+        db_session.commit()
+
+        response = _get_commands(client)
+
+    assert response.status_code == 200
+    assert response.json()["commands"] == []
+    db_session.refresh(case)
+    assert case.outbound_last_error_code == "command_payload_invalid"
+
+
 def test_wrong_global_command_key_fails_closed_without_discarding_command(
     client,
     db_session,

@@ -28035,6 +28035,7 @@ components:
           items:
             $ref: '#/components/schemas/SiteServiceRequestCommandPayload'
           type: array
+          maxItems: 20
           title: Commands
       type: object
       required:

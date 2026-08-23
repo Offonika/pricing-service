@@ -251,6 +251,138 @@ def test_apply_blocks_incomplete_existing_request_type_enum_before_writes() -> N
     assert _write_methods(api) == []
 
 
+def test_apply_blocks_incomplete_site_enum_before_writes() -> None:
+    fields = _all_fields()
+    sync_status = next(
+        field
+        for field in fields
+        if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
+    )
+    sync_status["enum"] = sync_status["enum"][:-1]
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="enum_mapping_incomplete"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"result": []},
+        {"result": {"type": []}},
+        {"result": {"type": {"id": 0, "entityTypeId": 1134}}},
+        {"result": {"type": {"id": 36.5, "entityTypeId": 1134}}},
+        {"result": {"type": {"id": 36, "entityTypeId": 1134.5}}},
+        {"result": {"type": {"id": 36, "entityTypeId": 999}}},
+    ],
+)
+def test_apply_rejects_malformed_process_type_before_writes(response: dict[str, Any]) -> None:
+    class MalformedTypeApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            if method == "crm.type.get":
+                return response
+            return super().call_json(method, payload, **kwargs)
+
+    api = MalformedTypeApi(fields=_all_fields())
+
+    with pytest.raises(RuntimeError, match="type_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"result": None},
+        {"result": {}},
+        {"result": {"statuses": "not-a-list"}},
+        {"result": ["unknown-row"]},
+    ],
+)
+def test_apply_rejects_malformed_stages_before_writes(response: dict[str, Any]) -> None:
+    class MalformedStagesApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            if method == "crm.status.list":
+                return response
+            return super().call_json(method, payload, **kwargs)
+
+    api = MalformedStagesApi(fields=_all_fields())
+
+    with pytest.raises(RuntimeError, match="stages_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_malformed_enum_rows_before_writes() -> None:
+    fields = _all_fields()
+    fields[3]["enum"] = ["unknown-row"]
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="enum_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_duplicate_enum_ids_before_writes() -> None:
+    fields = _all_fields()
+    fields[3]["enum"][1]["id"] = fields[3]["enum"][0]["id"]
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="enum_readback_ambiguous"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_duplicate_stage_rows_before_writes() -> None:
+    stages = _stages()
+    stages.append(deepcopy(stages[0]))
+    api = FakeBitrixApi(fields=_all_fields(), stages=stages)
+
+    with pytest.raises(RuntimeError, match="stage_mapping_ambiguous"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_duplicate_target_field_before_writes() -> None:
+    fields = _all_fields()
+    fields.append(deepcopy(fields[0]))
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="field_readback_ambiguous"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+def test_apply_rejects_ambiguous_existing_form_before_writes() -> None:
+    existing_form = [
+        {
+            "name": "main",
+            "title": "Основное",
+            "type": "section",
+            "elements": [
+                {"name": "TITLE", "optionFlags": 1},
+                {"name": "TITLE", "optionFlags": 1},
+            ],
+        }
+    ]
+    api = FakeBitrixApi(fields=_all_fields(), existing_form=existing_form)
+
+    with pytest.raises(RuntimeError, match="form_readback_ambiguous"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_merges_site_sections_without_replacing_existing_form() -> None:
     existing_form = [
         {
@@ -320,12 +452,33 @@ def test_userfield_list_reads_all_pages() -> None:
             assert method == "userfieldconfig.list"
             calls.append(deepcopy(payload))
             if payload.get("start") == 50:
-                return {"result": {"fields": [{"id": "2"}]}}
-            return {"result": {"fields": [{"id": "1"}]}, "next": 50}
+                return {
+                    "result": {
+                        "fields": [
+                            {
+                                "id": "2",
+                                "fieldName": "UF_CRM_36_SECOND",
+                                "userTypeId": "string",
+                            }
+                        ]
+                    }
+                }
+            return {
+                "result": {
+                    "fields": [
+                        {
+                            "id": "1",
+                            "fieldName": "UF_CRM_36_FIRST",
+                            "userTypeId": "string",
+                        }
+                    ]
+                },
+                "next": 50,
+            }
 
     fields = bitrix_setup._list_fields(PaginatedApi(), entity_id="CRM_36")
 
-    assert fields == [{"id": "1"}, {"id": "2"}]
+    assert [field["id"] for field in fields] == ["1", "2"]
     assert calls == [
         {"moduleId": "crm", "filter": {"entityId": "CRM_36"}},
         {"moduleId": "crm", "filter": {"entityId": "CRM_36"}, "start": 50},
@@ -339,6 +492,55 @@ def test_userfield_list_reads_all_pages() -> None:
         {"result": []},
         {"result": {"fields": "not-a-list"}},
         {"result": {"fields": ["unknown-row"]}},
+        {
+            "result": {
+                "fields": [{"id": "1", "fieldName": "", "userTypeId": "string"}]
+            }
+        },
+        {
+            "result": {
+                "fields": [
+                    {
+                        "id": "invalid",
+                        "fieldName": "UF_CRM_1_VALUE",
+                        "userTypeId": "string",
+                    }
+                ]
+            }
+        },
+        {
+            "result": {
+                "fields": [
+                    {
+                        "id": 1.5,
+                        "fieldName": "UF_CRM_1_VALUE",
+                        "userTypeId": "string",
+                    }
+                ]
+            }
+        },
+        {
+            "result": {
+                "fields": [
+                    {
+                        "id": "1",
+                        "fieldName": ["UF_CRM_1_VALUE"],
+                        "userTypeId": "string",
+                    }
+                ]
+            }
+        },
+        {
+            "result": {
+                "fields": [
+                    {
+                        "id": "1",
+                        "fieldName": "UF_CRM_1_VALUE",
+                        "userTypeId": {"type": "string"},
+                    }
+                ]
+            }
+        },
     ],
 )
 def test_userfield_list_rejects_malformed_page(response: dict[str, Any]) -> None:
@@ -351,7 +553,7 @@ def test_userfield_list_rejects_malformed_page(response: dict[str, Any]) -> None
         bitrix_setup._list_fields(MalformedApi(), entity_id="CRM_36")
 
 
-@pytest.mark.parametrize("next_value", [False, -1, "invalid"])
+@pytest.mark.parametrize("next_value", [False, -1, 1.5, "1.5", " 1", "invalid"])
 def test_userfield_list_rejects_invalid_next_offset(next_value: object) -> None:
     class InvalidPaginationApi:
         def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
@@ -360,6 +562,21 @@ def test_userfield_list_rejects_invalid_next_offset(next_value: object) -> None:
 
     with pytest.raises(RuntimeError, match="fields_pagination_invalid"):
         bitrix_setup._list_fields(InvalidPaginationApi(), entity_id="CRM_36")
+
+
+@pytest.mark.parametrize("next_value", [False, -1, 1.5, "1.5", " 1", "invalid"])
+def test_stage_list_rejects_invalid_next_offset(next_value: object) -> None:
+    class InvalidPaginationApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            assert method == "crm.status.list"
+            return {"result": [], "next": next_value}
+
+    with pytest.raises(RuntimeError, match="stages_pagination_invalid"):
+        bitrix_setup._list_stages(
+            InvalidPaginationApi(),
+            entity_type_id=1134,
+            category_id=55,
+        )
 
 
 def test_userfield_list_rejects_repeated_offset() -> None:

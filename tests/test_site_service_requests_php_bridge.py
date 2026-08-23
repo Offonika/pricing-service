@@ -44,15 +44,27 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "str_repeat('0', 64)" in source
     assert "LEFT JOIN `b_file`" in source
     assert "`ATTACHED_FILE_ID`" in source
+    assert "$fileRecordExists" in source
     assert "rawurlencode((string) $eventKey)" not in source
     assert "filename*=UTF-8" in source
     assert "file_response_mismatch" in source
     assert "file_error_report_response_mismatch" in source
-    assert source.count("throw new BridgeFailure('file_api_unavailable');") == 1
+    assert source.count("throw new BridgeFailure('file_api_unavailable');") == 3
+    assert "if ($documentRoot === '')" in source
     assert source.count("throw new BridgeFailure('file_hash_failed');") == 1
     assert "array(\n                                'file_not_found'" not in source
     assert "$isPermanentHttpError" in source
-    assert "array(408, 413, 425, 429)" in source
+    assert "array(400, 409, 413, 415, 422)" in source
+    assert "event_response_invalid" in source
+    assert "commands_response_invalid" in source
+    assert "command_ack_response_mismatch" in source
+    assert "payloadSourceFileIds" in source
+    assert "array('missingFileIds')" in source
+    assert "array('commands')" in source
+    assert "$shape instanceof \\stdClass" in source
+    assert "!is_int($payload['schemaVersion'])" in source
+    assert "!is_int($acknowledged['commandId'])" in source
+    assert "throw new BridgeFailure('site_database_unavailable');" in source
 
 
 def test_bridge_hardening_keeps_ambiguous_writes_and_field_repair_idempotent() -> None:

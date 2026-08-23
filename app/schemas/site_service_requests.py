@@ -159,7 +159,7 @@ class SiteServiceRequestCommandsResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
-    commands: list[SiteServiceRequestCommandPayload]
+    commands: list[SiteServiceRequestCommandPayload] = Field(max_length=20)
 
 
 class SiteServiceRequestCommandAckPayload(BaseModel):

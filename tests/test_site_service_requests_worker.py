@@ -188,7 +188,11 @@ class FakeBitrixApi:
         if method != "disk.folder.uploadfile":
             raise AssertionError(f"unexpected Bitrix JSON method: {method}")
         name = str(payload["data"]["NAME"])
-        item = {"ID": str(2000 + len(self.disk_files)), "DETAIL_URL": "/disk/file"}
+        item = {
+            "ID": str(2000 + len(self.disk_files)),
+            "NAME": name,
+            "DETAIL_URL": "/disk/file",
+        }
         self.disk_files[name] = item
         return {"result": item}
 
@@ -353,6 +357,16 @@ def test_normalization_and_exact_order_token() -> None:
     assert contains_exact_order_token("Заказ 1000001 / сайт", "000001") is False
 
 
+@pytest.mark.parametrize("value", [True, 1.5, "1.5", "+1", "١"])
+def test_positive_int_rejects_noncanonical_rest_ids(value: object) -> None:
+    assert worker_module._positive_int(value) is None
+
+
+@pytest.mark.parametrize(("value", "expected"), [(1, 1), (" 42 ", 42)])
+def test_positive_int_accepts_canonical_rest_ids(value: object, expected: int) -> None:
+    assert worker_module._positive_int(value) == expected
+
+
 def test_user_preflight_requires_active_users_with_expected_identity() -> None:
     api = FakeBitrixApi()
     settings = _worker_settings()
@@ -373,6 +387,43 @@ def test_user_preflight_requires_active_users_with_expected_identity() -> None:
     mismatched_api.users[1001]["ID"] = "9999"
     with pytest.raises(RuntimeError, match="readback failed"):
         preflight_site_service_request_users(api=mismatched_api, settings=settings)
+
+
+def test_user_preflight_rejects_malformed_extra_user_row() -> None:
+    class MalformedUserApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "user.get":
+                response = super().call(method, params, **kwargs)
+                return {"result": [*response["result"], "unknown-row"]}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="readback failed"):
+        preflight_site_service_request_users(
+            api=MalformedUserApi(),
+            settings=_worker_settings(),
+        )
+
+
+def test_contact_lookup_rejects_missing_contract_fields() -> None:
+    class MalformedContactApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.duplicate.findbycomm":
+                return {"result": {}}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_contact_search_invalid"):
+        SiteServiceRequestBitrixReader(MalformedContactApi()).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
+
+    missing_active = FakeBitrixApi()
+    missing_active.contacts[501].pop("ACTIVE")
+    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
+        SiteServiceRequestBitrixReader(missing_active).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
 
 
 def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
@@ -471,6 +522,94 @@ def test_deal_pagination_stops_after_100_pages() -> None:
     assert len(api.calls) == 100
 
 
+def test_deal_pagination_rejects_conflicting_offsets() -> None:
+    class ConflictingNextApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                return {"result": {"items": [], "next": 1}, "next": 2}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_pagination_invalid"):
+        SiteServiceRequestBitrixReader(ConflictingNextApi()).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+
+
+def test_bitrix_pagination_rejects_fractional_offsets() -> None:
+    class FractionalNextApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                return {"result": [], "next": 1.5}
+            if method == "crm.contact.list":
+                return {"result": [], "next": 1.5}
+            if method == "crm.timeline.comment.list":
+                return {"result": [], "next": 1.5}
+            if method == "crm.item.list":
+                return {"result": {"items": []}, "next": 1.5}
+            return super().call(method, params, **kwargs)
+
+    api = FractionalNextApi()
+    reader = SiteServiceRequestBitrixReader(api)
+    writer = SiteServiceRequestBitrixWriter(api)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_pagination_invalid"):
+        reader.find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+    with pytest.raises(RuntimeError, match="crm_contact_pagination_invalid"):
+        writer._recover_created_contact(origin_id="site-support-ticket:741")
+    with pytest.raises(RuntimeError, match="bitrix_timeline_pagination_invalid"):
+        writer.timeline_comment_exists(
+            entity_type_id=1134,
+            item_id=1000,
+            marker="missing marker",
+        )
+    with pytest.raises(RuntimeError, match="bitrix_item_pagination_invalid"):
+        writer._find_items(
+            entity_type_id=1134,
+            idempotency_field="UF_BACKEND_KEY",
+            idempotency_key="key",
+        )
+
+
+def test_deal_pagination_rejects_ambiguous_page_containers() -> None:
+    class AmbiguousDealPageApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                return {"result": {"items": [], "deals": []}}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_readback_invalid"):
+        SiteServiceRequestBitrixReader(AmbiguousDealPageApi()).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+
+
+@pytest.mark.parametrize(
+    "malformed_title",
+    [["Заказ 000001"], {"text": "Заказ 000001"}],
+)
+def test_deal_lookup_rejects_non_string_title(malformed_title: object) -> None:
+    class MalformedDealTitleApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                return {"result": [{"ID": "701", "TITLE": malformed_title}]}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_readback_invalid"):
+        SiteServiceRequestBitrixReader(MalformedDealTitleApi()).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+
+
 def test_contact_create_timeout_recovers_by_origin_id() -> None:
     api = FakeBitrixApi()
     api.raise_after_contact_add = True
@@ -482,6 +621,37 @@ def test_contact_create_timeout_recovers_by_origin_id() -> None:
     methods = [method for method, _params in api.calls]
     assert methods.count("crm.contact.add") == 1
     assert methods.count("crm.contact.list") == 1
+
+
+def test_contact_recovery_rejects_ambiguous_page_containers() -> None:
+    class AmbiguousContactPageApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.raise_after_contact_add = True
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.contact.list":
+                return {"result": {"items": [], "contacts": []}}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="crm_contact_readback_invalid"):
+        SiteServiceRequestBitrixWriter(AmbiguousContactPageApi()).create_contact(
+            SiteServiceRequestEventPayload.model_validate(_event_payload())
+        )
+
+
+def test_contact_create_requires_origin_readback() -> None:
+    class WrongOriginApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.contact.get":
+                response["result"]["ORIGIN_ID"] = "wrong-origin"
+            return response
+
+    with pytest.raises(RuntimeError, match="crm_contact_write_readback_failed"):
+        SiteServiceRequestBitrixWriter(WrongOriginApi()).create_contact(
+            SiteServiceRequestEventPayload.model_validate(_event_payload())
+        )
 
 
 def test_assignment_round_robin_outside_shift_pause_and_escalation() -> None:
@@ -970,6 +1140,49 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
 
 
+def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_path) -> None:
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    existing_file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1101,
+        source_file_id=9001,
+        safe_filename="existing.jpg",
+        mime_type="image/jpeg",
+        byte_size=1,
+        sha256=hashlib.sha256(b"x").hexdigest(),
+        status="uploaded",
+        bitrix_object_id="1999",
+        bitrix_file_id="1999",
+    )
+    content = b"new-file"
+    path = tmp_path / "new-file.bin"
+    path.write_bytes(content)
+    staged_file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=9002,
+        safe_filename="new.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, existing_file, staged_file])
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": ["1999"]}
+
+    results = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert results[0]["status"] == "uploaded"
+    assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "2000"]
+
+
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:
     case = _case(
         bitrix_item_id=1000,
@@ -1176,6 +1389,191 @@ def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncError"] == "file_sync_error"
 
 
+@pytest.mark.parametrize("malformed_reply", [[], {"text": "Ответ"}])
+def test_outbound_rejects_non_string_reply_text(db_session, malformed_reply: object) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": malformed_reply,
+    }
+
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["errorCode"] == "outbound_reconcile_failed"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyText"] == malformed_reply
+    assert case.outbound_last_error_code == "outbound_reconcile_failed"
+
+
+@pytest.mark.parametrize("malformed_action", [True, ["SEND"], {"value": "SEND"}])
+def test_outbound_rejects_non_scalar_reply_action(
+    db_session,
+    malformed_action: object,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": malformed_action,
+        "ufSiteReplyText": "Ответ не должен быть отправлен",
+    }
+
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["errorCode"] == "outbound_reconcile_failed"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == malformed_action
+    assert case.outbound_last_error_code == "outbound_reconcile_failed"
+
+
+def test_outbound_empty_send_sets_explicit_error_until_text_is_fixed(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "   ",
+    }
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    degraded = build_site_service_request_health(db_session, settings=settings)
+    assert failed[0]["status"] == "failed"
+    assert failed[0]["errorCode"] == "reply_text_empty"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
+    assert api.items[1000]["ufSiteSyncError"] == "reply_text_empty"
+    assert case.outbound_last_error_code == "reply_text_empty"
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["outbound_failure"]
+
+    api.items[1000]["ufSiteReplyAction"] = ""
+    cancelled = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    db_session.refresh(case)
+    still_degraded = build_site_service_request_health(db_session, settings=settings)
+    assert cancelled == []
+    assert case.outbound_last_error_code == "reply_text_empty"
+    assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
+    assert api.items[1000]["ufSiteSyncError"] == "reply_text_empty"
+    assert still_degraded["status"] == "degraded"
+
+    api.items[1000]["ufSiteReplyAction"] = "SEND"
+    api.items[1000]["ufSiteReplyText"] = "Исправленный ответ"
+    retried = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert retried[0]["status"] == "pending"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+    assert case.outbound_last_error_code is None
+
+
+def test_outbound_empty_send_error_survives_cancel_with_terminal_history(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.flush()
+    previous, _duplicate = create_site_service_request_command(
+        db_session,
+        case=case,
+        reply_text="Предыдущий ответ",
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    previous.status = "applied"
+    previous.card_action_cleared_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "",
+        "ufSiteReplyStatus": "SENT",
+    }
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    api.items[1000]["ufSiteReplyAction"] = ""
+    cancelled = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert failed[0]["errorCode"] == "reply_text_empty"
+    assert cancelled == []
+    assert case.outbound_last_error_code == "reply_text_empty"
+    assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
+
+
+def test_outbound_success_checkpoint_never_moves_backward(db_session) -> None:
+    newer_time = datetime(2026, 8, 23, 9, 0, tzinfo=UTC)
+    case = _case(bitrix_item_id=1000, outbound_checked_at=newer_time)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufSiteReplyAction": ""}
+
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results == []
+    assert case.outbound_checked_at is not None
+    assert case.outbound_checked_at.replace(tzinfo=UTC) == newer_time
+
+
 def test_outbound_command_is_durable_before_card_action_clear(db_session) -> None:
     cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
     case = _case(bitrix_item_id=1000)
@@ -1221,6 +1619,56 @@ def test_outbound_command_is_durable_before_card_action_clear(db_session) -> Non
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     db_session.refresh(command)
     assert command.card_action_cleared_at is not None
+
+
+def test_outbound_readback_failure_after_command_commit_is_durable_and_degrades_health(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+
+    class FailingGuardReadApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "SEND",
+                "ufSiteReplyText": "Ответ перед сбоем readback",
+            }
+            self.get_calls = 0
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get":
+                self.get_calls += 1
+                if self.get_calls == 2:
+                    raise RuntimeError("temporary guard readback failure")
+            return super().call(method, params, **kwargs)
+
+    api = FailingGuardReadApi()
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    command = db_session.scalar(select(SiteServiceRequestCommand))
+    db_session.refresh(case)
+    degraded = build_site_service_request_health(db_session, settings=settings)
+
+    assert failed[0]["errorCode"] == "outbound_reconcile_failed"
+    assert command is not None
+    assert command.status == "pending"
+    assert command.card_action_cleared_at is None
+    assert case.outbound_last_error_code == "outbound_reconcile_failed"
+    assert degraded["status"] == "degraded"
+    assert degraded["alert_codes"] == ["outbound_failure"]
+    assert degraded["outbound_failures"] == 1
 
 
 def test_outbound_stale_worker_does_not_clear_repeated_send_after_ack(
@@ -1294,7 +1742,9 @@ def test_outbound_stale_worker_does_not_clear_repeated_send_after_ack(
     assert api.items[1000]["ufSiteReplyAction"] == ""
 
 
-def test_applied_outbound_status_reconciles_without_reowning_idle_action(db_session) -> None:
+def test_applied_outbound_with_changed_text_restores_send_before_finishing_cleanup(
+    db_session,
+) -> None:
     case = _case(bitrix_item_id=1000)
     db_session.add(case)
     db_session.flush()
@@ -1325,12 +1775,95 @@ def test_applied_outbound_status_reconciles_without_reowning_idle_action(db_sess
 
     assert result[0]["status"] == "applied"
     assert result[0]["duplicate"] is True
-    assert api.items[1000]["ufSiteReplyStatus"] == "SENT"
-    assert api.items[1000]["ufSiteReplyAction"] == ""
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
     assert api.items[1000]["ufSiteReplyText"] == "Позднее редактирование без SEND"
     assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
     db_session.refresh(command)
     assert command.card_action_cleared_at is not None
+
+    second = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+
+    assert second[0]["duplicate"] is False
+    assert len(commands) == 2
+    assert commands[1].reply_sha256 != commands[0].reply_sha256
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+
+
+@pytest.mark.parametrize("terminal_status", ["applied", "failed"])
+def test_terminal_status_reconcile_preserves_concurrent_new_send(
+    db_session,
+    terminal_status: str,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.flush()
+    command, _duplicate = create_site_service_request_command(
+        db_session,
+        case=case,
+        reply_text="Предыдущий ответ",
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+    command.status = terminal_status
+    command.last_error_code = (
+        "message_write_failed" if terminal_status == "failed" else None
+    )
+    command.card_action_cleared_at = datetime(2026, 8, 23, 8, 0, tzinfo=UTC)
+    db_session.commit()
+
+    class ConcurrentSendApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.items[1000] = {
+                "ufSiteReplyAction": "",
+                "ufSiteReplyText": "Предыдущий ответ",
+                "ufSiteReplyStatus": "PENDING",
+            }
+            self.injected_send = False
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.update" and not self.injected_send:
+                self.injected_send = True
+                self.items[1000]["ufSiteReplyAction"] = "SEND"
+                self.items[1000]["ufSiteReplyText"] = "Новый конкурентный ответ"
+            return super().call(method, params, **kwargs)
+
+    api = ConcurrentSendApi()
+    settings = _worker_settings(site_service_requests_outbound_replies_enabled=True)
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+
+    first = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert first[0]["status"] == terminal_status
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyText"] == "Новый конкурентный ответ"
+
+    second = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    commands = db_session.scalars(
+        select(SiteServiceRequestCommand).order_by(SiteServiceRequestCommand.id)
+    ).all()
+
+    assert second[0]["duplicate"] is False
+    assert len(commands) == 2
+    assert commands[1].reply_sha256 != commands[0].reply_sha256
 
 
 @pytest.mark.parametrize(
@@ -1366,6 +1899,97 @@ def test_reconcile_failure_checkpoint_does_not_overwrite_same_time_success(
     assert recorded is False
     assert stored_time is not None and stored_time.replace(tzinfo=UTC) == newer_time
     assert getattr(case, error_field) is None
+
+
+@pytest.mark.parametrize(
+    ("lane", "checked_at_field", "error_field", "expected_error"),
+    [
+        (
+            "assignment",
+            "assignment_checked_at",
+            "assignment_last_error_code",
+            "assignment_reconcile_failed",
+        ),
+        (
+            "outbound",
+            "outbound_checked_at",
+            "outbound_last_error_code",
+            "outbound_reconcile_failed",
+        ),
+    ],
+)
+def test_selection_failure_checkpoint_skips_cases_already_processed_in_same_tick(
+    db_session,
+    lane: str,
+    checked_at_field: str,
+    error_field: str,
+    expected_error: str,
+) -> None:
+    current_time = datetime(2026, 8, 23, 8, 1, tzinfo=UTC)
+    processed = _case(source_ticket_id=741, bitrix_item_id=1000)
+    pending = _case(source_ticket_id=742, bitrix_item_id=1001)
+    setattr(processed, checked_at_field, current_time)
+    db_session.add_all([processed, pending])
+    db_session.commit()
+
+    checkpoint_case, recorded = worker_module._checkpoint_site_service_request_reconcile_failure(
+        db_session,
+        case_id=None,
+        lane=lane,
+        current_time=current_time,
+        exclude_case_ids={processed.id},
+    )
+
+    db_session.refresh(processed)
+    db_session.refresh(pending)
+    assert checkpoint_case is not None and checkpoint_case.id == pending.id
+    assert recorded is True
+    assert getattr(processed, error_field) is None
+    assert getattr(pending, error_field) == expected_error
+
+
+@pytest.mark.parametrize(
+    ("lane", "checked_at_field", "error_field", "expected_error"),
+    [
+        (
+            "assignment",
+            "assignment_checked_at",
+            "assignment_last_error_code",
+            "assignment_reconcile_failed",
+        ),
+        (
+            "outbound",
+            "outbound_checked_at",
+            "outbound_last_error_code",
+            "outbound_reconcile_failed",
+        ),
+    ],
+)
+def test_selection_failure_checkpoint_falls_back_after_all_cases_were_processed(
+    db_session,
+    lane: str,
+    checked_at_field: str,
+    error_field: str,
+    expected_error: str,
+) -> None:
+    current_time = datetime(2026, 8, 23, 8, 1, tzinfo=UTC)
+    processed = _case(bitrix_item_id=1000)
+    setattr(processed, checked_at_field, current_time)
+    db_session.add(processed)
+    db_session.commit()
+
+    checkpoint_case, recorded = worker_module._checkpoint_site_service_request_reconcile_failure(
+        db_session,
+        case_id=None,
+        lane=lane,
+        current_time=current_time,
+        exclude_case_ids={processed.id},
+    )
+
+    db_session.refresh(processed)
+    assert checkpoint_case is not None and checkpoint_case.id == processed.id
+    assert recorded is True
+    assert getattr(processed, error_field) == expected_error
 
 
 def test_outbound_text_changed_after_command_commit_is_preserved_for_next_tick(
@@ -2131,6 +2755,170 @@ def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> Non
     assert event.last_error_code == "bitrix_unavailable"
 
 
+@pytest.mark.parametrize("missing_field", ["ufSiteSyncStatus", "ufSiteSyncError"])
+def test_worker_rejects_missing_sync_readback_fields(db_session, missing_field: str) -> None:
+    cipher = _persist_event(db_session)
+
+    class MissingSyncFieldApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get":
+                response["result"]["item"].pop(missing_field, None)
+            return response
+
+    api = MissingSyncFieldApi()
+    settings = _worker_settings()
+    reader = SiteServiceRequestBitrixReader(api)
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert results[0].status == "retry"
+    assert results[0].error_code == "bitrix_unavailable"
+
+
+def test_worker_rejects_missing_stage_on_existing_item(db_session) -> None:
+    cipher = _persist_event(db_session)
+
+    class MissingStageApi(FakeBitrixApi):
+        omit_stage = False
+
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get" and self.omit_stage:
+                response["result"]["item"].pop("stageId", None)
+            return response
+
+    api = MissingStageApi()
+    settings = _worker_settings()
+    reader = SiteServiceRequestBitrixReader(api)
+    initial = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    apply_site_service_request_worker_plans(
+        db_session,
+        plans=initial,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+    payload = _event_payload()
+    payload["eventId"] = "site-support:741:1301"
+    payload["eventType"] = "ticket.updated"
+    payload["history"].append(
+        {
+            "messageId": 1301,
+            "authorKind": "customer",
+            "createdAt": "2026-08-22T11:00:00+03:00",
+            "text": "Новое сообщение",
+            "files": [],
+        }
+    )
+    _persist_payload(db_session, payload, cipher)
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+    )
+    api.omit_stage = True
+
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+    )
+
+    assert results[0].status == "retry"
+    assert results[0].error_code == "bitrix_unavailable"
+
+
+def test_event_retry_preserves_active_file_error_overlay(db_session) -> None:
+    _persist_event(db_session)
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert event is not None and case is not None
+    case.base_sync_status = "pending"
+    case.sync_status = "file_sync_error"
+    case.last_error_code = "file_sync_error"
+    checkpoint_time = worker_module._as_utc(event.updated_at) + timedelta(minutes=1)
+
+    result = worker_module._record_site_service_request_failure(
+        db_session,
+        event_id=event.event_id,
+        error_code="bitrix_unavailable",
+        permanent=False,
+        now=checkpoint_time,
+    )
+
+    assert result.status == "retry"
+    assert case.base_sync_status == "retry"
+    assert case.base_error_code == "bitrix_unavailable"
+    assert case.sync_status == "file_sync_error"
+    assert case.last_error_code == "file_sync_error"
+
+
+def test_needs_attention_state_survives_notification_outage(db_session) -> None:
+    cipher = _persist_event(db_session)
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    event.created_at = datetime(2026, 8, 21, 6, 0, tzinfo=UTC)
+    event.updated_at = datetime(2026, 8, 21, 6, 0, tzinfo=UTC)
+    db_session.commit()
+
+    class FailingApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method in {"crm.duplicate.findbycomm", "im.notify.personal.add"}:
+                raise RuntimeError("temporary Bitrix outage")
+            return super().call(method, params, **kwargs)
+
+    failures = []
+    api = FailingApi()
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        cipher=cipher,
+        now=datetime(2026, 8, 23, 7, 0, tzinfo=UTC),
+        failure_results=failures,
+        failure_writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert plans == []
+    assert failures[0].status == "needs_attention"
+    db_session.expire_all()
+    stored_event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert stored_event is not None
+    assert stored_event.status == "needs_attention"
+
+
+def test_worker_limit_is_clamped_to_safe_range() -> None:
+    settings = _worker_settings(site_service_requests_worker_batch_size=100)
+
+    assert worker_module._site_service_request_worker_limit(settings, limit=None) == 100
+    assert worker_module._site_service_request_worker_limit(settings, limit=0) == 1
+    assert worker_module._site_service_request_worker_limit(settings, limit=500) == 100
+
+
 def test_stale_plan_does_not_reopen_event_processed_by_another_worker(db_session) -> None:
     cipher = _persist_event(db_session)
     api = FakeBitrixApi()
@@ -2698,6 +3486,50 @@ def test_timeline_writer_follows_nested_result_next() -> None:
     )
 
 
+def test_timeline_writer_rejects_conflicting_offsets() -> None:
+    class ConflictingNextApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.timeline.comment.list":
+                return {"result": {"items": [], "next": 1}, "next": 2}
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_timeline_pagination_invalid"):
+        SiteServiceRequestBitrixWriter(ConflictingNextApi()).timeline_comment_exists(
+            entity_type_id=1134,
+            item_id=1000,
+            marker="missing marker",
+        )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {},
+        {"result": None},
+        {"result": {}},
+        {"result": {"items": [], "comments": []}},
+        {"result": {"items": ["unknown-row"]}},
+        {"result": [{"ID": "1"}]},
+        {"result": [{"COMMENT": ["missing marker"]}]},
+        {"result": [{"COMMENT": {"text": "missing marker"}}]},
+        {"result": [{"COMMENT": "one", "comment": "two"}]},
+    ],
+)
+def test_timeline_writer_rejects_malformed_pages(response: dict) -> None:
+    class MalformedTimelineApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.timeline.comment.list":
+                return response
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_timeline_readback_invalid"):
+        SiteServiceRequestBitrixWriter(MalformedTimelineApi()).timeline_comment_exists(
+            entity_type_id=1134,
+            item_id=1000,
+            marker="missing marker",
+        )
+
+
 def test_timeline_writer_rejects_repeated_offset_fail_closed() -> None:
     class RepeatedOffsetApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -2732,6 +3564,66 @@ def test_timeline_writer_rejects_more_than_100_pages_fail_closed() -> None:
             marker="missing marker",
         )
     assert len(api.calls) == 100
+
+
+def test_item_lookup_rejects_malformed_and_conflicting_pagination() -> None:
+    class MalformedItemApi(FakeBitrixApi):
+        def __init__(self, response: dict) -> None:
+            super().__init__()
+            self.response = response
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.list":
+                return self.response
+            return super().call(method, params, **kwargs)
+
+    writer = SiteServiceRequestBitrixWriter(MalformedItemApi({"result": []}))
+    with pytest.raises(RuntimeError, match="bitrix_item_readback_invalid"):
+        writer._find_items(
+            entity_type_id=1134,
+            idempotency_field="UF_BACKEND_KEY",
+            idempotency_key="key",
+        )
+
+    writer = SiteServiceRequestBitrixWriter(
+        MalformedItemApi({"result": {"items": [], "next": 1}, "next": 2})
+    )
+    with pytest.raises(RuntimeError, match="bitrix_item_pagination_invalid"):
+        writer._find_items(
+            entity_type_id=1134,
+            idempotency_field="UF_BACKEND_KEY",
+            idempotency_key="key",
+        )
+
+
+def test_disk_lookup_rejects_wrong_name_and_pagination() -> None:
+    wrong_name_api = FakeBitrixApi()
+    wrong_name_api.disk_files["expected.bin"] = {
+        "ID": "2000",
+        "NAME": "different.bin",
+    }
+    with pytest.raises(RuntimeError, match="bitrix_file_readback_invalid"):
+        SiteServiceRequestBitrixWriter(wrong_name_api).upload_file(
+            folder_id=777,
+            deterministic_name="expected.bin",
+            content=b"payload",
+        )
+
+    class PaginatedDiskApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "disk.folder.getchildren":
+                return {
+                    "result": [{"ID": "2000", "NAME": "expected.bin"}],
+                    "next": 50,
+                }
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_file_readback_ambiguous"):
+        SiteServiceRequestBitrixWriter(PaginatedDiskApi()).upload_file(
+            folder_id=777,
+            deterministic_name="expected.bin",
+            content=b"payload",
+        )
 
 
 def test_hidden_support_note_does_not_close_first_response_sla(db_session) -> None:

@@ -555,6 +555,18 @@ def lease_site_service_request_commands(
         command.card_action_cleared_at = current_time
         command.last_error_code = "command_payload_invalid"
         command.updated_at = current_time
+        latest_command_id = session.scalar(
+            select(SiteServiceRequestCommand.id)
+            .where(SiteServiceRequestCommand.case_id == command.case_id)
+            .order_by(
+                SiteServiceRequestCommand.created_at.desc(),
+                SiteServiceRequestCommand.id.desc(),
+            )
+            .limit(1)
+        )
+        if latest_command_id == command.id:
+            command.case.outbound_checked_at = current_time
+            command.case.outbound_last_error_code = "command_payload_invalid"
     session.flush()
     return leased
 

@@ -257,7 +257,9 @@ Payload шифруется отдельным ключом
 5. после timeout или неоднозначного ответа сначала повторно читает карточку по
    техническому ключу и только затем решает, нужен ли новый `add`;
 6. после timeout `crm.contact.add` также перечитывает контакт по отдельному
-   `ORIGINATOR_ID + ORIGIN_ID`; несколько результатов завершаются fail-closed;
+   `ORIGINATOR_ID + ORIGIN_ID`, а найденный ID подтверждает точным
+   `crm.contact.get`; несколько или несовпадающие результаты завершаются
+   fail-closed;
 7. повторное клиентское сообщение обновляет историю и файлы этой же карточки.
 
 Полная история тикета передаётся как нормализованный snapshot и заменяет поле
@@ -273,12 +275,27 @@ Payload шифруется отдельным ключом
 Для защиты от конкурентного редактирования outbound worker использует hash-guard
 до и после очистки действия. Если текст изменился, `SEND` восстанавливается, а
 следующий tick создаёт отдельную команду; новый UI/action ID в MVP не добавляется.
+Восстановление считается успешным только после readback `SEND`, `PENDING` и того
+же SHA-256 изменённого текста. Ошибка/timeout восстановления не завершает владение
+предыдущей команды: следующий tick повторяет восстановление, поэтому новый текст
+не теряется.
+Поле ответа принимается только как строка: `list`, `dict`, `null` и другие
+malformed-типы завершаются fail-closed до создания command. Пустой или состоящий
+только из пробелов `SEND` не очищается: карточка получает `ERROR` и технический код
+`reply_text_empty`, а health остаётся `degraded` до исправления текста. После
+исправления следующий tick обрабатывает сохранённый `SEND` обычным hash-guard.
+Снятие action без исправления текста не скрывает `reply_text_empty`; checkpoint
+очищается только после чтения непустого ответа и начала создания command. Action
+принимается только как строковый/целочисленный scalar либо пустое значение;
+контейнеры и boolean завершаются fail-closed.
 Повторный `SEND` с тем же текстом остаётся дубликатом, пока последняя команда
 `pending/leased`. После завершённой `applied/failed` команды и подтверждённой
 очистки действия тот же текст считается новым намерением и получает новую command.
 После повторного захвата row lock worker сначала проверяет
 `card_action_cleared_at`: если другая попытка уже завершила очистку, устаревшая
 попытка не читает и не меняет карточку, а новый `SEND` остаётся следующему tick.
+Terminal reconcile уже очищенной команды обновляет только status/sync-error и не
+пишет action, поэтому конкурентный новый `SEND` остаётся следующему tick.
 
 Site Agent получает команду, проверяет её повтор по `EXTERNAL_FIELD_1`, затем
 вызывает `CTicket::Set`/`CTicket::SetTicket` со следующими условиями:
@@ -398,6 +415,9 @@ v1
 Имя, MIME, размер и hash файла могут восстановиться вместе с удалённой записью
 `b_file` и отдельно проверяются файловым endpoint.
 Изменение самого исходного сообщения возвращает `409 event_payload_conflict`.
+Старое значение `authorKind=support` принимается при readback истории вместе с
+каноническим `support-team`, чтобы события предыдущей версии bridge продолжали
+подтверждать доставленный ответ.
 
 ## `PUT /events/{event_id}/files/{file_id}`
 
@@ -417,11 +437,24 @@ placeholder позволяет атомарно заменить имя, MIME, �
 `file_unavailable`: site outbox повторяет доставку. UTF-8 имя передаётся через
 RFC 5987 `filename*` без конкурирующего ASCII fallback.
 
+`SITE_SERVICE_REQUESTS_BITRIX_ROOT_FOLDER_ID` обязателен и должен быть
+положительным, когда Bitrix writes включены. Отсутствующий/нулевой ID завершает
+file worker configuration error до REST-записи. Disk lookup подтверждает точное
+имя единственного файла и отклоняет malformed/пагинированный неоднозначный ответ.
+После upload readback обязан сохранить все ранее связанные file IDs, не только
+ID нового файла. При файловом overlay локальные `base_sync_status/base_error_code`
+хранят underlying business/worker-состояние; Bitrix-статус восстанавливается
+только для известного enum, а локальный underlying status — после успешного upload
+в любом случае.
+
 ## `GET /commands`
 
 Возвращает не более 20 pending-команд с lease на 5 минут и новым `leaseToken`.
 Повтор после окончания lease допустим и безопасен за счёт `command_key`,
 `EXTERNAL_FIELD_1` и ротации lease-token.
+Site bridge проверяет `schemaVersion` и полную форму каждой команды до записи в
+тикет. Malformed command не подтверждается как `failed`: lease истекает, и ответ
+остаётся доступен для повторной доставки.
 
 ## `POST /commands/{command_id}/ack`
 
@@ -429,6 +462,8 @@ RFC 5987 `filename*` без конкурирующего ASCII fallback.
 `ticketId`, `messageId`, `appliedAt`. Ошибка содержит только
 стабильный код, например `ticket_not_found`, `support_user_invalid`,
 `message_write_failed`; stack trace и содержимое сообщения не возвращаются.
+Ответ ACK проверяется по `commandId`, `status` и boolean `duplicate`; HTTP `200`
+с malformed JSON не считается подтверждением.
 
 ## `GET /health`
 
@@ -441,6 +476,9 @@ RFC 5987 `filename*` без конкурирующего ASCII fallback.
 Durable checkpoint охватывает также ошибки lane до начала обработки карточки.
 Карточка с assignment failure остаётся кандидатом reconcile после первого ответа,
 чтобы успешный контрольный tick снял устаревший failure и вернул health в `healthy`.
+При сбое выбора следующей карточки checkpoint сначала использует ещё не обработанную
+в текущем tick запись, а после исчерпания списка — последнюю доступную fallback-запись;
+поэтому успех первой карточки с тем же timestamp не скрывает последующую ошибку worker.
 Checkpoint монотонен по `assignment_checked_at`/`outbound_checked_at`: failure от
 старой попытки не перезаписывает более новый успешный tick и не создаёт ложный alert.
 Поля API называются `assignmentFailures`, `outboundFailures` и
@@ -581,6 +619,15 @@ ID существует, активен и соответствует ожида
   повторного `add`;
 - HTTP `429/500/502/503/504`: повторы через 1, 2, 5, 15 и 30 минут, далее не чаще
   одного раза в час до 24 часов;
+- site outbox считает terminal только явные payload/contract HTTP
+  `400/409/413/415/422`; auth/routing/outage ответы остаются retryable, чтобы
+  исправление настроек или deploy не потеряло уже созданный тикет;
+- `202/200` считается успехом только после строгой проверки JSON response,
+  типов идентификаторов, статуса, boolean `duplicate` и обязательного списка файлов;
+  неизвестный file ID, повтор ID или отсутствие `missingFileIds` оставляет outbox
+  на retry;
+- ошибка SQL/readback локального site outbox, тикета, истории или файлов не
+  маскируется как пустой результат и остаётся retryable `site_database_unavailable`;
 - событие старше 24 часов или пять последовательных permanent errors получает
   `needs_attention` и попадает в health/внутреннее уведомление;
 - transient failure и успешная обработка сбрасывают счётчик последовательных
@@ -596,6 +643,20 @@ ID существует, активен и соответствует ожида
 - одинаковые имена файлов не являются dedupe-ключом;
 - изменение ответа после постановки команды сохраняет/восстанавливает `SEND` и
   создаёт новую команду на следующем worker tick;
+- временная недоступность `CFile`, пустой result `CFile::GetPath`, пустой document
+  root, ошибка `hash_file` или исчезновение файла между event и upload оставляют
+  site outbox retryable и не создают ложный zero-hash placeholder;
+- malformed/пустой ответ не создаёт command: неверный тип завершается fail-closed,
+  а пустой `SEND` получает явный `ERROR`/`reply_text_empty` без очистки action;
+- offsets Bitrix pagination принимаются только как `int` или строка из ASCII-цифр;
+  дробные, логические, отрицательные и форматированные пробелами значения
+  завершаются fail-closed без перехода на потенциально неверную страницу;
+- IDs типа процесса в ensure используют тот же строгий integer contract, а
+  `fieldName`/`userTypeId`, `TITLE` сделки и `COMMENT` timeline принимаются только
+  как строки; контейнеры не участвуют в mapping, matching или marker readback;
+- ambiguous DB commit после атомарной записи spool-файла удаляет payload только
+  после DB readback, подтвердившего отсутствие сохранённого пути; при недоступном
+  readback файл остаётся fail-safe;
 - прямой ответ сотрудника через штатную админку support также ловится событием и
   может закрыть SLA, если сообщение подтверждено как support-team;
 - событие собственного автоматического ответа распознаётся по
@@ -668,7 +729,9 @@ ID существует, активен и соответствует ожида
 - Поле сделки `UF_CRM_1772784329053` наблюдается заполненным числом у последних
   интернет-заказов, но его смысл должен быть подтверждён контрольным заказом.
 - Названия/enum IDs полей и стадий не хардкодятся: mapping пересобирается и
-  проверяется перед rollout.
+  проверяется перед rollout. Ensure dry-run/apply отклоняет malformed или
+  неоднозначные `crm.type`, fields, enum, stages и form, проверяет обе формы
+  pagination `next` и не выполняет writes после неизвестного readback.
 - Timeline/уведомления не являются source of truth доставки ответа; требуется MID
   модуля support и последующий readback.
 
@@ -727,6 +790,26 @@ Rollback:
 
 # Changelog
 
+- 2026-08-23 — исправлен синтаксис request-type mapping в ensure; terminal
+  reconcile больше не очищает конкурентный `SEND`, reply action/deal title/timeline
+  comment/ensure field scalars валидируются fail-closed, process IDs не усекают
+  дробные значения, а `reply_text_empty` сохраняется до валидного повторного SEND.
+  Регрессионные тесты добавлены без запуска до общего финального прогона.
+- 2026-08-23 — outbound reply readback ограничен строковым типом, пустой `SEND`
+  получает durable `reply_text_empty`, success-checkpoint стал монотонным, а
+  worker/ensure используют строгий parser pagination offsets. Пустой document root
+  в PHP bridge теперь остаётся retryable `file_api_unavailable`; регрессионные
+  тесты добавлены, но их запуск отложен до единого финального прогона.
+- 2026-08-23 — дополнительный статический hardening сделал ensure/worker/PHP
+  bridge fail-closed на malformed type/stage/enum/form/contact/deal/item/timeline/
+  Disk readback; восстановление outbound теперь подтверждает SHA-256 текста и
+  sync-error; same-tick selection failure больше не скрывается успехом предыдущей
+  карточки, повреждённая последняя command сразу деградирует health, а durable
+  `needs_attention` не откатывается при сбое внутреннего уведомления. Site outbox
+  строго проверяет типы event/command/ACK JSON, не маскирует SQL failure как пустой
+  readback, terminal-классификацию ограничивает `400/409/413/415/422` и неизвестные
+  локальные ошибки не ACK-ает; root Disk folder обязателен и положителен. Тесты
+  намеренно отложены до единого финального прогона.
 - 2026-08-23 — form ensure теперь отклоняет malformed readback до слияния/записи;
   временные file read/hash failures остаются в retry, UTF-8 filename сохраняется
   между event/upload, старый file placeholder не потребляется новым snapshot, а
@@ -740,8 +823,9 @@ Rollback:
   добавил ротацию lease-token/stale-ACK guard, quarantine повреждённой command,
   timeout-readback контакта и fail-closed pagination ensure/deal/timeline.
 - 2026-08-23 — финальная миграция исправляет ошибочный marker-backfill для всех
-  commands старого worker; terminal-команда с уже пустым action выполняет только
-  status-readback и не превращает позднее редактирование текста в новый `SEND`.
+  commands старого worker. ОТМЕНЕНО 2026-08-23 более поздним решением о hash-guard:
+  terminal-команда с незавершённой в БД очисткой больше не считает пустой action
+  достаточным доказательством владения изменённым текстом и восстанавливает `SEND`.
   Health последней failed delivery сохраняется, даже если новая command ожидает
   отправки.
 - 2026-08-23 — закрыты две межworker-гонки: устаревшая outbound-попытка не очищает

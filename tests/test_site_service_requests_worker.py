@@ -2829,6 +2829,9 @@ def test_direct_support_reply_closes_first_response_without_backend_command(db_s
 
 def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> None:
     cipher = _persist_event(db_session)
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert event is not None
+    failure_time = worker_module._as_utc(event.updated_at) + timedelta(minutes=1)
 
     class FailingApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -2843,7 +2846,7 @@ def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> Non
         settings=_worker_settings(),
         reader=SiteServiceRequestBitrixReader(api),
         cipher=cipher,
-        now=datetime(2026, 8, 22, 7, 0, tzinfo=UTC),
+        now=failure_time,
         failure_results=failures,
         failure_writer=SiteServiceRequestBitrixWriter(api),
     )
@@ -2851,8 +2854,8 @@ def test_planning_failure_is_recorded_for_retry_in_apply_mode(db_session) -> Non
     assert plans == []
     assert len(failures) == 1
     assert failures[0].status == "retry"
-    event = db_session.scalar(select(SiteServiceRequestEvent))
-    assert event is not None and event.status == "retry"
+    db_session.refresh(event)
+    assert event.status == "retry"
     assert event.last_error_code == "bitrix_unavailable"
 
 
@@ -3123,7 +3126,7 @@ def test_timeman_exception_creates_card_in_assignment_waiting(db_session) -> Non
 
     api = TimemanFailureApi()
     reader = SiteServiceRequestBitrixReader(api)
-    settings = _worker_settings()
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
     plans = build_site_service_request_worker_plans(
         db_session,
         settings=settings,

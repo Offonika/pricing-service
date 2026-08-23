@@ -2135,7 +2135,11 @@ def _checkpoint_site_service_request_reconcile_failure(
     if lane == "assignment":
         if failed_case.assignment_checked_at is not None and (
             _as_utc(failed_case.assignment_checked_at) > current_time
-            or (case_id is not None and _as_utc(failed_case.assignment_checked_at) == current_time)
+            or (
+                case_id is not None
+                and error_code is None
+                and _as_utc(failed_case.assignment_checked_at) == current_time
+            )
         ):
             session.commit()
             return failed_case, False
@@ -2399,6 +2403,7 @@ def reconcile_site_service_request_assignments(
             break
         case_id = case.id
         processed_case_ids.add(case_id)
+        assignment_state_committed = False
         try:
             if case.first_response_at is not None:
                 delivery_ticket_id = case.source_ticket_id
@@ -2547,6 +2552,11 @@ def reconcile_site_service_request_assignments(
                     _item_field_value(updated_item, field_map["site_sync_error"]) or ""
                 ) != str(expected_sync_error):
                     raise RuntimeError("bitrix_assignment_error_readback_failed")
+            # The escalation decision and the confirmed card update must survive
+            # a later timeline/notification failure. Delivery has its own durable
+            # checkpoints and is retried idempotently on the next tick.
+            session.commit()
+            assignment_state_committed = True
             _deliver_site_service_request_escalation(
                 session,
                 case_id=case_id,
@@ -2570,6 +2580,9 @@ def reconcile_site_service_request_assignments(
                 case_id=case_id,
                 lane="assignment",
                 current_time=current_time,
+                error_code=(
+                    "escalation_delivery_failed" if assignment_state_committed else None
+                ),
             )
             if failed_case is not None and checkpoint_recorded:
                 results.append(

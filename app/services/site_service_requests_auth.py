@@ -195,7 +195,9 @@ def _reserve_nonce(
     expires_at: datetime,
 ) -> None:
     session.execute(
-        delete(SiteServiceRequestNonce).where(SiteServiceRequestNonce.expires_at <= now)
+        delete(SiteServiceRequestNonce)
+        .where(SiteServiceRequestNonce.expires_at <= now)
+        .execution_options(synchronize_session=False)
     )
     try:
         with session.begin_nested():

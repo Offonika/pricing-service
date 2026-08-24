@@ -851,6 +851,13 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — новый staging-контур подготовлен до бухгалтерского gate: release
+  commit `10977d3d90773b3b0e4a34230221bc2bada45fe5`, immutable release
+  `customer-settlements-shadow-20260824-10977d3-r2`, новая БД на head
+  `6e8f0a2b4c6d`, whitelist `10/10`, bootstrap `34/34`, полный CRM read `50 035`
+  строк и mapping `10/10` без ambiguous pilot entries. Credential staging-роли
+  ротирован после диагностического раскрытия фрагмента. Financial sync и cron
+  заблокированы до новой ведомости за завершённый день.
 - 2026-08-24 — пользователь разрешил создать clean commit проверенного backend,
   собрать отдельный immutable staging release и начать новый 72-часовой
   `crm_readonly` shadow-run. Разрешение ограничено staging; production, сайты, CRM

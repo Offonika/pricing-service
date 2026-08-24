@@ -87,6 +87,30 @@ Settlement migrations объединены с фактически активн�
 1С не изменяются; CRM и 1С доступны только для чтения. Установка staging cron
 разрешена только после успешного ручного цикла и `ready` preflight.
 
+## Фактическая подготовка нового запуска 2026-08-24
+
+- release source commit: `10977d3d90773b3b0e4a34230221bc2bada45fe5`;
+- immutable release:
+  `/opt/MM/releases/pricing-service/customer-settlements-shadow-20260824-10977d3-r2`;
+- release включает active production base `99dc6dfe0510df85e8e5f06648d4d01e3d3f19c5`,
+  имеет `source_dirty=false`, content hash и единственный Alembic head
+  `6e8f0a2b4c6d`;
+- создана новая изолированная БД `settlements_stage_shadow_20260824`, полностью
+  поднятая до `6e8f0a2b4c6d`;
+- whitelist перенесён штатной CLI-командой: dry-run/apply/readback `10/10`;
+- bootstrap preflight прошёл `34/34` на чистом settlement-контуре;
+- первый полный `crm_readonly` sync прочитал `50 035` строк и активировал ровно
+  `10` pilot entries, ambiguous pilot entries — `0`;
+- staging credential был немедленно ротирован после диагностического раскрытия его
+  фрагмента; production credentials и production БД не затрагивались;
+- client API, eligibility, source validation и alerts остаются выключенными;
+- financial revision, reconciliation и staging cron ещё не запускались.
+
+Readiness gate остановлен до новой ведомости за один завершённый день. Исторический
+файл июля не используется. После получения ведомости обязательны reconciliation,
+включение `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`, первый financial sync и
+`ready` preflight; только затем разрешена установка cron и фактический отсчёт 72 часов.
+
 ## ОТМЕНЁННЫЙ shadow-run 2026-08-22
 
 - старт: `2026-08-22 20:43 MSK`;

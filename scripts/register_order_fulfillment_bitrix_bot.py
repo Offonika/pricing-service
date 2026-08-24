@@ -44,6 +44,7 @@ def build_plan() -> dict[str, object]:
             "EVENT_COMMAND_ADD": settings.order_fulfillment_bot_callback_url,
             "LANG": [{"LANGUAGE_ID": "ru", "TITLE": "Действие самовывоза", "PARAMS": ""}],
         },
+        "existing_bot_id": settings.order_fulfillment_bot_id,
         "existing_command_id": settings.order_fulfillment_bot_command_id,
         "deal_user_field": {
             "FIELD_NAME": settings.order_fulfillment_bot_pickup_sms_field,
@@ -93,18 +94,28 @@ def apply_plan(
         None,
     )
     bot_id = _item_id(existing_bot) if existing_bot is not None else None
+    configured_bot_id = _item_id({"ID": plan.get("existing_bot_id")})
     command_id = _item_id({"ID": plan.get("existing_command_id")})
     if existing_bot is not None:
         if bot_id is None:
             raise RuntimeError("existing bot returned without a valid positive id")
+        if configured_bot_id is not None and configured_bot_id != bot_id:
+            raise RuntimeError("existing bot id does not match ORDER_FULFILLMENT_BOT_ID")
         actual_type = str(existing_bot.get("TYPE") or existing_bot.get("type") or "").upper()
         expected_type = str(dict(plan["bot"]).get("TYPE") or "").upper()
-        if not actual_type or actual_type != expected_type:
+        if actual_type and actual_type != expected_type:
             raise RuntimeError(
                 f"existing bot type is {actual_type or 'unknown'}, expected {expected_type}; "
                 "imbot.update cannot change TYPE, so a separately confirmed "
                 "unregister/register is required"
             )
+        if not actual_type and configured_bot_id != bot_id:
+            raise RuntimeError(
+                "imbot.bot.list does not expose TYPE on this portal; matching "
+                "ORDER_FULFILLMENT_BOT_ID is required before updating the bot"
+            )
+    elif configured_bot_id is not None:
+        raise RuntimeError("ORDER_FULFILLMENT_BOT_ID is configured but the bot was not found")
     if bot_id is not None and command_id is None and not recover_missing_command:
         raise RuntimeError(
             "existing bot found; ORDER_FULFILLMENT_BOT_COMMAND_ID is required "

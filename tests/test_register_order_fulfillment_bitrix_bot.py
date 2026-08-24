@@ -48,7 +48,11 @@ class FakeRegistrationClient:
         return 77
 
 
-def _plan(*, command_id: int | None = None) -> dict[str, object]:
+def _plan(
+    *,
+    bot_id: int | None = None,
+    command_id: int | None = None,
+) -> dict[str, object]:
     return {
         "bot": {
             "CODE": register.BOT_CODE,
@@ -59,6 +63,7 @@ def _plan(*, command_id: int | None = None) -> dict[str, object]:
             "COMMAND": "pickup_action",
             "CLIENT_ID": "pickup-bot",
         },
+        "existing_bot_id": bot_id,
         "existing_command_id": command_id,
         "deal_user_field": {
             "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_SMS_AT",
@@ -156,6 +161,54 @@ def test_existing_bot_with_wrong_type_fails_before_any_update() -> None:
         ("list_deal_user_fields", "UF_CRM_MM_PICKUP_READY_SMS_AT"),
         ("list_bots", None),
     ]
+
+
+def test_existing_bot_without_type_uses_pinned_bot_id() -> None:
+    client = FakeRegistrationClient(existing_bot=True)
+
+    def bot_without_type():
+        client.calls.append(("list_bots", None))
+        return [{"ID": "42", "CODE": register.BOT_CODE}]
+
+    client.list_bots = bot_without_type  # type: ignore[method-assign]
+
+    result = register.apply_plan(  # type: ignore[arg-type]
+        client,
+        _plan(bot_id=42, command_id=103),
+    )
+
+    assert result["bot_id"] == 42
+    assert any(name == "update_bot" for name, _ in client.calls)
+
+
+def test_existing_bot_without_type_and_without_pinned_id_fails_closed() -> None:
+    client = FakeRegistrationClient(existing_bot=True)
+
+    def bot_without_type():
+        client.calls.append(("list_bots", None))
+        return [{"ID": "42", "CODE": register.BOT_CODE}]
+
+    client.list_bots = bot_without_type  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="does not expose TYPE"):
+        register.apply_plan(client, _plan(command_id=103))  # type: ignore[arg-type]
+
+    assert client.calls == [
+        ("list_deal_user_fields", "UF_CRM_MM_PICKUP_READY_SMS_AT"),
+        ("list_bots", None),
+    ]
+
+
+def test_configured_bot_id_without_matching_bot_fails_closed() -> None:
+    client = FakeRegistrationClient()
+
+    with pytest.raises(RuntimeError, match="configured but the bot was not found"):
+        register.apply_plan(  # type: ignore[arg-type]
+            client,
+            _plan(bot_id=42, command_id=103),
+        )
+
+    assert all(name not in {"register_bot", "register_bot_command"} for name, _ in client.calls)
 
 
 def test_existing_bot_without_valid_id_fails_before_any_update() -> None:

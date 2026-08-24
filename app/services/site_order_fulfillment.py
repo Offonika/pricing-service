@@ -370,31 +370,48 @@ class BitrixChatClient:
         return result
 
     def list_dialog_user_ids(self, dialog_id: str) -> set[str]:
-        response = self.call("im.dialog.users.list", {"DIALOG_ID": dialog_id})
-        result = response.get("result") or []
-        if isinstance(result, dict):
-            if "users" in result or "USERS" in result:
-                result = result.get("users") or result.get("USERS") or []
-        if isinstance(result, dict):
-            if "ID" in result or "id" in result:
-                result = [result]
-            else:
-                result = [
-                    (
-                        ({**item, "ID": item.get("ID") or item.get("id") or key})
-                        if isinstance(item, dict)
-                        else {"ID": key}
-                    )
-                    for key, item in result.items()
-                ]
-        if not isinstance(result, list):
-            raise BitrixChatError("im.dialog.users.list returned invalid result")
         user_ids: set[str] = set()
-        for item in result:
-            value = item.get("id") or item.get("ID") if isinstance(item, dict) else item
-            if clean_value := _clean_string(value):
-                user_ids.add(clean_value)
-        return user_ids
+        start = 0
+        seen_starts: set[int] = set()
+        for _ in range(200):
+            params: dict[str, Any] = {"DIALOG_ID": dialog_id}
+            if start:
+                params["start"] = start
+            response = self.call("im.dialog.users.list", params)
+            result = response.get("result") or []
+            if isinstance(result, dict):
+                if "users" in result or "USERS" in result:
+                    result = result.get("users") or result.get("USERS") or []
+            if isinstance(result, dict):
+                if "ID" in result or "id" in result:
+                    result = [result]
+                else:
+                    result = [
+                        (
+                            ({**item, "ID": item.get("ID") or item.get("id") or key})
+                            if isinstance(item, dict)
+                            else {"ID": key}
+                        )
+                        for key, item in result.items()
+                    ]
+            if not isinstance(result, list):
+                raise BitrixChatError("im.dialog.users.list returned invalid result")
+            for item in result:
+                value = item.get("id") or item.get("ID") if isinstance(item, dict) else item
+                if clean_value := _clean_string(value):
+                    user_ids.add(clean_value)
+
+            next_value = _clean_string(response.get("next"))
+            if not next_value:
+                return user_ids
+            if not next_value.isdigit():
+                raise BitrixChatError("im.dialog.users.list returned invalid next page")
+            next_start = int(next_value)
+            if next_start <= start or next_start in seen_starts:
+                raise BitrixChatError("im.dialog.users.list returned repeated next page")
+            seen_starts.add(start)
+            start = next_start
+        raise BitrixChatError("im.dialog.users.list exceeded pagination limit")
 
     def add_bot_message(
         self,

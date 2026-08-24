@@ -1859,6 +1859,51 @@ def test_task_api_falls_back_only_when_modern_method_is_unavailable() -> None:
     assert calls == ["tasks.task.add", "task.item.add"]
 
 
+def test_dialog_participants_are_loaded_from_all_bitrix_pages() -> None:
+    client = fulfillment.BitrixChatClient(
+        "https://crm.example/rest/1/token",
+        bot_client_id="pickup-bot",
+    )
+    calls: list[dict] = []
+
+    def fake_call(method: str, params: dict | None = None) -> dict:
+        assert method == "im.dialog.users.list"
+        calls.append(params or {})
+        if not params or "start" not in params:
+            return {
+                "result": [{"id": index} for index in range(1, 51)],
+                "next": 50,
+                "total": 60,
+            }
+        assert params["start"] == 50
+        return {
+            "result": [{"id": index} for index in range(51, 61)],
+            "total": 60,
+        }
+
+    client.call = fake_call  # type: ignore[method-assign]
+
+    assert client.list_dialog_user_ids("chat8729") == {str(index) for index in range(1, 61)}
+    assert calls == [
+        {"DIALOG_ID": "chat8729"},
+        {"DIALOG_ID": "chat8729", "start": 50},
+    ]
+
+
+def test_dialog_participant_pagination_fails_closed_on_repeated_page() -> None:
+    client = fulfillment.BitrixChatClient(
+        "https://crm.example/rest/1/token",
+        bot_client_id="pickup-bot",
+    )
+    client.call = lambda *args, **kwargs: {  # type: ignore[method-assign]
+        "result": [{"id": 1}],
+        "next": 50,
+    }
+
+    with pytest.raises(fulfillment.BitrixChatError, match="repeated next page"):
+        client.list_dialog_user_ids("chat8729")
+
+
 def test_task_api_does_not_fallback_after_ambiguous_modern_api_error() -> None:
     client = fulfillment.BitrixChatClient(
         "https://crm.example/rest/1/token",

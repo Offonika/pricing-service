@@ -98,6 +98,12 @@ downstream lead-time pipeline. Кандидат строится от актив
 две строки cron переводятся на release; rollback возвращает прежний release и
 сохранённые cron-конфигурации.
 
+Решение 2026-08-24: финальная release-цепочка runtime cutover интегрируется в
+`main` merge-коммитом, который одновременно является потомком active production
+source и актуального `origin/main`. Cherry-pick runtime-коммитов поверх расходящейся
+ветки запрещён: такой source потеряет release provenance и будет отклонён guarded
+controller при следующей production-сборке.
+
 ## Проверка после изменения расписания
 
 1. Убедиться, что скрипт существует по новому пути: `ls <путь>/infra/cron/<скрипт>`.
@@ -126,3 +132,5 @@ downstream lead-time pipeline. Кандидат строится от актив
   развёрнут через guarded controller; `manual_matching_bitrix_tasks` и
   `sync_open_procurement_supplier_orders_to_bitrix` переведены на release,
   production cron-ссылок на mutable checkout больше нет.
+- 2026-08-24 — Подтверждена интеграция runtime cutover в `main` merge-коммитом с
+  сохранением ancestry active production source и актуального `origin/main`.

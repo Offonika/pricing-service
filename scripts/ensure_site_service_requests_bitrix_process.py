@@ -815,12 +815,16 @@ def ensure(
                 "field": _field_payload(entity_id=entity_id, spec=spec),
             },
         )
-    refreshed_fields = _read_fields(api, entity_id=entity_id)
-    refreshed_stages = _list_stages(
-        api,
-        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-        category_id=settings.site_service_requests_bitrix_working_category_id,
-    )
+    if plan.missing_fields:
+        refreshed_fields = _read_fields(api, entity_id=entity_id)
+        refreshed_stages = _list_stages(
+            api,
+            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+            category_id=settings.site_service_requests_bitrix_working_category_id,
+        )
+    else:
+        refreshed_fields = fields
+        refreshed_stages = stages
     refreshed = build_plan(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,

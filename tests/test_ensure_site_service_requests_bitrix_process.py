@@ -323,7 +323,7 @@ def test_dry_run_reports_ux_mismatches_without_writes() -> None:
     assert "working_category_title" in plan.ux_mismatches
     assert "stage_title:PREPARATION" in plan.ux_mismatches
     assert "request_type_label:consultation" in plan.ux_mismatches
-    assert "field_label:UF_CRM_36_SITETICKETID:listColumnLabel" in plan.ux_mismatches
+    assert "field_label:UF_CRM_36_SITETICKETID:listColumnLabel" in plan.label_advisories
     assert "working_form" in plan.ux_mismatches
     assert _write_methods(api) == []
 
@@ -392,6 +392,7 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     )
 
     assert plan.ux_mismatches == ()
+    assert "field_label:UF_CRM_36_SITETICKETURL:listColumnLabel" in plan.label_advisories
     assert api.process_type["title"] == bitrix_setup.PROCESS_TITLE
     assert api.categories == [
         {"id": 55, "name": bitrix_setup.WORKING_CATEGORY_TITLE},
@@ -424,8 +425,8 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     )
     expected_title = "Открыть тикет сайта"
     assert updated_ticket_url["editFormLabel"] == {"ru": expected_title}
-    assert updated_ticket_url["listColumnLabel"] == {"ru": expected_title}
-    assert updated_ticket_url["listFilterLabel"] == {"ru": expected_title}
+    assert updated_ticket_url["listColumnLabel"] is None
+    assert updated_ticket_url["listFilterLabel"] is None
     approver = next(
         field
         for field in api.fields
@@ -449,6 +450,7 @@ def test_plan_payload_exposes_ux_plan() -> None:
     payload = bitrix_setup.plan_payload(plan, applied=False)
 
     assert payload["uxMismatches"] == list(plan.ux_mismatches)
+    assert payload["labelAdvisories"] == list(plan.label_advisories)
     assert payload["desiredProcessTitle"] == "Сервисные обращения сайта"
     assert payload["desiredWorkingCategoryTitle"] == "Рабочие обращения сайта"
     assert payload["desiredRequestTypeLabels"] == bitrix_setup.REQUEST_TYPE_ENUM_LABELS

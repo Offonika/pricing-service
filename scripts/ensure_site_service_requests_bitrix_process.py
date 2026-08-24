@@ -267,6 +267,7 @@ class EnsurePlan:
     stage_map: dict[str, str]
     form: list[dict[str, Any]]
     ux_mismatches: tuple[str, ...]
+    label_advisories: tuple[str, ...]
 
 
 def _localized_label(value: Any, *, language: str) -> str | None:
@@ -456,6 +457,7 @@ def build_plan(
         mapping_key for mapping_key in required_enum_mappings if not enum_map.get(mapping_key)
     )
     ux_mismatches: list[str] = []
+    label_advisories: list[str] = []
     if process_title is not None and process_title != PROCESS_TITLE:
         ux_mismatches.append("process_title")
     if category_title is not None and category_title != WORKING_CATEGORY_TITLE:
@@ -464,10 +466,12 @@ def build_plan(
         desired_title = _desired_field_title(field)
         if desired_title is None:
             continue
-        for label_key in ("editFormLabel", "listColumnLabel", "listFilterLabel"):
+        field_name = str(field.get("fieldName") or "unknown")
+        if _localized_label(field.get("editFormLabel"), language="ru") != desired_title:
+            ux_mismatches.append(f"field_label:{field_name}:editFormLabel")
+        for label_key in ("listColumnLabel", "listFilterLabel"):
             if _localized_label(field.get(label_key), language="ru") != desired_title:
-                field_name = str(field.get("fieldName") or "unknown")
-                ux_mismatches.append(f"field_label:{field_name}:{label_key}")
+                label_advisories.append(f"field_label:{field_name}:{label_key}")
         if field.get("fieldName") == REQUEST_TYPE_FIELD_NAME:
             request_mapping = _request_type_enum_mapping(field)
             enum_by_id = {_strict_enum_row_id(row): row for row in _require_enum_rows(field)}
@@ -502,6 +506,7 @@ def build_plan(
         stage_map=stage_map,
         form=form,
         ux_mismatches=tuple(sorted(set(ux_mismatches))),
+        label_advisories=tuple(sorted(set(label_advisories))),
     )
 
 
@@ -598,9 +603,8 @@ def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | No
     if desired_title is None:
         return None
     update: dict[str, Any] = {"languageId": "ru"}
-    for label_key in ("editFormLabel", "listColumnLabel", "listFilterLabel"):
-        if _localized_label(field.get(label_key), language="ru") != desired_title:
-            update[label_key] = {"ru": desired_title}
+    if _localized_label(field.get("editFormLabel"), language="ru") != desired_title:
+        update["editFormLabel"] = {"ru": desired_title}
     field_name = str(field.get("fieldName") or "").strip()
     if field_name in TECHNICAL_FORM_FIELD_NAMES:
         for key, desired in (
@@ -928,6 +932,7 @@ def plan_payload(plan: EnsurePlan, *, applied: bool) -> dict[str, Any]:
         "missingStages": list(plan.missing_stages),
         "missingEnumMappings": list(plan.missing_enum_mappings),
         "uxMismatches": list(plan.ux_mismatches),
+        "labelAdvisories": list(plan.label_advisories),
         "desiredProcessTitle": PROCESS_TITLE,
         "desiredWorkingCategoryTitle": WORKING_CATEGORY_TITLE,
         "desiredWorkingStageTitles": WORKING_STAGE_TITLES,

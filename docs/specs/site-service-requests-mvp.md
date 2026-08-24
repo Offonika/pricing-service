@@ -565,10 +565,19 @@ Checkpoint монотонен по `assignment_checked_at`/`outbound_checked_at`
 | `site_last_sync_at` | Последняя синхронизация | datetime |
 | `first_response_due_at` | Срок первого ответа | datetime |
 | `first_response_at` | Первый ответ доставлен | datetime |
-| `site_sync_error` | Техническая ошибка | string, скрыто из основной формы |
+| `site_sync_error` | Ошибка синхронизации | string, скрыто из основной формы |
+| `return_decision_approved_by_user` | Кто согласовал решение | employee |
 
 Существующее строковое поле `reaction_deadline` остаётся для совместимости, но
 машинная логика использует только новое datetime-поле `first_response_due_at`.
+Существующее строковое поле `return_decision_approved_by` также остаётся только
+для совместимости и скрывается; сотрудник выбирается в новом поле типа `employee`.
+
+Production Box 2026-08-24 подтвердил особенность `userfieldconfig`: русская
+`editFormLabel` сохраняется и используется UI как основная подпись/fallback, а
+`listColumnLabel` и `listFilterLabel` для полей процесса 1134 после update
+возвращаются как `null`. Ensure требует и проверяет `editFormLabel`, а эти два
+неподдерживаемых readback-поля сообщает как advisory и не блокирует форму.
 
 Значения enum находятся через mapping, а не хардкодятся по числовому ID.
 
@@ -858,6 +867,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — production readback подтвердил, что Bitrix Box сохраняет русскую
+  `editFormLabel`, но возвращает `null` для `listColumnLabel`/`listFilterLabel`
+  всех полей процесса 1134; ensure больше не блокирует форму на этом системном
+  ограничении и сохраняет расхождения как advisory.
 - 2026-08-24 — принято решение до пилота с сотрудниками завершить UX-аудит процесса
   1134: переименовать его в «Сервисные обращения сайта», рабочую воронку 55 — в
   «Рабочие обращения сайта», проверить типы и enum-справочники, оставить на форме

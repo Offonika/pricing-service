@@ -253,13 +253,17 @@ class Settings(BaseSettings):
     )
     order_fulfillment_bot_enabled: bool = False
     order_fulfillment_bot_apply_enabled: bool = False
+    order_fulfillment_pickup_stage_apply_enabled: bool = False
     order_fulfillment_bot_sms_enabled: bool = False
+    order_fulfillment_pickup_sla_enabled: bool = False
+    order_fulfillment_pickup_inventory_enabled: bool = False
+    order_fulfillment_inventory_won_enabled: bool = False
+    order_fulfillment_lost_orders_enabled: bool = False
     order_fulfillment_bot_source_chat_ids: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["chat8729", "chat733"]
+        default_factory=lambda: ["chat8729", "chat733", "chat8961", "chat729", "chat739"]
     )
     order_fulfillment_bot_card_ttl_hours: int = Field(default=24, ge=1, le=168)
     order_fulfillment_bot_dry_run_card_limit: int = Field(default=20, ge=0)
-    order_fulfillment_bot_sms_pilot_limit: int = Field(default=10, ge=0)
     order_fulfillment_bot_cutover_at: datetime | None = None
     order_fulfillment_bot_application_token: str | None = None
     order_fulfillment_bot_client_id: str | None = None
@@ -285,8 +289,23 @@ class Settings(BaseSettings):
     order_fulfillment_bot_sms_workflow_template_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_pickup_sms_field: str = "UF_CRM_MM_PICKUP_READY_SMS_AT"
     order_fulfillment_bot_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_internet_shop_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_site_return_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_point_task_routes: dict[str, dict[str, int]] = Field(default_factory=dict)
+    order_fulfillment_inventory_won_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     order_fulfillment_bot_call_after_hours: int = Field(default=72, ge=1, le=720)
     order_fulfillment_bot_dismantle_after_hours: int = Field(default=96, ge=1, le=720)
+    order_fulfillment_pickup_ready_chat_dialog_id: str = "chat8729"
+    order_fulfillment_pickup_inventory_chat_dialog_id: str = "chat8961"
+    order_fulfillment_pickup_movement_chat_dialog_id: str = "chat729"
+    order_fulfillment_pickup_exception_chat_dialog_id: str = "chat739"
+    order_fulfillment_pickup_notification_confirmer_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: [131016, 132252]
+    )
+    order_fulfillment_reaction_lookback_hours: int = Field(default=168, ge=1, le=2160)
+    order_fulfillment_chat_poll_page_limit: int = Field(default=20, ge=1, le=200)
     order_fulfillment_ocr_enabled: bool = True
     order_fulfillment_ocr_model: str | None = None
     order_fulfillment_ocr_min_confidence: float = 0.75
@@ -668,6 +687,7 @@ class Settings(BaseSettings):
         "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
         "order_fulfillment_bot_source_chat_ids",
+        "order_fulfillment_inventory_won_warehouse_external_ids",
         "order_fulfillment_bot_allowed_domains",
         "order_fulfillment_bot_allowed_member_ids",
         "receivable_workflow_department_refs",
@@ -745,6 +765,29 @@ class Settings(BaseSettings):
             return {str(key): int(item) for key, item in parsed.items() if item not in (None, "")}
         raise ValueError("unsupported mapping value")
 
+    @field_validator("order_fulfillment_point_task_routes", mode="before")
+    @classmethod
+    def _parse_order_fulfillment_point_task_routes(cls, value: Any) -> dict[str, dict[str, int]]:
+        if value in (None, ""):
+            return {}
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        result: dict[str, dict[str, int]] = {}
+        allowed_roles = {"operator", "senior"}
+        for warehouse_ref, route in parsed.items():
+            if not isinstance(route, dict):
+                raise ValueError("point task route must be an object")
+            unknown = set(route) - allowed_roles
+            if unknown:
+                raise ValueError(f"unsupported point task roles: {sorted(unknown)}")
+            normalized = {
+                role: int(user_id) for role, user_id in route.items() if user_id not in (None, "")
+            }
+            if normalized:
+                result[str(warehouse_ref)] = normalized
+        return result
+
     @field_validator(
         "expertise_bitrix_notify_auditor_user_ids",
         "expertise_alarm_review_primary_user_ids",
@@ -756,6 +799,7 @@ class Settings(BaseSettings):
         "order_fulfillment_courier_chat_apply_author_ids",
         "order_fulfillment_bot_excluded_user_ids",
         "site_service_requests_first_line_user_ids",
+        "order_fulfillment_pickup_notification_confirmer_ids",
         mode="before",
     )
     @classmethod

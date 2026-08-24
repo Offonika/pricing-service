@@ -17,8 +17,11 @@ from app.models import Base
 from app.models.logistics import LogisticsWarehouse
 from app.models.site_order_fulfillment import (
     BitrixChatActionCandidate,
+    BitrixChatMessage,
     SiteOrderFulfillmentOutbox,
 )
+from app.services import pickup_inventory
+from app.services import site_order_fulfillment as fulfillment
 from app.services import site_order_fulfillment_bot as bot
 
 
@@ -295,6 +298,92 @@ def test_command_event_reads_real_dynamic_command_payload(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["accepted"] is True
+
+
+def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None:
+    _configure(monkeypatch)
+    monkeypatch.setenv(
+        "ORDER_FULFILLMENT_BOT_SOURCE_CHAT_IDS",
+        "chat8729,chat733,chat8961",
+    )
+    get_settings.cache_clear()
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        with Session(engine) as session:
+            message = BitrixChatMessage(
+                chat_code=fulfillment.CHAT_PICKUP_INVENTORY,
+                dialog_id="chat8961",
+                chat_id=8961,
+                message_id=2001,
+                message_at=datetime(2026, 8, 24, 10),
+                author_id="7",
+                raw_text_hash=fulfillment._text_hash("Полный список 241500"),  # noqa: SLF001
+                raw_text_redacted="Полный список <order>",
+                parser_version="test",
+                parse_status="inventory_manual_review",
+                payload={"text": "Полный список 241500"},
+            )
+            session.add(message)
+            session.flush()
+            submission = pickup_inventory.persist_inventory_message(
+                session,
+                message=message,
+            )
+            assert submission is not None
+            bot.enqueue_inventory_clarification_card(
+                session,
+                submission=submission,
+                settings=get_settings(),
+                now=datetime(2026, 8, 24, 10),
+            )
+            state = dict((submission.payload or {})["clarification"])
+            state["bot_message_id"] = "9100"
+            submission.payload = {**(submission.payload or {}), "clarification": state}
+            publish = session.scalar(
+                select(SiteOrderFulfillmentOutbox).where(
+                    SiteOrderFulfillmentOutbox.idempotency_key
+                    == f"inventory-submission:{submission.id}:publish"
+                )
+            )
+            assert publish is not None
+            publish.status = bot.OUTBOX_COMPLETED
+            session.commit()
+            session.refresh(submission)
+            token = bot.sign_inventory_callback_token(
+                submission,
+                action=bot.INVENTORY_ACTION_SELECT_POINT,
+                secret="callback-secret",
+                warehouse_external_id="mitino",
+            )
+        response = client.post(
+            "/api/order-fulfillment/bitrix-bot/events",
+            data={
+                "event": "ONIMCOMMANDADD",
+                "auth[application_token]": "app-token",
+                "auth[domain]": "crm.example",
+                "auth[member_id]": "member-1",
+                "data[PARAMS][DIALOG_ID]": "chat8961",
+                "data[COMMAND]": "pickup_action",
+                "data[COMMAND_PARAMS]": token,
+                "data[USER][ID]": "7",
+            },
+        )
+        with Session(engine) as session:
+            operation = session.scalar(
+                select(SiteOrderFulfillmentOutbox).where(
+                    SiteOrderFulfillmentOutbox.operation == bot.OP_PROCESS_INVENTORY_CLARIFICATION
+                )
+            )
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["inventory_clarification"] is True
+    assert operation is not None
 
 
 def test_command_event_rejects_unexpected_command_id(monkeypatch) -> None:

@@ -17,6 +17,7 @@ from app.models.site_order_fulfillment import (
     BitrixChatActionCandidate,
     SiteOrderFulfillmentOutbox,
 )
+from app.services import pickup_control
 from app.services import site_order_fulfillment_bot as bot
 
 router = APIRouter()
@@ -140,6 +141,20 @@ async def bitrix_bot_event(
             "user_id",
         ) or _command_value(form, "USER_ID")
         try:
+            if bot.callback_token_kind(token) == bot.INVENTORY_CALLBACK_KIND:
+                operation, duplicate = bot.queue_inventory_clarification_action(
+                    db,
+                    token=token,
+                    actor_id=actor_id,
+                    dialog_id=dialog_id,
+                    settings=settings,
+                )
+                return {
+                    "accepted": True,
+                    "inventory_clarification": True,
+                    "operation_id": operation.id,
+                    "duplicate": duplicate,
+                }
             action, duplicate = bot.queue_callback_action(
                 db,
                 token=token,
@@ -213,17 +228,30 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
             0,
             int((bot.utcnow() - oldest_active_utc).total_seconds()),
         )
+    pickup_metrics = pickup_control.pickup_operational_metrics(
+        db,
+        settings=settings,
+    )
     return {
         "enabled": settings.order_fulfillment_bot_enabled,
         "apply_enabled": runtime_apply_enabled,
         "apply_configured_at_startup": settings.order_fulfillment_bot_apply_enabled,
         "sms_enabled": settings.order_fulfillment_bot_sms_enabled,
+        "stage_apply_enabled": settings.order_fulfillment_pickup_stage_apply_enabled,
+        "sla_enabled": settings.order_fulfillment_pickup_sla_enabled,
+        "inventory_enabled": settings.order_fulfillment_pickup_inventory_enabled,
+        "inventory_won_enabled": settings.order_fulfillment_inventory_won_enabled,
+        "lost_orders_enabled": settings.order_fulfillment_lost_orders_enabled,
         "candidate_count": candidates,
         "outbox_pending": pending,
         "outbox_processing": processing,
         "outbox_failed": failed,
         "outbox_blocked_by_apply": blocked_by_apply,
         "oldest_active_outbox_age_seconds": oldest_active_age_seconds,
+        **pickup_metrics,
+        "inventory_won_warehouse_allowlist": (
+            settings.order_fulfillment_inventory_won_warehouse_external_ids
+        ),
     }
 
 

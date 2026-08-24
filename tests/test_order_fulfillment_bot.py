@@ -28,6 +28,9 @@ def _settings(**overrides) -> Settings:
         "_env_file": None,
         "order_fulfillment_bot_enabled": True,
         "order_fulfillment_bot_apply_enabled": True,
+        "order_fulfillment_pickup_stage_apply_enabled": True,
+        "order_fulfillment_pickup_sla_enabled": True,
+        "order_fulfillment_pickup_inventory_enabled": True,
         "order_fulfillment_bot_sms_enabled": False,
         "order_fulfillment_bot_source_chat_ids": ["chat8729", "chat733"],
         "order_fulfillment_bot_callback_secret": "test-secret",
@@ -38,7 +41,9 @@ def _settings(**overrides) -> Settings:
         "order_fulfillment_bot_client_id": "pickup-bot",
         "order_fulfillment_bot_command_id": 103,
         "order_fulfillment_bot_dry_run_card_limit": 0,
-        "order_fulfillment_bot_task_responsible_id": 115204,
+        "order_fulfillment_internet_shop_task_responsible_id": 115204,
+        "order_fulfillment_site_return_task_responsible_id": 115204,
+        "order_fulfillment_point_task_routes": {"mitino": {"operator": 115204, "senior": 115204}},
     }
     values.update(overrides)
     return Settings(**values)
@@ -99,6 +104,13 @@ class FakeBitrixClient:
         self.stage = target_stage
         return True
 
+    def update_deal_fields(self, deal_id: int, fields: dict):
+        assert deal_id == 500
+        if "STAGE_ID" in fields:
+            self.stage = str(fields["STAGE_ID"])
+        self.raw.update(fields)
+        return True
+
     def start_business_process(self, **payload):
         self.workflows.append(payload)
         return "workflow-1"
@@ -106,6 +118,9 @@ class FakeBitrixClient:
     def add_task(self, fields):
         self.tasks.append(fields)
         return {"task": {"id": 1}}
+
+    def get_user_by_id(self, user_id: int):
+        return {"ID": str(user_id), "ACTIVE": "Y"}
 
 
 def _warehouse(db_session) -> LogisticsWarehouse:
@@ -992,7 +1007,9 @@ def test_arrival_apply_moves_stage_only_after_button(db_session) -> None:
     assert client.stage_updates == ["PICKUP_WAITING"]
     assert case is not None
     assert case.storage_started_at == datetime(2026, 8, 23, 12, 3)
-    assert case.storage_deadline_at == datetime(2026, 8, 27, 12, 3)
+    assert case.notification_confirmed_at is None
+    assert case.sla_started_at is None
+    assert case.storage_deadline_at is None
     assert case.current_derived_status == fulfillment.EVENT_PICKUP_STORED
 
 
@@ -1045,6 +1062,8 @@ def test_issued_requires_second_confirmation_and_payment(db_session) -> None:
         current_crm_stage="PICKUP_WAITING",
         pickup_point_warehouse_id=warehouse.id,
         storage_started_at=datetime(2026, 8, 20, 12, 0),
+        notification_confirmed_at=datetime(2026, 8, 20, 12, 30),
+        sla_started_at=datetime(2026, 8, 20, 12, 30),
         payload={},
     )
     db_session.add(case)
@@ -1110,6 +1129,8 @@ def test_dismantle_is_blocked_before_96_hours(db_session) -> None:
         current_crm_stage="PICKUP_WAITING",
         pickup_point_warehouse_id=warehouse.id,
         storage_started_at=datetime(2026, 8, 20, 12, 0),
+        notification_confirmed_at=datetime(2026, 8, 20, 12, 30),
+        sla_started_at=datetime(2026, 8, 20, 12, 30),
         payload={},
     )
     candidate = BitrixChatActionCandidate(
@@ -1272,7 +1293,7 @@ def test_historical_sms_is_blocked_and_track_marker_is_not_reused(db_session) ->
         settings=settings,
         now=datetime(2026, 8, 23, 12, 3),
     )
-    for minute in (4, 5):
+    for minute in range(4, 10):
         bot.process_outbox(
             db_session,
             client=client,
@@ -1332,8 +1353,7 @@ def test_first_arrival_reserves_sms_when_stage_is_already_pickup_waiting(db_sess
     assert bot.OP_VERIFY_SMS_WORKFLOW in operations
 
 
-def test_sms_pilot_reserves_only_ten_slots(db_session) -> None:
-    settings = _settings(order_fulfillment_bot_sms_pilot_limit=10)
+def test_sms_outbox_has_no_quantitative_pilot_limit(db_session) -> None:
     for index in range(10):
         bot.enqueue_outbox(
             db_session,
@@ -1342,9 +1362,24 @@ def test_sms_pilot_reserves_only_ten_slots(db_session) -> None:
             payload={},
             now=datetime(2026, 8, 23, 12, 0),
         )
+    eleventh = bot.enqueue_outbox(
+        db_session,
+        operation=bot.OP_START_SMS_WORKFLOW,
+        idempotency_key="sms:10",
+        payload={},
+        now=datetime(2026, 8, 23, 12, 0),
+    )
     db_session.commit()
 
-    assert bot._sms_pilot_has_capacity(db_session, settings=settings) is False  # noqa: SLF001
+    assert eleventh.id is not None
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_START_SMS_WORKFLOW
+            )
+        )
+        == 11
+    )
 
 
 def test_two_candidates_for_one_deal_reserve_only_one_pickup_sms(db_session) -> None:
@@ -1413,8 +1448,7 @@ def test_two_candidates_for_one_deal_reserve_only_one_pickup_sms(db_session) -> 
     assert sms_rows[0].idempotency_key == "deal:500:pickup-ready-sms"
 
 
-def test_failed_or_ambiguous_sms_attempts_still_consume_pilot_slots(db_session) -> None:
-    settings = _settings(order_fulfillment_bot_sms_pilot_limit=10)
+def test_failed_sms_attempts_do_not_block_unrelated_new_sms(db_session) -> None:
     for index in range(10):
         row = bot.enqueue_outbox(
             db_session,
@@ -1424,9 +1458,16 @@ def test_failed_or_ambiguous_sms_attempts_still_consume_pilot_slots(db_session) 
             now=datetime(2026, 8, 23, 12, 0),
         )
         row.status = bot.OUTBOX_FAILED
+    next_row = bot.enqueue_outbox(
+        db_session,
+        operation=bot.OP_START_SMS_WORKFLOW,
+        idempotency_key="ambiguous-sms:next-deal",
+        payload={},
+        now=datetime(2026, 8, 23, 12, 1),
+    )
     db_session.commit()
 
-    assert bot._sms_pilot_has_capacity(db_session, settings=settings) is False  # noqa: SLF001
+    assert next_row.status == bot.OUTBOX_PENDING
 
 
 @pytest.mark.parametrize(
@@ -1523,6 +1564,18 @@ def test_started_sms_is_completed_only_after_marker_confirmation(
         db_session,
         settings=settings,
         message_at=datetime(2026, 8, 23, 12, 0),
+    )
+    db_session.add(
+        SiteOrderExecutionCase(
+            site_order_number=candidate.site_order_number,
+            bitrix_deal_id=500,
+            delivery_method="Самовывоз",
+            current_derived_status=fulfillment.EVENT_PICKUP_STORED,
+            current_crm_stage=fulfillment.CRM_STAGE_PICKUP_WAITING,
+            pickup_point_warehouse_id=candidate.pickup_point_warehouse_id,
+            storage_started_at=datetime(2026, 8, 23, 12, 0),
+            payload={},
+        )
     )
     _mark_card_ready(db_session, candidate)
     start_row = bot.enqueue_outbox(
@@ -1762,6 +1815,7 @@ def test_task_is_blocked_if_live_deal_stage_changed(db_session) -> None:
 
     with pytest.raises(RuntimeError, match="deal_stage_changed_before_task"):
         bot._create_task(  # noqa: SLF001
+            session=db_session,
             row=row,
             client=client,
             settings=settings,

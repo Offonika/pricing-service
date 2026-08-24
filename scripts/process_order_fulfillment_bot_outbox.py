@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Callable
 from decimal import Decimal
@@ -15,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.core.config import get_settings  # noqa: E402
 from app.infrastructure.db import session_scope  # noqa: E402
+from app.services import pickup_control  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 from app.services import site_order_fulfillment_bot as bot  # noqa: E402
 from infra.cron import order_fulfillment_sync as fulfillment_sync  # noqa: E402
@@ -101,9 +103,48 @@ def main() -> int:
         initial_enabled=settings.order_fulfillment_bot_apply_enabled,
     )
     with session_scope() as session:
-        sla_created = (
-            bot.enqueue_due_sla_tasks(session, settings=settings) if apply_enabled_probe() else 0
-        )
+        poll_stats: dict[str, object]
+        try:
+            poll_stats = pickup_control.poll_pickup_control_chats(
+                session,
+                client=client,
+                settings=settings,
+                external_apply_enabled=apply_enabled_probe(),
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox must continue after ingest failure.
+            session.rollback()
+            poll_stats = {"error": type(exc).__name__}
+        try:
+            field_stats = bot.reconcile_pickup_case_fields(
+                session,
+                client=client,
+                settings=settings,
+                limit=50,
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox must continue after readback failure.
+            session.rollback()
+            field_stats = {"error": type(exc).__name__}
+        try:
+            inventory_stats: dict[str, object] = pickup_control.enqueue_inventory_won_candidates(
+                session,
+                client=client,
+                settings=settings,
+                onec_validator=build_onec_validator(),
+                limit=50,
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox must continue.
+            session.rollback()
+            inventory_stats = {"error": type(exc).__name__}
+        sla_result: dict[str, object] = {"created": 0}
+        if apply_enabled_probe():
+            try:
+                sla_result["created"] = bot.enqueue_due_sla_tasks(
+                    session,
+                    settings=settings,
+                )
+            except Exception as exc:  # noqa: BLE001 - outbox must continue.
+                session.rollback()
+                sla_result = {"created": 0, "error": type(exc).__name__}
         stats = bot.process_outbox(
             session,
             client=client,
@@ -113,11 +154,16 @@ def main() -> int:
             limit=max(1, min(args.limit, 500)),
         )
     print(
-        "{" + f'"sla_created":{sla_created},"selected":{stats["selected"]},'
-        f'"recovered":{stats["recovered"]},'
-        f'"expired":{stats["expired"]},'
-        f'"completed":{stats["completed"]},"retry":{stats["retry"]},'
-        f'"failed":{stats["failed"]}' + "}"
+        json.dumps(
+            {
+                "poll": poll_stats,
+                "field_sync": field_stats,
+                "inventory": inventory_stats,
+                "sla": sla_result,
+                **stats,
+            },
+            ensure_ascii=False,
+        )
     )
     return 0
 

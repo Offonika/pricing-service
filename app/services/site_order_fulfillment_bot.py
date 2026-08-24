@@ -7,21 +7,25 @@ import json
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, aliased
 
 from app.core.config import Settings
+from app.models.logistics import LogisticsWarehouse
 from app.models.site_order_fulfillment import (
     BitrixChatAction,
     BitrixChatActionCandidate,
     BitrixChatMessage,
+    PickupInventorySubmission,
     SiteOrderExecutionCase,
     SiteOrderFulfillmentOutbox,
 )
+from app.services import pickup_inventory
 from app.services import site_order_fulfillment as fulfillment
 from app.services.logistics_onec import resolve_target_warehouse
 
@@ -29,24 +33,44 @@ CHAT_PICKUP_READY = "pickup_ready"
 PARSER_VERSION = "pickup-bot-v1"
 
 ACTION_ARRIVED = "arrived"
+ACTION_MOVING = "moving"
 ACTION_ISSUED = "issued"
 ACTION_UNCLAIMED = "unclaimed"
 ACTION_DISMANTLE = "dismantle"
+ACTION_FOUND_EXPECTED = "found_expected"
+ACTION_FOUND_OTHER = "found_other"
+ACTION_RETURNED = "returned"
+ACTION_NOT_FOUND = "not_found"
 ACTION_CANCEL = "cancel"
 ACTIONS = {
     ACTION_ARRIVED,
+    ACTION_MOVING,
     ACTION_ISSUED,
     ACTION_UNCLAIMED,
     ACTION_DISMANTLE,
+    ACTION_FOUND_EXPECTED,
+    ACTION_FOUND_OTHER,
+    ACTION_RETURNED,
+    ACTION_NOT_FOUND,
     ACTION_CANCEL,
 }
-DANGEROUS_ACTIONS = {ACTION_ISSUED, ACTION_DISMANTLE}
+DANGEROUS_ACTIONS = {
+    ACTION_ISSUED,
+    ACTION_DISMANTLE,
+    ACTION_FOUND_OTHER,
+    ACTION_RETURNED,
+}
 
 ACTION_LABELS = {
     ACTION_ARRIVED: "Прибыл в точку",
+    ACTION_MOVING: "Отправлен на точку",
     ACTION_ISSUED: "Выдан клиенту",
     ACTION_UNCLAIMED: "Не забран",
     ACTION_DISMANTLE: "На расформирование",
+    ACTION_FOUND_EXPECTED: "Найден на ожидаемой точке",
+    ACTION_FOUND_OTHER: "На другой точке",
+    ACTION_RETURNED: "Возвращён / разобран",
+    ACTION_NOT_FOUND: "Не найден",
     ACTION_CANCEL: "Ошибка / отмена",
 }
 DECISION_REASON_TEXT = {
@@ -66,14 +90,29 @@ DECISION_REASON_TEXT = {
     "unclaimed_transition_not_allowed": "заказ сейчас не ожидает самовывоза",
     "dismantle_transition_not_allowed": "заказ сейчас не ожидает самовывоза",
     "storage_start_missing": "не зафиксирована дата поступления на точку",
+    "sla_start_missing": "не подтверждено уведомление клиента",
+    "pickup_sla_disabled": "контур SLA и расформирования выключен",
     "dismantle_too_early": "срок хранения ещё не истёк",
     "dismantle_payment_conflict": "оплата или выдача блокирует расформирование",
+    "lost_orders_disabled": "контур потерянных заказов выключен",
+    "lost_order_stage_not_allowed": "сделка не находится в ожидании самовывоза",
+    "lost_order_point_missing": "в заказе не определена ожидаемая точка",
+    "lost_order_target_missing": "не выбрана другая точка",
+    "lost_order_target_same": "выбрана та же точка",
+    "lost_order_target_invalid": "выбранная точка недоступна",
+    "return_not_confirmed": "возврат в 1С не подтверждён",
+    "return_payment_conflict": "оплата или выдача блокирует закрытие в отказ",
 }
 ACTION_EVENT_TYPES = {
     ACTION_ARRIVED: fulfillment.EVENT_PICKUP_STORED,
+    ACTION_MOVING: fulfillment.EVENT_PICKUP_MOVING,
     ACTION_ISSUED: fulfillment.EVENT_PICKUP_RECEIVED,
     ACTION_UNCLAIMED: fulfillment.EVENT_PICKUP_UNCLAIMED,
     ACTION_DISMANTLE: fulfillment.EVENT_PICKUP_DISMANTLING,
+    ACTION_FOUND_EXPECTED: fulfillment.EVENT_PICKUP_STORED,
+    ACTION_FOUND_OTHER: fulfillment.EVENT_PICKUP_REDIRECTED,
+    ACTION_RETURNED: fulfillment.EVENT_PICKUP_DISMANTLED,
+    ACTION_NOT_FOUND: fulfillment.EVENT_PICKUP_EXCEPTION,
 }
 
 CANDIDATE_OPEN = "open"
@@ -100,6 +139,11 @@ OP_FINALIZE_ACTION = "finalize_action"
 OP_START_SMS_WORKFLOW = "start_sms_workflow"
 OP_VERIFY_SMS_WORKFLOW = "verify_sms_workflow"
 OP_CREATE_TASK = "create_task"
+OP_UPDATE_CRM_FIELDS = "update_crm_fields"
+OP_FINALIZE_CASE_EVENT = "finalize_case_event"
+OP_PUBLISH_INVENTORY_CLARIFICATION = "publish_inventory_clarification"
+OP_PROCESS_INVENTORY_CLARIFICATION = "process_inventory_clarification"
+OP_UPDATE_INVENTORY_CLARIFICATION = "update_inventory_clarification"
 
 APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
     {
@@ -108,20 +152,33 @@ APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
         OP_START_SMS_WORKFLOW,
         OP_VERIFY_SMS_WORKFLOW,
         OP_CREATE_TASK,
+        OP_UPDATE_CRM_FIELDS,
+        OP_FINALIZE_CASE_EVENT,
     }
 )
 
 NON_RETRYABLE_EXTERNAL_OPERATIONS = {
     OP_PUBLISH_CARD,
+    OP_PUBLISH_INVENTORY_CLARIFICATION,
+    OP_UPDATE_INVENTORY_CLARIFICATION,
     OP_START_SMS_WORKFLOW,
     OP_CREATE_TASK,
 }
-SMS_PILOT_ADVISORY_LOCK_KEY = 5_584_927_483_671
 CANDIDATE_CREATE_ADVISORY_LOCK_KEY = 5_584_927_483_672
 SLA_TASK_ADVISORY_LOCK_KEY = 5_584_927_483_673
 APPLY_ENABLED_ENV_KEY = "ORDER_FULFILLMENT_BOT_APPLY_ENABLED"
 TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 DEFAULT_RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+CRM_PICKUP_STORAGE_STARTED_FIELD = "UF_CRM_MM_PICKUP_STORAGE_STARTED_AT"
+CRM_PICKUP_SLA_STARTED_FIELD = "UF_CRM_MM_PICKUP_SLA_STARTED_AT"
+CRM_PICKUP_HOLD_UNTIL_FIELD = "UF_CRM_MM_PICKUP_HOLD_UNTIL"
+CRM_PICKUP_DERIVED_STATUS_FIELD = "UF_CRM_MM_PICKUP_DERIVED_STATUS"
+CRM_PICKUP_LAST_EVIDENCE_FIELD = "UF_CRM_MM_PICKUP_LAST_EVIDENCE"
+CRM_PICKUP_DATETIME_FIELDS = {
+    CRM_PICKUP_STORAGE_STARTED_FIELD,
+    CRM_PICKUP_SLA_STARTED_FIELD,
+}
 
 ALLOWED_ARRIVAL_STAGES = {
     "PREPARATION",
@@ -133,6 +190,20 @@ ALLOWED_ARRIVAL_STAGES = {
 TERMINAL_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
 
 ORDER_LIMIT_PER_MESSAGE = 10
+
+INVENTORY_CALLBACK_KIND = "inventory"
+INVENTORY_ACTION_SELECT_POINT = "inventory_select_point"
+INVENTORY_ACTION_FULL = "inventory_full"
+INVENTORY_ACTION_CARRY = "inventory_carry"
+INVENTORY_ACTION_ZERO = "inventory_zero"
+INVENTORY_ACTION_ERROR = "inventory_error"
+INVENTORY_ACTIONS = {
+    INVENTORY_ACTION_SELECT_POINT,
+    INVENTORY_ACTION_FULL,
+    INVENTORY_ACTION_CARRY,
+    INVENTORY_ACTION_ZERO,
+    INVENTORY_ACTION_ERROR,
+}
 EXTERNAL_DELIVERY_MARKERS = ("сдэк", "почт", "boxberry", "постамат", "пвз")
 PICKUP_CUES = (
     "самовывоз",
@@ -159,6 +230,14 @@ ARRIVAL_MARKERS = (
     "готов к выдаче",
     "готова к выдаче",
 )
+MOVING_MARKERS = (
+    "отправили на",
+    "отправлен на",
+    "отправлена на",
+    "передали на точку",
+    "передан на точку",
+    "едет на точку",
+)
 
 
 class BotSecurityError(ValueError):
@@ -175,6 +254,14 @@ class ApplyDisabledBeforeSideEffect(RetryableBeforeExternalEffect):
 
 class SmsMarkerNotConfirmed(RuntimeError):
     """The asynchronous SMS workflow did not confirm its marker in time."""
+
+
+class TaskRouteConfigurationError(RuntimeError):
+    """SLA task routing is incomplete and must fail closed."""
+
+
+class SourceMessageEditedBeforeApply(RuntimeError):
+    """A queued external effect no longer has immutable source evidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +299,7 @@ class CallbackToken:
     step: int
     nonce: str
     expires_at: datetime
+    target_warehouse_id: int | None = None
 
 
 def utcnow() -> datetime:
@@ -234,6 +322,10 @@ def parse_pickup_candidate_text(
     if not order_numbers:
         return []
     action = _classify_pickup_action(normalized)
+    if action is None and dialog_id == "chat8729":
+        action = ACTION_ARRIVED
+    if action is None and dialog_id == "chat739":
+        action = ACTION_NOT_FOUND
     if action is None:
         return []
     if dialog_id == "chat733":
@@ -253,6 +345,8 @@ def parse_pickup_candidate_text(
 
 
 def _classify_pickup_action(normalized: str) -> str | None:
+    if any(marker in normalized for marker in ("не найден", "не нашли", "потерян", "потеряли")):
+        return ACTION_NOT_FOUND
     if any(marker in normalized for marker in ("расформ", "разобрать", "на разбор")):
         return ACTION_DISMANTLE
     if any(
@@ -266,6 +360,8 @@ def _classify_pickup_action(normalized: str) -> str | None:
         return ACTION_ISSUED
     if any(marker in normalized for marker in ARRIVAL_MARKERS):
         return ACTION_ARRIVED
+    if any(marker in normalized for marker in MOVING_MARKERS):
+        return ACTION_MOVING
     return None
 
 
@@ -285,6 +381,16 @@ def create_candidates_from_message(
     now = _naive_utc(now or utcnow())
     source_event_at = _naive_utc(message_at) if message_at is not None else None
     if dialog_id not in set(settings.order_fulfillment_bot_source_chat_ids):
+        return []
+    # Inventory reports are handled as point-in-time snapshots with their own
+    # clarification flow. Treating every order in such a report as a regular
+    # pickup action would publish one generic card per listed order.
+    if dialog_id == settings.order_fulfillment_pickup_inventory_chat_dialog_id:
+        return []
+    if (
+        dialog_id == settings.order_fulfillment_pickup_exception_chat_dialog_id
+        and not settings.order_fulfillment_lost_orders_enabled
+    ):
         return []
     numeric_chat_id = _numeric_chat_id(dialog_id)
     numeric_message_id = _numeric_message_id(message_id)
@@ -315,11 +421,23 @@ def create_candidates_from_message(
         )
     )
     if raw_message is None:
+        chat_code_by_dialog = {
+            settings.order_fulfillment_site_chat_dialog_id: (fulfillment.CHAT_SITE_MASTER_MOBILE),
+            settings.order_fulfillment_pickup_ready_chat_dialog_id: (fulfillment.CHAT_PICKUP_READY),
+            settings.order_fulfillment_pickup_inventory_chat_dialog_id: (
+                fulfillment.CHAT_PICKUP_INVENTORY
+            ),
+            settings.order_fulfillment_pickup_movement_chat_dialog_id: (
+                fulfillment.CHAT_PICKUP_MOVEMENT
+            ),
+            settings.order_fulfillment_pickup_exception_chat_dialog_id: (
+                fulfillment.CHAT_PICKUP_EXCEPTION
+            ),
+        }
         raw_message = BitrixChatMessage(
-            chat_code=(
-                CHAT_PICKUP_READY
-                if dialog_id == "chat8729"
-                else fulfillment.CHAT_SITE_MASTER_MOBILE
+            chat_code=chat_code_by_dialog.get(
+                dialog_id,
+                fulfillment.CHAT_SITE_MASTER_MOBILE,
             ),
             dialog_id=dialog_id,
             chat_id=numeric_chat_id,
@@ -334,6 +452,8 @@ def create_candidates_from_message(
         )
         session.add(raw_message)
         session.flush()
+    elif raw_message.parse_status == "edited_manual_review":
+        return []
 
     candidate_count = int(session.scalar(select(func.count(BitrixChatActionCandidate.id))) or 0)
     runtime_apply_enabled = _runtime_apply_enabled(settings, apply_enabled_probe)
@@ -393,6 +513,7 @@ def sign_callback_token(
     action: str,
     step: int,
     secret: str,
+    target_warehouse_id: int | None = None,
 ) -> str:
     if action not in ACTIONS or step not in {1, 2}:
         raise ValueError("unsupported callback action")
@@ -403,6 +524,8 @@ def sign_callback_token(
         "n": candidate.nonce,
         "e": int(_aware_utc(candidate.expires_at).timestamp()),
     }
+    if target_warehouse_id is not None:
+        payload["w"] = int(target_warehouse_id)
     encoded = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
     return f"{encoded}.{_b64encode(signature)}"
@@ -436,7 +559,174 @@ def verify_callback_token(
             step=step,
             nonce=str(payload["n"]),
             expires_at=expires_at,
+            target_warehouse_id=(int(payload["w"]) if payload.get("w") is not None else None),
         )
+    except BotSecurityError:
+        raise
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BotSecurityError("invalid_callback_token") from exc
+
+
+def callback_token_kind(token: str) -> str:
+    """Return an untrusted routing hint; the selected verifier still checks HMAC."""
+
+    try:
+        encoded, _ = token.split(".", 1)
+        payload = json.loads(_b64decode(encoded).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    return fulfillment._clean_string(payload.get("k")) if isinstance(payload, dict) else ""
+
+
+def enqueue_inventory_clarification_card(
+    session: Session,
+    *,
+    submission: PickupInventorySubmission,
+    settings: Settings,
+    now: datetime | None = None,
+) -> SiteOrderFulfillmentOutbox:
+    now = _naive_utc(now or utcnow())
+    state = _inventory_clarification_state(submission)
+    if not state.get("nonce"):
+        state = {
+            **state,
+            "nonce": secrets.token_hex(16),
+            "expires_at": (
+                now + timedelta(hours=settings.order_fulfillment_bot_card_ttl_hours)
+            ).isoformat(),
+            "status": "open",
+            "source_text_hash": submission.source_message.raw_text_hash,
+        }
+        _set_inventory_clarification_state(submission, state)
+    return enqueue_outbox(
+        session,
+        operation=OP_PUBLISH_INVENTORY_CLARIFICATION,
+        idempotency_key=f"inventory-submission:{submission.id}:publish",
+        target_type="inventory_submission",
+        target_id=str(submission.id),
+        payload={},
+        now=now,
+    )
+
+
+def sign_inventory_callback_token(
+    submission: PickupInventorySubmission,
+    *,
+    action: str,
+    secret: str,
+    warehouse_external_id: str | None = None,
+) -> str:
+    if action not in INVENTORY_ACTIONS:
+        raise ValueError("unsupported_inventory_action")
+    state = _inventory_clarification_state(submission)
+    nonce = fulfillment._clean_string(state.get("nonce"))
+    expires_at = _parse_naive_datetime(state.get("expires_at"))
+    if not nonce or expires_at is None:
+        raise ValueError("inventory_clarification_state_missing")
+    payload: dict[str, Any] = {
+        "k": INVENTORY_CALLBACK_KIND,
+        "i": submission.id,
+        "a": action,
+        "n": nonce,
+        "e": int(_aware_utc(expires_at).timestamp()),
+    }
+    if warehouse_external_id:
+        payload["w"] = warehouse_external_id
+    encoded = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded}.{_b64encode(signature)}"
+
+
+def queue_inventory_clarification_action(
+    session: Session,
+    *,
+    token: str,
+    actor_id: str,
+    dialog_id: str,
+    settings: Settings,
+    now: datetime | None = None,
+) -> tuple[SiteOrderFulfillmentOutbox, bool]:
+    now = _naive_utc(now or utcnow())
+    payload = _verify_inventory_callback_token(
+        token,
+        secret=settings.order_fulfillment_bot_callback_secret,
+        now=now,
+    )
+    submission = session.scalar(
+        select(PickupInventorySubmission)
+        .where(PickupInventorySubmission.id == int(payload["i"]))
+        .with_for_update()
+    )
+    if submission is None or submission.source_message is None:
+        raise BotSecurityError("inventory_submission_not_found")
+    if submission.source_message.dialog_id != dialog_id:
+        raise BotSecurityError("callback_wrong_chat")
+    state = _inventory_clarification_state(submission)
+    if state.get("nonce") != payload["n"] or state.get("status") != "open":
+        raise BotSecurityError("inventory_clarification_not_open")
+    if not fulfillment._clean_string(state.get("bot_message_id")):
+        raise BotSecurityError("inventory_clarification_card_not_ready")
+    clean_actor = fulfillment._clean_string(actor_id)
+    if not clean_actor:
+        raise BotSecurityError("actor_missing")
+    action = str(payload["a"])
+    warehouse_external_id = fulfillment._clean_string(payload.get("w"))
+    key = (
+        f"inventory-submission:{submission.id}:action:{action}:"
+        f"{warehouse_external_id or '-'}:{clean_actor}"
+    )
+    existing = session.scalar(
+        select(SiteOrderFulfillmentOutbox).where(SiteOrderFulfillmentOutbox.idempotency_key == key)
+    )
+    if existing is not None:
+        return existing, True
+    row = enqueue_outbox(
+        session,
+        operation=OP_PROCESS_INVENTORY_CLARIFICATION,
+        idempotency_key=key,
+        target_type="inventory_submission",
+        target_id=str(submission.id),
+        payload={
+            "action": action,
+            "actor_id": clean_actor,
+            "warehouse_external_id": warehouse_external_id or None,
+            "nonce": payload["n"],
+            "source_text_hash": state.get("source_text_hash"),
+        },
+        now=now,
+    )
+    session.commit()
+    return row, False
+
+
+def _verify_inventory_callback_token(
+    token: str,
+    *,
+    secret: str,
+    now: datetime,
+) -> dict[str, Any]:
+    if not secret:
+        raise BotSecurityError("callback_secret_not_configured")
+    try:
+        encoded, raw_signature = token.split(".", 1)
+        expected = hmac.new(
+            secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(expected, _b64decode(raw_signature)):
+            raise BotSecurityError("invalid_callback_signature")
+        payload = json.loads(_b64decode(encoded).decode("utf-8"))
+        if payload.get("k") != INVENTORY_CALLBACK_KIND:
+            raise BotSecurityError("invalid_callback_kind")
+        if str(payload.get("a")) not in INVENTORY_ACTIONS:
+            raise BotSecurityError("invalid_callback_action")
+        if _naive_utc(now) >= datetime.fromtimestamp(int(payload["e"]), tz=UTC).replace(
+            tzinfo=None
+        ):
+            raise BotSecurityError("callback_expired")
+        int(payload["i"])
+        if not fulfillment._clean_string(payload.get("n")):
+            raise BotSecurityError("invalid_callback_token")
+        return payload
     except BotSecurityError:
         raise
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -495,7 +785,27 @@ def queue_callback_action(
         raise BotSecurityError("actor_missing")
     if not clean_actor_id.isdigit() or len(clean_actor_id) > 20:
         raise BotSecurityError("actor_invalid")
-    idempotency_key = f"candidate:{candidate.id}:action:{decoded.action}:step:{decoded.step}"
+    if decoded.action == ACTION_FOUND_OTHER:
+        if decoded.step == 1 and decoded.target_warehouse_id is not None:
+            raise BotSecurityError("unexpected_target_warehouse")
+        if decoded.step == 2:
+            warehouse = _selectable_lost_order_warehouse(
+                session,
+                warehouse_id=decoded.target_warehouse_id,
+                settings=settings,
+            )
+            if warehouse is None:
+                raise BotSecurityError("invalid_target_warehouse")
+    elif decoded.target_warehouse_id is not None:
+        raise BotSecurityError("unexpected_target_warehouse")
+    target_suffix = (
+        f":warehouse:{decoded.target_warehouse_id}"
+        if decoded.target_warehouse_id is not None
+        else ""
+    )
+    idempotency_key = (
+        f"candidate:{candidate.id}:action:{decoded.action}:step:{decoded.step}{target_suffix}"
+    )
     existing = session.scalar(
         select(BitrixChatAction).where(BitrixChatAction.idempotency_key == idempotency_key)
     )
@@ -532,7 +842,7 @@ def queue_callback_action(
         status="queued",
         confirmation_step=decoded.step,
         idempotency_key=idempotency_key,
-        payload={},
+        payload={"target_warehouse_id": decoded.target_warehouse_id},
     )
     session.add(action)
     session.flush()
@@ -617,11 +927,37 @@ def card_keyboard(
         return []
     colors = {
         ACTION_ARRIVED: "#2FC6F6",
+        ACTION_MOVING: "#2F80ED",
         ACTION_ISSUED: "#9DCF00",
         ACTION_UNCLAIMED: "#F5A623",
         ACTION_DISMANTLE: "#E74C3C",
+        ACTION_FOUND_EXPECTED: "#9DCF00",
+        ACTION_FOUND_OTHER: "#2F80ED",
+        ACTION_RETURNED: "#E74C3C",
+        ACTION_NOT_FOUND: "#F5A623",
         ACTION_CANCEL: "#A6A6A6",
     }
+    if (
+        settings.order_fulfillment_lost_orders_enabled
+        and candidate.source_chat_id == settings.order_fulfillment_pickup_exception_chat_dialog_id
+    ):
+        actions = (
+            ACTION_FOUND_EXPECTED,
+            ACTION_FOUND_OTHER,
+            ACTION_ISSUED,
+            ACTION_RETURNED,
+            ACTION_NOT_FOUND,
+            ACTION_CANCEL,
+        )
+    else:
+        actions = (
+            ACTION_ARRIVED,
+            ACTION_MOVING,
+            ACTION_ISSUED,
+            ACTION_UNCLAIMED,
+            ACTION_DISMANTLE,
+            ACTION_CANCEL,
+        )
     return [
         {
             "TEXT": ACTION_LABELS[action],
@@ -635,13 +971,7 @@ def card_keyboard(
             "BG_COLOR": colors[action],
             "BLOCK": "Y",
         }
-        for action in (
-            ACTION_ARRIVED,
-            ACTION_ISSUED,
-            ACTION_UNCLAIMED,
-            ACTION_DISMANTLE,
-            ACTION_CANCEL,
-        )
+        for action in actions
     ]
 
 
@@ -664,14 +994,19 @@ def decide_pickup_action(
         return PickupActionDecision(True, None, None, "candidate_dismissed")
     if not fulfillment._is_internal_pickup_deal(deal):
         return PickupActionDecision(False, None, None, "delivery_mismatch")
-    if stage in TERMINAL_STAGES:
+    if stage in TERMINAL_STAGES and not (action == ACTION_RETURNED and stage == "DISMANTLING"):
         return PickupActionDecision(False, None, None, "terminal_crm_stage")
     if candidate.pickup_point_warehouse_id is None and action == ACTION_ARRIVED:
         return PickupActionDecision(False, None, None, "pickup_point_unresolved")
-    if _deal_pickup_point_conflicts(candidate, deal=deal):
+    if action not in {
+        ACTION_MOVING,
+        ACTION_FOUND_EXPECTED,
+        ACTION_FOUND_OTHER,
+    } and _deal_pickup_point_conflicts(candidate, deal=deal):
         return PickupActionDecision(False, None, None, "pickup_point_deal_mismatch")
     if (
-        case is not None
+        action not in {ACTION_MOVING, ACTION_FOUND_EXPECTED, ACTION_FOUND_OTHER}
+        and case is not None
         and case.pickup_point_warehouse_id is not None
         and candidate.pickup_point_warehouse_id is not None
         and case.pickup_point_warehouse_id != candidate.pickup_point_warehouse_id
@@ -679,8 +1014,112 @@ def decide_pickup_action(
         return PickupActionDecision(False, None, None, "pickup_point_mismatch")
     if not onec.available:
         return PickupActionDecision(False, None, None, "onec_unavailable")
-    if onec.return_confirmed and action in {ACTION_ARRIVED, ACTION_ISSUED}:
+    if onec.return_confirmed and action in {
+        ACTION_MOVING,
+        ACTION_ARRIVED,
+        ACTION_ISSUED,
+        ACTION_FOUND_EXPECTED,
+        ACTION_FOUND_OTHER,
+    }:
         return PickupActionDecision(False, None, None, "onec_return_conflict")
+
+    if (
+        action
+        in {
+            ACTION_FOUND_EXPECTED,
+            ACTION_FOUND_OTHER,
+            ACTION_RETURNED,
+            ACTION_NOT_FOUND,
+        }
+        and not settings.order_fulfillment_lost_orders_enabled
+    ):
+        return PickupActionDecision(False, None, None, "lost_orders_disabled")
+
+    if action == ACTION_FOUND_EXPECTED:
+        if stage != fulfillment.CRM_STAGE_PICKUP_WAITING:
+            return PickupActionDecision(False, None, None, "lost_order_stage_not_allowed")
+        if case is None or case.pickup_point_warehouse_id is None:
+            return PickupActionDecision(False, None, None, "lost_order_point_missing")
+        return PickupActionDecision(
+            True,
+            None,
+            fulfillment.EVENT_PICKUP_STORED,
+            "lost_order_found_expected_point",
+        )
+
+    if action == ACTION_FOUND_OTHER:
+        if confirmation_step != 2:
+            return PickupActionDecision(False, None, None, "second_confirmation_required")
+        if stage != fulfillment.CRM_STAGE_PICKUP_WAITING:
+            return PickupActionDecision(False, None, None, "lost_order_stage_not_allowed")
+        if candidate.pickup_point_warehouse_id is None:
+            return PickupActionDecision(False, None, None, "lost_order_target_missing")
+        if (
+            case is not None
+            and case.pickup_point_warehouse_id == candidate.pickup_point_warehouse_id
+        ):
+            return PickupActionDecision(False, None, None, "lost_order_target_same")
+        return PickupActionDecision(
+            True,
+            None,
+            fulfillment.EVENT_PICKUP_REDIRECTED,
+            "lost_order_found_other_point",
+        )
+
+    if action == ACTION_NOT_FOUND:
+        if stage != fulfillment.CRM_STAGE_PICKUP_WAITING:
+            return PickupActionDecision(False, None, None, "lost_order_stage_not_allowed")
+        if case is None or case.pickup_point_warehouse_id is None:
+            return PickupActionDecision(False, None, None, "lost_order_point_missing")
+        return PickupActionDecision(
+            True,
+            None,
+            fulfillment.EVENT_PICKUP_EXCEPTION,
+            "lost_order_search_required",
+            create_task="lost_search",
+        )
+
+    if action == ACTION_RETURNED:
+        if confirmation_step != 2:
+            return PickupActionDecision(False, None, None, "second_confirmation_required")
+        if stage not in {fulfillment.CRM_STAGE_PICKUP_WAITING, "DISMANTLING"}:
+            return PickupActionDecision(False, None, None, "lost_order_stage_not_allowed")
+        if not onec.return_confirmed:
+            return PickupActionDecision(False, None, None, "return_not_confirmed")
+        if onec.payment_confirmed or onec.issued_confirmed:
+            return PickupActionDecision(False, None, None, "return_payment_conflict")
+        return PickupActionDecision(
+            True,
+            "LOSE",
+            fulfillment.EVENT_PICKUP_DISMANTLED,
+            "pickup_return_confirmed",
+        )
+
+    if action == ACTION_MOVING:
+        if stage not in {
+            "PREPARATION",
+            "EXECUTING",
+            "FINAL_INVOICE",
+            fulfillment.CRM_STAGE_PICKUP_WAITING,
+        }:
+            return PickupActionDecision(False, None, None, "arrival_transition_not_allowed")
+        if candidate.pickup_point_warehouse_id is None:
+            return PickupActionDecision(False, None, None, "pickup_point_unresolved")
+        if not onec.assembled:
+            return PickupActionDecision(False, None, None, "assembly_not_confirmed")
+        if stage == fulfillment.CRM_STAGE_PICKUP_WAITING:
+            return PickupActionDecision(
+                True,
+                None,
+                fulfillment.EVENT_PICKUP_REDIRECTED,
+                "pickup_redirected_confirmed",
+            )
+        return PickupActionDecision(
+            True,
+            "FINAL_INVOICE",
+            fulfillment.EVENT_PICKUP_MOVING,
+            "pickup_moving_confirmed",
+        )
 
     if action == ACTION_ARRIVED:
         if stage not in ALLOWED_ARRIVAL_STAGES:
@@ -715,9 +1154,9 @@ def decide_pickup_action(
             return PickupActionDecision(False, None, None, "unclaimed_transition_not_allowed")
         due = bool(
             case is not None
-            and case.storage_started_at is not None
+            and case.sla_started_at is not None
             and now
-            >= case.storage_started_at
+            >= case.sla_started_at
             + timedelta(hours=settings.order_fulfillment_bot_call_after_hours)
         )
         return PickupActionDecision(
@@ -728,13 +1167,17 @@ def decide_pickup_action(
             create_task="call" if due else None,
         )
 
+    if not settings.order_fulfillment_pickup_sla_enabled:
+        return PickupActionDecision(False, None, None, "pickup_sla_disabled")
     if confirmation_step != 2:
         return PickupActionDecision(False, None, None, "second_confirmation_required")
     if stage != fulfillment.CRM_STAGE_PICKUP_WAITING:
         return PickupActionDecision(False, None, None, "dismantle_transition_not_allowed")
-    if case is None or case.storage_started_at is None:
-        return PickupActionDecision(False, None, None, "storage_start_missing")
-    if now < case.storage_started_at + timedelta(
+    if case is None or case.sla_started_at is None:
+        return PickupActionDecision(False, None, None, "sla_start_missing")
+    if case.hold_until is not None and case.hold_until > _moscow_date(now):
+        return PickupActionDecision(False, None, None, "dismantle_too_early")
+    if now < case.sla_started_at + timedelta(
         hours=settings.order_fulfillment_bot_dismantle_after_hours
     ):
         return PickupActionDecision(False, None, None, "dismantle_too_early")
@@ -864,6 +1307,7 @@ def process_outbox(
         .where(dependency.id == SiteOrderFulfillmentOutbox.depends_on_id)
         .scalar_subquery()
     )
+    deferred_row_ids: set[int] = set()
     for _ in range(limit):
         pending_query = (
             select(SiteOrderFulfillmentOutbox)
@@ -879,6 +1323,10 @@ def process_outbox(
             .with_for_update(skip_locked=True)
             .limit(1)
         )
+        if deferred_row_ids:
+            pending_query = pending_query.where(
+                SiteOrderFulfillmentOutbox.id.notin_(deferred_row_ids)
+            )
         if not _runtime_apply_enabled(settings, apply_enabled_probe):
             pending_query = pending_query.where(
                 SiteOrderFulfillmentOutbox.operation.notin_(APPLY_GATED_OUTBOX_OPERATIONS)
@@ -948,6 +1396,7 @@ def process_outbox(
             row.available_at = original_available_at
             row.last_error = original_last_error
             row.updated_at = original_updated_at
+            deferred_row_ids.add(row_id)
             stats["selected"] -= 1
         except Exception as exc:  # durable boundary: persist a safe retry state
             session.rollback()
@@ -955,7 +1404,16 @@ def process_outbox(
             if row is None:
                 raise RuntimeError(f"outbox_row_disappeared:{row_id}") from exc
             error = fulfillment._safe_error_reason(str(exc))[:1000]
-            if isinstance(exc, SmsMarkerNotConfirmed):
+            if isinstance(exc, SourceMessageEditedBeforeApply):
+                _finish_outbox(row, status=OUTBOX_FAILED, error=error, now=now)
+                _mark_candidate_manual_review(
+                    session,
+                    row=row,
+                    reason=error,
+                    now=now,
+                )
+                stats["failed"] += 1
+            elif isinstance(exc, SmsMarkerNotConfirmed):
                 _finish_outbox(row, status=OUTBOX_FAILED, error=error, now=now)
                 _mark_candidate_manual_review(
                     session,
@@ -1058,8 +1516,94 @@ def _dispatch_outbox(
         raise ApplyDisabledBeforeSideEffect("order_fulfillment_bot_apply_disabled")
     candidate = _outbox_candidate(session, row)
     action = session.get(BitrixChatAction, row.action_id) if row.action_id else None
+    if (
+        candidate is not None
+        and candidate.raw_message is not None
+        and candidate.raw_message.parse_status == "edited_manual_review"
+        and row.operation
+        in {OP_UPDATE_CRM_STAGE, OP_UPDATE_CRM_FIELDS, OP_START_SMS_WORKFLOW, OP_CREATE_TASK}
+    ):
+        raise SourceMessageEditedBeforeApply("source_message_edited_before_apply")
+    if row.operation in {
+        OP_UPDATE_CRM_STAGE,
+        OP_UPDATE_CRM_FIELDS,
+        OP_FINALIZE_ACTION,
+        OP_FINALIZE_CASE_EVENT,
+    }:
+        _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
+    if row.operation in {
+        OP_PUBLISH_INVENTORY_CLARIFICATION,
+        OP_PROCESS_INVENTORY_CLARIFICATION,
+        OP_UPDATE_INVENTORY_CLARIFICATION,
+    }:
+        _require_inventory_enabled(settings, apply_enabled_probe)
+    if (
+        candidate is not None
+        and candidate.source_chat_id == settings.order_fulfillment_pickup_exception_chat_dialog_id
+        and row.operation != OP_UPDATE_CARD
+    ):
+        _require_lost_orders_enabled(settings, apply_enabled_probe)
+    feature_guard = fulfillment._clean_string((row.payload or {}).get("feature_guard"))
+    if feature_guard == "inventory_won":
+        _require_inventory_won_enabled(settings, apply_enabled_probe)
+        _require_inventory_won_evidence_current(
+            session,
+            row=row,
+            client=client,
+            onec_validator=onec_validator,
+            validate_composite=row.operation == OP_UPDATE_CRM_STAGE,
+        )
+    elif feature_guard == "historical_reconciliation":
+        _require_historical_evidence_current(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            onec_validator=onec_validator,
+        )
+    if row.operation == OP_START_SMS_WORKFLOW:
+        _require_sms_enabled(settings, apply_enabled_probe)
+    if row.operation == OP_CREATE_TASK:
+        task_kind = fulfillment._clean_string((row.payload or {}).get("task_kind"))
+        if task_kind in {
+            "notify_client",
+            "call",
+            "hold_call",
+            "dismantle_review",
+            "dismantle",
+        }:
+            _require_sla_enabled(settings, apply_enabled_probe)
+        elif task_kind == "lost_search":
+            _require_lost_orders_enabled(settings, apply_enabled_probe)
+        else:
+            _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
     if row.operation == OP_PUBLISH_CARD:
         _publish_card(candidate, client=client, settings=settings, now=now)
+        return
+    if row.operation == OP_PUBLISH_INVENTORY_CLARIFICATION:
+        _publish_inventory_clarification(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+        )
+        return
+    if row.operation == OP_PROCESS_INVENTORY_CLARIFICATION:
+        _process_inventory_clarification(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            now=now,
+        )
+        return
+    if row.operation == OP_UPDATE_INVENTORY_CLARIFICATION:
+        _update_inventory_clarification(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+        )
         return
     if row.operation == OP_PROCESS_ACTION:
         if candidate is None or action is None:
@@ -1078,7 +1622,13 @@ def _dispatch_outbox(
     if row.operation == OP_PUBLISH_CONFIRMATION:
         if candidate is None or action is None:
             raise RuntimeError("confirmation_candidate_missing")
-        _publish_confirmation(candidate, action=action, client=client, settings=settings)
+        _publish_confirmation(
+            session,
+            candidate,
+            action=action,
+            client=client,
+            settings=settings,
+        )
         return
     if row.operation == OP_UPDATE_CARD:
         if candidate is None:
@@ -1093,6 +1643,14 @@ def _dispatch_outbox(
             settings=settings,
             apply_enabled_probe=apply_enabled_probe,
             now=now,
+        )
+        return
+    if row.operation == OP_UPDATE_CRM_FIELDS:
+        _update_crm_fields(
+            row=row,
+            client=client,
+            settings=settings,
+            apply_enabled_probe=apply_enabled_probe,
         )
         return
     if row.operation == OP_FINALIZE_ACTION:
@@ -1126,11 +1684,15 @@ def _dispatch_outbox(
         return
     if row.operation == OP_CREATE_TASK:
         _create_task(
+            session=session,
             row=row,
             client=client,
             settings=settings,
             apply_enabled_probe=apply_enabled_probe,
         )
+        return
+    if row.operation == OP_FINALIZE_CASE_EVENT:
+        _finalize_case_event(session, row=row, now=now)
         return
     raise RuntimeError(f"unsupported_outbox_operation:{row.operation}")
 
@@ -1197,6 +1759,369 @@ def _publish_card(
     )
 
 
+def _publish_inventory_clarification(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+) -> None:
+    submission = _outbox_inventory_submission(session, row)
+    if submission is None or submission.source_message is None:
+        raise RuntimeError("inventory_submission_missing")
+    _require_bot_card_configuration(settings)
+    state = _inventory_clarification_state(submission)
+    existing_bot_message_id = fulfillment._clean_string(state.get("bot_message_id"))
+    if existing_bot_message_id:
+        return
+    bot_message_id = client.add_bot_message(
+        dialog_id=submission.source_message.dialog_id,
+        bot_id=int(settings.order_fulfillment_bot_id or 0),
+        message=_inventory_clarification_text(submission),
+        keyboard=_inventory_clarification_keyboard(
+            session,
+            submission=submission,
+            settings=settings,
+        ),
+    )
+    _set_inventory_clarification_state(
+        submission,
+        {**state, "bot_message_id": bot_message_id},
+    )
+
+
+def _process_inventory_clarification(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    now: datetime,
+) -> None:
+    submission = _outbox_inventory_submission(session, row)
+    if submission is None or submission.source_message is None:
+        raise RuntimeError("inventory_submission_missing")
+    state = _inventory_clarification_state(submission)
+    payload = row.payload or {}
+    if submission.status != pickup_inventory.STATUS_MANUAL_REVIEW or state.get("status") != "open":
+        return
+    if payload.get("nonce") != state.get("nonce"):
+        raise RuntimeError("inventory_clarification_nonce_changed")
+    if state.get("source_text_hash") != submission.source_message.raw_text_hash:
+        submission.status = pickup_inventory.STATUS_MANUAL_REVIEW
+        _set_inventory_clarification_state(
+            submission,
+            {**state, "status": "conflict", "reason": "source_message_edited"},
+        )
+        _enqueue_inventory_card_update(
+            session,
+            submission=submission,
+            depends_on=row,
+            status_text="Сообщение изменено — отправьте исправленный список заново",
+            now=now,
+        )
+        return
+    actor_id = fulfillment._clean_string(payload.get("actor_id"))
+    participants = client.list_dialog_user_ids(submission.source_message.dialog_id)
+    excluded = {str(value) for value in settings.order_fulfillment_bot_excluded_user_ids}
+    if not actor_id or actor_id not in participants or actor_id in excluded:
+        raise RuntimeError("actor_not_active_chat_participant")
+    action = fulfillment._clean_string(payload.get("action"))
+    if action == INVENTORY_ACTION_ERROR:
+        submission.status = "dismissed"
+        _set_inventory_clarification_state(
+            submission,
+            {**state, "status": "dismissed", "actor_id": actor_id},
+        )
+        _enqueue_inventory_card_update(
+            session,
+            submission=submission,
+            depends_on=row,
+            status_text="Сообщение отмечено как ошибочное; состояние точки не изменено",
+            now=now,
+        )
+        return
+    if action == INVENTORY_ACTION_SELECT_POINT:
+        external_id = fulfillment._clean_string(payload.get("warehouse_external_id"))
+        warehouse = session.scalar(
+            select(LogisticsWarehouse).where(
+                LogisticsWarehouse.external_id == external_id,
+                LogisticsWarehouse.is_active.is_(True),
+            )
+        )
+        if warehouse is None:
+            raise RuntimeError("inventory_warehouse_not_available")
+        selected = pickup_inventory.create_point_selected_submission(
+            session,
+            submission=submission,
+            warehouse_id=warehouse.id,
+            actor_id=actor_id,
+            now=now,
+        )
+        _set_inventory_clarification_state(
+            submission,
+            {**state, "status": "superseded", "actor_id": actor_id},
+        )
+        _set_inventory_clarification_state(
+            selected,
+            {
+                "nonce": secrets.token_hex(16),
+                "expires_at": state.get("expires_at"),
+                "status": "open",
+                "source_text_hash": submission.source_message.raw_text_hash,
+                "bot_message_id": state.get("bot_message_id"),
+            },
+        )
+        _enqueue_inventory_card_update(
+            session,
+            submission=selected,
+            depends_on=row,
+            status_text="Точка выбрана; теперь уточните смысл сообщения",
+            now=now,
+        )
+        return
+    mode_by_action = {
+        INVENTORY_ACTION_FULL: pickup_inventory.MODE_FULL,
+        INVENTORY_ACTION_CARRY: pickup_inventory.MODE_CARRY,
+        INVENTORY_ACTION_ZERO: pickup_inventory.MODE_ZERO,
+    }
+    mode = mode_by_action.get(action)
+    if mode is None or submission.warehouse_id is None:
+        raise RuntimeError("inventory_clarification_action_invalid")
+    try:
+        confirmed = pickup_inventory.create_clarified_submission(
+            session,
+            submission=submission,
+            warehouse_id=submission.warehouse_id,
+            mode=mode,
+            actor_id=actor_id,
+            now=now,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        status_text = (
+            "Номер заказа неоднозначен — отправьте исправленный полный список"
+            if reason == "inventory_order_numbers_ambiguous"
+            else "Нет предыдущего подтверждённого списка этой точки"
+        )
+        _enqueue_inventory_card_update(
+            session,
+            submission=submission,
+            depends_on=row,
+            status_text=status_text,
+            now=now,
+        )
+        return
+    _set_inventory_clarification_state(
+        submission,
+        {**state, "status": "superseded", "actor_id": actor_id},
+    )
+    _set_inventory_clarification_state(
+        confirmed,
+        {
+            "status": "completed",
+            "actor_id": actor_id,
+            "bot_message_id": state.get("bot_message_id"),
+        },
+    )
+    _enqueue_inventory_card_update(
+        session,
+        submission=confirmed,
+        depends_on=row,
+        status_text="Состояние точки подтверждено",
+        now=now,
+    )
+
+
+def _update_inventory_clarification(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+) -> None:
+    submission = _outbox_inventory_submission(session, row)
+    if submission is None:
+        raise RuntimeError("inventory_submission_missing")
+    _require_bot_card_configuration(settings)
+    state = _inventory_clarification_state(submission)
+    bot_message_id = fulfillment._clean_string(state.get("bot_message_id"))
+    if not bot_message_id:
+        raise RuntimeError("inventory_bot_message_missing")
+    is_open = (
+        submission.status == pickup_inventory.STATUS_MANUAL_REVIEW and state.get("status") == "open"
+    )
+    client.update_bot_message(
+        message_id=bot_message_id,
+        bot_id=int(settings.order_fulfillment_bot_id or 0),
+        message=_inventory_clarification_text(
+            submission,
+            status_text=fulfillment._clean_string((row.payload or {}).get("status_text")),
+        ),
+        keyboard=(
+            _inventory_clarification_keyboard(
+                session,
+                submission=submission,
+                settings=settings,
+            )
+            if is_open
+            else []
+        ),
+    )
+
+
+def _inventory_clarification_text(
+    submission: PickupInventorySubmission,
+    *,
+    status_text: str | None = None,
+) -> str:
+    warehouse = submission.warehouse.name if submission.warehouse is not None else "не определена"
+    lines = [
+        "Уточнение инвентаризации",
+        f"Точка: {warehouse}",
+        f"Распознано заказов: {len(submission.items)}",
+    ]
+    if status_text:
+        lines.append(status_text)
+    elif submission.warehouse_id is None:
+        lines.append("Сначала выберите точку")
+    else:
+        lines.append("Выберите смысл сообщения")
+    return "\n".join(lines)
+
+
+def _inventory_clarification_keyboard(
+    session: Session,
+    *,
+    submission: PickupInventorySubmission,
+    settings: Settings,
+) -> list[dict[str, Any]]:
+    secret = settings.order_fulfillment_bot_callback_secret
+    if not secret:
+        return []
+    buttons: list[dict[str, Any]] = []
+    if submission.warehouse_id is None:
+        warehouses = session.scalars(
+            select(LogisticsWarehouse)
+            .where(
+                LogisticsWarehouse.is_active.is_(True),
+                LogisticsWarehouse.kind.in_(["store", "retail"]),
+            )
+            .order_by(LogisticsWarehouse.name.asc(), LogisticsWarehouse.id.asc())
+        ).all()
+        buttons.extend(
+            {
+                "TEXT": warehouse.name,
+                "COMMAND": settings.order_fulfillment_bot_command,
+                "COMMAND_PARAMS": sign_inventory_callback_token(
+                    submission,
+                    action=INVENTORY_ACTION_SELECT_POINT,
+                    secret=secret,
+                    warehouse_external_id=warehouse.external_id,
+                ),
+                "BG_COLOR": "#2F80ED",
+                "BLOCK": "Y",
+            }
+            for warehouse in warehouses
+        )
+    else:
+        for action, label, color in (
+            (INVENTORY_ACTION_FULL, "Полный список", "#2FC6F6"),
+            (INVENTORY_ACTION_CARRY, "Всё актуально", "#2F80ED"),
+            (INVENTORY_ACTION_ZERO, "Нулевой остаток", "#9DCF00"),
+        ):
+            buttons.append(
+                {
+                    "TEXT": label,
+                    "COMMAND": settings.order_fulfillment_bot_command,
+                    "COMMAND_PARAMS": sign_inventory_callback_token(
+                        submission,
+                        action=action,
+                        secret=secret,
+                    ),
+                    "BG_COLOR": color,
+                    "BLOCK": "Y",
+                }
+            )
+    buttons.append(
+        {
+            "TEXT": "Ошибка",
+            "COMMAND": settings.order_fulfillment_bot_command,
+            "COMMAND_PARAMS": sign_inventory_callback_token(
+                submission,
+                action=INVENTORY_ACTION_ERROR,
+                secret=secret,
+            ),
+            "BG_COLOR": "#A6A6A6",
+            "BLOCK": "Y",
+        }
+    )
+    return buttons
+
+
+def _require_bot_card_configuration(settings: Settings) -> None:
+    if settings.order_fulfillment_bot_id is None:
+        raise RetryableBeforeExternalEffect("bot_id_not_configured")
+    if not fulfillment._clean_string(settings.order_fulfillment_bot_client_id):
+        raise RetryableBeforeExternalEffect("bot_client_id_not_configured")
+    if not fulfillment._clean_string(settings.order_fulfillment_bot_callback_secret):
+        raise RetryableBeforeExternalEffect("callback_secret_not_configured")
+    if settings.order_fulfillment_bot_command_id is None:
+        raise RetryableBeforeExternalEffect("bot_command_id_not_configured")
+    if not fulfillment._clean_string(settings.order_fulfillment_bot_command):
+        raise RetryableBeforeExternalEffect("bot_command_not_configured")
+    if not fulfillment._clean_string(settings.order_fulfillment_bot_application_token):
+        raise RetryableBeforeExternalEffect("application_token_not_configured")
+    if not settings.order_fulfillment_bot_allowed_domains:
+        raise RetryableBeforeExternalEffect("allowed_domains_not_configured")
+    if not settings.order_fulfillment_bot_allowed_member_ids:
+        raise RetryableBeforeExternalEffect("allowed_member_ids_not_configured")
+
+
+def _outbox_inventory_submission(
+    session: Session,
+    row: SiteOrderFulfillmentOutbox,
+) -> PickupInventorySubmission | None:
+    if row.target_type != "inventory_submission":
+        return None
+    submission_id = fulfillment._int_or_none(row.target_id)
+    return session.get(PickupInventorySubmission, submission_id) if submission_id else None
+
+
+def _inventory_clarification_state(
+    submission: PickupInventorySubmission,
+) -> dict[str, Any]:
+    value = (submission.payload or {}).get("clarification")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _set_inventory_clarification_state(
+    submission: PickupInventorySubmission,
+    state: dict[str, Any],
+) -> None:
+    submission.payload = {**(submission.payload or {}), "clarification": state}
+
+
+def _enqueue_inventory_card_update(
+    session: Session,
+    *,
+    submission: PickupInventorySubmission,
+    depends_on: SiteOrderFulfillmentOutbox,
+    status_text: str,
+    now: datetime,
+) -> None:
+    enqueue_outbox(
+        session,
+        depends_on=depends_on,
+        operation=OP_UPDATE_INVENTORY_CLARIFICATION,
+        idempotency_key=f"{depends_on.idempotency_key}:card-update:{submission.id}",
+        target_type="inventory_submission",
+        target_id=str(submission.id),
+        payload={"status_text": status_text},
+        now=now,
+    )
+
+
 def _process_action(
     session: Session,
     *,
@@ -1211,6 +2136,27 @@ def _process_action(
     if candidate.active_action != action.action or candidate.active_actor_id != action.actor_id:
         action.status = "rejected"
         action.reason = "stale_action_claim"
+        return
+    if (
+        candidate.raw_message is not None
+        and candidate.raw_message.parse_status == "edited_manual_review"
+    ):
+        action.status = "manual_review"
+        action.reason = "source_message_edited"
+        candidate.status = CANDIDATE_REVIEW
+        candidate.updated_at = now
+        _reject_pending_confirmation(
+            session,
+            candidate=candidate,
+            reason=action.reason,
+        )
+        _queue_card_update(
+            session,
+            candidate,
+            action,
+            "Сообщение изменено — нужна ручная проверка",
+            now,
+        )
         return
     if candidate.expires_at <= now:
         candidate.status = CANDIDATE_EXPIRED
@@ -1346,6 +2292,35 @@ def _process_action(
             SiteOrderExecutionCase.site_order_number == candidate.site_order_number
         )
     )
+    if action.action == ACTION_FOUND_OTHER:
+        target_warehouse_id = _action_target_warehouse_id(action)
+        warehouse = _selectable_lost_order_warehouse(
+            session,
+            warehouse_id=target_warehouse_id,
+            settings=settings,
+        )
+        if warehouse is None:
+            action.status = "manual_review"
+            action.reason = "lost_order_target_invalid"
+            candidate.status = CANDIDATE_REVIEW
+            candidate.updated_at = now
+            _queue_card_update(
+                session,
+                candidate,
+                action,
+                "Нужна ручная проверка: выбранная точка недоступна",
+                now,
+            )
+            return
+        candidate.payload = {
+            **(candidate.payload or {}),
+            "previous_pickup_point_warehouse_id": (
+                case.pickup_point_warehouse_id if case is not None else None
+            ),
+            "target_pickup_point_warehouse_id": warehouse.id,
+        }
+        candidate.pickup_point_warehouse_id = warehouse.id
+        candidate.pickup_point_name = warehouse.name
     decision = decide_pickup_action(
         action=action.action,
         confirmation_step=action.confirmation_step,
@@ -1371,7 +2346,11 @@ def _process_action(
             now,
         )
         return
-    if candidate.dry_run or not _runtime_apply_enabled(settings, apply_enabled_probe):
+    if (
+        candidate.dry_run
+        or not settings.order_fulfillment_pickup_stage_apply_enabled
+        or not _runtime_apply_enabled(settings, apply_enabled_probe)
+    ):
         action.status = "dry_run"
         candidate.status = CANDIDATE_DRY_RUN
         candidate.updated_at = now
@@ -1416,7 +2395,34 @@ def _process_action(
         payload={
             "event_type": decision.event_type,
             "event_at": now.isoformat(),
+            "current_crm_stage": decision.target_stage or deal.stage_id,
+            "warehouse_id": _decision_warehouse_id(
+                candidate=candidate,
+                case=case,
+                action=action.action,
+            ),
             "dismantle_after_hours": settings.order_fulfillment_bot_dismantle_after_hours,
+        },
+        now=now,
+    )
+    crm_fields: dict[str, Any] = {
+        CRM_PICKUP_DERIVED_STATUS_FIELD: decision.event_type or "",
+        CRM_PICKUP_LAST_EVIDENCE_FIELD: decision.reason,
+    }
+    if action.action == ACTION_ARRIVED:
+        crm_fields[CRM_PICKUP_STORAGE_STARTED_FIELD] = crm_datetime_iso(now)
+    dependency = enqueue_outbox(
+        session,
+        candidate=candidate,
+        action=action,
+        depends_on=dependency,
+        operation=OP_UPDATE_CRM_FIELDS,
+        idempotency_key=f"action:{action.id}:crm-fields:{decision.event_type or 'none'}",
+        target_type="deal",
+        target_id=str(deal.deal_id),
+        payload={
+            "site_order_number": candidate.site_order_number,
+            "fields": crm_fields,
         },
         now=now,
     )
@@ -1425,33 +2431,31 @@ def _process_action(
         and settings.order_fulfillment_bot_sms_enabled
         and _sms_candidate_is_new(candidate, settings=settings)
     ):
-        _acquire_advisory_xact_lock(session, SMS_PILOT_ADVISORY_LOCK_KEY)
-        if _sms_pilot_has_capacity(session, settings=settings):
-            sms_start = enqueue_outbox(
-                session,
-                candidate=candidate,
-                action=action,
-                depends_on=dependency,
-                operation=OP_START_SMS_WORKFLOW,
-                idempotency_key=f"deal:{deal.deal_id}:pickup-ready-sms",
-                target_type="deal",
-                target_id=str(deal.deal_id),
-                payload={"site_order_number": candidate.site_order_number},
-                now=now,
-            )
-            dependency = enqueue_outbox(
-                session,
-                candidate=candidate,
-                action=action,
-                depends_on=sms_start,
-                operation=OP_VERIFY_SMS_WORKFLOW,
-                idempotency_key=f"deal:{deal.deal_id}:pickup-ready-sms-verify",
-                target_type="deal",
-                target_id=str(deal.deal_id),
-                payload={"site_order_number": candidate.site_order_number},
-                available_at=now + timedelta(minutes=2),
-                now=now,
-            )
+        sms_start = enqueue_outbox(
+            session,
+            candidate=candidate,
+            action=action,
+            depends_on=dependency,
+            operation=OP_START_SMS_WORKFLOW,
+            idempotency_key=f"deal:{deal.deal_id}:pickup-ready-sms",
+            target_type="deal",
+            target_id=str(deal.deal_id),
+            payload={"site_order_number": candidate.site_order_number},
+            now=now,
+        )
+        dependency = enqueue_outbox(
+            session,
+            candidate=candidate,
+            action=action,
+            depends_on=sms_start,
+            operation=OP_VERIFY_SMS_WORKFLOW,
+            idempotency_key=f"deal:{deal.deal_id}:pickup-ready-sms-verify",
+            target_type="deal",
+            target_id=str(deal.deal_id),
+            payload={"site_order_number": candidate.site_order_number},
+            available_at=now + timedelta(minutes=2),
+            now=now,
+        )
     if decision.create_task:
         dependency = enqueue_outbox(
             session,
@@ -1480,6 +2484,7 @@ def _process_action(
 
 
 def _publish_confirmation(
+    session: Session,
     candidate: BitrixChatActionCandidate,
     *,
     action: BitrixChatAction,
@@ -1497,19 +2502,53 @@ def _publish_confirmation(
     secret = settings.order_fulfillment_bot_callback_secret
     if not secret:
         raise RuntimeError("callback_secret_not_configured")
-    keyboard = [
-        {
-            "TEXT": f"Подтвердить: {ACTION_LABELS[action.action]}",
-            "COMMAND": settings.order_fulfillment_bot_command,
-            "COMMAND_PARAMS": sign_callback_token(
-                candidate,
-                action=action.action,
-                step=2,
-                secret=secret,
-            ),
-            "BG_COLOR": "#E74C3C",
-            "BLOCK": "Y",
-        },
+    if action.action == ACTION_FOUND_OTHER:
+        warehouses = _selectable_lost_order_warehouses(session, settings=settings)
+        if not warehouses:
+            raise RuntimeError("lost_order_warehouse_routes_missing")
+        case = session.scalar(
+            select(SiteOrderExecutionCase).where(
+                SiteOrderExecutionCase.site_order_number == candidate.site_order_number
+            )
+        )
+        current_warehouse_id = case.pickup_point_warehouse_id if case is not None else None
+        keyboard = [
+            {
+                "TEXT": warehouse.name,
+                "COMMAND": settings.order_fulfillment_bot_command,
+                "COMMAND_PARAMS": sign_callback_token(
+                    candidate,
+                    action=action.action,
+                    step=2,
+                    secret=secret,
+                    target_warehouse_id=warehouse.id,
+                ),
+                "BG_COLOR": "#2F80ED",
+                "BLOCK": "Y",
+            }
+            for warehouse in warehouses
+            if warehouse.id != current_warehouse_id
+        ]
+        if not keyboard:
+            raise RuntimeError("lost_order_alternative_warehouse_missing")
+        status_text = "Выберите точку, на которой найден заказ"
+    else:
+        keyboard = [
+            {
+                "TEXT": f"Подтвердить: {ACTION_LABELS[action.action]}",
+                "COMMAND": settings.order_fulfillment_bot_command,
+                "COMMAND_PARAMS": sign_callback_token(
+                    candidate,
+                    action=action.action,
+                    step=2,
+                    secret=secret,
+                ),
+                "BG_COLOR": "#E74C3C",
+                "BLOCK": "Y",
+            }
+        ]
+        status_text = "Требуется второе подтверждение"
+    keyboard.append(
         {
             "TEXT": ACTION_LABELS[ACTION_CANCEL],
             "COMMAND": settings.order_fulfillment_bot_command,
@@ -1521,12 +2560,12 @@ def _publish_confirmation(
             ),
             "BG_COLOR": "#A6A6A6",
             "BLOCK": "Y",
-        },
-    ]
+        }
+    )
     client.update_bot_message(
         message_id=candidate.bot_message_id,
         bot_id=settings.order_fulfillment_bot_id,
-        message=card_text(candidate, status_text="Требуется второе подтверждение"),
+        message=card_text(candidate, status_text=status_text),
         keyboard=keyboard,
     )
 
@@ -1571,7 +2610,15 @@ def _finalize_action(
             source_ref=f"pickup_bot_action:{action.id}",
             confidence="strong",
             raw_message_id=candidate.raw_message_id,
-            payload={"candidate_id": candidate.id, "actor_id": action.actor_id},
+            warehouse_id=fulfillment._int_or_none(payload.get("warehouse_id")),
+            actor_ref=action.actor_id,
+            payload={
+                "candidate_id": candidate.id,
+                "actor_id": action.actor_id,
+                "previous_warehouse_id": (candidate.payload or {}).get(
+                    "previous_pickup_point_warehouse_id"
+                ),
+            },
         )
     case = session.scalar(
         select(SiteOrderExecutionCase).where(
@@ -1580,16 +2627,32 @@ def _finalize_action(
     )
     if case is None:
         raise RuntimeError("execution_case_missing")
+    current_crm_stage = fulfillment._clean_string(payload.get("current_crm_stage"))
+    if current_crm_stage:
+        case.current_crm_stage = current_crm_stage
     if action.action == ACTION_ARRIVED:
         if case.storage_started_at is None:
             case.storage_started_at = event_at
-            case.storage_deadline_at = event_at + timedelta(
-                hours=int(payload.get("dismantle_after_hours") or 96)
-            )
         if candidate.pickup_point_warehouse_id is not None:
             case.pickup_point_warehouse_id = candidate.pickup_point_warehouse_id
+    elif action.action == ACTION_MOVING:
+        if candidate.pickup_point_warehouse_id is not None:
+            case.pickup_point_warehouse_id = candidate.pickup_point_warehouse_id
+    elif action.action == ACTION_FOUND_EXPECTED:
+        case.current_derived_status = fulfillment.EVENT_PICKUP_STORED
+        case.confidence = "strong"
+    elif action.action == ACTION_FOUND_OTHER:
+        if candidate.pickup_point_warehouse_id is not None:
+            case.pickup_point_warehouse_id = candidate.pickup_point_warehouse_id
+        case.current_derived_status = fulfillment.EVENT_PICKUP_REDIRECTED
+        case.confidence = "strong"
     elif action.action == ACTION_ISSUED:
         case.delivered_at = event_at
+    elif action.action == ACTION_RETURNED:
+        case.cancelled_at = event_at
+    elif action.action == ACTION_NOT_FOUND:
+        case.current_derived_status = "manual_review"
+        case.confidence = "weak"
     case.updated_at = now
     action.status = "accepted"
 
@@ -1620,7 +2683,7 @@ def _apply_crm_stage(
     if order_number != str(payload.get("site_order_number") or ""):
         raise RuntimeError("deal_order_changed")
     live_stage = fulfillment._clean_string(live.stage_id)
-    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
     if live_stage != target_stage:
         if live_stage != fulfillment._clean_string(payload.get("before_stage")):
             raise RuntimeError(f"deal_stage_changed:{live_stage or '-'}")
@@ -1648,6 +2711,91 @@ def _apply_crm_stage(
         case.updated_at = now
 
 
+def _update_crm_fields(
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None = None,
+) -> None:
+    payload = row.payload or {}
+    deal_id = int(row.target_id or 0)
+    order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    fields = payload.get("fields") or {}
+    if deal_id <= 0 or not order_number or not isinstance(fields, dict) or not fields:
+        raise RuntimeError("invalid_crm_fields_outbox_payload")
+    try:
+        live = client.get_deal_by_id(deal_id)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if live is None:
+        raise RuntimeError("deal_not_found")
+    live_order_number = fulfillment._clean_string(
+        (live.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+    )
+    if live_order_number != order_number:
+        raise RuntimeError("deal_order_changed")
+    _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
+    changed = {
+        key: value
+        for key, value in fields.items()
+        if not _crm_field_values_equal(
+            key,
+            (live.raw or {}).get(key),
+            value,
+        )
+    }
+    if changed:
+        client.update_deal_fields(deal_id, changed)
+        readback = client.get_deal_by_id(deal_id)
+        if readback is None:
+            raise RuntimeError("deal_fields_readback_unavailable")
+        for key, expected in changed.items():
+            if not _crm_field_values_equal(
+                key,
+                (readback.raw or {}).get(key),
+                expected,
+            ):
+                raise RuntimeError(f"deal_field_update_not_confirmed:{key}")
+
+
+def _finalize_case_event(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    now: datetime,
+) -> None:
+    payload = row.payload or {}
+    order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    event_type = fulfillment._clean_string(payload.get("event_type"))
+    if not order_number or not event_type:
+        raise RuntimeError("invalid_finalize_case_event_payload")
+    event_at = _parse_naive_datetime(payload.get("event_at")) or now
+    event = fulfillment.upsert_execution_event(
+        session,
+        site_order_number=order_number,
+        event_type=event_type,
+        event_at=event_at,
+        source=fulfillment._clean_string(payload.get("source")) or "system",
+        source_ref=fulfillment._clean_string(payload.get("source_ref")) or row.idempotency_key,
+        confidence=fulfillment._clean_string(payload.get("confidence")) or "strong",
+        raw_message_id=None,
+        warehouse_id=fulfillment._int_or_none(payload.get("warehouse_id")),
+        actor_ref=fulfillment._clean_string(payload.get("actor_ref")) or None,
+        payload=payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {},
+    )
+    case = session.scalar(
+        select(SiteOrderExecutionCase).where(
+            SiteOrderExecutionCase.site_order_number == order_number
+        )
+    )
+    if case is not None and event_type == fulfillment.EVENT_PICKUP_RECEIVED:
+        case.delivered_at = event_at
+        case.updated_at = now
+    if event is None:
+        return
+
+
 def _start_sms_workflow(
     session: Session,
     *,
@@ -1656,24 +2804,12 @@ def _start_sms_workflow(
     settings: Settings,
     apply_enabled_probe: Callable[[], bool] | None = None,
 ) -> None:
-    if not settings.order_fulfillment_bot_sms_enabled:
-        raise RuntimeError("pickup_sms_disabled")
+    _require_sms_enabled(settings, apply_enabled_probe)
     if settings.order_fulfillment_bot_sms_workflow_template_id is None:
         raise RuntimeError("pickup_sms_workflow_not_configured")
     candidate = _outbox_candidate(session, row)
     if candidate is None or not _sms_candidate_is_new(candidate, settings=settings):
         raise RuntimeError("historical_pickup_sms_blocked")
-    active_count = int(
-        session.scalar(
-            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
-                SiteOrderFulfillmentOutbox.operation == OP_START_SMS_WORKFLOW,
-                SiteOrderFulfillmentOutbox.id != row.id,
-            )
-        )
-        or 0
-    )
-    if active_count >= settings.order_fulfillment_bot_sms_pilot_limit:
-        raise RuntimeError("pickup_sms_pilot_limit_reached")
     deal_id = int(row.target_id or 0)
     marker_field = fulfillment._clean_string(settings.order_fulfillment_bot_pickup_sms_field)
     if deal_id <= 0 or not marker_field:
@@ -1710,19 +2846,38 @@ def _start_sms_workflow(
 
 def _create_task(
     *,
+    session: Session,
     row: SiteOrderFulfillmentOutbox,
     client: fulfillment.BitrixChatClient,
     settings: Settings,
     apply_enabled_probe: Callable[[], bool] | None = None,
 ) -> None:
-    if settings.order_fulfillment_bot_task_responsible_id is None:
-        raise RuntimeError("task_responsible_not_configured")
     payload = row.payload or {}
     order_number = str(payload.get("site_order_number") or "")
     task_kind = str(payload.get("task_kind") or "")
     deal_id = int(row.target_id or 0)
-    if deal_id <= 0 or not order_number or task_kind not in {"call", "dismantle"}:
+    allowed_task_kinds = {
+        "notify_client",
+        "call",
+        "hold_call",
+        "dismantle_review",
+        "dismantle",
+        "onec_return",
+        "lost_search",
+    }
+    if deal_id <= 0 or not order_number or task_kind not in allowed_task_kinds:
         raise RuntimeError("invalid_task_outbox_payload")
+    case = session.scalar(
+        select(SiteOrderExecutionCase).where(
+            SiteOrderExecutionCase.site_order_number == order_number
+        )
+    )
+    responsible_id, accomplice_ids = _resolve_task_route(
+        session,
+        case=case,
+        task_kind=task_kind,
+        settings=settings,
+    )
     try:
         live = client.get_deal_by_id(deal_id)
     except Exception as exc:
@@ -1737,24 +2892,133 @@ def _create_task(
     expected_stage = fulfillment._clean_string(payload.get("expected_stage"))
     if expected_stage and fulfillment._clean_string(live.stage_id) != expected_stage:
         raise RuntimeError("deal_stage_changed_before_task")
-    title = (
-        f"Позвонить клиенту по самовывозу №{order_number}"
-        if task_kind == "call"
-        else f"Расформировать самовывоз №{order_number}"
-    )
+    titles = {
+        "notify_client": f"Проверить телефон и уведомить клиента по заказу №{order_number}",
+        "call": f"Позвонить клиенту по самовывозу №{order_number}",
+        "hold_call": f"Повторно связаться с клиентом по самовывозу №{order_number}",
+        "dismantle_review": f"Проверить самовывоз №{order_number} на расформирование",
+        "dismantle": f"Физически разобрать самовывоз №{order_number}",
+        "onec_return": f"Оформить возврат самовывоза №{order_number} в 1С",
+        "lost_search": f"Найти потерянный самовывоз №{order_number}",
+    }
+    title = titles[task_kind]
+    for user_id in [responsible_id, *accomplice_ids]:
+        user = client.get_user_by_id(user_id)
+        if user is None or str(user.get("ACTIVE") or "").upper() not in {"Y", "TRUE", "1"}:
+            raise RuntimeError(f"task_route_user_inactive:{user_id}")
     _require_runtime_apply_enabled(settings, apply_enabled_probe)
-    task_result = client.add_task(
-        {
-            "TITLE": title,
-            "RESPONSIBLE_ID": settings.order_fulfillment_bot_task_responsible_id,
-            "DESCRIPTION": "Создано подтверждённым сценарием самовывоза.",
-            "UF_CRM_TASK": [f"D_{row.target_id}"],
-        }
-    )
+    fields: dict[str, Any] = {
+        "TITLE": title,
+        "RESPONSIBLE_ID": responsible_id,
+        "DESCRIPTION": "Создано подтверждённым сценарием самовывоза.",
+        "UF_CRM_TASK": [f"D_{row.target_id}"],
+    }
+    if accomplice_ids:
+        fields["ACCOMPLICES"] = accomplice_ids
+    task_result = client.add_task(fields)
     task_id = _task_result_id(task_result)
     if task_id is None:
         raise RuntimeError("task_api_returned_unrecognized_result")
     row.payload = {**payload, "task_id": task_id}
+
+
+def _resolve_task_route(
+    session: Session,
+    *,
+    case: SiteOrderExecutionCase | None,
+    task_kind: str,
+    settings: Settings,
+) -> tuple[int, list[int]]:
+    if task_kind in {"notify_client", "call", "hold_call"}:
+        responsible = settings.order_fulfillment_internet_shop_task_responsible_id
+        if responsible is None:
+            raise RuntimeError("task_route_missing:internet_shop")
+        return responsible, []
+    if task_kind == "onec_return":
+        responsible = settings.order_fulfillment_site_return_task_responsible_id
+        if responsible is None:
+            raise RuntimeError("task_route_missing:site_return")
+        return responsible, []
+    if case is None or case.pickup_point_warehouse_id is None:
+        raise RuntimeError("task_route_missing:pickup_point")
+    warehouse = session.get(LogisticsWarehouse, case.pickup_point_warehouse_id)
+    if warehouse is None:
+        raise RuntimeError("task_route_missing:warehouse")
+    route = settings.order_fulfillment_point_task_routes.get(warehouse.external_id) or {}
+    if task_kind in {"dismantle_review", "lost_search"}:
+        senior = route.get("senior")
+        if senior is None:
+            raise RuntimeError(f"task_route_missing:{warehouse.external_id}:senior")
+        return senior, []
+    operator = route.get("operator")
+    senior = route.get("senior")
+    if operator is None:
+        raise RuntimeError(f"task_route_missing:{warehouse.external_id}:operator")
+    return operator, ([senior] if senior is not None and senior != operator else [])
+
+
+def _action_target_warehouse_id(action: BitrixChatAction) -> int | None:
+    return fulfillment._int_or_none((action.payload or {}).get("target_warehouse_id"))
+
+
+def _selectable_lost_order_warehouse(
+    session: Session,
+    *,
+    warehouse_id: int | None,
+    settings: Settings,
+) -> LogisticsWarehouse | None:
+    if warehouse_id is None:
+        return None
+    warehouse = session.get(LogisticsWarehouse, warehouse_id)
+    route = (
+        settings.order_fulfillment_point_task_routes.get(warehouse.external_id) or {}
+        if warehouse is not None
+        else {}
+    )
+    if (
+        warehouse is None
+        or not warehouse.is_active
+        or warehouse.kind not in {"store", "retail"}
+        or not fulfillment._int_or_none(route.get("operator"))
+        or not fulfillment._int_or_none(route.get("senior"))
+    ):
+        return None
+    return warehouse
+
+
+def _selectable_lost_order_warehouses(
+    session: Session,
+    *,
+    settings: Settings,
+) -> list[LogisticsWarehouse]:
+    external_ids = {
+        external_id
+        for external_id, route in settings.order_fulfillment_point_task_routes.items()
+        if fulfillment._int_or_none(route.get("operator"))
+        and fulfillment._int_or_none(route.get("senior"))
+    }
+    if not external_ids:
+        return []
+    return session.scalars(
+        select(LogisticsWarehouse)
+        .where(
+            LogisticsWarehouse.is_active.is_(True),
+            LogisticsWarehouse.kind.in_(["store", "retail"]),
+            LogisticsWarehouse.external_id.in_(external_ids),
+        )
+        .order_by(LogisticsWarehouse.name.asc(), LogisticsWarehouse.id.asc())
+    ).all()
+
+
+def _decision_warehouse_id(
+    *,
+    candidate: BitrixChatActionCandidate,
+    case: SiteOrderExecutionCase,
+    action: str,
+) -> int | None:
+    if action in {ACTION_MOVING, ACTION_ARRIVED, ACTION_FOUND_OTHER}:
+        return candidate.pickup_point_warehouse_id
+    return case.pickup_point_warehouse_id
 
 
 def _verify_sms_workflow(
@@ -1788,12 +3052,213 @@ def _verify_sms_workflow(
     if live_order_number != candidate.site_order_number:
         raise SmsMarkerNotConfirmed("pickup_sms_verification_order_changed")
     marker_field = fulfillment._clean_string(settings.order_fulfillment_bot_pickup_sms_field)
-    if marker_field and fulfillment._clean_string((live.raw or {}).get(marker_field)):
+    marker_value = (live.raw or {}).get(marker_field) if marker_field else None
+    if fulfillment._clean_string(marker_value):
+        notification_at = _naive_utc(fulfillment.parse_datetime(marker_value) or now)
+        case = session.scalar(
+            select(SiteOrderExecutionCase).where(
+                SiteOrderExecutionCase.site_order_number == candidate.site_order_number
+            )
+        )
+        if case is None or case.storage_started_at is None:
+            raise SmsMarkerNotConfirmed("pickup_sms_case_storage_missing")
+        if case.notification_confirmed_at is None:
+            case.notification_confirmed_at = notification_at
+        case.sla_started_at = max(case.storage_started_at, case.notification_confirmed_at)
+        case.storage_deadline_at = case.sla_started_at + timedelta(
+            hours=settings.order_fulfillment_bot_dismantle_after_hours
+        )
+        case.payload = {
+            **(case.payload or {}),
+            "notification_source": "sms_marker",
+        }
+        case.updated_at = now
+        fulfillment.upsert_execution_event(
+            session,
+            site_order_number=case.site_order_number,
+            event_type=fulfillment.EVENT_PICKUP_NOTIFICATION_CONFIRMED,
+            event_at=case.notification_confirmed_at,
+            source="bitrix",
+            source_ref=f"deal:{deal_id}:{marker_field}",
+            confidence="strong",
+            raw_message_id=candidate.raw_message_id,
+            payload={"marker_field": marker_field},
+        )
+        enqueue_outbox(
+            session,
+            candidate=candidate,
+            depends_on=row,
+            operation=OP_UPDATE_CRM_FIELDS,
+            idempotency_key=f"case:{case.id}:crm-fields:sla:{case.sla_started_at.isoformat()}",
+            target_type="deal",
+            target_id=str(deal_id),
+            payload={
+                "site_order_number": case.site_order_number,
+                "fields": {
+                    CRM_PICKUP_SLA_STARTED_FIELD: crm_datetime_iso(case.sla_started_at),
+                    CRM_PICKUP_DERIVED_STATUS_FIELD: fulfillment.EVENT_PICKUP_STORED,
+                    CRM_PICKUP_LAST_EVIDENCE_FIELD: "pickup_sms_marker_confirmed",
+                },
+            },
+            now=now,
+        )
         return
     started_at = start_row.processed_at or start_row.updated_at
     if now < started_at + timedelta(minutes=15):
         raise RetryableBeforeExternalEffect("pickup_sms_marker_pending")
     raise SmsMarkerNotConfirmed("pickup_sms_marker_not_confirmed")
+
+
+def reconcile_pickup_case_fields(
+    session: Session,
+    *,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    limit: int = 200,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    now = _naive_utc(now or utcnow())
+    stats = {
+        "checked": 0,
+        "notification_confirmed": 0,
+        "hold_changed": 0,
+        "invalid_hold": 0,
+        "errors": 0,
+    }
+    cases = session.scalars(
+        select(SiteOrderExecutionCase)
+        .where(
+            SiteOrderExecutionCase.current_crm_stage == fulfillment.CRM_STAGE_PICKUP_WAITING,
+            SiteOrderExecutionCase.bitrix_deal_id.is_not(None),
+        )
+        .order_by(SiteOrderExecutionCase.updated_at.desc())
+        .limit(max(1, min(limit, 1000)))
+    ).all()
+    for case in cases:
+        stats["checked"] += 1
+        try:
+            live = client.get_deal_by_id(int(case.bitrix_deal_id or 0))
+        except Exception:
+            stats["errors"] += 1
+            continue
+        if live is None:
+            stats["errors"] += 1
+            continue
+        live_order = fulfillment._clean_string(
+            (live.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        if live_order != case.site_order_number:
+            stats["errors"] += 1
+            continue
+        marker_field = fulfillment._clean_string(settings.order_fulfillment_bot_pickup_sms_field)
+        marker_value = (live.raw or {}).get(marker_field) if marker_field else None
+        marker_at = fulfillment.parse_datetime(marker_value)
+        if marker_at is not None and case.storage_started_at is not None:
+            marker_at = _naive_utc(marker_at)
+            if case.notification_confirmed_at != marker_at:
+                case.notification_confirmed_at = marker_at
+                case.sla_started_at = max(case.storage_started_at, marker_at)
+                case.storage_deadline_at = case.sla_started_at + timedelta(
+                    hours=settings.order_fulfillment_bot_dismantle_after_hours
+                )
+                case.payload = {
+                    **(case.payload or {}),
+                    "notification_source": "sms_marker",
+                }
+                fulfillment.upsert_execution_event(
+                    session,
+                    site_order_number=case.site_order_number,
+                    event_type=fulfillment.EVENT_PICKUP_NOTIFICATION_CONFIRMED,
+                    event_at=marker_at,
+                    source="bitrix",
+                    source_ref=f"deal:{case.bitrix_deal_id}:{marker_field}",
+                    confidence="strong",
+                    raw_message_id=None,
+                    payload={"marker_field": marker_field},
+                )
+                enqueue_outbox(
+                    session,
+                    operation=OP_UPDATE_CRM_FIELDS,
+                    idempotency_key=(f"case:{case.id}:marker:{marker_at.isoformat()}:crm-fields"),
+                    target_type="deal",
+                    target_id=str(case.bitrix_deal_id),
+                    payload={
+                        "site_order_number": case.site_order_number,
+                        "fields": {
+                            CRM_PICKUP_SLA_STARTED_FIELD: crm_datetime_iso(case.sla_started_at),
+                            CRM_PICKUP_DERIVED_STATUS_FIELD: fulfillment.EVENT_PICKUP_STORED,
+                            CRM_PICKUP_LAST_EVIDENCE_FIELD: "pickup_sms_marker_confirmed",
+                        },
+                    },
+                    now=now,
+                )
+                stats["notification_confirmed"] += 1
+        raw_hold = (live.raw or {}).get(CRM_PICKUP_HOLD_UNTIL_FIELD)
+        hold_value = _parse_hold_date(raw_hold)
+        if raw_hold and hold_value is None:
+            stats["invalid_hold"] += 1
+            case.current_derived_status = "manual_review"
+            case.confidence = "weak"
+        elif hold_value != case.hold_until:
+            previous = case.hold_until
+            case.hold_until = hold_value
+            hold_revision = int((case.payload or {}).get("hold_revision") or 0) + 1
+            case.payload = {**(case.payload or {}), "hold_revision": hold_revision}
+            fulfillment.upsert_execution_event(
+                session,
+                site_order_number=case.site_order_number,
+                event_type="pickup_hold_changed",
+                event_at=now,
+                source="bitrix",
+                source_ref=(
+                    f"deal:{case.bitrix_deal_id}:hold:"
+                    f"{previous.isoformat() if previous else '-'}:"
+                    f"{hold_value.isoformat() if hold_value else '-'}:{now.isoformat()}"
+                ),
+                confidence="strong",
+                raw_message_id=None,
+                payload={
+                    "previous": previous.isoformat() if previous else None,
+                    "current": hold_value.isoformat() if hold_value else None,
+                },
+            )
+            stats["hold_changed"] += 1
+        if case.hold_until is not None and case.hold_until < _moscow_date(now):
+            stats["invalid_hold"] += 1
+            case.current_derived_status = "manual_review"
+            case.confidence = "weak"
+        case.updated_at = now
+    session.commit()
+    return stats
+
+
+def _parse_hold_date(value: Any) -> date | None:
+    if value in (None, "", "0000-00-00"):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    cleaned = fulfillment._clean_string(value)
+    try:
+        return date.fromisoformat(cleaned[:10])
+    except ValueError:
+        return None
+
+
+def crm_datetime_iso(value: datetime) -> str:
+    """Serialize service UTC-naive datetimes with an explicit offset for Bitrix."""
+
+    return _aware_utc(value).isoformat()
+
+
+def _crm_field_values_equal(field_name: str, actual: Any, expected: Any) -> bool:
+    if field_name in CRM_PICKUP_DATETIME_FIELDS:
+        actual_dt = fulfillment.parse_datetime(actual)
+        expected_dt = fulfillment.parse_datetime(expected)
+        if actual_dt is not None and expected_dt is not None:
+            return _naive_utc(actual_dt) == _naive_utc(expected_dt)
+    return str(actual or "") == str(expected or "")
 
 
 def enqueue_due_sla_tasks(
@@ -1803,42 +3268,302 @@ def enqueue_due_sla_tasks(
     now: datetime | None = None,
 ) -> int:
     now = _naive_utc(now or utcnow())
+    if not settings.order_fulfillment_pickup_sla_enabled:
+        return 0
+    route_errors = task_route_configuration_errors(session, settings=settings)
+    if route_errors:
+        raise TaskRouteConfigurationError(";".join(route_errors))
     _acquire_advisory_xact_lock(session, SLA_TASK_ADVISORY_LOCK_KEY)
-    threshold = now - timedelta(hours=settings.order_fulfillment_bot_call_after_hours)
     cases = session.scalars(
         select(SiteOrderExecutionCase).where(
             SiteOrderExecutionCase.current_crm_stage == fulfillment.CRM_STAGE_PICKUP_WAITING,
             SiteOrderExecutionCase.storage_started_at.is_not(None),
-            SiteOrderExecutionCase.storage_started_at <= threshold,
             SiteOrderExecutionCase.delivered_at.is_(None),
             SiteOrderExecutionCase.bitrix_deal_id.is_not(None),
         )
     ).all()
     created = 0
     for case in cases:
-        key = f"case:{case.id}:task:call"
-        if session.scalar(
-            select(SiteOrderFulfillmentOutbox.id).where(
-                SiteOrderFulfillmentOutbox.idempotency_key == key
-            )
-        ):
+        if not _case_is_after_cutover(case, settings=settings):
             continue
-        enqueue_outbox(
-            session,
-            operation=OP_CREATE_TASK,
-            idempotency_key=key,
-            target_type="deal",
-            target_id=str(case.bitrix_deal_id),
-            payload={
-                "task_kind": "call",
-                "site_order_number": case.site_order_number,
-                "expected_stage": fulfillment.CRM_STAGE_PICKUP_WAITING,
-            },
-            now=now,
-        )
-        created += 1
+        if case.notification_confirmed_at is None or case.sla_started_at is None:
+            created += _enqueue_case_task_once(
+                session,
+                case=case,
+                task_kind="notify_client",
+                key=f"case:{case.id}:task:notify_client",
+                now=now,
+            )
+            continue
+        today_moscow = _moscow_date(now)
+        if case.hold_until is not None:
+            if case.hold_until <= today_moscow:
+                hold_revision = int((case.payload or {}).get("hold_revision") or 0)
+                created += _enqueue_case_task_once(
+                    session,
+                    case=case,
+                    task_kind="hold_call",
+                    key=(
+                        f"case:{case.id}:task:hold_call:{hold_revision}:"
+                        f"{case.hold_until.isoformat()}"
+                    ),
+                    now=now,
+                )
+            continue
+        if now >= case.sla_started_at + timedelta(
+            hours=settings.order_fulfillment_bot_call_after_hours
+        ):
+            created += _enqueue_case_task_once(
+                session,
+                case=case,
+                task_kind="call",
+                key=f"case:{case.id}:task:call:initial",
+                now=now,
+            )
+        if now >= case.sla_started_at + timedelta(
+            hours=settings.order_fulfillment_bot_dismantle_after_hours
+        ):
+            created_now = _enqueue_case_task_once(
+                session,
+                case=case,
+                task_kind="dismantle_review",
+                key=f"case:{case.id}:task:dismantle_review:initial",
+                now=now,
+            )
+            if created_now:
+                fulfillment.upsert_execution_event(
+                    session,
+                    site_order_number=case.site_order_number,
+                    event_type=fulfillment.EVENT_PICKUP_DISMANTLE_CANDIDATE,
+                    event_at=now,
+                    source="system",
+                    source_ref=f"case:{case.id}:sla:96",
+                    confidence="strong",
+                    raw_message_id=None,
+                    payload={"sla_started_at": case.sla_started_at.isoformat()},
+                )
+                created += 1
     session.commit()
     return created
+
+
+def task_route_configuration_errors(
+    session: Session,
+    *,
+    settings: Settings,
+) -> list[str]:
+    errors: list[str] = []
+    if settings.order_fulfillment_internet_shop_task_responsible_id is None:
+        errors.append("task_route_missing:internet_shop")
+    if settings.order_fulfillment_site_return_task_responsible_id is None:
+        errors.append("task_route_missing:site_return")
+    warehouses = session.scalars(
+        select(LogisticsWarehouse)
+        .where(
+            LogisticsWarehouse.is_active.is_(True),
+            LogisticsWarehouse.kind.in_(["store", "retail"]),
+        )
+        .order_by(LogisticsWarehouse.external_id.asc())
+    ).all()
+    if not warehouses:
+        errors.append("task_route_missing:pickup_warehouse_catalog")
+    for warehouse in warehouses:
+        route = settings.order_fulfillment_point_task_routes.get(warehouse.external_id) or {}
+        for role in ("operator", "senior"):
+            if not fulfillment._int_or_none(route.get(role)):
+                errors.append(f"task_route_missing:{warehouse.external_id}:{role}")
+    return errors
+
+
+def _enqueue_case_task_once(
+    session: Session,
+    *,
+    case: SiteOrderExecutionCase,
+    task_kind: str,
+    key: str,
+    now: datetime,
+) -> int:
+    if session.scalar(
+        select(SiteOrderFulfillmentOutbox.id).where(
+            SiteOrderFulfillmentOutbox.idempotency_key == key
+        )
+    ):
+        return 0
+    enqueue_outbox(
+        session,
+        operation=OP_CREATE_TASK,
+        idempotency_key=key,
+        target_type="deal",
+        target_id=str(case.bitrix_deal_id),
+        payload={
+            "task_kind": task_kind,
+            "site_order_number": case.site_order_number,
+            "expected_stage": fulfillment.CRM_STAGE_PICKUP_WAITING,
+        },
+        now=now,
+    )
+    return 1
+
+
+def _case_is_after_cutover(case: SiteOrderExecutionCase, *, settings: Settings) -> bool:
+    cutover = settings.order_fulfillment_bot_cutover_at
+    if cutover is None or case.storage_started_at is None:
+        return False
+    return _aware_utc(case.storage_started_at) >= _aware_utc(cutover)
+
+
+def _require_pickup_stage_apply_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_pickup_stage_apply_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_pickup_stage_apply_disabled")
+
+
+def _require_inventory_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_pickup_inventory_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_pickup_inventory_disabled")
+
+
+def _require_inventory_won_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_inventory_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_inventory_won_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_inventory_won_disabled")
+
+
+def _require_inventory_won_evidence_current(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    onec_validator: Callable[[str], OneCPickupValidation],
+    validate_composite: bool,
+) -> None:
+    payload = row.payload or {}
+    order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    previous_id = fulfillment._int_or_none(payload.get("inventory_previous_submission_id"))
+    current_id = fulfillment._int_or_none(payload.get("inventory_current_submission_id"))
+    previous = session.get(PickupInventorySubmission, previous_id) if previous_id else None
+    current = session.get(PickupInventorySubmission, current_id) if current_id else None
+    if (
+        previous is None
+        or current is None
+        or previous.status != pickup_inventory.STATUS_CONFIRMED
+        or current.status != pickup_inventory.STATUS_CONFIRMED
+        or current.supersedes_submission_id != previous.id
+        or current.warehouse_id is None
+    ):
+        raise SourceMessageEditedBeforeApply("inventory_evidence_changed_before_apply")
+    if not validate_composite:
+        return
+    previous_orders = {item.site_order_number for item in previous.items}
+    current_orders = {item.site_order_number for item in current.items}
+    if not order_number or order_number not in previous_orders or order_number in current_orders:
+        raise SourceMessageEditedBeforeApply("inventory_disappearance_changed_before_apply")
+    disappearance = pickup_inventory.InventoryDisappearance(
+        site_order_number=order_number,
+        warehouse_id=current.warehouse_id,
+        previous_submission_id=previous.id,
+        current_submission_id=current.id,
+        previous_at=previous.submitted_at,
+        current_at=current.submitted_at,
+    )
+    uncontested, reason = pickup_inventory.disappearance_is_uncontested(
+        session,
+        candidate=disappearance,
+    )
+    if not uncontested:
+        raise SourceMessageEditedBeforeApply(f"inventory_won_blocked:{reason}")
+    onec = onec_validator(order_number)
+    if not onec.available or not onec.assembled or onec.return_confirmed:
+        raise SourceMessageEditedBeforeApply("inventory_onec_changed_before_apply")
+    deals = client.list_deals_by_site_order(order_number)
+    target_id = fulfillment._int_or_none(row.target_id)
+    if (
+        len(deals) != 1
+        or deals[0].deal_id != target_id
+        or fulfillment._clean_string(deals[0].stage_id) != fulfillment.CRM_STAGE_PICKUP_WAITING
+        or not fulfillment._is_internal_pickup_deal(deals[0])
+    ):
+        raise SourceMessageEditedBeforeApply("inventory_crm_changed_before_apply")
+
+
+def _require_historical_evidence_current(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    onec_validator: Callable[[str], OneCPickupValidation],
+) -> None:
+    from app.services import pickup_history
+
+    payload = row.payload or {}
+    order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    if not order_number:
+        raise SourceMessageEditedBeforeApply("historical_order_missing_before_apply")
+    assessment = pickup_history.reassess_historical_order(
+        session,
+        site_order_number=order_number,
+        client=client,
+        settings=settings,
+        onec_validator=onec_validator,
+    )
+    expected_warehouses = tuple(
+        sorted(
+            value
+            for item in payload.get("historical_warehouse_ids") or []
+            if (value := fulfillment._int_or_none(item)) is not None
+        )
+    )
+    if (
+        assessment.bitrix_deal_id != fulfillment._int_or_none(row.target_id)
+        or assessment.current_stage != fulfillment._clean_string(payload.get("before_stage"))
+        or assessment.queue != fulfillment._clean_string(payload.get("historical_queue"))
+        or assessment.target_stage != fulfillment._clean_string(payload.get("target_stage"))
+        or assessment.reason != fulfillment._clean_string(payload.get("historical_reason"))
+        or tuple(sorted(assessment.warehouse_ids)) != expected_warehouses
+    ):
+        raise SourceMessageEditedBeforeApply("historical_evidence_changed_before_apply")
+
+
+def _require_sms_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_bot_sms_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_bot_sms_disabled")
+
+
+def _require_lost_orders_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_lost_orders_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_lost_orders_disabled")
+
+
+def _require_sla_enabled(
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    if not settings.order_fulfillment_pickup_sla_enabled:
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_pickup_sla_disabled")
+
+
+def _moscow_date(value: datetime) -> date:
+    return _aware_utc(value).astimezone(ZoneInfo("Europe/Moscow")).date()
 
 
 def _ensure_case(
@@ -1914,18 +3639,6 @@ def _deal_pickup_point_conflicts(
     candidate_cues = {cue for cue in PICKUP_CUES if cue != "самовывоз" and cue in candidate_text}
     deal_cues = {cue for cue in PICKUP_CUES if cue != "самовывоз" and cue in deal_text}
     return bool(candidate_cues and deal_cues and candidate_cues.isdisjoint(deal_cues))
-
-
-def _sms_pilot_has_capacity(session: Session, *, settings: Settings) -> bool:
-    reserved = int(
-        session.scalar(
-            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
-                SiteOrderFulfillmentOutbox.operation == OP_START_SMS_WORKFLOW,
-            )
-        )
-        or 0
-    )
-    return reserved < settings.order_fulfillment_bot_sms_pilot_limit
 
 
 def _sms_workflow_marker_present(

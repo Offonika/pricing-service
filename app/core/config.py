@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -200,6 +201,42 @@ class Settings(BaseSettings):
     order_fulfillment_courier_chat_apply_author_ids: Annotated[list[int], NoDecode] = Field(
         default_factory=list
     )
+    order_fulfillment_bot_enabled: bool = False
+    order_fulfillment_bot_apply_enabled: bool = False
+    order_fulfillment_bot_sms_enabled: bool = False
+    order_fulfillment_bot_source_chat_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["chat8729", "chat733"]
+    )
+    order_fulfillment_bot_card_ttl_hours: int = Field(default=24, ge=1, le=168)
+    order_fulfillment_bot_dry_run_card_limit: int = Field(default=20, ge=0)
+    order_fulfillment_bot_sms_pilot_limit: int = Field(default=10, ge=0)
+    order_fulfillment_bot_cutover_at: datetime | None = None
+    order_fulfillment_bot_application_token: str | None = None
+    order_fulfillment_bot_client_id: str | None = None
+    order_fulfillment_bot_callback_secret: str | None = None
+    order_fulfillment_bot_callback_max_body_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
+    order_fulfillment_bot_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_excluded_user_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_command: str = "pickup_action"
+    order_fulfillment_bot_callback_url: str | None = None
+    order_fulfillment_bot_sms_workflow_template_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_pickup_sms_field: str = "UF_CRM_MM_PICKUP_READY_SMS_AT"
+    order_fulfillment_bot_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_call_after_hours: int = Field(default=72, ge=1, le=720)
+    order_fulfillment_bot_dismantle_after_hours: int = Field(default=96, ge=1, le=720)
     order_fulfillment_ocr_enabled: bool = True
     order_fulfillment_ocr_model: str | None = None
     order_fulfillment_ocr_min_confidence: float = 0.75
@@ -580,6 +617,9 @@ class Settings(BaseSettings):
         "card_balance_pilot_cashbox_codes",
         "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
+        "order_fulfillment_bot_source_chat_ids",
+        "order_fulfillment_bot_allowed_domains",
+        "order_fulfillment_bot_allowed_member_ids",
         "receivable_workflow_department_refs",
         "receivable_workflow_department_names",
         "receivable_workplace_bitrix_allowed_domains",
@@ -664,6 +704,7 @@ class Settings(BaseSettings):
         "order_fulfillment_notify_tech_user_ids",
         "order_fulfillment_site_chat_apply_author_ids",
         "order_fulfillment_courier_chat_apply_author_ids",
+        "order_fulfillment_bot_excluded_user_ids",
         mode="before",
     )
     @classmethod

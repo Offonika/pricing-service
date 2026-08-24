@@ -341,8 +341,8 @@ def _decide_delivery_review_stage(
     if order_status is not None and order_status.status_id == "F":
         return _new_decision(
             deal,
-            "WON",
-            "delivery_review_completed_to_won",
+            None,
+            "delivery_review_completed_needs_handoff_confirmation",
             order_status=order_status,
         )
     if order_status is not None and order_status.status_id == "P" and order_status.payed:
@@ -356,8 +356,8 @@ def _decide_delivery_review_stage(
         if _is_pickup_delivery(delivery):
             return _new_decision(
                 deal,
-                "PICKUP_WAITING",
-                "delivery_review_paid_pickup_assembled",
+                "FINAL_INVOICE",
+                "delivery_review_paid_pickup_ready_for_dispatch",
                 order_status=order_status,
             )
         return _new_decision(
@@ -370,8 +370,8 @@ def _decide_delivery_review_stage(
         if _is_pickup_delivery(delivery) and assembled:
             return _new_decision(
                 deal,
-                "PICKUP_WAITING",
-                "delivery_review_pickup_assembled_waiting",
+                "FINAL_INVOICE",
+                "delivery_review_pickup_ready_for_dispatch",
                 order_status=order_status,
             )
         if _is_prepayment_waiting_expired(order_status):
@@ -427,26 +427,10 @@ def _decide_pickup_waiting_stage(
             f"pickup_waiting_client_waiting:{order_status.status_id or '-'}",
             order_status=order_status,
         )
-    if order_status.payed or payment_status == "1":
-        return _new_decision(
-            deal,
-            "WON",
-            "pickup_waiting_completed_paid_to_won",
-            order_status=order_status,
-            onec_settlement=onec_settlement,
-        )
-    if onec_settlement is not None and onec_settlement.payment_confirmed:
-        return _new_decision(
-            deal,
-            "WON",
-            f"pickup_waiting_completed_onec_confirmed_to_won:{onec_settlement.evidence}",
-            order_status=order_status,
-            onec_settlement=onec_settlement,
-        )
     return _new_decision(
         deal,
         None,
-        "pickup_waiting_completed_needs_payment_check",
+        "pickup_waiting_completed_needs_handoff_confirmation",
         order_status=order_status,
         onec_settlement=onec_settlement,
     )
@@ -708,12 +692,16 @@ def fetch_onec_order_settlements(order_numbers: list[str]) -> dict[str, OneCOrde
         WHERE o.site_order_number IS NOT NULL
         """)
 
+    engine = None
     try:
         engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
         with engine.connect() as connection:
             rows = connection.execute(statement, params).fetchall()
     except Exception:
         return {}
+    finally:
+        if engine is not None:
+            engine.dispose()
 
     result: dict[str, OneCOrderSettlement] = {}
     for row in rows:
@@ -1030,39 +1018,42 @@ def run_chat_sync(
 ) -> dict[str, Any]:
     settings = get_settings()
     engine = build_engine(settings.database_url, pool_pre_ping=True)
-    onec_engine = (
-        build_engine(settings.onec_database_url, pool_pre_ping=True)
-        if settings.onec_database_url
-        else None
-    )
+    onec_engine = None
     stats: dict[str, Any] = {}
-    with Session(engine) as session:
-        stats["site_master_mobile"] = fulfillment.ingest_bitrix_chat(
-            session,
-            client=client,
-            chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
-            dialog_id=settings.order_fulfillment_site_chat_dialog_id,
-            limit=site_limit,
-            run_ocr=False,
-            settings=settings,
-        )
-        stats["courier_spb"] = fulfillment.ingest_bitrix_chat(
-            session,
-            client=client,
-            chat_code=fulfillment.CHAT_COURIER_SPB,
-            dialog_id=settings.order_fulfillment_spb_courier_chat_dialog_id,
-            limit=courier_limit,
-            run_ocr=bool(settings.order_fulfillment_ocr_enabled),
-            settings=settings,
-        )
-        session.commit()
-        review_rows = fulfillment.build_review_rows(
-            session,
-            limit=review_limit,
-            bitrix_client=client,
-            onec_engine=onec_engine,
-            settings=settings,
-        )
+    try:
+        if settings.onec_database_url:
+            onec_engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+        with Session(engine) as session:
+            stats["site_master_mobile"] = fulfillment.ingest_bitrix_chat(
+                session,
+                client=client,
+                chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+                dialog_id=settings.order_fulfillment_site_chat_dialog_id,
+                limit=site_limit,
+                run_ocr=False,
+                settings=settings,
+            )
+            stats["courier_spb"] = fulfillment.ingest_bitrix_chat(
+                session,
+                client=client,
+                chat_code=fulfillment.CHAT_COURIER_SPB,
+                dialog_id=settings.order_fulfillment_spb_courier_chat_dialog_id,
+                limit=courier_limit,
+                run_ocr=bool(settings.order_fulfillment_ocr_enabled),
+                settings=settings,
+            )
+            session.commit()
+            review_rows = fulfillment.build_review_rows(
+                session,
+                limit=review_limit,
+                bitrix_client=client,
+                onec_engine=onec_engine,
+                settings=settings,
+            )
+    finally:
+        engine.dispose()
+        if onec_engine is not None:
+            onec_engine.dispose()
     review_path = output_dir / f"chat-review-{stamp}.csv"
     fulfillment.write_review_csv(review_path, review_rows)
     outbox_rows = fulfillment.build_stage_outbox_rows(
@@ -1072,11 +1063,13 @@ def run_chat_sync(
     outbox_path = output_dir / f"chat-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
     chat_apply = apply and settings.order_fulfillment_chat_auto_apply_enabled
+    blocked_event_prefixes = ("pickup_",) if settings.order_fulfillment_bot_enabled else ()
     apply_results = apply_outbox_by_target(
         outbox_rows,
         client=client,
         apply=chat_apply,
         allowed_target_stages=fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES,
+        blocked_event_prefixes=blocked_event_prefixes,
     )
     apply_path = output_dir / f"chat-stage-apply-result-{stamp}.csv"
     fulfillment.write_stage_apply_result_csv(apply_path, apply_results)
@@ -1088,7 +1081,12 @@ def run_chat_sync(
         "apply_result": str(apply_path),
         "dry_run": not chat_apply,
         "apply_requested": apply,
-        "auto_apply_enabled": settings.order_fulfillment_chat_auto_apply_enabled,
+        "auto_apply_enabled": chat_apply,
+        "auto_apply_configured": settings.order_fulfillment_chat_auto_apply_enabled,
+        "pickup_auto_apply_suppressed_by_bot": bool(
+            settings.order_fulfillment_bot_enabled
+            and settings.order_fulfillment_chat_auto_apply_enabled
+        ),
         "apply_target_stages": (
             sorted(fulfillment.CHAT_AUTO_APPLY_TARGET_STAGES) if chat_apply else []
         ),
@@ -1135,15 +1133,21 @@ def apply_outbox_by_target(
     client: fulfillment.BitrixChatClient,
     apply: bool,
     allowed_target_stages: set[str] | None = None,
+    blocked_event_prefixes: tuple[str, ...] = (),
 ) -> list[fulfillment.OrderFulfillmentStageApplyResult]:
-    grouped: dict[str, list[fulfillment.OrderFulfillmentStageOutboxRow]] = defaultdict(list)
+    grouped: dict[
+        tuple[str, bool],
+        list[fulfillment.OrderFulfillmentStageOutboxRow],
+    ] = defaultdict(list)
     for row in rows:
-        grouped[row.target_stage].append(row)
-    results: list[fulfillment.OrderFulfillmentStageApplyResult] = []
-    for target_stage, target_rows in grouped.items():
-        target_apply = apply and (
-            allowed_target_stages is None or target_stage in allowed_target_stages
+        row_apply = (
+            apply
+            and (allowed_target_stages is None or row.target_stage in allowed_target_stages)
+            and not any(row.chat_event.startswith(prefix) for prefix in blocked_event_prefixes)
         )
+        grouped[(row.target_stage, row_apply)].append(row)
+    results: list[fulfillment.OrderFulfillmentStageApplyResult] = []
+    for (target_stage, target_apply), target_rows in grouped.items():
         results.extend(
             fulfillment.apply_stage_outbox_rows(
                 target_rows,
@@ -1326,8 +1330,47 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                     SELECT 1
                     FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
                     WHERE assembled_event._Fld9449_RRRef = rtu._IDRRef
+                      AND assembled_event._Fld9449_TYPE = 0x08
+                      AND assembled_event._Fld9449_RTRef = 0x000000CB
                       AND assembled_event._Fld9454 = N'Собран'
-                ) THEN 1 ELSE 0 END AS has_assembled
+                ) THEN 1 ELSE 0 END AS has_assembled,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM dbo._InfoRg9448 AS print_event WITH (NOLOCK)
+                    WHERE print_event._Fld9449_RRRef = rtu._IDRRef
+                      AND print_event._Fld9449_TYPE = 0x08
+                      AND print_event._Fld9449_RTRef = 0x000000CB
+                      AND print_event._Fld9454 = N'Распечатан'
+                ) THEN 1 ELSE 0 END AS has_print,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM dbo._InfoRg9448 AS scan_event WITH (NOLOCK)
+                    WHERE scan_event._Fld9449_RRRef = rtu._IDRRef
+                      AND scan_event._Fld9449_TYPE = 0x08
+                      AND scan_event._Fld9449_RTRef = 0x000000CB
+                      AND scan_event._Fld9454 = N'Отсканирован'
+                ) THEN 1 ELSE 0 END AS has_scan,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM dbo._Document109 AS return_doc WITH (NOLOCK)
+                    WHERE return_doc._Posted = 0x01
+                      AND return_doc._Marked = 0x00
+                      AND (
+                          (
+                              return_doc._Fld1684_TYPE = 0x08
+                              AND return_doc._Fld1684_RTRef = 0x000000CB
+                              AND return_doc._Fld1684_RRRef = rtu._IDRRef
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
+                              WHERE return_line._Document109_IDRRef = return_doc._IDRRef
+                                AND return_line._Fld1712_TYPE = 0x08
+                                AND return_line._Fld1712_RTRef = 0x000000CB
+                                AND return_line._Fld1712_RRRef = rtu._IDRRef
+                          )
+                      )
+                ) THEN 1 ELSE 0 END AS has_return
             FROM dbo._Document203 AS rtu WITH (NOLOCK)
             JOIN dbo._Document132 AS ord WITH (NOLOCK)
                 ON ord._IDRRef = rtu._Fld4939_RRRef
@@ -1342,6 +1385,9 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                 rtu_number,
                 rtu_date,
                 has_assembled,
+                has_print,
+                has_scan,
+                has_return,
                 ROW_NUMBER() OVER (
                     PARTITION BY site_order_number
                     ORDER BY rtu_date DESC, rtu_number DESC
@@ -1353,14 +1399,22 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             site_order_number,
             COUNT(*) AS rtu_count,
             SUM(has_assembled) AS assembled_rtu_count,
+            SUM(has_print) AS printed_rtu_count,
+            SUM(has_scan) AS scanned_rtu_count,
+            SUM(CASE WHEN has_print = 1 AND has_scan = 1 THEN 1 ELSE 0 END)
+                AS issued_rtu_count,
+            SUM(has_return) AS returned_rtu_count,
             MAX(CASE WHEN rn = 1 THEN rtu_number END) AS latest_rtu_number,
             MAX(CASE WHEN rn = 1 THEN rtu_date END) AS latest_rtu_date
         FROM ranked
         GROUP BY site_order_number
         """)
     engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
-    with engine.connect() as connection:
-        rows = connection.execute(statement, params).fetchall()
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(statement, params).fetchall()
+    finally:
+        engine.dispose()
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
         mapping = getattr(row, "_mapping", row)
@@ -1370,6 +1424,10 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
         result[order_number] = {
             "rtu_count": int(mapping["rtu_count"] or 0),
             "assembled_rtu_count": int(mapping["assembled_rtu_count"] or 0),
+            "printed_rtu_count": int(mapping["printed_rtu_count"] or 0),
+            "scanned_rtu_count": int(mapping["scanned_rtu_count"] or 0),
+            "issued_rtu_count": int(mapping["issued_rtu_count"] or 0),
+            "returned_rtu_count": int(mapping["returned_rtu_count"] or 0),
             "latest_rtu_number": clean_csv_value(mapping["latest_rtu_number"]),
             "latest_rtu_date": mapping["latest_rtu_date"],
         }
@@ -1458,7 +1516,10 @@ def build_operational_monitoring_rows(
         )
 
     for decision in decisions:
-        if decision.review_reason != "pickup_waiting_completed_needs_payment_check":
+        if decision.review_reason not in {
+            "pickup_waiting_completed_needs_payment_check",
+            "pickup_waiting_completed_needs_handoff_confirmation",
+        }:
             continue
         rows.append(
             monitoring_row(

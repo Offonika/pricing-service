@@ -134,10 +134,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteDefectArchiveMessage,
     )
     from app.models.site_order_fulfillment import (
+        BitrixChatAction,
+        BitrixChatActionCandidate,
         BitrixChatMention,
         BitrixChatMessage,
         SiteOrderExecutionCase,
         SiteOrderExecutionEvent,
+        SiteOrderFulfillmentOutbox,
     )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
@@ -263,7 +266,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "SiteOrderExecutionCase",
         "BitrixChatMessage",
         "BitrixChatMention",
+        "BitrixChatActionCandidate",
+        "BitrixChatAction",
         "SiteOrderExecutionEvent",
+        "SiteOrderFulfillmentOutbox",
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",

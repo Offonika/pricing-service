@@ -26,7 +26,8 @@ SITE_ORDER_TABLES = [
 
 def test_site_chat_parser_extracts_many_orders_without_word_order() -> None:
     mentions = service.parse_site_chat_text(
-        "218014\n217624\nне забрали спб садовая [USER=7]Ариф Рахманов[/USER]"
+        "218014\n217624\nне забрали спб садовая +7 (928) 717-17-11 "
+        "client@example.ru [USER=7]Ариф Рахманов[/USER]"
     )
 
     assert [mention.site_order_number for mention in mentions] == ["218014", "217624"]
@@ -36,10 +37,24 @@ def test_site_chat_parser_extracts_many_orders_without_word_order() -> None:
     assert "<order>" in mentions[0].evidence_text
     assert "218014" not in mentions[0].evidence_text
     assert "Ариф Рахманов" not in mentions[0].evidence_text
+    assert "+7 (928) 717-17-11" not in mentions[0].evidence_text
+    assert "client@example.ru" not in mentions[0].evidence_text
+    assert "<phone>" in mentions[0].evidence_text
+    assert "<email>" in mentions[0].evidence_text
 
 
 def test_site_chat_parser_does_not_infer_pickup_from_absence_in_list() -> None:
     mentions = service.parse_site_chat_text("218014\n217624\nспб садовая")
+
+    assert mentions == []
+
+
+def test_courier_chat_does_not_fall_back_to_pickup_text_parser() -> None:
+    mentions = service.parse_bitrix_message(
+        chat_code=service.CHAT_COURIER_SPB,
+        text_value="Заказ 218014 выдан клиенту",
+        ocr_payloads=[],
+    )
 
     assert mentions == []
 
@@ -150,6 +165,7 @@ def test_ingest_is_idempotent_and_delivery_without_payment_is_not_won() -> None:
             dialog_id="chat727",
             chat_id=727,
             message_id=1001,
+            create_execution_events=True,
             ocr_payloads=[
                 {
                     "orders": ["218530"],
@@ -165,6 +181,7 @@ def test_ingest_is_idempotent_and_delivery_without_payment_is_not_won() -> None:
             dialog_id="chat727",
             chat_id=727,
             message_id=1001,
+            create_execution_events=True,
             ocr_payloads=[
                 {
                     "orders": ["218530"],
@@ -203,6 +220,7 @@ def test_review_enrichment_merges_case_bitrix_and_onec() -> None:
             dialog_id="chat733",
             chat_id=733,
             message_id=2001,
+            create_execution_events=True,
             author_id="7",
             text_value="Заказ 218014 — не забрали",
         )
@@ -257,6 +275,7 @@ def test_review_marks_multiple_bitrix_deals_manual_review() -> None:
             dialog_id="chat733",
             chat_id=733,
             message_id=2002,
+            create_execution_events=True,
             text_value="218015 не забрали",
         )
         rows = service.build_review_rows(
@@ -287,6 +306,7 @@ def test_review_courier_delivered_unpaid_is_not_won() -> None:
             dialog_id="chat727",
             chat_id=727,
             message_id=2003,
+            create_execution_events=True,
             author_id="9",
             ocr_payloads=[
                 {
@@ -338,6 +358,7 @@ def test_review_pickup_received_closes_internal_pickup_without_site_payment_flag
             dialog_id="chat733",
             chat_id=733,
             message_id=2004,
+            create_execution_events=True,
             author_id="7",
             text_value="Заказ 218016 — выдан клиенту",
         )
@@ -377,6 +398,7 @@ def test_review_keeps_unauthorized_strict_chat_event_as_recommendation() -> None
             dialog_id="chat733",
             chat_id=733,
             message_id=20041,
+            create_execution_events=True,
             author_id="8",
             text_value="Заказ 218041 — выдан клиенту",
         )
@@ -432,6 +454,7 @@ def test_review_pickup_received_for_non_pickup_requires_manual_review() -> None:
             dialog_id="chat733",
             chat_id=733,
             message_id=20040,
+            create_execution_events=True,
             text_value="218016 забрали",
         )
         rows = service.build_review_rows(
@@ -465,6 +488,7 @@ def test_review_does_not_update_terminal_crm_stage() -> None:
             dialog_id="chat733",
             chat_id=733,
             message_id=2005,
+            create_execution_events=True,
             text_value="218017 не забрали",
         )
         rows = service.build_review_rows(

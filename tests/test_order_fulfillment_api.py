@@ -45,6 +45,7 @@ def _configure(monkeypatch, token: str = "order-token") -> None:
     monkeypatch.setenv("ORDER_FULFILLMENT_INTERNAL_API_TOKEN", token)
     monkeypatch.setenv("ORDER_FULFILLMENT_BITRIX_WEBHOOK_URL", "")
     monkeypatch.setenv("ONEC_DATABASE_URL", "")
+    monkeypatch.setenv("ORDER_FULFILLMENT_BOT_ENABLED", "true")
     monkeypatch.delenv("LOGISTICS_INTERNAL_API_TOKEN", raising=False)
     monkeypatch.delenv("MANAGEMENT_INTERNAL_API_TOKEN", raising=False)
     get_settings.cache_clear()
@@ -96,7 +97,9 @@ def test_order_fulfillment_message_endpoint_dry_run_parses_without_db(monkeypatc
     ]
 
 
-def test_order_fulfillment_persisted_message_recommendations(monkeypatch) -> None:
+def test_order_fulfillment_persisted_courier_ocr_creates_recommendation(
+    monkeypatch,
+) -> None:
     _configure(monkeypatch)
     engine = create_engine(
         "sqlite://",
@@ -183,9 +186,5 @@ def test_order_fulfillment_review_endpoint_handles_missing_external_config(monke
 
     assert create_response.status_code == 200
     assert review_response.status_code == 200
-    item = review_response.json()["items"][0]
-    assert item["site_order_number"] == "218014"
-    assert item["recommended_stage"] == service.CRM_STAGE_MANUAL_REVIEW
-    assert item["action"] == "manual_review"
-    assert "bitrix_config_missing" in item["manual_review_reason"]
-    assert "onec_config_missing" in item["manual_review_reason"]
+    assert create_response.json()["events_created"] == 0
+    assert review_response.json()["items"] == []

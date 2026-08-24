@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import hmac
+import json
+import re
+from datetime import UTC, datetime
+from typing import Any
+from urllib.parse import parse_qs
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.api.dependencies import get_db, require_order_fulfillment_internal_token
+from app.core.config import Settings, get_settings
+from app.models.site_order_fulfillment import (
+    BitrixChatActionCandidate,
+    SiteOrderFulfillmentOutbox,
+)
+from app.services import site_order_fulfillment_bot as bot
+
+router = APIRouter()
+internal_router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+CALLBACK_MAX_FORM_FIELDS = 256
+CALLBACK_MAX_JSON_DEPTH = 16
+CALLBACK_MAX_JSON_VALUES = 512
+
+
+@router.post(
+    "/events",
+    responses={
+        400: {"description": "Malformed or unsupported Bitrix callback"},
+        403: {"description": "Callback authentication or authorization failed"},
+        404: {"description": "Bot callback is disabled"},
+        413: {"description": "Callback body exceeds the configured limit"},
+    },
+)
+async def bitrix_bot_event(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.order_fulfillment_bot_enabled:
+        raise HTTPException(status_code=404, detail="not found")
+    body = await _read_limited_body(
+        request,
+        max_bytes=max(1024, settings.order_fulfillment_bot_callback_max_body_bytes),
+    )
+    form = _decode_form(body)
+    _verify_bitrix_event(form, settings=settings)
+    event_name = _value(form, "event").upper()
+    if not event_name:
+        raise HTTPException(status_code=400, detail="event name is missing")
+    if event_name not in {"ONIMBOTMESSAGEADD", "ONIMCOMMANDADD", "ONIMBOTCOMMANDADD"}:
+        return {"accepted": True, "ignored": True}
+    dialog_id = _value(
+        form,
+        "data[PARAMS][DIALOG_ID]",
+        "data[COMMAND][DIALOG_ID]",
+        "data[COMMAND][0][DIALOG_ID]",
+        "data[DIALOG_ID]",
+        "dialog_id",
+    ) or _command_value(form, "DIALOG_ID")
+    if dialog_id not in set(settings.order_fulfillment_bot_source_chat_ids):
+        raise HTTPException(status_code=403, detail="source chat is not allowed")
+
+    if event_name == "ONIMBOTMESSAGEADD":
+        text_value = _value(
+            form,
+            "data[PARAMS][MESSAGE]",
+            "data[MESSAGE]",
+            "message",
+        )
+        message_id = _value(
+            form,
+            "data[PARAMS][MESSAGE_ID]",
+            "data[MESSAGE_ID]",
+            "message_id",
+        )
+        author_id = _value(
+            form,
+            "data[PARAMS][FROM_USER_ID]",
+            "data[USER][ID]",
+            "user_id",
+        )
+        if not message_id:
+            raise HTTPException(status_code=400, detail="message id is missing")
+        try:
+            candidates = bot.create_candidates_from_message(
+                db,
+                dialog_id=dialog_id,
+                message_id=message_id,
+                author_id=author_id or None,
+                text_value=text_value,
+                message_at=_parse_datetime(
+                    _value(
+                        form,
+                        "data[PARAMS][DATE_CREATE]",
+                        "data[DATE_CREATE]",
+                    )
+                ),
+                settings=settings,
+                payload={"event": event_name},
+                apply_enabled_probe=lambda: bot.runtime_apply_enabled_from_env(
+                    initial_enabled=settings.order_fulfillment_bot_apply_enabled,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"accepted": True, "candidates": len(candidates)}
+
+    if event_name in {"ONIMCOMMANDADD", "ONIMBOTCOMMANDADD"}:
+        command = _command_value(form, "COMMAND", fallback_keys=("data[COMMAND]", "command"))
+        if not command:
+            raise HTTPException(status_code=400, detail="command is missing")
+        if command.casefold() != settings.order_fulfillment_bot_command.casefold():
+            raise HTTPException(status_code=400, detail="unsupported command")
+        command_id = _command_entry_id(form)
+        if settings.order_fulfillment_bot_command_id is not None and command_id != str(
+            settings.order_fulfillment_bot_command_id
+        ):
+            raise HTTPException(status_code=400, detail="unexpected command id")
+        token = _command_value(
+            form,
+            "COMMAND_PARAMS",
+            fallback_keys=(
+                "data[COMMAND_PARAMS]",
+                "data[PARAMS][COMMAND_PARAMS]",
+                "command_params",
+            ),
+        )
+        if not token:
+            token = _command_value(form, "PARAMS")
+        actor_id = _value(
+            form,
+            "data[PARAMS][FROM_USER_ID]",
+            "data[PARAMS][AUTHOR_ID]",
+            "data[USER][ID]",
+            "data[USER_ID]",
+            "user_id",
+        ) or _command_value(form, "USER_ID")
+        try:
+            action, duplicate = bot.queue_callback_action(
+                db,
+                token=token,
+                actor_id=actor_id,
+                dialog_id=dialog_id,
+                settings=settings,
+            )
+        except bot.BotSecurityError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return {"accepted": True, "action_id": action.id, "duplicate": duplicate}
+
+    raise HTTPException(status_code=400, detail="unsupported bot event")
+
+
+@internal_router.get("/health")
+def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    settings = get_settings()
+    runtime_apply_enabled = bot.runtime_apply_enabled_from_env(
+        initial_enabled=settings.order_fulfillment_bot_apply_enabled,
+    )
+    candidates = int(db.scalar(select(func.count(BitrixChatActionCandidate.id))) or 0)
+    pending = int(
+        db.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.status.in_([bot.OUTBOX_PENDING, bot.OUTBOX_RETRY])
+            )
+        )
+        or 0
+    )
+    failed = int(
+        db.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.status == bot.OUTBOX_FAILED
+            )
+        )
+        or 0
+    )
+    processing = int(
+        db.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.status == bot.OUTBOX_PROCESSING
+            )
+        )
+        or 0
+    )
+    active_statuses = [bot.OUTBOX_PENDING, bot.OUTBOX_RETRY, bot.OUTBOX_PROCESSING]
+    blocked_by_apply = 0
+    if not runtime_apply_enabled:
+        blocked_by_apply = int(
+            db.scalar(
+                select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                    SiteOrderFulfillmentOutbox.status.in_(active_statuses),
+                    SiteOrderFulfillmentOutbox.operation.in_(bot.APPLY_GATED_OUTBOX_OPERATIONS),
+                )
+            )
+            or 0
+        )
+    oldest_active_created_at = db.scalar(
+        select(func.min(SiteOrderFulfillmentOutbox.created_at)).where(
+            SiteOrderFulfillmentOutbox.status.in_(active_statuses)
+        )
+    )
+    oldest_active_age_seconds: int | None = None
+    if isinstance(oldest_active_created_at, datetime):
+        oldest_active_utc = (
+            oldest_active_created_at.astimezone(UTC).replace(tzinfo=None)
+            if oldest_active_created_at.tzinfo is not None
+            else oldest_active_created_at
+        )
+        oldest_active_age_seconds = max(
+            0,
+            int((bot.utcnow() - oldest_active_utc).total_seconds()),
+        )
+    return {
+        "enabled": settings.order_fulfillment_bot_enabled,
+        "apply_enabled": runtime_apply_enabled,
+        "apply_configured_at_startup": settings.order_fulfillment_bot_apply_enabled,
+        "sms_enabled": settings.order_fulfillment_bot_sms_enabled,
+        "candidate_count": candidates,
+        "outbox_pending": pending,
+        "outbox_processing": processing,
+        "outbox_failed": failed,
+        "outbox_blocked_by_apply": blocked_by_apply,
+        "oldest_active_outbox_age_seconds": oldest_active_age_seconds,
+    }
+
+
+def _verify_bitrix_event(form: dict[str, str], *, settings: Settings) -> None:
+    expected_token = settings.order_fulfillment_bot_application_token or ""
+    actual_token = _value(form, "auth[application_token]", "application_token")
+    if not expected_token or not hmac.compare_digest(actual_token, expected_token):
+        raise HTTPException(status_code=403, detail="invalid application token")
+    domain = _value(form, "auth[domain]", "domain").casefold()
+    allowed_domains = {item.casefold() for item in settings.order_fulfillment_bot_allowed_domains}
+    if not allowed_domains or domain not in allowed_domains:
+        raise HTTPException(status_code=403, detail="domain is not allowed")
+    member_id = _value(form, "auth[member_id]", "member_id")
+    allowed_members = set(settings.order_fulfillment_bot_allowed_member_ids)
+    if not allowed_members or member_id not in allowed_members:
+        raise HTTPException(status_code=403, detail="member is not allowed")
+
+
+def _decode_form(body: bytes) -> dict[str, str]:
+    try:
+        parsed = parse_qs(
+            body.decode("utf-8", errors="replace"),
+            keep_blank_values=True,
+            max_num_fields=CALLBACK_MAX_FORM_FIELDS,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="callback has too many form fields") from None
+    values = {key: items[-1] if items else "" for key, items in parsed.items()}
+    for container_name in ("data", "auth"):
+        raw = values.get(container_name)
+        if not raw or not raw.lstrip().startswith("{"):
+            continue
+        try:
+            nested = json.loads(raw)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="invalid nested callback JSON") from None
+        except RecursionError:
+            raise HTTPException(
+                status_code=400,
+                detail="callback JSON is too deeply nested",
+            ) from None
+        try:
+            _flatten_json(nested, prefix=container_name, target=values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+    return values
+
+
+def _flatten_json(value: Any, *, prefix: str, target: dict[str, str]) -> None:
+    stack: list[tuple[str, Any, int]] = [(prefix, value, 0)]
+    flattened_values = 0
+    while stack:
+        item_prefix, item, depth = stack.pop()
+        if depth > CALLBACK_MAX_JSON_DEPTH:
+            raise ValueError("callback JSON is too deeply nested")
+        if isinstance(item, dict):
+            for key, nested in reversed(list(item.items())):
+                stack.append((f"{item_prefix}[{key}]", nested, depth + 1))
+            continue
+        if isinstance(item, list):
+            for index in range(len(item) - 1, -1, -1):
+                stack.append((f"{item_prefix}[{index}]", item[index], depth + 1))
+            continue
+        if item is None:
+            continue
+        flattened_values += 1
+        if flattened_values > CALLBACK_MAX_JSON_VALUES:
+            raise ValueError("callback JSON has too many values")
+        target[item_prefix] = str(item)
+
+
+def _value(form: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(form.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _command_value(
+    form: dict[str, str],
+    field_name: str,
+    *,
+    fallback_keys: tuple[str, ...] = (),
+) -> str:
+    direct = _value(form, *fallback_keys)
+    if direct:
+        return direct
+    pattern = re.compile(
+        rf"^data\[COMMAND\]\[[^\]]+\]\[{re.escape(field_name)}\]$",
+        re.IGNORECASE,
+    )
+    for key, value in form.items():
+        if pattern.fullmatch(key) and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _command_entry_id(form: dict[str, str]) -> str:
+    direct = _command_value(
+        form,
+        "COMMAND_ID",
+        fallback_keys=(
+            "data[COMMAND_ID]",
+            "data[PARAMS][COMMAND_ID]",
+            "command_id",
+        ),
+    )
+    if direct:
+        return direct
+    pattern = re.compile(r"^data\[COMMAND\]\[([^\]]+)\]\[[^\]]+\]$", re.IGNORECASE)
+    for key in form:
+        match = pattern.fullmatch(key)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+async def _read_limited_body(request: Request, *, max_bytes: int) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise HTTPException(status_code=413, detail="request body is too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content length") from None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="request body is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None

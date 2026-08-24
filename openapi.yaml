@@ -7886,6 +7886,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/bitrix-bot/events:
+    post:
+      summary: Bitrix Bot Event
+      operationId: bitrix_bot_event_api_order_fulfillment_bitrix_bot_events_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Bitrix Bot Event Api Order Fulfillment Bitrix Bot Events Post
+        '400':
+          description: Malformed or unsupported Bitrix callback
+        '403':
+          description: Callback authentication or authorization failed
+        '404':
+          description: Bot callback is disabled
+        '413':
+          description: Callback body exceeds the configured limit
+  /api/order-fulfillment/bitrix-bot/internal/health:
+    get:
+      summary: Bot Health
+      operationId: bot_health_api_order_fulfillment_bitrix_bot_internal_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Bot Health Api Order Fulfillment Bitrix Bot Internal Health Get
+      security:
+      - HTTPBearer: []
   /api/order-payment-control/check:
     post:
       summary: Check Order Payment

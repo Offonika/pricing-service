@@ -155,7 +155,7 @@ def test_decide_new_deal_stage_for_safe_v1_rules() -> None:
     )
 
 
-def test_decide_delivery_review_completed_order_closes_won() -> None:
+def test_decide_delivery_review_completed_order_requires_handoff_confirmation() -> None:
     decision = sync.decide_new_deal_stage(
         _deal(stage_id="DELIVERY_REVIEW", delivery="Самовывоз", payment_status="0"),
         order_status=sync.SaleOrderStatus(
@@ -167,9 +167,9 @@ def test_decide_delivery_review_completed_order_closes_won() -> None:
         ),
     )
 
-    assert decision.action == "update_stage"
-    assert decision.recommended_stage == "WON"
-    assert decision.review_reason == "delivery_review_completed_to_won"
+    assert decision.action == "manual_review"
+    assert decision.recommended_stage is None
+    assert decision.review_reason == "delivery_review_completed_needs_handoff_confirmation"
 
 
 def test_decide_delivery_review_routes_non_completed_orders() -> None:
@@ -204,6 +204,16 @@ def test_decide_delivery_review_routes_non_completed_orders() -> None:
             created_at=datetime.now(),
         ),
     )
+    paid_pickup = sync.decide_new_deal_stage(
+        _deal(stage_id="DELIVERY_REVIEW", delivery="Самовывоз", assembled="1"),
+        order_status=sync.SaleOrderStatus(
+            order_number="218005",
+            canceled=False,
+            status_id="P",
+            payed=True,
+            created_at=datetime.now(),
+        ),
+    )
     paid_courier = sync.decide_new_deal_stage(
         _deal(stage_id="DELIVERY_REVIEW", delivery="Доставка курьером", assembled="1"),
         order_status=sync.SaleOrderStatus(
@@ -219,8 +229,10 @@ def test_decide_delivery_review_routes_non_completed_orders() -> None:
     assert old_unpaid_carrier.review_reason == "delivery_review_unpaid_expired_to_lost"
     assert fresh_unpaid_carrier.recommended_stage == "PREPAYMENT_INVOICE"
     assert fresh_unpaid_carrier.review_reason == "delivery_review_carrier_unpaid_to_payment_waiting"
-    assert assembled_pickup.recommended_stage == "PICKUP_WAITING"
-    assert assembled_pickup.review_reason == "delivery_review_pickup_assembled_waiting"
+    assert assembled_pickup.recommended_stage == "FINAL_INVOICE"
+    assert assembled_pickup.review_reason == "delivery_review_pickup_ready_for_dispatch"
+    assert paid_pickup.recommended_stage == "FINAL_INVOICE"
+    assert paid_pickup.review_reason == "delivery_review_paid_pickup_ready_for_dispatch"
     assert paid_courier.recommended_stage == "FINAL_INVOICE"
     assert paid_courier.review_reason == "delivery_review_paid_carrier_assembled"
 
@@ -362,7 +374,7 @@ def test_quick_onec_candidates_include_expired_prepayment_and_completed_pickup()
     ]
 
 
-def test_decide_pickup_waiting_closes_only_when_payment_is_confirmed() -> None:
+def test_decide_pickup_waiting_never_closes_without_handoff_confirmation() -> None:
     completed_unpaid = sync.decide_new_deal_stage(
         _deal(stage_id="PICKUP_WAITING", delivery="Самовывоз", payment_status="0"),
         order_status=sync.SaleOrderStatus(
@@ -405,14 +417,14 @@ def test_decide_pickup_waiting_closes_only_when_payment_is_confirmed() -> None:
 
     assert completed_unpaid.action == "manual_review"
     assert completed_unpaid.recommended_stage is None
-    assert completed_unpaid.review_reason == "pickup_waiting_completed_needs_payment_check"
-    assert completed_paid.action == "update_stage"
-    assert completed_paid.recommended_stage == "WON"
-    assert completed_paid.review_reason == "pickup_waiting_completed_paid_to_won"
-    assert completed_onec_paid.action == "update_stage"
-    assert completed_onec_paid.recommended_stage == "WON"
+    assert completed_unpaid.review_reason == "pickup_waiting_completed_needs_handoff_confirmation"
+    assert completed_paid.action == "manual_review"
+    assert completed_paid.recommended_stage is None
+    assert completed_paid.review_reason == "pickup_waiting_completed_needs_handoff_confirmation"
+    assert completed_onec_paid.action == "manual_review"
+    assert completed_onec_paid.recommended_stage is None
     assert completed_onec_paid.review_reason == (
-        "pickup_waiting_completed_onec_confirmed_to_won:onec_no_debt"
+        "pickup_waiting_completed_needs_handoff_confirmation"
     )
 
 
@@ -513,7 +525,7 @@ def test_new_deal_outbox_excludes_manual_review_and_won_targets() -> None:
     assert rows[1].target_stage == "PREPAYMENT_INVOICE"
 
 
-def test_new_deal_outbox_allows_won_with_payment_flag() -> None:
+def test_new_deal_outbox_blocks_won_without_handoff_confirmation() -> None:
     decision = sync.decide_new_deal_stage(
         _deal(deal_id=1, stage_id="DELIVERY_REVIEW", delivery="Самовывоз"),
         order_status=sync.SaleOrderStatus(
@@ -530,11 +542,7 @@ def test_new_deal_outbox_allows_won_with_payment_flag() -> None:
         available_stage_ids={"WON"},
     )
 
-    assert len(rows) == 1
-    assert rows[0].target_stage == "WON"
-    payload = json.loads(rows[0].payload_json)
-    assert payload["fields"]["STAGE_ID"] == "WON"
-    assert payload["fields"][service.CRM_PAYMENT_FIELD] == "1"
+    assert rows == []
 
 
 def test_apply_outbox_by_target_handles_mixed_targets() -> None:
@@ -670,6 +678,66 @@ def test_apply_outbox_by_target_dry_runs_target_outside_chat_allowlist() -> None
     assert client.updates == []
 
 
+def test_bot_cutover_blocks_only_legacy_pickup_auto_apply() -> None:
+    rows = [
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="pickup-won",
+            site_order_number="218003",
+            bitrix_deal_id=3,
+            current_stage="PICKUP_WAITING",
+            target_stage="WON",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_PICKUP_RECEIVED,
+            event_confidence="strong",
+            evidence_redacted=None,
+            payload_json="{}",
+            block_reason=None,
+        ),
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="courier-won",
+            site_order_number="218004",
+            bitrix_deal_id=4,
+            current_stage="IN_DELIVERY",
+            target_stage="WON",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_COURIER_DELIVERED_PAID,
+            event_confidence="strong",
+            evidence_redacted=None,
+            payload_json="{}",
+            block_reason=None,
+        ),
+    ]
+    client = FakeBitrixClient(
+        {
+            3: _deal(
+                deal_id=3,
+                order_number="218003",
+                stage_id="PICKUP_WAITING",
+                delivery="Самовывоз",
+            ),
+            4: _deal(
+                deal_id=4,
+                order_number="218004",
+                stage_id="IN_DELIVERY",
+                delivery="Доставка курьером",
+            ),
+        }
+    )
+
+    results = sync.apply_outbox_by_target(
+        rows,
+        client=client,
+        apply=True,
+        allowed_target_stages={"WON"},
+        blocked_event_prefixes=("pickup_",),
+    )
+
+    assert [result.result for result in results] == ["dry_run_ready", "applied"]
+    assert client.updates == [(4, "WON")]
+
+
 def test_build_operational_monitoring_rows_flags_stage_errors_and_rtu_gap() -> None:
     decisions = [
         sync.decide_new_deal_stage(
@@ -784,6 +852,75 @@ def test_build_rtu_without_assembled_rows_keeps_only_missing_signal() -> None:
     assert rows[0]["latest_rtu_date"] == "2026-05-26T10:00:00"
 
 
+def test_rtu_signal_requires_print_and_scan_on_same_rtu_and_reads_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResult:
+        def fetchall(self):
+            return [
+                {
+                    "site_order_number": "218001",
+                    "rtu_count": 2,
+                    "assembled_rtu_count": 1,
+                    "printed_rtu_count": 1,
+                    "scanned_rtu_count": 1,
+                    "issued_rtu_count": 0,
+                    "returned_rtu_count": 1,
+                    "latest_rtu_number": "РБГУ000002",
+                    "latest_rtu_date": datetime(2026, 8, 23, 12, 0),
+                }
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return FakeResult()
+
+    class FakeEngine:
+        disposed = False
+
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            self.disposed = True
+
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        sync,
+        "get_settings",
+        lambda: Settings(_env_file=None, onec_database_url="mssql://placeholder"),
+    )
+    monkeypatch.setattr(sync, "build_engine", lambda *args, **kwargs: engine)
+
+    result = sync.query_rtu_signal_by_orders(["218001"])
+
+    sql = str(captured["sql"])
+    assert result["218001"]["issued_rtu_count"] == 0
+    assert result["218001"]["returned_rtu_count"] == 1
+    assert "CASE WHEN has_print = 1 AND has_scan = 1" in sql
+    assert "assembled_event._Fld9449_TYPE = 0x08" in sql
+    assert "assembled_event._Fld9449_RTRef = 0x000000CB" in sql
+    assert "print_event._Fld9449_TYPE = 0x08" in sql
+    assert "print_event._Fld9449_RTRef = 0x000000CB" in sql
+    assert "scan_event._Fld9449_TYPE = 0x08" in sql
+    assert "scan_event._Fld9449_RTRef = 0x000000CB" in sql
+    assert "return_doc._Fld1684_TYPE = 0x08" in sql
+    assert "return_doc._Fld1684_RRRef = rtu._IDRRef" in sql
+    assert "return_line._Fld1712_TYPE = 0x08" in sql
+    assert "return_line._Fld1712_RRRef = rtu._IDRRef" in sql
+    assert engine.disposed is True
+
+
 def test_stage_summary_uses_fast_totals_without_pagination() -> None:
     client = FakeListClient()
 
@@ -829,6 +966,10 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     wrapper_source = (sync.REPO_ROOT / "infra/cron/order_fulfillment_sync.sh").read_text(
         encoding="utf-8"
     )
+    bot_wrapper_source = (sync.REPO_ROOT / "infra/cron/order_fulfillment_bot_outbox.sh").read_text(
+        encoding="utf-8"
+    )
+    env_example = (sync.REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert "25,55 * * * *" in cron_source
     assert "0 11 * * *" in cron_source
@@ -840,6 +981,14 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "REPO_DIR=/opt/MM/pricing-service-task43-current" in cron_source
     assert "flock -w 600" in wrapper_source
     assert "flock -n" in wrapper_source
+    assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS:-600" in bot_wrapper_source
+    assert bot_wrapper_source.index('source "${REPO_DIR}/.env"') < bot_wrapper_source.index(
+        'WORKER_TIMEOUT_SECONDS="${ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS:-600}"'
+    )
+    assert "--signal=TERM" in bot_wrapper_source
+    assert "--kill-after=30s" in bot_wrapper_source
+    assert '"${WORKER_TIMEOUT_SECONDS}s"' in bot_wrapper_source
+    assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS=600" in env_example
 
 
 def _notify_settings(

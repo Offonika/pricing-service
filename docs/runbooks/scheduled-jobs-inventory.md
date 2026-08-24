@@ -39,8 +39,8 @@ updated_at: "2026-08-24"
 | `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | релиз |
 | `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | релиз |
 | `sync_telephony_mapping` | ежедневно 08:35 | релиз |
-| `sync_open_procurement_supplier_orders_to_bitrix` | каждые 30 минут, 08:00–21:59 | рабочая папка |
-| `manual_matching_bitrix_tasks` | по будням 09:10 | рабочая папка |
+| `sync_open_procurement_supplier_orders_to_bitrix` | каждые 30 минут, 08:00–21:59 | релиз |
+| `manual_matching_bitrix_tasks` | по будням 09:10 | релиз |
 | `pricing-executive-procurement-snapshot` | ежедневно 10:35 | релиз |
 | `pricing-executive-management-balance` | ежедневно 11:40 | релиз |
 | `bronze_price_type_monthly_inventory` | первого числа месяца 06:45 | релиз |
@@ -60,13 +60,21 @@ updated_at: "2026-08-24"
 
 ## Известное расхождение
 
+УСТРАНЕНО (2026-08-24): все активные scheduled jobs исполняются из единого
+immutable source `/opt/MM/pricing-service-task43-current`. Последние два контура
+переведены после guarded deploy clean release
+`runtime-split-brain-final-20260824-c9f1469`. Штатный procurement-запуск в 10:00
+подтвердил release interpreter и завершился со статусом `0`.
+
 Решение 2026-08-24: устранение runtime split-brain назначено приоритетом №1.
 Все активные scheduled jobs `pricing-service` переводятся с изменяемого
 `/opt/MM/pricing-service` на единый проверенный immutable release source. Cutover
 выполняется по одному job-контуру с backup, readback, контрольным запуском и
 проверенным rollback. Production jobs из mutable checkout после перевода запрещены.
 
-После cutover 2026-08-24 из рабочей папки остаются два активных контура:
+ОТМЕНЕНО (2026-08-24): временное исключение для двух mutable-контуров завершено
+после выпуска совместимого clean release. До финального cutover из рабочей папки
+оставались два активных контура:
 
 - служба API и остальные scheduled jobs — из проверенного immutable release через
   `/opt/MM/pricing-service-task43-current`;
@@ -114,3 +122,7 @@ downstream lead-time pipeline. Кандидат строится от актив
   выпуска совместимого downstream lead-time pipeline.
 - 2026-08-24 — Подтверждена сборка и guarded deploy отдельного clean release для
   последних двух mutable scheduled jobs.
+- 2026-08-24 — Clean release `runtime-split-brain-final-20260824-c9f1469`
+  развёрнут через guarded controller; `manual_matching_bitrix_tasks` и
+  `sync_open_procurement_supplier_orders_to_bitrix` переведены на release,
+  production cron-ссылок на mutable checkout больше нет.

@@ -9,6 +9,8 @@ IMMUTABLE_RUNTIME_ROOT = "/opt/MM/pricing-service-task43-current"
 MUTABLE_CODE_ROOT = "/opt/MM/pricing-service/"
 
 RUNTIME_TEMPLATES = (
+    "infra/cron/manual_matching_bitrix_tasks.cron",
+    "infra/cron/sync_open_procurement_supplier_orders_to_bitrix.cron",
     "infra/cron/competitor_matching_nightly.cron",
     "infra/cron/bronze_price_type_monthly_inventory.cron",
     "infra/cron/onec_assembly_crm_reconciler.cron",

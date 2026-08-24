@@ -7,8 +7,9 @@ if (!defined('B_PROLOG_INCLUDED') || B_PROLOG_INCLUDED !== true) {
 $this->setFrameMode(false);
 $status = (string)($arResult['status'] ?? 'temporarily_unavailable');
 $state = (string)($arResult['state'] ?? '');
+$isMock = ($arResult['is_mock'] ?? false) === true;
 $labels = array(
-    'debt' => 'К оплате',
+    'debt' => 'Задолженность',
     'advance' => 'Ваш аванс',
     'zero' => 'Задолженности нет',
 );
@@ -29,15 +30,26 @@ $formatAmount = static function ($raw): string {
         return '0,00';
     }
     $whole = preg_replace('/\B(?=(\d{3})+(?!\d))/', ' ', $parts[1]);
-    return $whole . ',' . $parts[2];
+    return $parts[2] === '00' ? $whole : $whole . ',' . $parts[2];
 };
 ?>
 <section class="mm-settlements" aria-labelledby="mm-settlements-title">
     <div class="profile__item mm-settlements__panel">
         <div class="profile__item-head mm-settlements__head">
-            <div class="profile__item-title" id="mm-settlements-title">Взаиморасчёты</div>
-            <span class="mm-settlements__readonly">Только просмотр</span>
+            <div class="profile__item-title" id="mm-settlements-title">Состояние расчётов</div>
+            <div class="mm-settlements__badges">
+                <?php if ($isMock): ?>
+                    <span class="mm-settlements__badge mm-settlements__badge--test">Тестовые данные</span>
+                <?php endif; ?>
+                <span class="mm-settlements__badge mm-settlements__badge--readonly">Только просмотр</span>
+            </div>
         </div>
+
+        <?php if ($isMock): ?>
+            <div class="mm-settlements__test-notice" role="status">
+                Демонстрационный пример — сумма не относится к вашему реальному балансу.
+            </div>
+        <?php endif; ?>
 
         <?php if ($available): ?>
             <div class="mm-settlements__card mm-settlements__card--<?=htmlspecialchars($state)?>">
@@ -47,7 +59,7 @@ $formatAmount = static function ($raw): string {
                 </div>
                 <?php $asOf = $formatDate($arResult['as_of'] ?? ''); ?>
                 <?php if ($asOf !== ''): ?>
-                    <div class="mm-settlements__date">Данные на <?=htmlspecialchars($asOf)?></div>
+                    <div class="mm-settlements__date">По данным на <?=htmlspecialchars($asOf)?></div>
                 <?php endif; ?>
                 <?php if ($status === 'stale'): ?>
                     <div class="mm-settlements__warning" role="status">
@@ -79,7 +91,7 @@ $formatAmount = static function ($raw): string {
                 <p>Данные обновляются примерно раз в час. Раздел ничего не списывает и не создаёт платежи.</p>
                 <?php $syncedAt = $formatDate($arResult['synced_at'] ?? ''); ?>
                 <?php if ($syncedAt !== ''): ?>
-                    <p class="mm-settlements__sync">Доставлено на сайт: <?=htmlspecialchars($syncedAt)?></p>
+                    <p class="mm-settlements__sync">Обновлено: <?=htmlspecialchars($syncedAt)?></p>
                 <?php endif; ?>
             </div>
         </details>

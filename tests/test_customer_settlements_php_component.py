@@ -31,9 +31,11 @@ def test_component_bundle_is_server_side_and_fail_closed() -> None:
     assert "BX_COMPOSITE_CACHE" in page
     assert "CACHE_TYPE' => 'N'" in page
     assert "Cache-Control: private, no-store" in component
-    assert "К оплате" in template
+    assert "Задолженность" in template
     assert "Ваш аванс" in template
     assert "Задолженности нет" in template
+    assert "Тестовые данные" in template
+    assert "Обновлено:" in template
     assert "Обновить" not in template
 
 
@@ -41,6 +43,9 @@ def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
     client = (
         BUNDLE / "local/components/mastermobile/customer.settlements/lib/client.php"
     ).read_text(encoding="utf-8")
+    component = (BUNDLE / "local/components/mastermobile/customer.settlements/class.php").read_text(
+        encoding="utf-8"
+    )
     menu_visibility = (
         BUNDLE / "local/include/personal/customer_settlements_menu_visibility.php"
     ).read_text(encoding="utf-8")
@@ -57,6 +62,7 @@ def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
     assert "CURLOPT_SSL_VERIFYHOST => 2" in client
     assert "allowed_hosts" in client
     assert "mock_allowed_user_hashes" in client
+    assert "isMockModeForHost" in client
     assert "hash_hmac('sha256', $siteUserId, $salt)" in client
     assert "hash_equals" in client
     assert "|eligibility" in client
@@ -64,6 +70,7 @@ def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
     assert "time() + 300" in menu_visibility
     assert "customer-settlements-eligibility|" in menu_visibility
     assert "Composite\\Engine::setEnable(false)" in page
+    assert "is_mock" in component
     assert "(float)" not in template
 
 

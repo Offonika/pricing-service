@@ -40,6 +40,7 @@ final class MasterMobileCustomerSettlementsComponent extends CBitrixComponent
             $mockVariant
         );
         unset($result['_transport_error'], $result['_error_code']);
+        $result['is_mock'] = \MasterMobile\CustomerSettlements\Client::isMockModeForHost($host);
         $this->arResult = $result;
         $this->includeComponentTemplate();
     }

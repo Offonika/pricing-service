@@ -226,13 +226,23 @@ final class Client
         return self::normalizeSummary($variants[$variant] ?? $variants['debt']);
     }
 
-    public static function mockQueryEnabledForHost(string $host): bool
+    public static function isMockModeForHost(string $host): bool
     {
         try {
             $config = self::loadConfig();
             return ($config['mode'] ?? null) === 'mock'
-                && ($config['mock_query_enabled'] ?? false) === true
                 && strtolower(preg_replace('/:\d+$/', '', $host)) === 'dev.master-mobile.ru';
+        } catch (\Throwable $error) {
+            return false;
+        }
+    }
+
+    public static function mockQueryEnabledForHost(string $host): bool
+    {
+        try {
+            $config = self::loadConfig();
+            return self::isMockModeForHost($host)
+                && ($config['mock_query_enabled'] ?? false) === true;
         } catch (\Throwable $error) {
             return false;
         }

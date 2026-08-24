@@ -78,6 +78,15 @@ Settlement migrations объединены с фактически активн�
 прежняя БД и runtime на `d9e1f3a5b7c9` доказательством нового 72-часового запуска
 не являются.
 
+## Решение о новом запуске 2026-08-24
+
+Пользователь разрешил создать clean commit текущего проверенного backend-кода,
+собрать из него отдельный immutable staging release и начать новый 72-часовой
+`crm_readonly` shadow-run по этому runbook. Разрешение распространяется только на
+изолированный staging-контур: production, `master-mobile.ru`, тестовые сайты, CRM и
+1С не изменяются; CRM и 1С доступны только для чтения. Установка staging cron
+разрешена только после успешного ручного цикла и `ready` preflight.
+
 ## ОТМЕНЁННЫЙ shadow-run 2026-08-22
 
 - старт: `2026-08-22 20:43 MSK`;
@@ -128,6 +137,7 @@ CUSTOMER_SETTLEMENTS_SUCCESS_RETENTION_DAYS=30
 CUSTOMER_SETTLEMENTS_FAILED_RETENTION_DAYS=7
 CUSTOMER_SETTLEMENTS_JTI_RETENTION_HOURS=24
 CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS=90
+CUSTOMER_SETTLEMENTS_MAPPING_JOB_TIMEOUT_SECONDS=360
 CUSTOMER_SETTLEMENTS_RETRY_DELAY_SECONDS=600
 CUSTOMER_SETTLEMENTS_ALERTS_ENABLED=false
 CUSTOMER_SETTLEMENTS_ALERT_TASK_ID=2883
@@ -147,8 +157,8 @@ Preflight выполняет только локальные проверки к
 или суммы.
 
 ```bash
-export REPO_DIR=/opt/MM/.worktrees/<clean-settlements-release>
-export PYTHON_BIN=/opt/MM/pricing-service/.venv/bin/python
+export REPO_DIR=/opt/MM/releases/pricing-service/<immutable-settlements-release>
+export PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
 export CUSTOMER_SETTLEMENTS_ENV_FILE=/etc/pricing-service/customer-settlements-shadow.env
 
 source "${REPO_DIR}/infra/cron/load_env.sh"
@@ -192,11 +202,12 @@ Whitelist содержит только утверждённые пилотны�
   --expected-pilot-count 10
 ```
 
-Mapping worker обязан полностью прочитать CRM, перепроверить total/первую страницу,
-разрешить hashes через read-only `_Reference54` и активировать только 10 строк
-whitelist. Отсутствующий пилот получает `not_linked`; несколько cluster или
-counterparty дают `ambiguous` и блокируют ready gate. Email, телефон, ФИО, название
-и ИНН не используются как ключ.
+Mapping worker обязан дважды полностью прочитать CRM и подтвердить одинаковые total
+и семантическое содержимое всех страниц, затем разрешить hashes через read-only
+`_Reference54` и активировать только 10 строк whitelist. Проверки только первой
+страницы недостаточно. Отсутствующий пилот получает `not_linked`; несколько cluster
+или counterparty дают `ambiguous` и блокируют ready gate. Email, телефон, ФИО,
+название и ИНН не используются как ключ.
 
 Reconciliation принимает ведомость только за один завершённый день. Технический
 срез — строго `< 00:00:00` следующего дня по Москве, допуск `0,01 RUB`. Команда не
@@ -205,6 +216,9 @@ Reconciliation принимает ведомость только за один 
 точному набору контрагентов, прочитанному SQL-срезу и файлу ведомости. Изменение
 пилота, mapping или настроек источника требует новой ведомости и новой полной
 сверки: одинаковый файл не может повторно разрешить изменившийся контекст.
+Перед сохранением reconciliation получает общий context lock и повторно сверяет
+active mapping и pilot scope; financial worker под тем же lock повторно читает
+последнюю reconciliation непосредственно перед активацией.
 Историческая ведомость `2026-07-29` не заменяет ни одну из новых контрольных
 ведомостей.
 
@@ -230,25 +244,37 @@ revision не удалять.
 
 ## 4. Расписание 72 часов
 
-Перед установкой cron зафиксировать clean commit и использовать один выделенный
-staging checkout. Settlement-обёртки принимают отдельный secret-файл через
-`CUSTOMER_SETTLEMENTS_ENV_FILE`; production `.env` не нужен.
+Перед установкой cron зафиксировать clean commit и собрать из него отдельный
+immutable staging release со своим hash-locked `.venv`. Settlement-обёртки
+принимают отдельный secret-файл через `CUSTOMER_SETTLEMENTS_ENV_FILE`; production
+`.env` не нужен.
 Все обёртки сначала переходят в зафиксированный `REPO_DIR`, безопасно загружают
-env, требуют ожидаемое имя БД и запускают job с внешним timeout. Ошибка `cd`,
+env, требуют ожидаемое имя БД и запускают job с внешним timeout. Mapping имеет
+отдельный лимит 360 секунд для двух полных CRM-read и разрешения hash через 1С;
+остальные jobs используют
+общий лимит. Ошибка `cd`,
 невалидное имя env-переменной, несовпадение БД или timeout завершают job ненулевым
 кодом; checkpoint также ограничен тем же process timeout.
 
 ```cron
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
-REPO_DIR=/opt/MM/.worktrees/<clean-settlements-release>
-PYTHON_BIN=/opt/MM/pricing-service/.venv/bin/python
+REPO_DIR=/opt/MM/releases/pricing-service/customer-settlements-shadow-release
 CUSTOMER_SETTLEMENTS_ENV_FILE=/etc/pricing-service/customer-settlements-shadow.env
 
-5 * * * * ${REPO_DIR}/infra/cron/customer_settlement_mapping_sync.sh >> /var/log/pricing-staging/customer_settlement_mapping_sync.log 2>&1
-17 * * * * ${REPO_DIR}/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing-staging/customer_settlement_financial_sync.log 2>&1
-35 * * * * ${REPO_DIR}/infra/cron/customer_settlement_health.sh >> /var/log/pricing-staging/customer_settlement_health.log 2>&1
-25 3 * * * ${REPO_DIR}/infra/cron/customer_settlement_cleanup.sh >> /var/log/pricing-staging/customer_settlement_cleanup.log 2>&1
+5 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_mapping_sync.sh >> /var/log/pricing-staging/customer_settlement_mapping_sync.log 2>&1
+17 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing-staging/customer_settlement_financial_sync.log 2>&1
+35 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_health.sh >> /var/log/pricing-staging/customer_settlement_health.log 2>&1
+25 3 * * * root ${REPO_DIR}/infra/cron/customer_settlement_cleanup.sh >> /var/log/pricing-staging/customer_settlement_cleanup.log 2>&1
 ```
+
+Tracked-файл `infra/cron/customer_settlements.cron` повторяет этот безопасный
+шаблон именно для `/etc/cron.d` и намеренно указывает на отдельный immutable
+release, а не на mutable-root. `PYTHON_BIN` не задаётся в crontab: обёртка выводит
+его как `${REPO_DIR}/.venv/bin/python` и блокирует попытку переопределить путь через
+secret-файл. До установки путь необходимо заменить на фактически собранный release
+и проверить readback `REPO_DIR`, производного `PYTHON_BIN` и secret-файла.
 
 Это шаблон, а не разрешение устанавливать cron. Установку выполнять отдельно только
 после успешного ручного цикла. Каталог логов должен быть staging-отдельным и не

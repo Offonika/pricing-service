@@ -11,9 +11,12 @@ def main() -> int:
     except Exception:
         result = {"status": "error", "reason": "financial_sync_failed"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    # The cron wrapper retries only a real source/sync error. Configuration and
-    # rollout gates are operator actions and must not create a second noisy run.
-    return 1 if result.get("status") == "error" else 0
+    # Retry source/sync failures and a transient shared/exclusive context collision.
+    # Configuration and rollout gates are operator actions and stay non-retryable.
+    retryable = result.get("status") == "error" or (
+        result.get("status") == "skipped_lock" and result.get("reason") == "context_lock"
+    )
+    return 1 if retryable else 0
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ def _settings() -> Settings:
         customer_settlements_organization_ref=ORG_REF,
         customer_settlements_organization_guid=ORG_GUID,
         customer_settlements_counterparty_inn_field="_Fld611",
+        customer_settlements_correlation_salt="synthetic-audit-salt",
     )
 
 
@@ -114,6 +115,7 @@ def test_manual_import_dry_run_rolls_back_and_apply_materializes_account(
             )
             assert applied["status"] == "applied"
             assert len(str(applied["approval_hash"])) == 64
+            assert applied["approval_hash"] != importer._hash_payload("finance-owner")
             assert session.scalar(select(func.count()).select_from(CustomerAccount)) == 1
             assert session.scalar(select(func.count()).select_from(CustomerAccountSiteBinding)) == 1
             assert (
@@ -135,6 +137,10 @@ def test_manual_import_dry_run_rolls_back_and_apply_materializes_account(
         monkeypatch.setattr(
             "app.workers.customer_settlements.get_application_session_factory",
             lambda: lambda: Session(engine),
+        )
+        monkeypatch.setattr(
+            "app.workers.customer_settlements.assert_expected_application_database",
+            lambda *_args, **_kwargs: None,
         )
         sync_result = run_customer_settlement_mapping_sync(settings=settings)
         assert sync_result["status"] == "unchanged"
@@ -186,6 +192,92 @@ def test_manual_import_apply_requires_matching_dry_run_hashes(
         assert exc.value.code == expected_code
         with Session(engine) as session:
             assert session.scalar(select(func.count()).select_from(CustomerAccount)) == 0
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_manual_import_apply_requires_salted_audit_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        importer,
+        "fetch_manual_customer_settlement_controls",
+        lambda *_args, **_kwargs: (_control(),),
+    )
+    settings = _settings()
+    settings.customer_settlements_correlation_salt = None
+    engine = _engine()
+    try:
+        with (
+            Session(engine) as session,
+            pytest.raises(
+                importer.ManualMappingImportError,
+                match="correlation_salt_not_configured",
+            ),
+        ):
+            importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(),),
+                settings=settings,
+                apply=True,
+                approved_by="finance-owner",
+                approved_input_hash="a" * 64,
+                approved_controls_hash="b" * 64,
+            )
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_manual_import_reports_unknown_commit_state_after_committed_connection_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        importer,
+        "fetch_manual_customer_settlement_controls",
+        lambda *_args, **_kwargs: (_control(),),
+    )
+    engine = _engine()
+
+    class CommitUnknownSession(Session):
+        def commit(self) -> None:
+            super().commit()
+            raise RuntimeError("synthetic connection loss after commit")
+
+    try:
+        with Session(engine) as session:
+            dry_run = importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(),),
+                settings=_settings(),
+                apply=False,
+                approved_by=None,
+            )
+        with (
+            CommitUnknownSession(engine) as session,
+            pytest.raises(
+                importer.ManualMappingImportError,
+                match="mapping_commit_state_unknown",
+            ),
+        ):
+            importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(),),
+                settings=_settings(),
+                apply=True,
+                approved_by="finance-owner",
+                approved_input_hash=str(dry_run["input_hash"]),
+                approved_controls_hash=str(dry_run["controls_hash"]),
+            )
+        with Session(engine) as session:
+            assert (
+                session.scalar(select(func.count()).select_from(CustomerSettlementMappingRevision))
+                == 1
+            )
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()

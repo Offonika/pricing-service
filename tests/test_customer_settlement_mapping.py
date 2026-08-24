@@ -31,8 +31,9 @@ class _HashResult:
 
 
 class _HashConnection:
-    def __init__(self, refs: list[str]):
+    def __init__(self, refs: list[str], sql: list[str]):
         self.refs = refs
+        self.sql = sql
 
     def __enter__(self):
         return self
@@ -40,16 +41,18 @@ class _HashConnection:
     def __exit__(self, exc_type, exc, traceback):
         return False
 
-    def execute(self, _statement):
+    def execute(self, statement):
+        self.sql.append(str(statement))
         return _HashResult(self.refs)
 
 
 class _HashEngine:
     def __init__(self, refs: list[str]):
         self.refs = refs
+        self.sql: list[str] = []
 
     def connect(self):
-        return _HashConnection(self.refs)
+        return _HashConnection(self.refs, self.sql)
 
 
 def _row(
@@ -73,6 +76,7 @@ def _raw_contact(row_id: int) -> dict[str, object]:
         CRM_CLUSTER_FIELD: f"cluster-{row_id}",
         CRM_SITE_USERS_FIELD: [str(1000 + row_id)],
         CRM_COUNTERPARTIES_FIELD: [CP_1],
+        mapping.CRM_SOURCE_SYSTEMS_FIELD: ["box_shop", "onec"],
     }
 
 
@@ -105,6 +109,7 @@ def test_parse_crm_cluster_row_normalizes_multi_fields_and_timestamp() -> None:
             CRM_SITE_USERS_FIELD: [{"VALUE": "101"}, "101", "102"],
             CRM_COUNTERPARTIES_FIELD: [CP_1.upper().replace("0X", "0x")],
             mapping.CRM_UPDATED_AT_FIELD: "2026-07-29T12:00:00+03:00",
+            mapping.CRM_SOURCE_SYSTEMS_FIELD: [" OneC ", "BOX_SHOP", "onec"],
         }
     )
 
@@ -112,6 +117,7 @@ def test_parse_crm_cluster_row_normalizes_multi_fields_and_timestamp() -> None:
     assert row.site_user_ids == ("101", "102")
     assert row.counterparty_refs == (CP_1,)
     assert row.source_updated_at == datetime(2026, 7, 29, 9, 0, tzinfo=UTC)
+    assert row.source_systems == ("box_shop", "onec")
 
 
 def test_invalid_crm_identifiers_make_cluster_ambiguous_without_aborting_sync() -> None:
@@ -150,15 +156,18 @@ def test_hashed_onec_counterparty_id_resolves_to_exact_raw_ref() -> None:
     assert row.counterparty_refs == ()
     assert row.counterparty_hashes == (value_hash,)
     assert row.has_invalid_counterparty_ref is False
+    engine = _HashEngine([CP_1])
     resolved = resolve_crm_counterparty_hashes(
         [row],
-        onec_engine=_HashEngine([CP_1]),
+        onec_engine=engine,
     )
     assert resolved[0].counterparty_refs == (CP_1,)
     entries = build_mapping_entries(resolved)
     assert len(entries) == 1
     assert entries[0].status == "linked"
     assert entries[0].counterparty_ref == CP_1
+    assert "_Marked = 0x00" in engine.sql[0]
+    assert "_Folder = 0x01" in engine.sql[0]
 
 
 def test_unresolved_onec_counterparty_hash_is_ambiguous() -> None:
@@ -207,6 +216,21 @@ def test_fetch_crm_cluster_rows_checks_complete_pagination(monkeypatch) -> None:
             "total": 51,
             "next": 50,
         },
+        {
+            "result": {
+                "result": {
+                    "page_1": [
+                        {
+                            "ID": "51",
+                            CRM_CLUSTER_FIELD: "cluster-b",
+                            CRM_SITE_USERS_FIELD: ["102"],
+                            CRM_COUNTERPARTIES_FIELD: [CP_2],
+                        }
+                    ]
+                },
+                "result_error": {},
+            }
+        },
     ]
 
     def fake_post_json(
@@ -236,6 +260,7 @@ def test_fetch_crm_cluster_rows_checks_complete_pagination(monkeypatch) -> None:
     assert "crm.contact.list?" in calls[1][1]["cmd"]["page_1"]
     assert "start=-1" in calls[1][1]["cmd"]["page_1"]
     assert calls[2][0] == "https://example.test/rest/1/token/crm.contact.list.json"
+    assert calls[3][0] == "https://example.test/rest/1/token/batch.json"
 
 
 def test_fetch_crm_cluster_rows_rejects_incomplete_pages(
@@ -251,6 +276,44 @@ def test_fetch_crm_cluster_rows_rejects_incomplete_pages(
         match="crm_mapping_incomplete_pagination",
     ):
         fetch_crm_cluster_rows(webhook_url="https://example.test/rest/1/token", timeout_seconds=2)
+
+
+def test_fetch_crm_cluster_rows_rejects_empty_source_before_mapping_revoke(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        mapping,
+        "_post_json",
+        lambda *args, **kwargs: {"result": [], "total": 0},
+    )
+    with pytest.raises(
+        CustomerSettlementMappingSourceError,
+        match="crm_mapping_source_is_empty",
+    ):
+        fetch_crm_cluster_rows(
+            webhook_url="https://example.test/rest/1/token",
+            timeout_seconds=2,
+        )
+
+
+@pytest.mark.parametrize("invalid_total", (True, False, 1.5, -1, None, "1.5"))
+def test_fetch_crm_cluster_rows_rejects_non_integer_total(
+    monkeypatch,
+    invalid_total: object,
+) -> None:
+    monkeypatch.setattr(
+        mapping,
+        "_post_json",
+        lambda *args, **kwargs: {"result": [_raw_contact(1)], "total": invalid_total},
+    )
+    expected_error = (
+        "crm_mapping_total_is_missing" if invalid_total is None else "crm_mapping_total_is_invalid"
+    )
+    with pytest.raises(CustomerSettlementMappingSourceError, match=expected_error):
+        fetch_crm_cluster_rows(
+            webhook_url="https://example.test/rest/1/token",
+            timeout_seconds=2,
+        )
 
 
 def test_fetch_crm_cluster_rows_rejects_total_change_during_pagination(
@@ -272,6 +335,12 @@ def test_fetch_crm_cluster_rows_rejects_total_change_during_pagination(
             "result": [_raw_contact(row_id) for row_id in range(1, 51)],
             "total": 52,
             "next": 50,
+        },
+        {
+            "result": {
+                "result": {"page_1": [_raw_contact(51), _raw_contact(52)]},
+                "result_error": {},
+            }
         },
     ]
     call_count = 0
@@ -318,3 +387,105 @@ def test_fetch_crm_cluster_rows_rejects_duplicate_rows(monkeypatch) -> None:
         match="crm_mapping_duplicate_or_missing_id",
     ):
         fetch_crm_cluster_rows(webhook_url="https://example.test/rest/1/token", timeout_seconds=2)
+
+
+def test_fetch_crm_cluster_rows_rejects_later_page_change_with_same_total(
+    monkeypatch,
+) -> None:
+    first_page = {
+        "result": [_raw_contact(row_id) for row_id in range(1, 51)],
+        "total": 51,
+        "next": 50,
+    }
+    first_last_row = {
+        "result": {
+            "result": {"page_1": [_raw_contact(51)]},
+            "result_error": {},
+        }
+    }
+    changed_row = _raw_contact(51)
+    changed_row[mapping.CRM_SOURCE_SYSTEMS_FIELD] = ["box_shop"]
+    responses = [
+        first_page,
+        first_last_row,
+        first_page,
+        {
+            "result": {
+                "result": {"page_1": [changed_row]},
+                "result_error": {},
+            }
+        },
+    ]
+    call_count = 0
+
+    def changed_later_page(*args, **kwargs):
+        nonlocal call_count
+        value = responses[call_count]
+        call_count += 1
+        return value
+
+    monkeypatch.setattr(mapping, "_post_json", changed_later_page)
+    with pytest.raises(
+        CustomerSettlementMappingSourceError,
+        match="crm_mapping_source_changed_during_read",
+    ):
+        fetch_crm_cluster_rows(
+            webhook_url="https://example.test/rest/1/token",
+            timeout_seconds=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "webhook_url",
+    (
+        "http://example.test/rest/1/token",
+        "https://user:password@example.test/rest/1/token",
+        "https://example.test/rest/1/token?query=1",
+        "https://example.test/rest/1/token#fragment",
+        "https://[broken/rest/1/token",
+        "https://example.test:invalid/rest/1/token",
+    ),
+)
+def test_fetch_crm_cluster_rows_rejects_unsafe_webhook_url(
+    monkeypatch,
+    webhook_url: str,
+) -> None:
+    monkeypatch.setattr(
+        mapping,
+        "_post_json",
+        lambda *args, **kwargs: pytest.fail("unsafe URL must fail before HTTP"),
+    )
+    with pytest.raises(
+        CustomerSettlementMappingSourceError,
+        match="crm_mapping_webhook_is_invalid",
+    ):
+        fetch_crm_cluster_rows(webhook_url=webhook_url, timeout_seconds=2)
+
+
+def test_crm_http_reader_rejects_oversized_response(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, size: int) -> bytes:
+            assert size == mapping._MAX_CRM_RESPONSE_BYTES + 1
+            return b"x" * size
+
+    monkeypatch.setattr(
+        mapping.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse(),
+    )
+
+    with pytest.raises(
+        CustomerSettlementMappingSourceError,
+        match="crm_mapping_source_response_too_large",
+    ):
+        mapping._post_json(
+            "https://example.test/rest/1/token/crm.contact.list.json",
+            {},
+            timeout_seconds=2,
+        )

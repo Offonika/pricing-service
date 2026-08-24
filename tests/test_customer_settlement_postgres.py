@@ -4,6 +4,7 @@ import importlib.util
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from threading import Barrier, Event
 from uuid import uuid4
@@ -11,7 +12,7 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
@@ -19,23 +20,33 @@ from sqlalchemy.pool import NullPool
 from app.core.config import Settings
 from app.models.customer_settlement import (
     CustomerSettlementAlertOutbox,
+    CustomerSettlementAlertState,
     CustomerSettlementAssertionJti,
     CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
 from app.services import customer_settlement_alerts as settlement_alerts
+from app.services.customer_settlement_alerts import ALERT_CHANNEL
 from app.services.customer_settlement_auth import (
     CustomerSettlementAuthError,
     create_customer_settlement_assertion,
     verify_and_consume_customer_settlement_assertion,
 )
+from app.services.customer_settlement_reconciliation import (
+    CustomerSettlementReconciliationResult,
+    store_reconciliation_result,
+)
 from app.services.customer_settlements import (
+    CustomerSettlementContextBusyError,
     CustomerSettlementRuntimeGuardError,
     SettlementBalanceInput,
     activate_financial_revision,
     assert_expected_application_database,
     cleanup_customer_settlements,
+    customer_settlement_health_metrics,
     mark_financial_revision_failed,
+    try_customer_settlement_context_lock,
+    try_customer_settlement_context_read_lock,
 )
 from app.workers.customer_settlements import _advisory_lock
 
@@ -235,6 +246,11 @@ def test_postgres_runtime_database_guard_checks_actual_database(postgres_engine)
     with Session(postgres_engine) as session:
         actual_database = session.scalar(text("SELECT current_database()"))
         assert isinstance(actual_database, str)
+        with pytest.raises(CustomerSettlementRuntimeGuardError):
+            assert_expected_application_database(
+                session,
+                expected_database_name=None,
+            )
         assert_expected_application_database(
             session,
             expected_database_name=actual_database,
@@ -301,10 +317,13 @@ def test_postgres_advisory_lock_excludes_second_worker(postgres_engine) -> None:
                 second, "customer-settlements:postgres-integration"
             ) as second_acquired:
                 assert second_acquired is False
+        first.commit()
+        second.rollback()
         with _advisory_lock(
             second, "customer-settlements:postgres-integration"
         ) as acquired_after_release:
             assert acquired_after_release is True
+        second.rollback()
 
 
 def test_postgres_concurrent_jti_consumption_allows_one_request(postgres_engine) -> None:
@@ -431,6 +450,17 @@ def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> No
                     matched_count=1,
                     mismatch_count=0,
                     max_abs_difference="0.00",
+                    created_at=BASE_TIME,
+                ),
+                CustomerSettlementReconciliationRun(
+                    report_date=date(2026, 6, 21),
+                    as_of=old_time,
+                    report_hash="f" * 64,
+                    status="mismatched",
+                    expected_count=1,
+                    matched_count=0,
+                    mismatch_count=1,
+                    max_abs_difference="0.02",
                     created_at=old_time,
                 ),
                 CustomerSettlementAlertOutbox(
@@ -465,5 +495,190 @@ def test_postgres_retention_never_deletes_active_revision(postgres_engine) -> No
         assert active.status == "active"
         assert result["financial_revisions"] == 2
         assert result["assertion_jti"] == 1
-        assert result["reconciliation_runs"] == 1
+        assert result["reconciliation_runs"] == 2
         assert result["alert_outbox"] == 1
+        assert (
+            session.scalar(select(func.count()).select_from(CustomerSettlementReconciliationRun))
+            == 0
+        )
+
+
+def test_postgres_concurrent_reconciliation_store_is_idempotent(postgres_engine) -> None:
+    barrier = Barrier(2)
+    result = CustomerSettlementReconciliationResult(
+        report_date=date(2026, 8, 22),
+        as_of=datetime(2026, 8, 22, 21, 0, tzinfo=UTC),
+        report_hash=uuid4().hex * 2,
+        context_hash=uuid4().hex * 2,
+        source_hash=uuid4().hex * 2,
+        input_hash=uuid4().hex * 2,
+        status="matched",
+        expected_count=1,
+        matched_count=1,
+        mismatch_count=0,
+        max_abs_difference=Decimal("0.00"),
+    )
+
+    class ReconciliationBarrierSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._scalar_calls = 0
+
+        def scalar(self, statement, *args, **kwargs):
+            value = super().scalar(statement, *args, **kwargs)
+            self._scalar_calls += 1
+            if self._scalar_calls == 1:
+                barrier.wait(timeout=5)
+            return value
+
+    def store() -> int:
+        with ReconciliationBarrierSession(postgres_engine) as session:
+            row = store_reconciliation_result(session, result)
+            row_id = row.id
+            session.commit()
+            return row_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        row_ids = list(executor.map(lambda _: store(), range(2)))
+
+    assert len(set(row_ids)) == 1
+    with Session(postgres_engine) as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(CustomerSettlementReconciliationRun)
+                .where(CustomerSettlementReconciliationRun.input_hash == result.input_hash)
+            )
+            == 1
+        )
+
+
+def test_postgres_concurrent_health_enqueue_is_idempotent(postgres_engine) -> None:
+    with Session(postgres_engine) as session:
+        session.execute(
+            delete(CustomerSettlementAlertState).where(
+                CustomerSettlementAlertState.channel == ALERT_CHANNEL
+            )
+        )
+        session.commit()
+
+    barrier = Barrier(2)
+    metrics = {
+        "freshness_status": "critical",
+        "mapping_status": "ok",
+        "expected_rows": 1,
+        "loaded_rows": 1,
+        "zero_rows": 0,
+    }
+
+    class AlertBarrierSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._scalar_calls = 0
+
+        def scalar(self, statement, *args, **kwargs):
+            value = super().scalar(statement, *args, **kwargs)
+            self._scalar_calls += 1
+            if self._scalar_calls == 1:
+                barrier.wait(timeout=5)
+            return value
+
+    def enqueue() -> str | None:
+        with AlertBarrierSession(postgres_engine) as session:
+            row = settlement_alerts.enqueue_health_alert_if_needed(
+                session,
+                metrics=metrics,
+                repeat_seconds=21600,
+                now=BASE_TIME + timedelta(days=1),
+            )
+            event_key = row.event_key if row is not None else None
+            session.commit()
+            return event_key
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        event_keys = list(executor.map(lambda _: enqueue(), range(2)))
+
+    created_keys = [value for value in event_keys if value is not None]
+    assert len(created_keys) == 1
+    with Session(postgres_engine) as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(CustomerSettlementAlertState)
+                .where(CustomerSettlementAlertState.channel == ALERT_CHANNEL)
+            )
+            == 1
+        )
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(CustomerSettlementAlertOutbox)
+                .where(CustomerSettlementAlertOutbox.event_key == created_keys[0])
+            )
+            == 1
+        )
+
+
+def test_postgres_context_lock_blocks_activation_and_false_green_health(
+    postgres_engine,
+) -> None:
+    with Session(postgres_engine) as writer, Session(postgres_engine) as contender:
+        assert try_customer_settlement_context_lock(writer) is True
+        assert try_customer_settlement_context_lock(contender) is False
+
+        with pytest.raises(CustomerSettlementContextBusyError, match="context_busy"):
+            activate_financial_revision(
+                contender,
+                organization_ref=ORG,
+                as_of=BASE_TIME + timedelta(days=2),
+                source_db_time=BASE_TIME + timedelta(days=2),
+                source_mode="context-lock-regression",
+                expected_counterparty_refs=(CP_1,),
+                balances=(SettlementBalanceInput(CP_1, Decimal("10.00")),),
+            )
+        contender.rollback()
+
+        with pytest.raises(CustomerSettlementContextBusyError, match="context_busy"):
+            cleanup_customer_settlements(
+                contender,
+                successful_retention_days=30,
+                failed_retention_days=7,
+                jti_retention_hours=24,
+                now=BASE_TIME + timedelta(days=40),
+            )
+        contender.rollback()
+
+        metrics = customer_settlement_health_metrics(
+            contender,
+            stale_after_seconds=7200,
+            hide_after_seconds=21600,
+            mapping_stale_after_seconds=7200,
+            now=BASE_TIME,
+        )
+        assert metrics["freshness_status"] == "critical"
+        assert metrics["mapping_status"] == "critical"
+        assert metrics["context_stable"] is False
+
+        writer.commit()
+        contender.rollback()
+        assert try_customer_settlement_context_lock(contender) is True
+        contender.rollback()
+
+
+def test_postgres_context_read_lock_allows_parallel_readers_and_blocks_writer(
+    postgres_engine,
+) -> None:
+    with (
+        Session(postgres_engine) as first_reader,
+        Session(postgres_engine) as second_reader,
+        Session(postgres_engine) as writer,
+    ):
+        assert try_customer_settlement_context_read_lock(first_reader) is True
+        assert try_customer_settlement_context_read_lock(second_reader) is True
+        assert try_customer_settlement_context_lock(writer) is False
+
+        first_reader.commit()
+        second_reader.commit()
+        writer.rollback()
+        assert try_customer_settlement_context_lock(writer) is True
+        writer.rollback()

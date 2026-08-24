@@ -25,6 +25,7 @@ from app.services.customer_settlement_source import (
     fetch_manual_customer_settlement_controls,
 )
 from app.services.customer_settlements import (
+    CustomerSettlementContextBusyError,
     CustomerSettlementRuntimeGuardError,
     SettlementMappingInput,
     activate_mapping_revision,
@@ -55,6 +56,33 @@ class ManualMappingImportError(RuntimeError):
         super().__init__(code)
 
 
+def _rollback_quietly(session: Session | None) -> None:
+    if session is None:
+        return
+    try:
+        session.rollback()
+    except Exception:
+        pass
+
+
+def _close_quietly(session: Session | None) -> None:
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception:
+        pass
+
+
+def _dispose_quietly(engine: Engine | None) -> None:
+    if engine is None:
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class ManualMappingRow:
     site_user_id: str
@@ -78,6 +106,13 @@ def _hash_payload(payload: Any) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _audit_identity_hash(value: object, salt: str | None) -> str:
+    normalized_salt = str(salt or "").strip()
+    if not normalized_salt:
+        raise ManualMappingImportError("correlation_salt_not_configured")
+    return hashlib.sha256(f"{normalized_salt}:{_canonical_text(value)}".encode()).hexdigest()
 
 
 def load_manual_mapping_csv(path: Path) -> tuple[ManualMappingRow, ...]:
@@ -191,6 +226,8 @@ def import_manual_customer_settlement_mappings(
 ) -> dict[str, object]:
     if apply and not _canonical_text(approved_by):
         raise ManualMappingImportError("approved_by_required")
+    if apply and not str(settings.customer_settlements_correlation_salt or "").strip():
+        raise ManualMappingImportError("correlation_salt_not_configured")
     if apply and (
         not _SHA256_RE.fullmatch(str(approved_input_hash or "").strip().lower())
         or not _SHA256_RE.fullmatch(str(approved_controls_hash or "").strip().lower())
@@ -278,11 +315,15 @@ def import_manual_customer_settlement_mappings(
         if revision.source_name != MANUAL_SOURCE_NAME or loaded_count != len(rows):
             raise ManualMappingImportError("mapping_readback_failed")
         if apply:
-            session.commit()
+            try:
+                session.commit()
+            except Exception as exc:
+                _rollback_quietly(session)
+                raise ManualMappingImportError("mapping_commit_state_unknown") from exc
         else:
             session.rollback()
     except Exception:
-        session.rollback()
+        _rollback_quietly(session)
         raise
 
     result: dict[str, object] = {
@@ -296,7 +337,10 @@ def import_manual_customer_settlement_mappings(
         "mapping_changed": bool(activated),
     }
     if apply:
-        result["approval_hash"] = _hash_payload(_canonical_text(approved_by))
+        result["approval_hash"] = _audit_identity_hash(
+            approved_by,
+            settings.customer_settlements_correlation_salt,
+        )
     return result
 
 
@@ -349,10 +393,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
-    except (ManualMappingImportError, CustomerSettlementSourceError) as exc:
-        if session is not None:
-            session.rollback()
-        error_code = exc.code if isinstance(exc, ManualMappingImportError) else str(exc)[:96]
+    except (
+        ManualMappingImportError,
+        CustomerSettlementContextBusyError,
+        CustomerSettlementSourceError,
+    ) as exc:
+        _rollback_quietly(session)
+        error_code = (
+            exc.code
+            if isinstance(exc, ManualMappingImportError)
+            else (
+                "settlement_context_busy"
+                if isinstance(exc, CustomerSettlementContextBusyError)
+                else str(exc)[:96]
+            )
+        )
         print(
             json.dumps(
                 {"status": "blocked", "mode": mode, "error_code": error_code},
@@ -362,8 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except CustomerSettlementRuntimeGuardError:
-        if session is not None:
-            session.rollback()
+        _rollback_quietly(session)
         print(
             json.dumps(
                 {
@@ -377,8 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except Exception:
-        if session is not None:
-            session.rollback()
+        _rollback_quietly(session)
         print(
             json.dumps(
                 {"status": "blocked", "mode": mode, "error_code": "mapping_import_failed"},
@@ -388,10 +441,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     finally:
-        if session is not None:
-            session.close()
-        if onec_engine is not None:
-            onec_engine.dispose()
+        _close_quietly(session)
+        _dispose_quietly(onec_engine)
 
 
 if __name__ == "__main__":

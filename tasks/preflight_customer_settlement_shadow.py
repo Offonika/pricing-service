@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import distinct, func, select, text
@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.infrastructure.db import get_application_session_factory
 from app.models.customer_settlement import (
     CustomerAccount,
+    CustomerAccountSiteBinding,
     CustomerAccountSourceBinding,
     CustomerSettlementBalance,
     CustomerSettlementMappingEntry,
@@ -21,13 +22,22 @@ from app.models.customer_settlement import (
     CustomerSettlementReconciliationRun,
     CustomerSettlementRevision,
 )
+from app.services.customer_settlement_mapping import (
+    CustomerSettlementMappingSourceError,
+    validate_crm_mapping_webhook_url,
+)
 from app.services.customer_settlement_reconciliation import (
     CustomerSettlementReconciliationError,
     customer_settlement_reconciliation_context_hash,
+    customer_settlement_reconciliation_input_hash,
+    customer_settlement_reconciliation_run_is_current,
+    latest_customer_settlement_reconciliation,
 )
 from app.services.customer_settlements import (
+    CustomerSettlementContextBusyError,
     active_pilot_counterparty_refs,
     customer_settlement_health_metrics,
+    try_customer_settlement_context_read_lock,
 )
 
 EXPECTED_ALEMBIC_REVISION = "6e8f0a2b4c6d"
@@ -40,6 +50,50 @@ DEFAULT_EXPECTED_ORGANIZATION_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
 
 def _check(name: str, ok: bool) -> dict[str, object]:
     return {"name": name, "ok": bool(ok)}
+
+
+def _reconciliation_difference_is_acceptable(value: Any) -> bool:
+    try:
+        difference = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return difference.is_finite() and Decimal("0") <= difference <= Decimal("0.01")
+
+
+def _reconciliation_hashes_are_complete(
+    reconciliation: CustomerSettlementReconciliationRun | None,
+) -> bool:
+    if reconciliation is None:
+        return False
+    report_hash = str(reconciliation.report_hash or "")
+    context_hash = str(reconciliation.context_hash or "")
+    source_hash = str(reconciliation.source_hash or "")
+    input_hash = str(reconciliation.input_hash or "")
+    try:
+        expected_input_hash = customer_settlement_reconciliation_input_hash(
+            report_hash=report_hash,
+            context_hash=context_hash,
+            source_hash=source_hash,
+        )
+    except CustomerSettlementReconciliationError:
+        return False
+    return (
+        all(
+            value == value.strip().lower()
+            for value in (report_hash, context_hash, source_hash, input_hash)
+        )
+        and input_hash == expected_input_hash
+    )
+
+
+def _crm_mapping_source_is_configured(settings: Settings) -> bool:
+    if settings.customer_settlements_mapping_mode != "crm_readonly":
+        return False
+    try:
+        validate_crm_mapping_webhook_url(settings.customer_settlements_crm_webhook_url)
+    except CustomerSettlementMappingSourceError:
+        return False
+    return True
 
 
 def _configuration_checks(
@@ -83,8 +137,7 @@ def _configuration_checks(
         _check("onec_source_configured", bool(settings.onec_database_url)),
         _check(
             "mapping_source_configured",
-            settings.customer_settlements_mapping_mode == "crm_readonly"
-            and bool(settings.customer_settlements_crm_webhook_url),
+            _crm_mapping_source_is_configured(settings),
         ),
         _check(
             "organization_matches_reconciled_pilot",
@@ -127,10 +180,16 @@ def _configuration_checks(
             and settings.customer_settlements_failed_retention_days == 7
             and settings.customer_settlements_jti_retention_hours == 24,
         ),
+        _check(
+            "alert_repeat_matches_contract",
+            settings.customer_settlements_alert_repeat_seconds == 21600,
+        ),
     ]
 
 
 def _collect_database_facts(session: Session, settings: Settings) -> dict[str, Any]:
+    if not try_customer_settlement_context_read_lock(session):
+        raise CustomerSettlementContextBusyError("customer_settlement_context_busy")
     bind = session.get_bind()
     alembic_revisions = tuple(
         session.execute(text("SELECT version_num FROM alembic_version")).scalars()
@@ -143,14 +202,7 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
     active_financial = session.scalar(
         select(CustomerSettlementRevision).where(CustomerSettlementRevision.status == "active")
     )
-    latest_reconciliation = session.scalar(
-        select(CustomerSettlementReconciliationRun)
-        .order_by(
-            CustomerSettlementReconciliationRun.created_at.desc(),
-            CustomerSettlementReconciliationRun.id.desc(),
-        )
-        .limit(1)
-    )
+    latest_reconciliation = latest_customer_settlement_reconciliation(session)
     pilot_counterparty_refs = active_pilot_counterparty_refs(session)
     expected_reconciliation_context_hash = None
     if active_mapping is not None and pilot_counterparty_refs:
@@ -189,11 +241,16 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
         "latest_reconciliation_context_hash": (
             latest_reconciliation.context_hash if latest_reconciliation is not None else None
         ),
-        "latest_reconciliation_has_complete_hashes": bool(
-            latest_reconciliation is not None
-            and latest_reconciliation.context_hash
-            and latest_reconciliation.source_hash
-            and latest_reconciliation.input_hash
+        "latest_reconciliation_has_complete_hashes": (
+            _reconciliation_hashes_are_complete(latest_reconciliation)
+        ),
+        "latest_reconciliation_is_current": bool(
+            expected_reconciliation_context_hash is not None
+            and customer_settlement_reconciliation_run_is_current(
+                latest_reconciliation,
+                context_hash=expected_reconciliation_context_hash,
+                expected_count=len(pilot_counterparty_refs),
+            )
         ),
         "reconciliation_expected_count": (
             latest_reconciliation.expected_count if latest_reconciliation is not None else 0
@@ -220,10 +277,32 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
             .where(CustomerSettlementMappingRevision.status == "active")
         )
         or 0,
+        "mapping_revisions_total": session.scalar(
+            select(func.count()).select_from(CustomerSettlementMappingRevision)
+        )
+        or 0,
         "active_financial_revisions": session.scalar(
             select(func.count())
             .select_from(CustomerSettlementRevision)
             .where(CustomerSettlementRevision.status == "active")
+        )
+        or 0,
+        "financial_revisions_total": session.scalar(
+            select(func.count()).select_from(CustomerSettlementRevision)
+        )
+        or 0,
+        "reconciliation_runs_total": session.scalar(
+            select(func.count()).select_from(CustomerSettlementReconciliationRun)
+        )
+        or 0,
+        "customer_accounts_total": session.scalar(select(func.count()).select_from(CustomerAccount))
+        or 0,
+        "site_bindings_total": session.scalar(
+            select(func.count()).select_from(CustomerAccountSiteBinding)
+        )
+        or 0,
+        "source_bindings_total": session.scalar(
+            select(func.count()).select_from(CustomerAccountSourceBinding)
         )
         or 0,
         "loading_mapping_revisions": session.scalar(
@@ -361,6 +440,11 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
         stale_after_seconds=7200,
         hide_after_seconds=21600,
         mapping_stale_after_seconds=7200,
+        expected_source_mode=settings.customer_settlements_source_mode,
+        expected_mapping_source_name="bitrix_crm_customer_cluster",
+        expected_source_system="ut103",
+        expected_organization_ref=settings.customer_settlements_organization_ref,
+        expected_organization_guid=settings.customer_settlements_organization_guid,
     )
     return facts
 
@@ -396,6 +480,24 @@ def _database_checks(
                 _check(
                     "no_active_financial_before_first_sync",
                     facts["active_financial_revisions"] == 0,
+                ),
+                _check(
+                    "no_mapping_revisions_before_first_sync",
+                    facts["mapping_revisions_total"] == 0,
+                ),
+                _check(
+                    "no_financial_revisions_before_first_sync",
+                    facts["financial_revisions_total"] == 0,
+                ),
+                _check(
+                    "no_reconciliation_runs_before_first_sync",
+                    facts["reconciliation_runs_total"] == 0,
+                ),
+                _check(
+                    "no_durable_customer_bindings_before_first_sync",
+                    facts["customer_accounts_total"] == 0
+                    and facts["site_bindings_total"] == 0
+                    and facts["source_bindings_total"] == 0,
                 ),
                 _check("no_mapping_rows_before_first_sync", facts["mapping_entries_total"] == 0),
                 _check(
@@ -438,12 +540,14 @@ def _database_checks(
             ),
             _check(
                 "latest_reconciliation_is_complete_match",
-                facts["latest_reconciliation_has_complete_hashes"] is True
+                facts["latest_reconciliation_is_current"] is True
+                and facts["latest_reconciliation_has_complete_hashes"] is True
                 and facts["reconciliation_expected_count"] == facts["pilot_counterparties"]
                 and facts["reconciliation_matched_count"] == facts["pilot_counterparties"]
                 and facts["reconciliation_mismatch_count"] == 0
-                and facts["latest_reconciliation_max_abs_difference"] is not None
-                and Decimal(facts["latest_reconciliation_max_abs_difference"]) <= Decimal("0.01"),
+                and _reconciliation_difference_is_acceptable(
+                    facts["latest_reconciliation_max_abs_difference"]
+                ),
             ),
             _check(
                 "financial_revision_is_complete",
@@ -546,9 +650,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.expected_pilot_count <= 0:
         parser.error("--expected-pilot-count must be positive")
 
-    settings = get_settings()
-    session = get_application_session_factory()()
+    session = None
     try:
+        settings = get_settings()
+        session = get_application_session_factory()()
         report = build_shadow_preflight_report(
             settings,
             session,
@@ -559,7 +664,11 @@ def main(argv: list[str] | None = None) -> int:
             expected_pilot_count=args.expected_pilot_count,
         )
     except Exception as exc:
-        session.rollback()
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
         report = {
             "status": "blocked",
             "phase": args.phase,
@@ -568,8 +677,15 @@ def main(argv: list[str] | None = None) -> int:
             "error_type": type(exc).__name__,
         }
     finally:
-        session.rollback()
-        session.close()
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            try:
+                session.close()
+            except Exception:
+                pass
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report["status"] == "ready" else 2
 

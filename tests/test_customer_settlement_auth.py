@@ -23,7 +23,7 @@ def _settings(**overrides: object) -> Settings:
         "customer_settlements_assertion_issuer": "master-mobile.ru",
         "customer_settlements_assertion_audience": ("pricing-service:customer-settlements"),
         "customer_settlements_assertion_active_kid": "active-1",
-        "customer_settlements_assertion_active_secret": "synthetic-active-secret",
+        "customer_settlements_assertion_active_secret": "synthetic-active-secret-32-bytes",
         "customer_settlements_assertion_previous_kid": None,
         "customer_settlements_assertion_previous_secret": None,
         "customer_settlements_assertion_ttl_seconds": 60,
@@ -114,34 +114,101 @@ def test_documented_assertion_contract_vector_is_stable() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("create_overrides", "verify_overrides"),
-    [
-        ({"customer_settlements_assertion_issuer": "wrong.example"}, {}),
-        (
-            {"customer_settlements_assertion_audience": "wrong-audience"},
-            {},
-        ),
-    ],
-)
+@pytest.mark.parametrize(("claim", "value"), [("iss", "wrong.example"), ("aud", "wrong")])
 def test_assertion_rejects_wrong_issuer_or_audience(
     db_session: Session,
-    create_overrides: dict[str, object],
-    verify_overrides: dict[str, object],
+    claim: str,
+    value: str,
 ) -> None:
+    settings = _settings()
     token, _ = create_customer_settlement_assertion(
         site_user_id="123",
-        settings=_settings(**create_overrides),
+        settings=settings,
         now=1_000,
         jti="synthetic_jti_123456789",
     )
+    token = _rewrite_token(token, settings=settings, payload_changes={claim: value})
     with pytest.raises(CustomerSettlementAuthError):
         verify_and_consume_customer_settlement_assertion(
             db_session,
             token=token,
             source_ip="127.0.0.1",
-            settings=_settings(**verify_overrides),
+            settings=settings,
             now=1_001,
+        )
+
+
+@pytest.mark.parametrize(
+    "payload_changes",
+    (
+        {"site_user_id": 123},
+        {"sub": 123},
+        {"jti": 1234567890123456},
+    ),
+)
+def test_assertion_rejects_non_string_identity_claims(
+    db_session: Session,
+    payload_changes: dict[str, object],
+) -> None:
+    settings = _settings()
+    token, _ = create_customer_settlement_assertion(
+        site_user_id="123",
+        settings=settings,
+        now=1_000,
+        jti="synthetic_jti_123456789",
+    )
+    token = _rewrite_token(token, settings=settings, payload_changes=payload_changes)
+
+    with pytest.raises(CustomerSettlementAuthError):
+        verify_and_consume_customer_settlement_assertion(
+            db_session,
+            token=token,
+            source_ip="127.0.0.1",
+            settings=settings,
+            now=1_001,
+        )
+
+
+def test_assertion_rejects_noncanonical_signature_without_type_error(
+    db_session: Session,
+) -> None:
+    settings = _settings()
+    token, _ = create_customer_settlement_assertion(
+        site_user_id="123",
+        settings=settings,
+        now=1_000,
+        jti="synthetic_jti_123456789",
+    )
+    header, payload, _signature = token.split(".")
+
+    with pytest.raises(CustomerSettlementAuthError):
+        verify_and_consume_customer_settlement_assertion(
+            db_session,
+            token=f"{header}.{payload}.{'я' * 43}",
+            source_ip="127.0.0.1",
+            settings=settings,
+            now=1_001,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"customer_settlements_assertion_issuer": "wrong.example"},
+        {"customer_settlements_assertion_audience": "wrong-audience"},
+        {"customer_settlements_assertion_active_secret": "too-short"},
+        {"customer_settlements_assertion_active_secret": (" synthetic-active-secret-32-bytes")},
+        {"customer_settlements_assertion_active_kid": "invalid key id"},
+        {"customer_settlements_assertion_previous_secret": "orphaned-previous-secret-value"},
+    ),
+)
+def test_assertion_rejects_unsafe_runtime_key_configuration(overrides: dict[str, object]) -> None:
+    with pytest.raises(CustomerSettlementAuthConfigError):
+        create_customer_settlement_assertion(
+            site_user_id="123",
+            settings=_settings(**overrides),
+            now=1_000,
+            jti="synthetic_jti_123456789",
         )
 
 
@@ -248,7 +315,7 @@ def test_assertion_rejects_expired_future_and_invalid_not_before(
 def test_assertion_accepts_previous_rotation_key(db_session: Session) -> None:
     old_settings = _settings(
         customer_settlements_assertion_active_kid="old-key",
-        customer_settlements_assertion_active_secret="old-secret",
+        customer_settlements_assertion_active_secret="synthetic-old-secret-32-bytes!",
     )
     token, _ = create_customer_settlement_assertion(
         site_user_id="123",
@@ -258,9 +325,9 @@ def test_assertion_accepts_previous_rotation_key(db_session: Session) -> None:
     )
     rotated_settings = _settings(
         customer_settlements_assertion_active_kid="new-key",
-        customer_settlements_assertion_active_secret="new-secret",
+        customer_settlements_assertion_active_secret="synthetic-new-secret-32-bytes!",
         customer_settlements_assertion_previous_kid="old-key",
-        customer_settlements_assertion_previous_secret="old-secret",
+        customer_settlements_assertion_previous_secret="synthetic-old-secret-32-bytes!",
     )
 
     identity = verify_and_consume_customer_settlement_assertion(
@@ -292,7 +359,7 @@ def test_assertion_rejects_unlisted_ip_and_duplicate_key_ids(db_session: Session
 
     duplicate = _settings(
         customer_settlements_assertion_previous_kid="active-1",
-        customer_settlements_assertion_previous_secret="previous-secret",
+        customer_settlements_assertion_previous_secret="synthetic-previous-secret-32bytes",
     )
     with pytest.raises(CustomerSettlementAuthConfigError):
         create_customer_settlement_assertion(

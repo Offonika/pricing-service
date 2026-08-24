@@ -49,7 +49,7 @@ depends_on:
   - docs/BI.Receivables.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-23"
+updated_at: "2026-08-24"
 ---
 
 # Назначение
@@ -251,12 +251,18 @@ Claims:
 Инварианты:
 
 - `sub == site_user_id`, ID — положительная десятичная строка;
+- `kid`, `sub`, `site_user_id` и `jti` принимаются только как JSON-строки;
+- compact assertion использует только непустые unpadded base64url-сегменты, а
+  HS256-подпись имеет ровно 43 base64url-символа;
+- `iss=master-mobile.ru` и `aud=pricing-service:customer-settlements` неизменяемы;
 - `scope` должен в точности равняться `customer:settlements:read`;
 - `1 <= exp - iat <= 60`;
 - `iat <= nbf < exp`;
 - clock skew не больше 30 секунд;
 - `jti` принимается один раз и хранится только как SHA-256;
 - принимаются active и previous `kid`, но они должны различаться;
+- каждый HMAC secret содержит не менее 24 UTF-8 байт, active/previous secrets
+  различаются и не имеют начальных/конечных пробелов;
 - запрос дополнительно ограничен настроенным IP/CIDR сервера сайта.
 
 ### Детерминированный тестовый вектор
@@ -398,6 +404,10 @@ site_user_id,counterparty_guid,organization_guid,source_system,expected_code,exp
 - apply разрешён только с `--apply --approved-by`, `--approved-input-hash` и
   `--approved-controls-hash`; оба SHA-256 должны совпасть с текущими CSV и live
   controls;
+- `approved-by` не сохраняется и не выводится: audit использует SHA-256 с отдельной
+  `CUSTOMER_SETTLEMENTS_CORRELATION_SALT`, отсутствие соли блокирует apply;
+- ошибка соединения во время commit возвращает `mapping_commit_state_unknown`, а не
+  ложное утверждение об откате; повтор с теми же hashes выполняет безопасный readback;
 - УТ/QWE читается без записи и обязательно проверяет существование
   организации/контрагента, GUID↔ref, код, название и отсутствие активных договоров
   не в `643/RUB`; ИНН сверяется только при наличии;
@@ -415,19 +425,28 @@ Retention:
 - successful/superseded — 30 дней;
 - `failed/loading` — 7 дней;
 - replay `jti` — до `exp + 24 часа`;
-- reconciliation runs и отправленные/pending alert events — 30 дней;
+- reconciliation runs и отправленные/pending alert events — 30 дней; последняя
+  reconciliation не удаляется отдельно от более старой цепочки: если её срок истёк,
+  cleanup удаляет и все предыдущие runs, чтобы откат системных часов не мог вернуть
+  более старый допуск;
 - failed alert events — 7 дней, alert state сохраняется;
 - active revision никогда не удаляется.
+- cleanup перед любым запросом требует точные параметры `30/7/24`; иной env
+  блокирует job и не может преждевременно удалить replay-маркеры либо историю.
 
 # Extractor readiness gate
 
 Extractor использует `_AccumRgT7009/_AccumRg7002` только как проверяемую основу:
 
 - точный `as_of`, движения строго `< as_of`;
-- `SYSUTCDATETIME()/SYSDATETIME()` SQL Server;
+- `SYSUTCDATETIME()` SQL Server с преобразованием UTC в `Europe/Moscow` для
+  границы регистра; локальные часы SQL host не определяют `as_of`;
 - whitelist через параметризованную `#CustomerSettlementPilot`;
 - `SNAPSHOT`, если разрешён, иначе `READ COMMITTED`;
-- `LOCK_TIMEOUT <= 30s`, без `NOLOCK`;
+- `source_db_time` читается из SQL Server уже внутри той же основной транзакции,
+  которая формирует финансовый срез, после установки isolation level;
+- `LOCK_TIMEOUT <= 30s`, без `NOLOCK`; для `pyodbc` отдельно задаётся
+  `cursor.timeout`, а для `pytds` раздельно задаются query/login timeout;
 - `COALESCE(..., 0)` для явного нуля;
 - отсутствующий или помеченный контрагент блокирует revision.
 
@@ -542,7 +561,8 @@ Read-only проверка CRM подтвердила все пять service fi
 - Bitrix batch выполняет до 50 связанных страниц по 50 строк;
 - каждая следующая страница использует `filter[>ID]` и `start=-1`;
 - ID обязаны строго возрастать, дубли и неполные страницы запрещены;
-- после чтения повторно проверяются `total` и первая страница;
+- выполняются два полных последовательных чтения всех страниц; `total` и
+  нормализованные семантические строки, включая source systems, обязаны совпасть;
 - изменение CRM во время чтения не активирует mapping revision.
 
 `UF_CRM_MM_ONEC_COUNTERPARTY_IDS` содержит не raw ref, а существующий
@@ -556,7 +576,9 @@ Read-only проверка CRM подтвердила все пять service fi
 - `28 736` linked;
 - `21 288` not linked;
 - `11` ambiguous/invalid;
-- полный цикл CRM read + проверка занял меньше 90 секунд.
+- исторический один полный CRM read + короткая проверка занял меньше 90 секунд;
+  обязательные два полных чтения и hash-resolution через 1С имеют отдельный
+  process timeout 360 секунд.
 
 Сформирован локальный review-only shortlist из 10 разных cluster/counterparty:
 4 `debt`, 3 `advance`, 3 `zero`. Все 10 контрагентов существуют, не помечены
@@ -582,6 +604,50 @@ Read-only проверка CRM подтвердила все пять service fi
 - Повторное использование одинакового hash financial/mapping revision разрешено
   только после проверки фактических строк, counts, GUID, сумм и статусов; повреждённая
   или неполная revision блокирует активацию.
+- Финансовый worker читает внешний SQL-срез без общего context lock, затем получает
+  lock, повторно читает active mapping revision, полный список pilot users и
+  counterparty scope и только после совпадения активирует revision в той же транзакции.
+  Mapping worker аналогично получает context lock после двух стабильных CRM-read и
+  удерживает его только на финальном whitelist/readback и активации.
+- Mapping/whitelist mutation и финансовая активация используют общий transaction-level
+  context lock, который удерживается до commit/rollback: после финальной проверки
+  mapping и pilot scope не могут измениться до активации финансовой revision.
+- Eligibility, summary, health и preflight используют shared-вариант context lock;
+  параллельные клиенты не блокируют друг друга. Активации, whitelist, reconciliation и
+  retention cleanup используют exclusive-вариант: клиентское чтение при занятом
+  write-контексте закрывается как `temporarily_unavailable`, а cleanup не может удалить
+  реактивированную active mapping revision.
+- Любая неожиданная ошибка service/DB после успешной авторизации возвращается как
+  обезличенный `503` с `private, no-store`; текст исключения не попадает клиенту.
+- Health использует тот же context lock и повторно сверяет ID активных financial/mapping
+  revision перед возвратом; смена snapshot во время расчёта закрывает оба health
+  статуса как `critical`, а не оставляет частично ложный `ok`.
+- Пустые financial/mapping scope запрещены. Health и summary требуют точного совпадения
+  фактического набора financial balance refs с уникальными активными pilot
+  counterparties, совпадения actual rows/zero с revision counters, канонических
+  пар ref/GUID/source-system и текущего `mapping_revision_id` обеих bindings.
+  Eligibility и summary дополнительно требуют внутренне полного mapping revision и
+  явной entry текущего пользователя; отсутствующая entry не подменяется `not_linked`.
+  `NaN`/Infinity и будущие timestamps не принимаются как валидные данные.
+- CRM mapping считается стабильным только после двух полных последовательных чтений
+  всех страниц с одинаковым total и семантически одинаковыми строками, включая
+  `UF_CRM_MM_SYNC_SOURCE_SYSTEMS`; проверка одной первой страницы недостаточна.
+  CRM и alert webhook base допускаются только как чистые HTTPS URL без credentials,
+  query и fragment.
+- Reconciliation task получает context lock только после read-only чтения отчёта/1С,
+  повторно сверяет active mapping и pilot scope и сохраняет результат в той же
+  транзакции. Financial worker под lock повторно читает последнюю reconciliation;
+  удалённый либо заменённый результат не разрешает активацию.
+- Обрыв соединения во время reconciliation commit возвращает
+  `reconciliation_commit_state_unknown`; повтор того же input hash идемпотентен,
+  только пока сохранённый результат остаётся последним run по монотонному `id`.
+  Повтор более старого superseded-результата блокируется и не может вернуть CLI-код
+  успешной сверки поверх более нового run.
+- Runtime database guard обязателен для worker/CLI/health/cleanup и выполняется в API
+  до записи replay `jti`; пустое ожидаемое имя БД также блокирует операцию.
+- Сохранение одинаковой reconciliation и создание одного health-alert остаются
+  идемпотентными при параллельном запуске: конфликт уникальности не превращается в
+  ложную ошибку процесса и не создаёт дубль.
 - Частичная revision никогда не активируется.
 - Feature flag по умолчанию выключен; shadow flag не открывает клиентский API.
 - Секреты существуют только в локальном env/secret-контуре.
@@ -595,13 +661,20 @@ Read-only проверка CRM подтвердила все пять service fi
   несовпадении, не раскрывая connection details.
 - Каждый cron-артефакт ограничен внешним process timeout; после TERM применяется
   принудительное завершение через 5 секунд.
+- Checked-in `/etc/cron.d`-шаблон не указывает на mutable-root и production `.env`:
+  до установки оператор обязан подставить точный immutable clean release со своим
+  hash-locked `.venv`, отдельный staging secret-file и staging-каталог логов.
+  Runtime-пути обёрток read-only и не могут быть переопределены secret-файлом.
 - Точный повтор payload идемпотентен.
 - Финансовый cron повторяет только `error`; `blocked/disabled` не запускают retry.
 - В историческом `manual_confirmed` mapping cron только проверяет active revision.
-- В активном `crm_readonly` cron после `error` или внешнего process timeout
-  выполняет один повтор через 600 секунд; `blocked`, `disabled` и `skipped_lock`
-  повтор не запускают.
-- После 2 часов financial health — `warning`, после 6 — `critical`; API скрывает сумму.
+- В активном `crm_readonly` cron после `error`, внешнего process timeout или transient
+  `skipped_lock/context_lock` выполняет один повтор через 600 секунд. Job-lock другого
+  уже работающего экземпляра, `blocked` и `disabled` повтор не запускают.
+- Ровно с `2:00:00` financial health — `warning`, а API — `stale`; ровно в
+  `6:00:00` сумма ещё видна как stale, любое превышение 6 часов даёт `critical`
+  и скрывает сумму. Сравнение выполняется по точному `timedelta`, без округления
+  возраста вниз до целых секунд.
 - Stale/missing mapping имеет `critical` health.
 - Свежий, но неполный (`not_linked`, `ambiguous` или отозванная site-связь) pilot
   mapping также имеет `critical` health.
@@ -612,9 +685,20 @@ Read-only проверка CRM подтвердила все пять service fi
 - Alert создаётся только при переходе уровня, recovery или раз в 6 часов при
   продолжающемся critical; PostgreSQL `FOR UPDATE SKIP LOCKED` исключает двойную
   отправку параллельными health worker.
+- Каждый комментарий получает безопасный event marker; перед записью выполняется
+  bounded paginated readback задачи, поэтому неизвестный результат DB commit не
+  создаёт повторный комментарий.
+- Alert enqueue до обращения к outbox требует `repeat_seconds=21600`; иное значение
+  блокирует доставку, чтобы ошибка env не создала поток повторных комментариев.
 - Включённые alerts без утверждённой задачи/webhook, ошибка доставки и exhausted
   outbox после пяти попыток дают `critical` и остаются видимыми оператору.
 - Внешняя доставка жёстко ограничена HTTPS и задачей Bitrix24 №2883.
+- CRM response читается с жёстким пределом 16 MiB; oversized/не-UTF-8 ответ не
+  активирует mapping revision.
+- Бухгалтерская сверка принимает только непустой scope до 10 контрагентов,
+  фиксированный допуск `0,01 RUB` и действующие канонические ref/GUID в RUB.
+- Pilot whitelist dry-run получает общий context lock до чтения текущего состояния,
+  выполняет реальную mutation/readback в транзакции и обязан подтвердить rollback.
 
 # Observability and data safety
 
@@ -692,27 +776,41 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 
 # Tests
 
+Ограничение на автоматические проверки снято пользователем 2026-08-23. Перед
+готовностью обязательны профильный и полный `pytest`, PostgreSQL integration,
+Ruff, Black, OpenAPI и docs validation; отсутствие любого обязательного прогона
+означает, что текущий diff не готов к release.
+
 Покрыты:
 
-- debt/advance/zero, округление и `-0.00`;
+- debt/advance/zero, округление, `-0.00` и запрет non-finite amounts;
 - atomic supersede, incomplete revision, idempotency и retention;
 - stale 2/6, stale mapping, удаление связи и отсутствующий compatible balance;
 - GUID round-trip, постоянство account при remap, конфликт accounts и запрет старого snapshot;
 - manual import dry-run/apply, control mismatch и non-RUB rejection;
 - несколько cluster/counterparty, manual mapping и совместимая CRM pagination;
 - issuer/audience/alg/kid/IP/TTL/future/expired/replay/rotation;
-- server-derived identity, отсутствие IDOR-параметров и `no-store`;
+- server-derived identity, отсутствие IDOR-параметров и `no-store`, включая
+  неожиданный service failure после авторизации;
 - eligibility states, session-only cache, host/TLS/timeouts и отключение composite cache;
-- точный `< as_of`, temp whitelist, zero SQL и запрет `NOLOCK`;
+- точный `< as_of`, SQL clock внутри основной transaction, temp whitelist, zero SQL
+  и запрет `NOLOCK`;
 - migration upgrade/downgrade и partial unique active indexes;
-- reconciliation end-of-day boundary, duplicate controls/source rows и idempotency;
-- reconciliation context/source binding и запрет повторного допуска при изменении
-  пилотов, mapping либо SQL-среза;
+- reconciliation end-of-day boundary, duplicate controls/source rows, idempotency и
+  запрет ложного успеха при повторе superseded input;
+- reconciliation context/source binding, финальный context lock/recheck и запрет
+  повторного допуска при изменении пилотов, mapping, reconciliation либо SQL-среза;
 - отзыв site-binding, безопасное разделение общего account при remap и запрет
   повторного использования повреждённых revision;
 - runtime database guard и обезличивание ошибок драйвера;
 - transition alerts, approved task guard, `SKIP LOCKED`, retention operational rows;
-- readiness gate, retry policy, health exit codes и mock-client secrecy.
+- стабильное двойное CRM-чтение, включая позднюю страницу/source systems,
+  запрет пустого full-read и повреждённых webhook URL, клиентский context lock,
+  exact actual financial scope, актуальную revision обеих bindings, обязательный
+  runtime database guard и retention/reactivation race;
+- единый API/worker/health/preflight-предикат актуальной сверки, завершённая
+  report boundary и порядок reconciliation-run по монотонному `id`;
+- readiness gate, retry policy, health exit codes и mock-client secrecy;
 - bootstrap с закрытым source gate, запрет `manual_confirmed` для нового запуска и
   обязательная последняя `matched`-сверка перед ready.
 
@@ -753,6 +851,64 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — пользователь разрешил создать clean commit проверенного backend,
+  собрать отдельный immutable staging release и начать новый 72-часовой
+  `crm_readonly` shadow-run. Разрешение ограничено staging; production, сайты, CRM
+  и 1С не изменяются, внешние источники читаются только read-only, а cron можно
+  установить только после успешного ручного цикла и `ready` preflight.
+- 2026-08-24 — после cron/runtime исправлений завершён обязательный тестовый gate:
+  профильный settlement-набор повторно прошёл после форматирования; отдельные
+  PostgreSQL integration-тесты дали `11 passed`; все `243` test-файла полного
+  `pytest` прошли в девяти непересекающихся группах после того, как единый процесс
+  был остановлен внешним часовым лимитом на 72% без ошибок. Ruff, Black check,
+  OpenAPI, docs validation и `git diff --check` прошли. Staging release и cron не
+  устанавливались.
+- 2026-08-23 — после повторного аудита cron-шаблон приведён к фактическому формату
+  `/etc/cron.d` с явным пользователем `root`; mutable-root Python заменён на
+  release-specific `.venv`, а settlement-обёртки запрещают secret-файлу подменять
+  `REPO_DIR`, `PYTHON_BIN` и путь env-файла. Пользователь разрешил полный тестовый
+  и quality-прогон после исправления.
+- 2026-08-23 — подтверждённый пользователем повторный аудит закрыл ложный CLI-успех
+  при повторе superseded reconciliation, перенёс SQL Server clock внутрь основной
+  transaction финансового среза и заменил mutable-root cron-артефакт безопасным
+  immutable-release/staging шаблоном. Регрессионные заготовки обновлены, но тесты и
+  quality-проверки по действующему решению пользователя ещё не запускались.
+- 2026-08-23 — очередной ручной аудит исправил групповой remap нескольких site users
+  одного account на новый GUID, потребовал точного уникального совпадения control и
+  SQL scope при бухгалтерской сверке и запретил активацию financial/mapping revision
+  с временем впереди backend clock. Отсутствующая в ещё не обновлённом mapping
+  entry нового whitelist-пользователя теперь даёт `temporarily_unavailable`, а не
+  маскируется под `not_linked`; activation больше не принимает scope свыше 10.
+  Регрессионные заготовки добавлены, но по решению пользователя ещё не запускались.
+- 2026-08-23 — дополнительный ручной аудит исправил точные границы freshness
+  `2h/6h` без секундного усечения, ужесточил canonical assertion и secret config,
+  привязал границу УТ к SQL UTC clock, ограничил CRM response 16 MiB, запретил
+  ослабление допуска/пустой scope/невалидную identity в reconciliation и сделал
+  whitelist dry-run атомарным относительно общего context lock. Добавлены
+  regression-заготовки; по решению пользователя они ещё не запускались.
+- 2026-08-23 — повторный ручной аудит запретил возврат старой reconciliation при
+  retention и откате системных часов, ужесточил CRM `total`, засолил audit hash
+  approver, добавил destructive retention guard `30/7/24`, guard alert repeat `21600`
+  и явные unknown-commit состояния, а rollback/close/dispose settlement CLI сделал
+  best-effort, чтобы вторичная ошибка соединения не перекрывала безопасный JSON.
+- 2026-08-23 — по решению пользователя тестовые и quality-прогоны отложены до
+  завершения ручного аудита и отдельного разрешения.
+- 2026-08-23 — текущий ручной аудит унифицировал readiness сверки между
+  API/worker/health/preflight, проверил завершённую report boundary и порядок run
+  по `id`, запретил пустой CRM full-read и нормализовал повреждённые webhook URL;
+  тестовые seed/mock приведены к обязательной matched-сверке.
+- 2026-08-23 — следующий ручной аудит закрыл service-failure cache leak,
+  расхождение actual financial rows с revision counters, stale source-binding,
+  non-finite суммы, reconciliation TOCTOU и недостаточный timeout двойного CRM-read.
+- 2026-08-23 — повторный статический аудит закрыл смешанное клиентское чтение,
+  неполную проверку CRM pagination, пустой/лишний financial scope, будущие timestamps,
+  source-system/ref-GUID integrity, cleanup/reactivation race и необязательный DB guard.
+- 2026-08-23 — решено закрыть остаточное TOCTOU-окно финансовой активации и
+  ложный зелёный health при переключении revision; обязательны PostgreSQL
+  regression-тесты общего context lock и стабильности snapshot.
+- 2026-08-23 — подтверждено закрыть три повторно воспроизведённые гонки перед
+  продолжением пилота: context recheck финансового worker, compatible-balance health,
+  конкурентно-идемпотентные reconciliation store и health-alert enqueue.
 - 2026-08-23 — сверка привязана к mapping/source/pilot context и фактическому
   SQL-срезу; добавлены runtime guard ожидаемой PostgreSQL БД, проверка целостности
   повторно используемых revision, отзыв устаревших site bindings, безопасный split

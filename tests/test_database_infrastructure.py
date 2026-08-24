@@ -8,7 +8,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.infrastructure.db.engines import build_application_engine
+from app.infrastructure.db.engines import build_application_engine, build_onec_engine
 from app.infrastructure.db.session import session_scope
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
@@ -61,6 +61,80 @@ def test_application_engine_enables_pre_ping_without_forcing_pool_overrides(tmp_
         assert engine.pool._pre_ping is True
     finally:
         engine.dispose()
+
+
+def test_onec_pytds_engine_passes_distinct_query_and_login_timeouts(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_create_engine(database_url: str, **options):
+        captured.update({"database_url": database_url, **options})
+        return sentinel
+
+    monkeypatch.setattr(
+        "app.infrastructure.db.engines.sqlalchemy_create_engine", fake_create_engine
+    )
+
+    result = build_onec_engine(
+        "mssql+pytds://readonly:secret@onec/db",
+        query_timeout_seconds=30,
+        login_timeout_seconds=6,
+    )
+
+    assert result is sentinel
+    assert captured["connect_args"] == {"timeout": 30.0, "login_timeout": 6.0}
+
+
+def test_onec_pyodbc_engine_uses_login_timeout_and_cursor_query_timeout(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    listeners: list[tuple[object, str, object]] = []
+    sentinel = object()
+
+    def fake_create_engine(database_url: str, **options):
+        captured.update({"database_url": database_url, **options})
+        return sentinel
+
+    def fake_listens_for(target, event_name):
+        def register(listener):
+            listeners.append((target, event_name, listener))
+            return listener
+
+        return register
+
+    monkeypatch.setattr(
+        "app.infrastructure.db.engines.sqlalchemy_create_engine", fake_create_engine
+    )
+    monkeypatch.setattr("app.infrastructure.db.engines.event.listens_for", fake_listens_for)
+
+    result = build_onec_engine(
+        "mssql+pyodbc://readonly:secret@onec/db?driver=ODBC+Driver+18+for+SQL+Server",
+        query_timeout_seconds=30,
+        login_timeout_seconds=6,
+    )
+
+    assert result is sentinel
+    assert captured["connect_args"] == {"timeout": 6}
+    assert len(listeners) == 1
+    assert listeners[0][:2] == (sentinel, "before_cursor_execute")
+    cursor = type("Cursor", (), {})()
+    listeners[0][2](None, cursor, None, None, None, None)
+    assert cursor.timeout == 30
+
+
+@pytest.mark.parametrize(
+    ("query_timeout", "login_timeout"),
+    ((float("nan"), 6), (30, float("inf")), (0, 6), (30, -1), (True, 6)),
+)
+def test_onec_engine_rejects_non_finite_or_non_positive_timeouts(
+    query_timeout: float,
+    login_timeout: float,
+) -> None:
+    with pytest.raises(ValueError, match="timeouts must be finite and positive"):
+        build_onec_engine(
+            "mssql+pytds://readonly:secret@onec/db",
+            query_timeout_seconds=query_timeout,
+            login_timeout_seconds=login_timeout,
+        )
 
 
 def test_read_only_session_scope_rolls_back_accidental_write(monkeypatch) -> None:

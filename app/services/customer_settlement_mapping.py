@@ -31,6 +31,7 @@ CRM_SOURCE_SYSTEMS_FIELD = "UF_CRM_MM_SYNC_SOURCE_SYSTEMS"
 CRM_PAGE_SIZE = 50
 CRM_BATCH_PAGE_COUNT = 50
 CRM_ONEC_HASH_RE = re.compile(r"^[0-9a-fA-F]{24}$")
+_MAX_CRM_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 class CustomerSettlementMappingSourceError(RuntimeError):
@@ -44,6 +45,7 @@ class CrmClusterSourceRow:
     site_user_ids: tuple[str, ...]
     counterparty_refs: tuple[str, ...]
     source_updated_at: datetime | None
+    source_systems: tuple[str, ...] = ()
     counterparty_hashes: tuple[str, ...] = ()
     has_invalid_site_user_id: bool = False
     has_invalid_counterparty_ref: bool = False
@@ -106,6 +108,11 @@ def parse_crm_cluster_row(payload: dict[str, Any]) -> CrmClusterSourceRow:
         counterparty_refs=tuple(sorted(counterparty_refs)),
         counterparty_hashes=tuple(sorted(counterparty_hashes)),
         source_updated_at=_parse_datetime(payload.get(CRM_UPDATED_AT_FIELD)),
+        source_systems=tuple(
+            sorted(
+                {value.casefold() for value in _list_values(payload.get(CRM_SOURCE_SYSTEMS_FIELD))}
+            )
+        ),
         has_invalid_site_user_id=has_invalid_site_user_id,
         has_invalid_counterparty_ref=has_invalid_counterparty_ref,
     )
@@ -134,6 +141,8 @@ def resolve_crm_counterparty_hashes(
                 SELECT CONVERT(varchar(34), _IDRRef, 1) AS counterparty_ref
                 FROM dbo._Reference54
                 WHERE _IDRRef <> 0x00000000000000000000000000000000
+                  AND _Marked = 0x00
+                  AND _Folder = 0x01
                 """)).mappings()
         for item in result:
             counterparty_ref = normalize_counterparty_ref(str(item["counterparty_ref"]))
@@ -253,11 +262,15 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout_seconds: float) -> 
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            raw_body = response.read(_MAX_CRM_RESPONSE_BYTES + 1)
+            if len(raw_body) > _MAX_CRM_RESPONSE_BYTES:
+                raise CustomerSettlementMappingSourceError("crm_mapping_source_response_too_large")
+            body = json.loads(raw_body.decode("utf-8"))
     except (
         urllib.error.HTTPError,
         urllib.error.URLError,
         TimeoutError,
+        UnicodeDecodeError,
         json.JSONDecodeError,
     ) as exc:
         raise CustomerSettlementMappingSourceError("crm_mapping_source_unavailable") from exc
@@ -295,21 +308,46 @@ def _contact_list_batch_command(after_id: str) -> str:
 
 
 def _crm_total(value: Any) -> int:
-    try:
-        total = int(value)
-    except (TypeError, ValueError) as exc:
-        raise CustomerSettlementMappingSourceError("crm_mapping_total_is_invalid") from exc
+    if isinstance(value, bool):
+        raise CustomerSettlementMappingSourceError("crm_mapping_total_is_invalid")
+    if isinstance(value, int):
+        total = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        total = int(value.strip())
+    else:
+        raise CustomerSettlementMappingSourceError("crm_mapping_total_is_invalid")
     if total < 0:
         raise CustomerSettlementMappingSourceError("crm_mapping_total_is_invalid")
     return total
 
 
-def fetch_crm_cluster_rows(
+def validate_crm_mapping_webhook_url(webhook_url: str | None) -> str:
+    normalized = str(webhook_url or "").strip().rstrip("/")
+    try:
+        parts = urllib.parse.urlparse(normalized)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError as exc:
+        raise CustomerSettlementMappingSourceError("crm_mapping_webhook_is_invalid") from exc
+    if (
+        parts.scheme != "https"
+        or not hostname
+        or port == 0
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        raise CustomerSettlementMappingSourceError("crm_mapping_webhook_is_invalid")
+    return normalized
+
+
+def _fetch_crm_cluster_raw_rows(
     *,
     webhook_url: str,
     timeout_seconds: float,
-) -> tuple[CrmClusterSourceRow, ...]:
-    base_url = webhook_url.rstrip("/")
+) -> tuple[int, tuple[dict[str, Any], ...]]:
+    base_url = validate_crm_mapping_webhook_url(webhook_url)
     url = f"{base_url}/crm.contact.list.json"
     raw_rows: list[dict[str, Any]] = []
     seen_row_ids: set[str] = set()
@@ -347,8 +385,9 @@ def fetch_crm_cluster_rows(
     if first_body.get("total") is None:
         raise CustomerSettlementMappingSourceError("crm_mapping_total_is_missing")
     expected_total = _crm_total(first_body["total"])
+    if expected_total == 0:
+        raise CustomerSettlementMappingSourceError("crm_mapping_source_is_empty")
     append_page(first_body.get("result"))
-    first_page_ids = tuple(str(row["ID"]) for row in raw_rows)
 
     if len(raw_rows) < expected_total:
         next_start = first_body.get("next")
@@ -399,16 +438,32 @@ def fetch_crm_cluster_rows(
 
     if len(raw_rows) != expected_total:
         raise CustomerSettlementMappingSourceError("crm_mapping_incomplete_pagination")
-    verification_body = _post_json(
-        url,
-        _contact_list_payload(0),
+    return expected_total, tuple(raw_rows)
+
+
+def fetch_crm_cluster_rows(
+    *,
+    webhook_url: str,
+    timeout_seconds: float,
+) -> tuple[CrmClusterSourceRow, ...]:
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int | float)
+        or not 0 < float(timeout_seconds) <= 6
+    ):
+        raise CustomerSettlementMappingSourceError("crm_mapping_timeout_is_invalid")
+    expected_total, raw_rows = _fetch_crm_cluster_raw_rows(
+        webhook_url=webhook_url,
         timeout_seconds=timeout_seconds,
     )
-    if _crm_total(verification_body.get("total")) != expected_total:
+    verification_total, verification_raw_rows = _fetch_crm_cluster_raw_rows(
+        webhook_url=webhook_url,
+        timeout_seconds=timeout_seconds,
+    )
+    if verification_total != expected_total:
         raise CustomerSettlementMappingSourceError("crm_mapping_total_changed_during_read")
-    verification_rows = verification_body.get("result")
-    if not isinstance(verification_rows, list):
-        raise CustomerSettlementMappingSourceError("crm_mapping_result_is_not_list")
-    if tuple(str(row.get("ID") or "") for row in verification_rows) != first_page_ids:
+    rows = tuple(parse_crm_cluster_row(item) for item in raw_rows)
+    verification_rows = tuple(parse_crm_cluster_row(item) for item in verification_raw_rows)
+    if verification_rows != rows:
         raise CustomerSettlementMappingSourceError("crm_mapping_source_changed_during_read")
-    return tuple(parse_crm_cluster_row(item) for item in raw_rows)
+    return rows

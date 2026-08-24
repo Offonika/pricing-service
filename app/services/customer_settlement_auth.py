@@ -23,7 +23,13 @@ from app.services.customer_settlements import normalize_site_user_id
 TOKEN_ALGORITHM = "HS256"
 TOKEN_TYPE = "MM-CUSTOMER-SETTLEMENTS"
 TOKEN_SCOPE = "customer:settlements:read"
+TOKEN_ISSUER = "master-mobile.ru"
+TOKEN_AUDIENCE = "pricing-service:customer-settlements"
 _JTI_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_KID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_B64URL_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_SIGNATURE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+_MIN_SECRET_BYTES = 24
 
 
 class CustomerSettlementAuthError(RuntimeError):
@@ -59,20 +65,34 @@ def _keys(settings: Settings) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
     active_kid = settings.customer_settlements_assertion_active_kid
     previous_kid = settings.customer_settlements_assertion_previous_kid
+    active_secret = settings.customer_settlements_assertion_active_secret
+    previous_secret = settings.customer_settlements_assertion_previous_secret
+    if settings.customer_settlements_assertion_issuer != TOKEN_ISSUER:
+        raise CustomerSettlementAuthConfigError("assertion issuer does not match contract")
+    if settings.customer_settlements_assertion_audience != TOKEN_AUDIENCE:
+        raise CustomerSettlementAuthConfigError("assertion audience does not match contract")
+    if bool(active_kid) != bool(active_secret) or not active_kid:
+        raise CustomerSettlementAuthConfigError("active assertion key pair is not configured")
+    if bool(previous_kid) != bool(previous_secret):
+        raise CustomerSettlementAuthConfigError("previous assertion key pair is incomplete")
+    for secret in (active_secret, previous_secret):
+        if secret is not None and secret != secret.strip():
+            raise CustomerSettlementAuthConfigError(
+                "assertion secret must not have surrounding whitespace"
+            )
+    for key_id in (active_kid, previous_kid):
+        if key_id and not _KID_RE.fullmatch(key_id):
+            raise CustomerSettlementAuthConfigError("assertion key id is invalid")
     if active_kid and previous_kid and active_kid == previous_kid:
         raise CustomerSettlementAuthConfigError("assertion key ids must be unique")
-    if active_kid:
-        if not settings.customer_settlements_assertion_active_secret:
-            raise CustomerSettlementAuthConfigError("active assertion secret is not configured")
-        result[active_kid] = settings.customer_settlements_assertion_active_secret.encode("utf-8")
+    if active_kid and active_secret:
+        result[active_kid] = active_secret.encode("utf-8")
     if previous_kid:
-        if not settings.customer_settlements_assertion_previous_secret:
-            raise CustomerSettlementAuthConfigError("previous assertion secret is not configured")
-        result[previous_kid] = settings.customer_settlements_assertion_previous_secret.encode(
-            "utf-8"
-        )
-    if not result:
-        raise CustomerSettlementAuthConfigError("assertion keys are not configured")
+        result[previous_kid] = str(previous_secret).encode("utf-8")
+    if any(len(secret) < _MIN_SECRET_BYTES for secret in result.values()):
+        raise CustomerSettlementAuthConfigError("assertion secret is too short")
+    if len(set(result.values())) != len(result):
+        raise CustomerSettlementAuthConfigError("assertion secrets must be unique")
     return result
 
 
@@ -108,10 +128,8 @@ def create_customer_settlement_assertion(
     jti: str | None = None,
 ) -> tuple[str, int]:
     settings = settings or get_settings()
-    key_id = settings.customer_settlements_assertion_active_kid
-    if not key_id:
-        raise CustomerSettlementAuthConfigError("active assertion key id is not configured")
     keys = _keys(settings)
+    key_id = str(settings.customer_settlements_assertion_active_kid)
     issued_at = int(now if now is not None else time.time())
     ttl = int(settings.customer_settlements_assertion_ttl_seconds)
     if ttl < 1 or ttl > 60:
@@ -123,8 +141,8 @@ def create_customer_settlement_assertion(
     user_id = normalize_site_user_id(site_user_id)
     header = {"alg": TOKEN_ALGORITHM, "typ": TOKEN_TYPE, "kid": key_id}
     payload = {
-        "iss": settings.customer_settlements_assertion_issuer,
-        "aud": settings.customer_settlements_assertion_audience,
+        "iss": TOKEN_ISSUER,
+        "aud": TOKEN_AUDIENCE,
         "sub": user_id,
         "site_user_id": user_id,
         "scope": TOKEN_SCOPE,
@@ -161,6 +179,12 @@ def verify_and_consume_customer_settlement_assertion(
         raise CustomerSettlementAuthError()
     try:
         header_raw, payload_raw, signature = token.split(".", 2)
+        if (
+            not _B64URL_SEGMENT_RE.fullmatch(header_raw)
+            or not _B64URL_SEGMENT_RE.fullmatch(payload_raw)
+            or not _SIGNATURE_RE.fullmatch(signature)
+        ):
+            raise CustomerSettlementAuthError()
         header = json.loads(_b64_decode(header_raw).decode("utf-8"))
         payload = json.loads(_b64_decode(payload_raw).decode("utf-8"))
     except (
@@ -175,7 +199,10 @@ def verify_and_consume_customer_settlement_assertion(
         raise CustomerSettlementAuthError()
     if header.get("alg") != TOKEN_ALGORITHM or header.get("typ") != TOKEN_TYPE:
         raise CustomerSettlementAuthError()
-    key_id = str(header.get("kid") or "")
+    raw_key_id = header.get("kid")
+    if not isinstance(raw_key_id, str):
+        raise CustomerSettlementAuthError()
+    key_id = raw_key_id
     secret = _keys(settings).get(key_id)
     if secret is None:
         raise CustomerSettlementAuthError()
@@ -185,20 +212,27 @@ def verify_and_consume_customer_settlement_assertion(
 
     issuer = str(payload.get("iss") or "")
     audience = str(payload.get("aud") or "")
-    if issuer != settings.customer_settlements_assertion_issuer:
+    if issuer != TOKEN_ISSUER:
         raise CustomerSettlementAuthError()
-    if audience != settings.customer_settlements_assertion_audience:
+    if audience != TOKEN_AUDIENCE:
         raise CustomerSettlementAuthError()
     scope = str(payload.get("scope") or "")
     if scope != TOKEN_SCOPE:
         raise CustomerSettlementAuthError("scope")
+    raw_site_user_id = payload.get("site_user_id")
+    raw_subject = payload.get("sub")
+    if not isinstance(raw_site_user_id, str) or not isinstance(raw_subject, str):
+        raise CustomerSettlementAuthError()
     try:
-        site_user_id = normalize_site_user_id(payload.get("site_user_id") or "")
+        site_user_id = normalize_site_user_id(raw_site_user_id)
     except ValueError as exc:
         raise CustomerSettlementAuthError() from exc
-    if str(payload.get("sub") or "") != site_user_id:
+    if raw_subject != site_user_id:
         raise CustomerSettlementAuthError()
-    jti = str(payload.get("jti") or "")
+    raw_jti = payload.get("jti")
+    if not isinstance(raw_jti, str):
+        raise CustomerSettlementAuthError()
+    jti = raw_jti
     if not _JTI_RE.fullmatch(jti):
         raise CustomerSettlementAuthError()
 

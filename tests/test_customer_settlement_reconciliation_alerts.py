@@ -14,6 +14,7 @@ from app.models.customer_settlement import (
     CustomerSettlementAlertOutbox,
     CustomerSettlementReconciliationRun,
 )
+from app.services import customer_settlement_alerts as settlement_alerts
 from app.services.customer_settlement_alerts import (
     dispatch_customer_settlement_alerts,
     enqueue_health_alert_if_needed,
@@ -21,7 +22,11 @@ from app.services.customer_settlement_alerts import (
 )
 from app.services.customer_settlement_reconciliation import (
     CustomerSettlementReconciliationError,
+    customer_settlement_reconciliation_context_hash,
+    customer_settlement_reconciliation_input_hash,
+    customer_settlement_reconciliation_run_is_current,
     end_of_day_boundary_utc,
+    latest_customer_settlement_reconciliation,
     reconcile_customer_settlement_rows,
     store_reconciliation_result,
 )
@@ -44,6 +49,7 @@ from tasks import reconcile_customer_settlements as reconciliation_task
 
 CP_1 = "0x" + "1" * 32
 CP_2 = "0x" + "2" * 32
+CP_3 = "0x" + "3" * 32
 REPORT_DATE = date(2026, 8, 22)
 
 
@@ -112,6 +118,17 @@ def test_end_of_day_reconciliation_is_exact_and_idempotently_stored(
     assert third.id != first.id
     assert third.status == "mismatched"
 
+    with pytest.raises(
+        CustomerSettlementReconciliationError,
+        match="reconciliation_result_is_superseded",
+    ):
+        store_reconciliation_result(db_session, result)
+
+    first.report_hash = "e" * 64
+    db_session.flush()
+    with pytest.raises(CustomerSettlementReconciliationError, match="payload_mismatch"):
+        store_reconciliation_result(db_session, result)
+
 
 def test_reconciliation_rejects_duplicate_control_names_and_source_rows() -> None:
     as_of = end_of_day_boundary_utc(REPORT_DATE)
@@ -156,6 +173,194 @@ def test_reconciliation_rejects_duplicate_control_names_and_source_rows() -> Non
             controls=(_control(CP_1, "Клиент Один"),),
             source=duplicate_source,
         )
+
+
+def test_reconciliation_requires_exact_unique_control_and_source_scope() -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    rows = [
+        OneCMutualSettlementCurrentBalanceRow(REPORT_DATE, "Клиент Один", Decimal("10"), 1),
+        OneCMutualSettlementCurrentBalanceRow(REPORT_DATE, "Клиент Два", Decimal("20"), 2),
+    ]
+    source_with_unexpected_counterparty = CustomerSettlementSourceResult(
+        source_db_time=as_of + timedelta(minutes=5),
+        as_of=as_of,
+        balances=(
+            SettlementBalanceInput(CP_1, Decimal("10.00")),
+            SettlementBalanceInput(CP_3, Decimal("20.00")),
+        ),
+        isolation_level="SNAPSHOT",
+        duration_seconds=0.1,
+    )
+    with pytest.raises(
+        CustomerSettlementReconciliationError,
+        match="source_pilot_count_mismatch",
+    ):
+        reconcile_customer_settlement_rows(
+            report_hash="d" * 64,
+            context_hash="f" * 64,
+            report_rows=rows,
+            controls=(_control(CP_1, "Клиент Один"), _control(CP_2, "Клиент Два")),
+            source=source_with_unexpected_counterparty,
+        )
+
+    duplicate_controls = (
+        _control(CP_1, "Клиент Один"),
+        _control(CP_1, "Клиент Два"),
+    )
+    with pytest.raises(
+        CustomerSettlementReconciliationError,
+        match="control_identity_is_invalid",
+    ):
+        reconcile_customer_settlement_rows(
+            report_hash="e" * 64,
+            context_hash="f" * 64,
+            report_rows=rows,
+            controls=duplicate_controls,
+            source=source_with_unexpected_counterparty,
+        )
+
+
+@pytest.mark.parametrize("tolerance", (Decimal("0"), Decimal("0.02"), Decimal("NaN")))
+def test_reconciliation_rejects_non_contract_tolerance(tolerance: Decimal) -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    source = CustomerSettlementSourceResult(
+        source_db_time=as_of + timedelta(minutes=5),
+        as_of=as_of,
+        balances=(SettlementBalanceInput(CP_1, Decimal("10.00")),),
+        isolation_level="SNAPSHOT",
+        duration_seconds=0.1,
+    )
+
+    with pytest.raises(CustomerSettlementReconciliationError, match="tolerance_is_invalid"):
+        reconcile_customer_settlement_rows(
+            report_hash="a" * 64,
+            context_hash="f" * 64,
+            report_rows=[
+                OneCMutualSettlementCurrentBalanceRow(
+                    REPORT_DATE,
+                    "Клиент Один",
+                    Decimal("10"),
+                    1,
+                )
+            ],
+            controls=(_control(CP_1, "Клиент Один"),),
+            source=source,
+            tolerance=tolerance,
+        )
+
+
+def test_reconciliation_rejects_empty_pilot_and_inactive_source_identity() -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    report_rows = [
+        OneCMutualSettlementCurrentBalanceRow(
+            REPORT_DATE,
+            "Клиент Один",
+            Decimal("0"),
+            1,
+        )
+    ]
+    inactive_source = CustomerSettlementSourceResult(
+        source_db_time=as_of + timedelta(minutes=5),
+        as_of=as_of,
+        balances=(
+            SettlementBalanceInput(
+                CP_1,
+                Decimal("0.00"),
+                exists=False,
+            ),
+        ),
+        isolation_level="SNAPSHOT",
+        duration_seconds=0.1,
+    )
+
+    with pytest.raises(CustomerSettlementReconciliationError, match="pilot_count_is_invalid"):
+        reconcile_customer_settlement_rows(
+            report_hash="a" * 64,
+            context_hash="f" * 64,
+            report_rows=report_rows,
+            controls=(),
+            source=inactive_source,
+        )
+    with pytest.raises(CustomerSettlementReconciliationError, match="source_identity_is_invalid"):
+        reconcile_customer_settlement_rows(
+            report_hash="a" * 64,
+            context_hash="f" * 64,
+            report_rows=report_rows,
+            controls=(_control(CP_1, "Клиент Один"),),
+            source=inactive_source,
+        )
+
+
+def test_current_reconciliation_requires_completed_report_boundary() -> None:
+    report_hash = "a" * 64
+    context_hash = "b" * 64
+    source_hash = "c" * 64
+    valid = {
+        "report_date": REPORT_DATE,
+        "as_of": end_of_day_boundary_utc(REPORT_DATE),
+        "report_hash": report_hash,
+        "context_hash": context_hash,
+        "source_hash": source_hash,
+        "input_hash": customer_settlement_reconciliation_input_hash(
+            report_hash=report_hash,
+            context_hash=context_hash,
+            source_hash=source_hash,
+        ),
+        "status": "matched",
+        "expected_count": 1,
+        "matched_count": 1,
+        "mismatch_count": 0,
+        "max_abs_difference": Decimal("0.00"),
+    }
+    assert customer_settlement_reconciliation_run_is_current(
+        SimpleNamespace(**valid),
+        context_hash=context_hash,
+        expected_count=1,
+    )
+    assert not customer_settlement_reconciliation_run_is_current(
+        SimpleNamespace(
+            **{
+                **valid,
+                "as_of": end_of_day_boundary_utc(REPORT_DATE) + timedelta(seconds=1),
+            }
+        ),
+        context_hash=context_hash,
+        expected_count=1,
+    )
+
+
+def test_latest_reconciliation_uses_insert_order_when_database_clock_moves_back(
+    db_session: Session,
+) -> None:
+    common = {
+        "report_date": REPORT_DATE,
+        "as_of": end_of_day_boundary_utc(REPORT_DATE),
+        "context_hash": "b" * 64,
+        "source_hash": "c" * 64,
+        "status": "matched",
+        "expected_count": 1,
+        "matched_count": 1,
+        "mismatch_count": 0,
+        "max_abs_difference": Decimal("0.00"),
+    }
+    first = CustomerSettlementReconciliationRun(
+        **common,
+        report_hash="a" * 64,
+        input_hash="d" * 64,
+        created_at=datetime(2026, 8, 23, 12, 0, tzinfo=UTC),
+    )
+    db_session.add(first)
+    db_session.flush()
+    second = CustomerSettlementReconciliationRun(
+        **common,
+        report_hash="e" * 64,
+        input_hash="f" * 64,
+        created_at=datetime(2026, 8, 23, 11, 59, tzinfo=UTC),
+    )
+    db_session.add(second)
+    db_session.flush()
+
+    assert latest_customer_settlement_reconciliation(db_session).id == second.id
 
 
 def test_health_alerts_are_transition_based_and_do_not_contain_financial_data(
@@ -203,6 +408,66 @@ def test_health_alerts_are_transition_based_and_do_not_contain_financial_data(
     assert "восстановлено" in recovery.message
 
 
+def test_same_alert_transition_is_not_lost_inside_repeat_window(db_session: Session) -> None:
+    now = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
+    ok = {"freshness_status": "ok", "mapping_status": "ok"}
+    critical = {"freshness_status": "critical", "mapping_status": "ok"}
+
+    assert (
+        enqueue_health_alert_if_needed(
+            db_session,
+            metrics=ok,
+            repeat_seconds=21600,
+            now=now,
+        )
+        is None
+    )
+    first = enqueue_health_alert_if_needed(
+        db_session,
+        metrics=critical,
+        repeat_seconds=21600,
+        now=now + timedelta(minutes=1),
+    )
+    recovery = enqueue_health_alert_if_needed(
+        db_session,
+        metrics=ok,
+        repeat_seconds=21600,
+        now=now + timedelta(minutes=2),
+    )
+    second = enqueue_health_alert_if_needed(
+        db_session,
+        metrics=critical,
+        repeat_seconds=21600,
+        now=now + timedelta(minutes=3),
+    )
+
+    assert first is not None
+    assert recovery is not None
+    assert second is not None
+    assert len({first.event_key, recovery.event_key, second.event_key}) == 3
+
+
+def test_alert_enqueue_rejects_non_contract_repeat_before_database_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace()
+    monkeypatch.setattr(
+        settlement_alerts,
+        "utc_now",
+        lambda: pytest.fail("invalid repeat must fail before clock or database access"),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="customer_settlement_alert_repeat_is_invalid",
+    ):
+        enqueue_health_alert_if_needed(
+            session,
+            metrics={"freshness_status": "critical", "mapping_status": "critical"},
+            repeat_seconds=0,
+        )
+
+
 def test_health_alerts_fail_closed_and_sanitize_invalid_metrics(db_session: Session) -> None:
     assert overall_health_status({}) == "critical"
     metrics = {
@@ -232,6 +497,42 @@ def test_alert_delivery_is_restricted_to_approved_task(db_session: Session) -> N
         )
 
 
+@pytest.mark.parametrize(
+    "webhook_url",
+    (
+        "http://example.invalid/rest/1/token",
+        "https://user:password@example.invalid/rest/1/token",
+        "https://example.invalid/rest/1/token?query=1",
+        "https://example.invalid/rest/1/token#fragment",
+        "https://[broken/rest/1/token",
+        "https://example.invalid:invalid/rest/1/token",
+    ),
+)
+def test_alert_delivery_rejects_unsafe_webhook_url(
+    db_session: Session,
+    webhook_url: str,
+) -> None:
+    now = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
+    db_session.add(
+        CustomerSettlementAlertOutbox(
+            event_key="f" * 64,
+            status="pending",
+            severity="critical",
+            message="synthetic safe alert",
+            attempt_count=0,
+            next_attempt_at=now,
+        )
+    )
+    db_session.flush()
+
+    assert dispatch_customer_settlement_alerts(
+        db_session,
+        webhook_url=webhook_url,
+        task_id=" 2883 ",
+        now=now,
+    ) == {"processed": 1, "sent": 0, "failed": 1, "exhausted": 0}
+
+
 def test_alert_delivery_reports_exhausted_outbox_rows(db_session: Session) -> None:
     now = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
     db_session.add(
@@ -252,6 +553,122 @@ def test_alert_delivery_reports_exhausted_outbox_rows(db_session: Session) -> No
         task_id="2883",
         now=now,
     ) == {"processed": 0, "sent": 0, "failed": 0, "exhausted": 1}
+
+
+def test_alert_delivery_readback_prevents_duplicate_after_unknown_commit(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
+    event_key = "d" * 64
+    db_session.add(
+        CustomerSettlementAlertOutbox(
+            event_key=event_key,
+            status="pending",
+            severity="critical",
+            message="synthetic safe alert",
+            attempt_count=0,
+            next_attempt_at=now,
+        )
+    )
+    db_session.flush()
+    calls: list[str] = []
+
+    def fake_request(*, url: str, payload: dict[str, str], timeout_seconds: float):
+        calls.append(url)
+        assert timeout_seconds == 3.0
+        assert payload["TASKID"] == "2883"
+        return {
+            "result": [
+                {
+                    "ID": "comment-42",
+                    "POST_MESSAGE": f"previous delivery\n[#mm-settlements:{event_key}]",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(settlement_alerts, "_request_bitrix_json", fake_request)
+
+    assert dispatch_customer_settlement_alerts(
+        db_session,
+        webhook_url="https://example.invalid/rest/1/token",
+        task_id="2883",
+        now=now,
+    ) == {"processed": 1, "sent": 1, "failed": 0, "exhausted": 0}
+    assert calls == ["https://example.invalid/rest/1/token/task.commentitem.getlist.json"]
+
+
+def test_alert_delivery_readback_follows_checked_pagination(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 22, 20, 0, tzinfo=UTC)
+    event_key = "e" * 64
+    db_session.add(
+        CustomerSettlementAlertOutbox(
+            event_key=event_key,
+            status="pending",
+            severity="critical",
+            message="synthetic safe alert",
+            attempt_count=0,
+            next_attempt_at=now,
+        )
+    )
+    db_session.flush()
+    starts: list[str] = []
+
+    def fake_request(*, url: str, payload: dict[str, str], timeout_seconds: float):
+        assert url.endswith("/task.commentitem.getlist.json")
+        assert timeout_seconds == 3.0
+        starts.append(payload["start"])
+        if payload["start"] == "0":
+            return {"result": [{"ID": "1", "POST_MESSAGE": "other"}], "next": 50}
+        return {
+            "result": [
+                {
+                    "ID": "2",
+                    "POST_MESSAGE": f"previous delivery\n[#mm-settlements:{event_key}]",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(settlement_alerts, "_request_bitrix_json", fake_request)
+
+    result = dispatch_customer_settlement_alerts(
+        db_session,
+        webhook_url="https://example.invalid/rest/1/token",
+        task_id="2883",
+        now=now,
+    )
+
+    assert result == {"processed": 1, "sent": 1, "failed": 0, "exhausted": 0}
+    assert starts == ["0", "50"]
+
+
+@pytest.mark.parametrize(
+    ("timeout_seconds", "max_attempts"),
+    ((0.0, 5), (3.1, 5), (3.0, 0), (3.0, 6)),
+)
+def test_alert_delivery_rejects_non_contract_runtime_limits_before_database_access(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_seconds: float,
+    max_attempts: int,
+) -> None:
+    session = SimpleNamespace()
+    monkeypatch.setattr(
+        settlement_alerts,
+        "utc_now",
+        lambda: pytest.fail("invalid limits must fail before clock or database access"),
+    )
+
+    with pytest.raises(RuntimeError, match="delivery_contract_is_invalid"):
+        dispatch_customer_settlement_alerts(
+            session,
+            webhook_url="https://example.invalid/rest/1/token",
+            task_id="2883",
+            timeout_seconds=timeout_seconds,
+            max_attempts=max_attempts,
+        )
 
 
 def test_reconciliation_task_hides_report_path_on_parse_failure(
@@ -318,6 +735,97 @@ def test_reconciliation_task_hides_unexpected_source_error(
     assert str(report_path) not in output
 
 
+def test_reconciliation_task_locks_and_rechecks_context_before_store(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    organization_ref = "0x" + "a" * 32
+    organization_guid = onec_ref_to_guid(organization_ref)
+    activate_mapping_revision(
+        db_session,
+        entries=(SettlementMappingInput("101", "cluster-a", CP_1, "linked"),),
+        source_checked_at=datetime(2026, 8, 23, 10, 0, tzinfo=UTC),
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+    )
+    set_pilot_access(db_session, site_user_id="101", enabled=True)
+    db_session.commit()
+    report_path = tmp_path / "statement.xlsx"
+    report_path.write_bytes(b"synthetic")
+    settings = Settings(
+        _env_file=None,
+        customer_settlements_organization_ref=organization_ref,
+        customer_settlements_organization_guid=organization_guid,
+        customer_settlements_opening_organization_field="_Fld7005RRef",
+        customer_settlements_movement_organization_field="_Fld7005RRef",
+        onec_database_url="mssql+pyodbc://synthetic",
+    )
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    monkeypatch.setattr(reconciliation_task, "get_settings", lambda: settings)
+    monkeypatch.setattr(reconciliation_task, "report_sha256", lambda _path: "a" * 64)
+    monkeypatch.setattr(
+        reconciliation_task,
+        "load_onec_mutual_settlements_current_balances_file",
+        lambda *_args, **_kwargs: [
+            OneCMutualSettlementCurrentBalanceRow(
+                REPORT_DATE,
+                "Pilot",
+                Decimal("0.00"),
+                1,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "get_application_session_factory",
+        lambda: lambda: Session(db_session.get_bind()),
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "assert_expected_application_database",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "build_onec_engine",
+        lambda *_args, **_kwargs: SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "fetch_manual_customer_settlement_controls",
+        lambda *_args, **_kwargs: (_control(CP_1, "Pilot"),),
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "fetch_customer_settlement_balances",
+        lambda *_args, **_kwargs: CustomerSettlementSourceResult(
+            source_db_time=as_of,
+            as_of=as_of,
+            balances=(SettlementBalanceInput(CP_1, Decimal("0.00")),),
+            isolation_level="READ COMMITTED",
+            duration_seconds=0.1,
+        ),
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "try_customer_settlement_context_lock",
+        lambda _session: False,
+    )
+    monkeypatch.setattr(
+        reconciliation_task,
+        "store_reconciliation_result",
+        lambda *_args, **_kwargs: pytest.fail("unlocked reconciliation must not be stored"),
+    )
+
+    assert reconciliation_task.main([str(report_path)]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "blocked",
+        "error_code": "settlement_context_busy",
+    }
+
+
 def test_financial_worker_rejects_reconciliation_from_another_pilot_context(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -355,6 +863,11 @@ def test_financial_worker_rejects_reconciliation_from_another_pilot_context(
         "get_application_session_factory",
         lambda: lambda: Session(db_session.get_bind()),
     )
+    monkeypatch.setattr(
+        settlement_workers,
+        "assert_expected_application_database",
+        lambda *_args, **_kwargs: None,
+    )
     settings = Settings(
         _env_file=None,
         customer_settlements_shadow_enabled=True,
@@ -364,6 +877,316 @@ def test_financial_worker_rejects_reconciliation_from_another_pilot_context(
         customer_settlements_opening_organization_field="_Fld7005RRef",
         customer_settlements_movement_organization_field="_Fld7005RRef",
         onec_database_url="mssql+pyodbc://synthetic",
+    )
+
+    assert settlement_workers.run_customer_settlement_financial_sync(settings=settings) == {
+        "status": "blocked",
+        "reason": "financial_reconciliation_not_current",
+    }
+
+
+def test_financial_worker_rechecks_mapping_context_before_activation(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_ref = "0x" + "a" * 32
+    organization_guid = onec_ref_to_guid(organization_ref)
+    mapping, _ = activate_mapping_revision(
+        db_session,
+        entries=(SettlementMappingInput("101", "cluster-a", CP_1, "linked"),),
+        source_checked_at=datetime(2026, 8, 23, 10, 0, tzinfo=UTC),
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+    )
+    set_pilot_access(db_session, site_user_id="101", enabled=True)
+    settings = Settings(
+        _env_file=None,
+        customer_settlements_shadow_enabled=True,
+        customer_settlements_source_validated=True,
+        customer_settlements_organization_ref=organization_ref,
+        customer_settlements_organization_guid=organization_guid,
+        customer_settlements_opening_organization_field="_Fld7005RRef",
+        customer_settlements_movement_organization_field="_Fld7005RRef",
+        onec_database_url="mssql+pyodbc://synthetic",
+    )
+    context_hash = customer_settlement_reconciliation_context_hash(
+        mapping_source_hash=mapping.source_hash,
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+        source_mode=settings.customer_settlements_source_mode,
+        opening_organization_field="_Fld7005RRef",
+        movement_organization_field="_Fld7005RRef",
+        counterparty_refs=(CP_1,),
+    )
+    report_hash = "a" * 64
+    source_hash = "c" * 64
+    db_session.add(
+        CustomerSettlementReconciliationRun(
+            report_date=REPORT_DATE,
+            as_of=end_of_day_boundary_utc(REPORT_DATE),
+            report_hash=report_hash,
+            context_hash=context_hash,
+            source_hash=source_hash,
+            input_hash=customer_settlement_reconciliation_input_hash(
+                report_hash=report_hash,
+                context_hash=context_hash,
+                source_hash=source_hash,
+            ),
+            status="matched",
+            expected_count=1,
+            matched_count=1,
+            mismatch_count=0,
+            max_abs_difference=Decimal("0.00"),
+        )
+    )
+    db_session.commit()
+
+    scopes = iter(((CP_1,), (CP_2,)))
+    monkeypatch.setattr(
+        settlement_workers,
+        "get_application_session_factory",
+        lambda: lambda: Session(db_session.get_bind()),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "assert_expected_application_database",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "active_pilot_counterparty_refs",
+        lambda _session: next(scopes),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "active_pilot_site_user_ids",
+        lambda _session: ("101",),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "build_onec_engine",
+        lambda *_args, **_kwargs: SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "fetch_customer_settlement_balances",
+        lambda *_args, **_kwargs: CustomerSettlementSourceResult(
+            source_db_time=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            as_of=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            balances=(SettlementBalanceInput(CP_1, Decimal("10.00")),),
+            isolation_level="READ COMMITTED",
+            duration_seconds=0.1,
+        ),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "activate_financial_revision",
+        lambda *_args, **_kwargs: pytest.fail("stale context must not be activated"),
+    )
+
+    assert settlement_workers.run_customer_settlement_financial_sync(settings=settings) == {
+        "status": "blocked",
+        "reason": "financial_context_changed",
+    }
+
+
+def test_financial_worker_locks_final_context_after_source_read(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_ref = "0x" + "a" * 32
+    organization_guid = onec_ref_to_guid(organization_ref)
+    mapping, _ = activate_mapping_revision(
+        db_session,
+        entries=(SettlementMappingInput("101", "cluster-a", CP_1, "linked"),),
+        source_checked_at=datetime(2026, 8, 23, 10, 0, tzinfo=UTC),
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+    )
+    set_pilot_access(db_session, site_user_id="101", enabled=True)
+    settings = Settings(
+        _env_file=None,
+        customer_settlements_shadow_enabled=True,
+        customer_settlements_source_validated=True,
+        customer_settlements_organization_ref=organization_ref,
+        customer_settlements_organization_guid=organization_guid,
+        customer_settlements_opening_organization_field="_Fld7005RRef",
+        customer_settlements_movement_organization_field="_Fld7005RRef",
+        onec_database_url="mssql+pyodbc://synthetic",
+    )
+    context_hash = customer_settlement_reconciliation_context_hash(
+        mapping_source_hash=mapping.source_hash,
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+        source_mode=settings.customer_settlements_source_mode,
+        opening_organization_field="_Fld7005RRef",
+        movement_organization_field="_Fld7005RRef",
+        counterparty_refs=(CP_1,),
+    )
+    report_hash = "a" * 64
+    source_hash = "c" * 64
+    db_session.add(
+        CustomerSettlementReconciliationRun(
+            report_date=REPORT_DATE,
+            as_of=end_of_day_boundary_utc(REPORT_DATE),
+            report_hash=report_hash,
+            context_hash=context_hash,
+            source_hash=source_hash,
+            input_hash=customer_settlement_reconciliation_input_hash(
+                report_hash=report_hash,
+                context_hash=context_hash,
+                source_hash=source_hash,
+            ),
+            status="matched",
+            expected_count=1,
+            matched_count=1,
+            mismatch_count=0,
+            max_abs_difference=Decimal("0.00"),
+        )
+    )
+    db_session.commit()
+
+    source_read = False
+
+    def fetch_source(*_args, **_kwargs):
+        nonlocal source_read
+        source_read = True
+        return CustomerSettlementSourceResult(
+            source_db_time=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            as_of=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            balances=(SettlementBalanceInput(CP_1, Decimal("10.00")),),
+            isolation_level="READ COMMITTED",
+            duration_seconds=0.1,
+        )
+
+    monkeypatch.setattr(
+        settlement_workers,
+        "get_application_session_factory",
+        lambda: lambda: Session(db_session.get_bind()),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "assert_expected_application_database",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "build_onec_engine",
+        lambda *_args, **_kwargs: SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "fetch_customer_settlement_balances",
+        fetch_source,
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "try_customer_settlement_context_lock",
+        lambda _session: False if source_read else pytest.fail("lock acquired before source read"),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "activate_financial_revision",
+        lambda *_args, **_kwargs: pytest.fail("activation must not run without the lock"),
+    )
+
+    assert settlement_workers.run_customer_settlement_financial_sync(settings=settings) == {
+        "status": "skipped_lock",
+        "reason": "context_lock",
+    }
+
+
+def test_financial_worker_rechecks_latest_reconciliation_under_context_lock(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_ref = "0x" + "a" * 32
+    organization_guid = onec_ref_to_guid(organization_ref)
+    mapping, _ = activate_mapping_revision(
+        db_session,
+        entries=(SettlementMappingInput("101", "cluster-a", CP_1, "linked"),),
+        source_checked_at=datetime(2026, 8, 23, 10, 0, tzinfo=UTC),
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+    )
+    set_pilot_access(db_session, site_user_id="101", enabled=True)
+    db_session.commit()
+    settings = Settings(
+        _env_file=None,
+        customer_settlements_shadow_enabled=True,
+        customer_settlements_source_validated=True,
+        customer_settlements_organization_ref=organization_ref,
+        customer_settlements_organization_guid=organization_guid,
+        customer_settlements_opening_organization_field="_Fld7005RRef",
+        customer_settlements_movement_organization_field="_Fld7005RRef",
+        onec_database_url="mssql+pyodbc://synthetic",
+    )
+    context_hash = customer_settlement_reconciliation_context_hash(
+        mapping_source_hash=mapping.source_hash,
+        organization_ref=organization_ref,
+        organization_guid=organization_guid,
+        source_mode=settings.customer_settlements_source_mode,
+        opening_organization_field="_Fld7005RRef",
+        movement_organization_field="_Fld7005RRef",
+        counterparty_refs=(CP_1,),
+    )
+    report_hash = "a" * 64
+    source_hash = "c" * 64
+    valid = SimpleNamespace(
+        status="matched",
+        report_date=REPORT_DATE,
+        as_of=end_of_day_boundary_utc(REPORT_DATE),
+        report_hash=report_hash,
+        context_hash=context_hash,
+        source_hash=source_hash,
+        input_hash=customer_settlement_reconciliation_input_hash(
+            report_hash=report_hash,
+            context_hash=context_hash,
+            source_hash=source_hash,
+        ),
+        expected_count=1,
+        matched_count=1,
+        mismatch_count=0,
+        max_abs_difference=Decimal("0.00"),
+    )
+    changed = SimpleNamespace(**{**vars(valid), "status": "mismatched"})
+    reconciliations = iter((valid, changed))
+
+    monkeypatch.setattr(
+        settlement_workers,
+        "get_application_session_factory",
+        lambda: lambda: Session(db_session.get_bind()),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "assert_expected_application_database",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "_latest_customer_settlement_reconciliation",
+        lambda _session: next(reconciliations),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "build_onec_engine",
+        lambda *_args, **_kwargs: SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "fetch_customer_settlement_balances",
+        lambda *_args, **_kwargs: CustomerSettlementSourceResult(
+            source_db_time=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            as_of=datetime(2026, 8, 23, 10, 30, tzinfo=UTC),
+            balances=(SettlementBalanceInput(CP_1, Decimal("10.00")),),
+            isolation_level="READ COMMITTED",
+            duration_seconds=0.1,
+        ),
+    )
+    monkeypatch.setattr(
+        settlement_workers,
+        "activate_financial_revision",
+        lambda *_args, **_kwargs: pytest.fail("changed reconciliation must block activation"),
     )
 
     assert settlement_workers.run_customer_settlement_financial_sync(settings=settings) == {

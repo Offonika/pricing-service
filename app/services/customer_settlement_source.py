@@ -63,6 +63,12 @@ def validate_counterparty_control_field(value: str | None) -> str:
     return normalized
 
 
+def _validate_query_timeout(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 30:
+        raise CustomerSettlementSourceError("query_timeout_must_be_between_1_and_30_seconds")
+    return value
+
+
 def _clock_row(connection) -> dict:
     row = connection.execute(text("""
             SELECT
@@ -104,31 +110,19 @@ def fetch_customer_settlement_balances(
         raise CustomerSettlementSourceError("pilot_counterparty_list_is_empty")
     if len(normalized_refs) > 100:
         raise CustomerSettlementSourceError("pilot_counterparty_limit_exceeded")
-    if query_timeout_seconds < 1 or query_timeout_seconds > 30:
-        raise CustomerSettlementSourceError("query_timeout_must_be_between_1_and_30_seconds")
+    query_timeout_seconds = _validate_query_timeout(query_timeout_seconds)
 
     started = time.monotonic()
     with onec_engine.connect() as connection:
-        clock = _clock_row(connection)
+        isolation_probe = _clock_row(connection)
         connection.rollback()
         isolation_level = (
-            "SNAPSHOT" if int(clock.get("snapshot_isolation_state") or 0) == 1 else "READ COMMITTED"
+            "SNAPSHOT"
+            if int(isolation_probe.get("snapshot_isolation_state") or 0) == 1
+            else "READ COMMITTED"
         )
         connection.exec_driver_sql(f"SET TRANSACTION ISOLATION LEVEL {isolation_level}")
         connection.rollback()
-        source_db_time = ensure_utc(clock["utc_now"])
-        source_local_time = clock["local_now"]
-        if isinstance(source_local_time, datetime) and source_local_time.tzinfo is not None:
-            source_local_time = source_local_time.replace(tzinfo=None)
-        if as_of is None:
-            query_as_of = source_local_time
-            response_as_of = source_db_time
-        else:
-            response_as_of = ensure_utc(as_of)
-            query_as_of = response_as_of.astimezone(ZoneInfo(onec_timezone)).replace(tzinfo=None)
-            if response_as_of > source_db_time:
-                raise CustomerSettlementSourceError("as_of_cannot_be_in_the_future")
-        opening_cutoff = datetime(query_as_of.year, query_as_of.month, 1)
 
         statement = text(f"""
             WITH
@@ -199,7 +193,11 @@ def fetch_customer_settlement_balances(
                 pilot.ref_text AS counterparty_ref,
                 CAST(COALESCE(balances.signed_balance, 0) AS decimal(18, 2))
                     AS signed_balance,
-                CASE WHEN counterparty._IDRRef IS NULL THEN 0 ELSE 1 END AS counterparty_exists,
+                CASE
+                    WHEN counterparty._IDRRef IS NOT NULL
+                     AND counterparty._Folder = 0x01
+                    THEN 1 ELSE 0
+                END AS counterparty_exists,
                 CASE WHEN counterparty._Marked = 0x01 THEN 1 ELSE 0 END AS marked_deleted
             FROM #CustomerSettlementPilot AS pilot
             LEFT JOIN balances
@@ -209,6 +207,22 @@ def fetch_customer_settlement_balances(
             ORDER BY pilot.ref_text
             """)
         with connection.begin():
+            clock = _clock_row(connection)
+            source_db_time = ensure_utc(clock["utc_now"])
+            source_local_time = source_db_time.astimezone(ZoneInfo(onec_timezone)).replace(
+                tzinfo=None
+            )
+            if as_of is None:
+                query_as_of = source_local_time
+                response_as_of = source_db_time
+            else:
+                response_as_of = ensure_utc(as_of)
+                query_as_of = response_as_of.astimezone(ZoneInfo(onec_timezone)).replace(
+                    tzinfo=None
+                )
+                if response_as_of > source_db_time:
+                    raise CustomerSettlementSourceError("as_of_cannot_be_in_the_future")
+            opening_cutoff = datetime(query_as_of.year, query_as_of.month, 1)
             connection.exec_driver_sql(f"SET LOCK_TIMEOUT {query_timeout_seconds * 1000}")
             connection.exec_driver_sql("""
                 CREATE TABLE #CustomerSettlementPilot (
@@ -289,8 +303,7 @@ def fetch_manual_customer_settlement_controls(
         raise CustomerSettlementSourceError("manual_mapping_batch_is_empty")
     if len(normalized_guids) > 10:
         raise CustomerSettlementSourceError("manual_mapping_batch_limit_exceeded")
-    if query_timeout_seconds < 1 or query_timeout_seconds > 30:
-        raise CustomerSettlementSourceError("query_timeout_must_be_between_1_and_30_seconds")
+    query_timeout_seconds = _validate_query_timeout(query_timeout_seconds)
     refs_by_guid = {guid: onec_guid_to_ref(guid) for guid in normalized_guids}
 
     counterparty_statement = text(f"""

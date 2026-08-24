@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import contextmanager
-from decimal import Decimal
 from typing import Iterator
 
 from sqlalchemy import select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -14,10 +14,7 @@ from app.infrastructure.db import (
     build_onec_engine,
     get_application_session_factory,
 )
-from app.models.customer_settlement import (
-    CustomerSettlementMappingRevision,
-    CustomerSettlementReconciliationRun,
-)
+from app.models.customer_settlement import CustomerSettlementMappingRevision
 from app.services.customer_settlement_mapping import (
     build_mapping_entries,
     fetch_crm_cluster_rows,
@@ -26,6 +23,10 @@ from app.services.customer_settlement_mapping import (
 from app.services.customer_settlement_reconciliation import (
     CustomerSettlementReconciliationError,
     customer_settlement_reconciliation_context_hash,
+    customer_settlement_reconciliation_run_is_current,
+)
+from app.services.customer_settlement_reconciliation import (
+    latest_customer_settlement_reconciliation as _latest_customer_settlement_reconciliation,
 )
 from app.services.customer_settlement_source import (
     CustomerSettlementSourceError,
@@ -33,6 +34,7 @@ from app.services.customer_settlement_source import (
 )
 from app.services.customer_settlements import (
     MAX_PILOT_USERS,
+    CustomerSettlementContextBusyError,
     CustomerSettlementRuntimeGuardError,
     SettlementMappingInput,
     activate_financial_revision,
@@ -43,6 +45,7 @@ from app.services.customer_settlements import (
     cleanup_customer_settlements,
     mark_financial_revision_failed,
     mark_mapping_revision_failed,
+    try_customer_settlement_context_lock,
     utc_now,
 )
 
@@ -54,34 +57,45 @@ def _lock_key(name: str) -> int:
     return int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:8], "big", signed=True)
 
 
+def _rollback_quietly(session: Session) -> None:
+    try:
+        session.rollback()
+    except Exception:
+        pass
+
+
+def _close_quietly(session: Session) -> None:
+    try:
+        session.close()
+    except Exception:
+        pass
+
+
+def _dispose_quietly(engine: Engine | None) -> None:
+    if engine is None:
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        pass
+
+
+def _source_timeout_is_bounded(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and 0 < float(value) <= 30
+
+
 @contextmanager
 def _advisory_lock(session: Session, name: str) -> Iterator[bool]:
+    """Hold a worker lock until the current transaction commits or rolls back."""
     bind = session.get_bind()
     if bind.dialect.name != "postgresql":
         yield True
         return
     key = _lock_key(name)
     acquired = bool(
-        session.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}).scalar()
+        session.execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}).scalar()
     )
-    body_failed = False
-    try:
-        yield acquired
-    except BaseException:
-        body_failed = True
-        if acquired:
-            try:
-                session.rollback()
-            except Exception:
-                pass
-        raise
-    finally:
-        if acquired:
-            try:
-                session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
-            except Exception:
-                if not body_failed:
-                    raise
+    yield acquired
 
 
 def run_customer_settlement_mapping_sync(
@@ -113,15 +127,17 @@ def run_customer_settlement_mapping_sync(
                 "mapping_entries": revision.loaded_entry_count,
             }
         except CustomerSettlementRuntimeGuardError:
-            session.rollback()
+            _rollback_quietly(session)
             return {"status": "blocked", "reason": "runtime_database_guard_failed"}
         except Exception:
-            session.rollback()
+            _rollback_quietly(session)
             return {"status": "error", "reason": "mapping_sync_failed"}
         finally:
-            session.close()
+            _close_quietly(session)
     if mapping_mode != "crm_readonly":
         return {"status": "blocked", "reason": "unsupported_mapping_mode"}
+    if not _source_timeout_is_bounded(settings.customer_settlements_query_timeout_seconds):
+        return {"status": "blocked", "reason": "mapping_source_timeout_invalid"}
     session = get_application_session_factory()()
     onec_engine = None
     try:
@@ -141,11 +157,6 @@ def run_customer_settlement_mapping_sync(
                 and settings.customer_settlements_organization_guid
             ):
                 return {"status": "blocked", "reason": "mapping_organization_not_configured"}
-            pilot_user_ids = active_pilot_site_user_ids(session)
-            if not pilot_user_ids:
-                return {"status": "blocked", "reason": "pilot_users_not_configured"}
-            if len(pilot_user_ids) > MAX_PILOT_USERS:
-                return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             onec_engine = build_onec_engine(
                 settings.onec_database_url,
                 query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
@@ -165,6 +176,13 @@ def run_customer_settlement_mapping_sync(
             )
             all_entries = build_mapping_entries(rows)
             entries_by_user = {item.site_user_id: item for item in all_entries}
+            if not try_customer_settlement_context_lock(session):
+                return {"status": "skipped_lock", "reason": "context_lock"}
+            pilot_user_ids = active_pilot_site_user_ids(session)
+            if not pilot_user_ids:
+                return {"status": "blocked", "reason": "pilot_users_not_configured"}
+            if len(pilot_user_ids) > MAX_PILOT_USERS:
+                return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             entries = tuple(
                 entries_by_user.get(user_id)
                 or SettlementMappingInput(
@@ -196,10 +214,10 @@ def run_customer_settlement_mapping_sync(
                 "invalid_source_rows": invalid_source_rows,
             }
     except CustomerSettlementRuntimeGuardError:
-        session.rollback()
+        _rollback_quietly(session)
         return {"status": "blocked", "reason": "runtime_database_guard_failed"}
     except Exception as exc:
-        session.rollback()
+        _rollback_quietly(session)
         try:
             mark_mapping_revision_failed(
                 session,
@@ -208,12 +226,11 @@ def run_customer_settlement_mapping_sync(
             )
             session.commit()
         except Exception:
-            session.rollback()
+            _rollback_quietly(session)
         return {"status": "error", "reason": "mapping_sync_failed"}
     finally:
-        if onec_engine is not None:
-            onec_engine.dispose()
-        session.close()
+        _dispose_quietly(onec_engine)
+        _close_quietly(session)
 
 
 def run_customer_settlement_financial_sync(
@@ -225,6 +242,8 @@ def run_customer_settlement_financial_sync(
         return {"status": "disabled"}
     if not settings.customer_settlements_source_validated:
         return {"status": "blocked", "reason": "financial_source_not_validated"}
+    if not _source_timeout_is_bounded(settings.customer_settlements_query_timeout_seconds):
+        return {"status": "blocked", "reason": "financial_source_timeout_invalid"}
     required_config = (
         settings.customer_settlements_organization_ref,
         settings.customer_settlements_organization_guid,
@@ -248,7 +267,8 @@ def run_customer_settlement_financial_sync(
             counterparty_refs = active_pilot_counterparty_refs(session)
             if not counterparty_refs:
                 return {"status": "blocked", "reason": "pilot_counterparties_not_configured"}
-            if len(active_pilot_site_user_ids(session)) > MAX_PILOT_USERS:
+            pilot_user_ids = active_pilot_site_user_ids(session)
+            if len(pilot_user_ids) > MAX_PILOT_USERS:
                 return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             mapping_revision = session.scalar(
                 select(CustomerSettlementMappingRevision).where(
@@ -273,24 +293,11 @@ def run_customer_settlement_financial_sync(
                 )
             except CustomerSettlementReconciliationError:
                 return {"status": "blocked", "reason": "financial_reconciliation_not_current"}
-            latest_reconciliation = session.scalar(
-                select(CustomerSettlementReconciliationRun)
-                .order_by(
-                    CustomerSettlementReconciliationRun.created_at.desc(),
-                    CustomerSettlementReconciliationRun.id.desc(),
-                )
-                .limit(1)
-            )
-            if (
-                latest_reconciliation is None
-                or latest_reconciliation.status != "matched"
-                or latest_reconciliation.context_hash != reconciliation_context_hash
-                or latest_reconciliation.source_hash is None
-                or latest_reconciliation.input_hash is None
-                or latest_reconciliation.expected_count != len(counterparty_refs)
-                or latest_reconciliation.matched_count != len(counterparty_refs)
-                or latest_reconciliation.mismatch_count != 0
-                or Decimal(latest_reconciliation.max_abs_difference) > Decimal("0.01")
+            latest_reconciliation = _latest_customer_settlement_reconciliation(session)
+            if not customer_settlement_reconciliation_run_is_current(
+                latest_reconciliation,
+                context_hash=reconciliation_context_hash,
+                expected_count=len(counterparty_refs),
             ):
                 return {"status": "blocked", "reason": "financial_reconciliation_not_current"}
             onec_engine = build_onec_engine(
@@ -315,6 +322,33 @@ def run_customer_settlement_financial_sync(
                 counterparty_refs=counterparty_refs,
                 query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
             )
+            if not try_customer_settlement_context_lock(session):
+                return {"status": "skipped_lock", "reason": "context_lock"}
+            current_counterparty_refs = active_pilot_counterparty_refs(session)
+            current_pilot_user_ids = active_pilot_site_user_ids(session)
+            current_mapping_revision = session.scalar(
+                select(CustomerSettlementMappingRevision).where(
+                    CustomerSettlementMappingRevision.status == "active"
+                )
+            )
+            if (
+                current_mapping_revision is None
+                or current_mapping_revision.id != mapping_revision.id
+                or current_mapping_revision.source_hash != mapping_revision.source_hash
+                or current_counterparty_refs != counterparty_refs
+                or current_pilot_user_ids != pilot_user_ids
+            ):
+                return {"status": "blocked", "reason": "financial_context_changed"}
+            current_reconciliation = _latest_customer_settlement_reconciliation(session)
+            if not customer_settlement_reconciliation_run_is_current(
+                current_reconciliation,
+                context_hash=reconciliation_context_hash,
+                expected_count=len(current_counterparty_refs),
+            ):
+                return {
+                    "status": "blocked",
+                    "reason": "financial_reconciliation_not_current",
+                }
             revision, activated = activate_financial_revision(
                 session,
                 organization_ref=settings.customer_settlements_organization_ref,
@@ -334,10 +368,10 @@ def run_customer_settlement_financial_sync(
                 "duration_seconds": round(source.duration_seconds, 3),
             }
     except CustomerSettlementRuntimeGuardError:
-        session.rollback()
+        _rollback_quietly(session)
         return {"status": "blocked", "reason": "runtime_database_guard_failed"}
     except Exception as exc:
-        session.rollback()
+        _rollback_quietly(session)
         try:
             mark_financial_revision_failed(
                 session,
@@ -354,12 +388,11 @@ def run_customer_settlement_financial_sync(
             )
             session.commit()
         except Exception:
-            session.rollback()
+            _rollback_quietly(session)
         return {"status": "error", "reason": "financial_sync_failed"}
     finally:
-        if onec_engine is not None:
-            onec_engine.dispose()
-        session.close()
+        _dispose_quietly(onec_engine)
+        _close_quietly(session)
 
 
 def run_customer_settlement_cleanup(
@@ -382,10 +415,13 @@ def run_customer_settlement_cleanup(
         session.commit()
         return {"status": "ok", **result}
     except CustomerSettlementRuntimeGuardError:
-        session.rollback()
+        _rollback_quietly(session)
         return {"status": "blocked", "reason": "runtime_database_guard_failed"}
+    except CustomerSettlementContextBusyError:
+        _rollback_quietly(session)
+        return {"status": "skipped_lock", "reason": "context_lock"}
     except Exception:
-        session.rollback()
+        _rollback_quietly(session)
         return {"status": "error", "reason": "cleanup_failed"}
     finally:
-        session.close()
+        _close_quietly(session)

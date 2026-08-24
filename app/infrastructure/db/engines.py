@@ -8,10 +8,12 @@ reuse a pool instead of creating an engine per request.
 from __future__ import annotations
 
 from functools import lru_cache
+from math import ceil, isfinite
 from typing import Any
 
 from sqlalchemy import create_engine as sqlalchemy_create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy import event
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.pool import Pool
 
 from app.core.config import get_settings
@@ -65,16 +67,51 @@ def build_onec_engine(
 ) -> Engine:
     """Build the read-only 1C MSSQL engine with bounded connection waits."""
 
+    if isinstance(query_timeout_seconds, bool) or isinstance(login_timeout_seconds, bool):
+        raise ValueError("1C query and login timeouts must be finite and positive")
+    query_timeout = float(query_timeout_seconds)
+    login_timeout = float(login_timeout_seconds)
+    if (
+        not isfinite(query_timeout)
+        or not isfinite(login_timeout)
+        or query_timeout <= 0
+        or login_timeout <= 0
+    ):
+        raise ValueError("1C query and login timeouts must be finite and positive")
+    driver_name = make_url(database_url).drivername
+    if driver_name.endswith("+pyodbc") or driver_name == "mssql":
+        # pyodbc's connect-level ``timeout`` is a login timeout.  Its statement
+        # timeout belongs to the cursor and is installed below.
+        connect_args = {"timeout": max(1, ceil(login_timeout))}
+    else:
+        # python-tds documents ``timeout`` as the query timeout and
+        # ``login_timeout`` as the connection/login timeout.
+        connect_args = {
+            "timeout": query_timeout,
+            "login_timeout": login_timeout,
+        }
     engine_options: dict[str, object] = {
-        "connect_args": {
-            "timeout": float(query_timeout_seconds),
-            "login_timeout": float(login_timeout_seconds),
-        },
+        "connect_args": connect_args,
         "pool_pre_ping": True,
     }
     if poolclass is not None:
         engine_options["poolclass"] = poolclass
-    return sqlalchemy_create_engine(database_url, **engine_options)
+    engine = sqlalchemy_create_engine(database_url, **engine_options)
+    if driver_name.endswith("+pyodbc") or driver_name == "mssql":
+        statement_timeout = max(1, ceil(query_timeout))
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _set_pyodbc_statement_timeout(
+            _connection,
+            cursor,
+            _statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            cursor.timeout = statement_timeout
+
+    return engine
 
 
 def build_onec_engine_from_settings(*, poolclass: type[Pool] | None = None) -> Engine:

@@ -12,6 +12,8 @@ def main() -> int:
         result = {"status": "error", "reason": "mapping_sync_failed"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     status = result.get("status")
+    if status == "skipped_lock" and result.get("reason") == "context_lock":
+        return 1
     if status in {"activated", "unchanged", "skipped_lock", "disabled"}:
         return 0
     if status == "error":

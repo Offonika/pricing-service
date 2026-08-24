@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
@@ -28,10 +30,38 @@ from app.services.customer_settlements import (
     active_pilot_counterparty_refs,
     assert_expected_application_database,
     onec_ref_to_guid,
+    try_customer_settlement_context_lock,
 )
 from app.services.importers.onec_mutual_settlements import (
     load_onec_mutual_settlements_current_balances_file,
 )
+
+
+def _rollback_quietly(session: Session | None) -> None:
+    if session is None:
+        return
+    try:
+        session.rollback()
+    except Exception:
+        pass
+
+
+def _close_quietly(session: Session | None) -> None:
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception:
+        pass
+
+
+def _dispose_quietly(engine: Engine | None) -> None:
+    if engine is None:
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,8 +153,39 @@ def main(argv: list[str] | None = None) -> int:
             controls=controls,
             source=source,
         )
+        if not try_customer_settlement_context_lock(session):
+            raise CustomerSettlementReconciliationError("settlement_context_busy")
+        current_mapping = session.scalar(
+            select(CustomerSettlementMappingRevision).where(
+                CustomerSettlementMappingRevision.status == "active"
+            )
+        )
+        current_refs = active_pilot_counterparty_refs(session)
+        if current_mapping is None or not current_refs:
+            raise CustomerSettlementReconciliationError("reconciliation_context_changed")
+        current_context_hash = customer_settlement_reconciliation_context_hash(
+            mapping_source_hash=current_mapping.source_hash,
+            organization_ref=str(settings.customer_settlements_organization_ref or ""),
+            organization_guid=str(settings.customer_settlements_organization_guid or ""),
+            source_mode=settings.customer_settlements_source_mode,
+            opening_organization_field=str(
+                settings.customer_settlements_opening_organization_field or ""
+            ),
+            movement_organization_field=str(
+                settings.customer_settlements_movement_organization_field or ""
+            ),
+            counterparty_refs=current_refs,
+        )
+        if current_context_hash != context_hash:
+            raise CustomerSettlementReconciliationError("reconciliation_context_changed")
         store_reconciliation_result(session, result)
-        session.commit()
+        try:
+            session.commit()
+        except Exception as exc:
+            _rollback_quietly(session)
+            raise CustomerSettlementReconciliationError(
+                "reconciliation_commit_state_unknown"
+            ) from exc
         print(
             json.dumps(
                 {
@@ -140,8 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if result.mismatch_count == 0 else 2
     except CustomerSettlementRuntimeGuardError:
-        if session is not None:
-            session.rollback()
+        _rollback_quietly(session)
         print(
             json.dumps(
                 {"status": "blocked", "error_code": "runtime_database_guard_failed"},
@@ -150,8 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except (CustomerSettlementReconciliationError, CustomerSettlementSourceError, OSError) as exc:
-        if session is not None:
-            session.rollback()
+        _rollback_quietly(session)
         error_code = (
             str(exc)[:96]
             if isinstance(
@@ -168,8 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except Exception:
-        if session is not None:
-            session.rollback()
+        _rollback_quietly(session)
         print(
             json.dumps(
                 {"status": "blocked", "error_code": "reconciliation_failed"},
@@ -178,10 +236,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     finally:
-        if session is not None:
-            session.close()
-        if onec_engine is not None:
-            onec_engine.dispose()
+        _close_quietly(session)
+        _dispose_quietly(onec_engine)
 
 
 if __name__ == "__main__":

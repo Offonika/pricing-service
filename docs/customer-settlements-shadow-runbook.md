@@ -156,6 +156,54 @@ backend override по заказам не использовался. Новый
 завершения cleanup повторный health сразу вернул `ok` и отправил recovery. В cron
 jobs разнесены на 10 минут и не запускаются параллельно.
 
+## Досрочное включение real provider на dev 2026-08-24
+
+Пользователь отдельно разрешил не ждать завершения 72 часов и включить реальные
+данные только на `dev.master-mobile.ru`. Shadow-run при этом продолжает идти до
+`2026-08-27 10:22:35 MSK`; production `master-mobile.ru`, production API и
+production-БД не изменялись.
+
+Контуры намеренно разделены:
+
+- cron продолжает использовать исходный shadow env с client/eligibility flags
+  `false`, поэтому checkpoint preflight сохраняет контракт `36/36`;
+- отдельный `customer-settlements-staging-api.service` запущен из immutable
+  release `ccd19fb` на `127.0.0.1:18081` с отдельным API-env, где оба клиентских
+  флага включены;
+- Nginx публикует только два settlement endpoint под staging-префиксом и допускает
+  только фиксированный исходящий IP `dev.master-mobile.ru`; запрос с другого IP
+  получает `403`;
+- Bitrix-конфиг остаётся вне webroot в
+  `/etc/master-mobile/customer-settlements.json`, имеет режим `real`, выключенный
+  mock query и права `0640 root:mm`;
+- site-пакет синхронизирован clean commit `b8e60d9`; assertion создаётся только
+  PHP-сервером, а его secret отсутствует в webroot.
+
+Live smoke после переключения:
+
+- PHP-клиент: `10/10 available`, `10/10 eligible`, `0` transport errors;
+- состояния: `6 debt / 3 advance / 1 zero`, без вывода сумм и идентификаторов;
+- пользователь вне whitelist: `pilot_disabled`; replay: `401`;
+- две отдельные PHP-сессии вернули разные ожидаемые состояния `debt` и `advance`;
+- backend отвечает `Cache-Control: private, no-store`, неавторизованный staging
+  запрос получает `401`, неавторизованный кабинет перенаправляется на `/auth/`;
+- после переключения shadow preflight повторно дал `36/36`, health — `ok`.
+
+Rollback dev-пилота:
+
+1. вернуть конфиг
+   `/etc/master-mobile/customer-settlements.json.bak-dev-real-20260824-1212`;
+2. восстановить site-пакет из
+   `/root/customer-settlements-site-backup-20260824-1215` и reload `php-fpm`;
+3. остановить и disable `customer-settlements-staging-api.service`;
+4. удалить только два staging location из Nginx после `nginx -t`, используя
+   backup `pricing-service.conf.bak-customer-settlements-dev-real-20260824-1207`
+   только после read-only diff, чтобы не затереть более поздние изменения;
+5. shadow cron, active revisions и staging-БД не удалять.
+
+После диагностического вывода старый пароль отдельной staging PostgreSQL-роли был
+немедленно ротирован и оба действующих env обновлены; новый пароль не логировался.
+
 ## Точечное разрешение на исправление CRM mapping 2026-08-24
 
 Владелец пилота выбрал исправление CRM-связи Арсения с уже существующим
@@ -437,6 +485,10 @@ Shadow-run принимается, если 72 часа:
 
 ## Changelog
 
+- 2026-08-24 — real provider досрочно включён только на `dev.master-mobile.ru`:
+  отдельный staging API, IP allowlist, PHP-пакет `b8e60d9`, live smoke `10/10`,
+  cache/replay/cross-session проверки и повторный shadow preflight `36/36`
+  прошли; production не изменялся, rollback сохранён.
 - 2026-08-24 — staging cron переключён на immutable release `ccd19fb`; полная
   checkpoint-обёртка из release дала `preflight 36/36`, автоматическую сверку
   `10/10` и health `ok`, persistent остановка `27.08.2026 10:22:35 MSK` сохранена.

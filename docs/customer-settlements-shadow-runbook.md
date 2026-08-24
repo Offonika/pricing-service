@@ -131,6 +131,14 @@ Settlement migrations объединены с фактически активн�
 - cron загружен в `10:23 MSK`, технические checkpoints назначены на `10:19 MSK`
   `25/26/27.08.2026`, а persistent stop timer автоматически переместит cron в
   `.expired` `2026-08-27 10:22:35 MSK`.
+- автоматическая сверка с витриной дебиторки реализована clean commit
+  `ccd19fb90dadad86309f512a7e31ae3c14d1b964` и собрана в immutable release
+  `/opt/MM/releases/pricing-service/customer-settlements-shadow-20260824-ccd19fb-r1`
+  с content hash
+  `10e9c9a56d326db67ba63976a0a8dd131783d10831987c03318c6d48f2d86a16`;
+- release-checkpoint полностью прошёл `preflight 36/36`, read-only drift-check
+  `10/10` и health `ok`; в `11:36 MSK` staging cron переключён на этот release,
+  а время checkpoint и persistent stop timer не изменялись.
 
 Блокеры CRM mapping, бухгалтерской сверки и первого financial snapshot закрыты;
 backend override по заказам не использовался. Новый зачётный 72-часовой shadow-run
@@ -429,6 +437,9 @@ Shadow-run принимается, если 72 часа:
 
 ## Changelog
 
+- 2026-08-24 — staging cron переключён на immutable release `ccd19fb`; полная
+  checkpoint-обёртка из release дала `preflight 36/36`, автоматическую сверку
+  `10/10` и health `ok`, persistent остановка `27.08.2026 10:22:35 MSK` сохранена.
 - 2026-08-24 — read-only dry-run автоматической сверки на завершённом дне
   `23.08.2026` прошёл `10/10`: `9` строк найдены в витрине, отсутствующая десятая
   подтверждена явным нулём 1С, расхождений и пропущенных ненулевых остатков нет.

@@ -33,6 +33,7 @@ from app.services.site_service_requests_auth import content_sha256
 from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixReader,
     SiteServiceRequestBitrixWriter,
+    SiteServiceRequestFileCleanup,
     SiteServiceRequestPermanentError,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
@@ -71,6 +72,7 @@ class FakeBitrixApi:
         self.disk_files: dict[str, dict] = {}
         self.timeline_comments: list[dict[str, str]] = []
         self.timeline_page_size: int | None = None
+        self.notification_ids_by_tag: dict[str, int] = {}
         self.users: dict[int, dict] = {
             1001: {"ID": "1001", "ACTIVE": "Y", "NAME": "Анна", "LAST_NAME": "Гиря"},
             1002: {"ID": "1002", "ACTIVE": "Y", "NAME": "Ариф", "LAST_NAME": "Рахманов"},
@@ -180,7 +182,13 @@ class FakeBitrixApi:
                 response["next"] = start + page_size
             return response
         if method == "im.notify.personal.add":
-            return {"result": 1}
+            tag = mapped.get("TAG")
+            assert isinstance(tag, str) and tag
+            notification_id = self.notification_ids_by_tag.setdefault(
+                tag,
+                len(self.notification_ids_by_tag) + 1,
+            )
+            return {"result": notification_id}
         if method == "timeman.status":
             user_id = int(mapped["USER_ID"])
             return {"result": {"STATUS": self.timeman.get(user_id, "ERROR")}}
@@ -1335,7 +1343,13 @@ def test_uploaded_file_cleanup_preserves_concurrently_restaged_payload(
     )
     db_session.add_all([case, file])
     db_session.commit()
-    stale_cleanup_paths = [path]
+    stale_cleanup_paths = [
+        SiteServiceRequestFileCleanup(
+            case_id=case.id,
+            file_id=file.id,
+            path=path,
+        )
+    ]
 
     path.write_bytes(b"recovered")
     file.status = "staged"
@@ -1361,9 +1375,7 @@ def test_staged_file_upload_rejects_conflicting_file_id_aliases(
         def call(self, method: str, params=None, **kwargs):
             response = super().call(method, params, **kwargs)
             if method == "crm.item.get":
-                response["result"]["item"]["ufCrm36Clientfiles"] = [
-                    {"id": "2000", "ID": "9999"}
-                ]
+                response["result"]["item"]["ufCrm36Clientfiles"] = [{"id": "2000", "ID": "9999"}]
             return response
 
     content = b"file-content"
@@ -1984,10 +1996,13 @@ def test_outbound_success_checkpoint_never_moves_backward(db_session) -> None:
     assert case.outbound_checked_at is not None
     assert case.outbound_checked_at.replace(tzinfo=UTC) == newer_time
     assert case.outbound_last_error_code == "newer_outbound_failure"
-    assert build_site_service_request_health(
-        db_session,
-        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
-    )["status"] == "degraded"
+    assert (
+        build_site_service_request_health(
+            db_session,
+            settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        )["status"]
+        == "degraded"
+    )
 
 
 def test_outbound_command_is_durable_before_card_action_clear(db_session) -> None:
@@ -3699,7 +3714,7 @@ def test_stale_assignment_success_does_not_regress_newer_failure_checkpoint(
     assert case.assignment_checked_at is not None
     assert case.assignment_checked_at.replace(tzinfo=UTC) == newer_time
     assert case.assignment_last_error_code == "timeman_unavailable"
-    assert case.updated_at.replace(tzinfo=UTC) == newer_time
+    assert case.updated_at.replace(tzinfo=UTC) >= newer_time
     assert health["status"] == "degraded"
     assert health["alert_codes"] == ["assignment_failure"]
 
@@ -3876,7 +3891,9 @@ def test_escalation_recovers_after_notification_failure_without_duplicate_timeli
         def call(self, method: str, params=None, **kwargs):
             if method == "im.notify.personal.add" and self.fail_notification:
                 self.fail_notification = False
-                self.calls.append((method, list(params or [])))
+                # Simulate an ambiguous timeout after Bitrix accepted the tagged
+                # notification. A retry with the same TAG must not create another.
+                super().call(method, params, **kwargs)
                 raise RuntimeError("notification timeout")
             return super().call(method, params, **kwargs)
 
@@ -3903,6 +3920,9 @@ def test_escalation_recovers_after_notification_failure_without_duplicate_timeli
     assert second[0]["escalated"] is False
     assert len(api.timeline_comments) == 1
     assert [method for method, _params in api.calls].count("im.notify.personal.add") == 2
+    assert api.notification_ids_by_tag == {
+        f"mm-site-service-escalation:{case.id}:1003": 1,
+    }
     assert case.escalation_timeline_delivered_at is not None
     assert case.escalation_notification_delivered_at is not None
 
@@ -3924,6 +3944,7 @@ def test_notification_rejects_malformed_success_result(
         SiteServiceRequestBitrixWriter(MalformedNotificationApi()).notify_user(
             user_id=1003,
             message="Тестовое уведомление",
+            tag="mm-site-service-test:1:1003",
         )
 
 

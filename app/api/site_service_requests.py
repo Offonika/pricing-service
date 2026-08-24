@@ -4,7 +4,6 @@ from email.message import Message
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -14,7 +13,6 @@ from app.api.dependencies import (
     require_site_service_request_signature,
 )
 from app.core.config import Settings
-from app.models.site_service_requests import SiteServiceRequestFile
 from app.schemas.site_service_requests import (
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestCommandAckResponse,
@@ -31,12 +29,11 @@ from app.services.site_service_requests import (
     SiteServiceRequestNotFoundError,
     SiteServiceRequestPayloadError,
     SiteServiceRequestStorageError,
-    StagedSiteServiceRequestFile,
     accept_site_service_request_event,
     acknowledge_site_service_request_command,
     build_site_service_request_cipher,
     build_site_service_request_health,
-    cleanup_staged_site_service_request_file,
+    cleanup_unreferenced_site_service_request_file,
     fail_site_service_request_file,
     lease_site_service_request_commands,
     stage_site_service_request_file,
@@ -184,7 +181,16 @@ def upload_event_file(
     except SQLAlchemyError as exc:
         db.rollback()
         if result is not None:
-            _cleanup_unreferenced_site_service_request_file(db, result=result)
+            try:
+                cleanup_unreferenced_site_service_request_file(db, result=result)
+            except SQLAlchemyError:
+                # A second readback failure is ambiguous. Keep the private spool
+                # payload for a later operator/worker reconciliation.
+                pass
+            finally:
+                # Release the identity locks only after the guarded unlink has
+                # either completed or failed safe.
+                db.rollback()
         raise HTTPException(status_code=503, detail="file_storage_unavailable") from exc
 
     return SiteServiceRequestFileStagedResponse(
@@ -322,25 +328,3 @@ def _commit_site_service_request_file_failure(db: Session) -> None:
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=503, detail="file_storage_unavailable") from exc
-
-
-def _cleanup_unreferenced_site_service_request_file(
-    db: Session,
-    *,
-    result: StagedSiteServiceRequestFile,
-) -> None:
-    if not result.cleanup_on_failure or not result.storage_path:
-        return
-    try:
-        referenced_file_id = db.scalar(
-            select(SiteServiceRequestFile.id)
-            .where(SiteServiceRequestFile.temporary_path == result.storage_path)
-            .limit(1)
-        )
-    except SQLAlchemyError:
-        # An ambiguous commit must retain the private spool payload. Deleting it
-        # without DB readback could leave a committed row pointing to no file.
-        db.rollback()
-        return
-    if referenced_file_id is None:
-        cleanup_staged_site_service_request_file(result)

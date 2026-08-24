@@ -134,6 +134,10 @@ def test_static_fixtures_cover_ddl_event_and_command_dedupe() -> None:
     assert "'messageId' => 1201" in event_source
     assert "mm-site-service-command:42" in command_source
     assert "findCommandMarkerInRows(42" in command_source
+    bridge_source = BRIDGE.read_text(encoding="utf-8")
+    assert "GET_LOCK(" in bridge_source
+    assert "RELEASE_LOCK(" in bridge_source
+    assert "command_lease_expired" in bridge_source
 
 
 @pytest.mark.skipif(PHP is None, reason="php binary is not installed on this host")

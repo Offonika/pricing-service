@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-08"
+updated_at: "2026-08-24"
 ---
 
 # Инвентарь заданий по расписанию
@@ -29,18 +29,25 @@ updated_at: "2026-08-08"
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|
-| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | рабочая папка |
-| `pricing-sku-result-sync-ut103` | ежечасно в :45 | рабочая папка |
-| `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
-| `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
+| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | релиз |
+| `pricing-sku-result-sync-ut103` | ежечасно в :45 | релиз |
+| `onec_assembly_crm_reconciler` | каждые 30 минут | релиз |
+| `order_fulfillment_sync` | каждые 30 минут, ежечасно в :10, ежедневно 11:00 | релиз |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
-| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | рабочая папка |
-| `pricing-sku-generation-ut103` | ежедневно 02:30 | рабочая папка |
-| `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | рабочая папка |
-| `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | рабочая папка |
+| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | релиз |
+| `pricing-sku-generation-ut103` | ежедневно 02:30 | релиз |
+| `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | релиз |
+| `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | релиз |
+| `sync_telephony_mapping` | ежедневно 08:35 | релиз |
+| `sync_open_procurement_supplier_orders_to_bitrix` | каждые 30 минут, 08:00–21:59 | рабочая папка |
 | `manual_matching_bitrix_tasks` | по будням 09:10 | рабочая папка |
 | `pricing-executive-procurement-snapshot` | ежедневно 10:35 | релиз |
 | `pricing-executive-management-balance` | ежедневно 11:40 | релиз |
+| `bronze_price_type_monthly_inventory` | первого числа месяца 06:45 | релиз |
+| `pricing-expertise-alarm-scan` | каждые 15 минут | релиз |
+| `pricing-expertise-sync` | каждые 10 минут в :02 | релиз |
+| `pricing-expertise-sync-watchdog` | каждые 5 минут | релиз |
+| `pricing-executive-dashboard-monitor` | каждые 5 минут | релиз |
 
 Логи всех заданий — в `/var/log/pricing/`, имя файла совпадает с именем задания.
 
@@ -53,17 +60,35 @@ updated_at: "2026-08-08"
 
 ## Известное расхождение
 
-На 2026-08-08 система работает из двух источников одновременно:
+Решение 2026-08-24: устранение runtime split-brain назначено приоритетом №1.
+Все активные scheduled jobs `pricing-service` переводятся с изменяемого
+`/opt/MM/pricing-service` на единый проверенный immutable release source. Cutover
+выполняется по одному job-контуру с backup, readback, контрольным запуском и
+проверенным rollback. Production jobs из mutable checkout после перевода запрещены.
 
-- служба API — из релиза `task-43-table-overflow-20260806-d20e64d`;
-- девять заданий по расписанию — из рабочей папки.
+После cutover 2026-08-24 из рабочей папки остаются два активных контура:
 
-Между этими версиями 228 файлов различий. Экраны и ночные расчёты могут по-разному
-интерпретировать одни и те же данные.
+- служба API и остальные scheduled jobs — из проверенного immutable release через
+  `/opt/MM/pricing-service-task43-current`;
+- `manual_matching_bitrix_tasks` временно остаётся в рабочей папке, потому что его
+  текущая команда содержит ещё не выпущенное правило исключения ответственных;
+- `sync_open_procurement_supplier_orders_to_bitrix` временно остаётся в рабочей
+  папке, потому что его downstream lead-time pipeline отличается от release.
 
-Свести источники к одному следует **после** того, как ветка релиза будет принята в
-`main`: иначе перевод заданий на релиз законсервирует в них непроверенный код, а
-обновление релиза до `main` откатит контур дебиторки примерно на две недели.
+Эти контуры нельзя переключать на текущий release механически: manual matching
+потеряет правило исключения ответственных, а procurement pipeline вернётся к другой
+версии расчёта lead time. Сначала изменения должны попасть в проверенный immutable
+release, после чего пути cron переключаются с тем же backup, readback и
+rollback-порядком.
+
+Решение 2026-08-24: для `manual_matching_bitrix_tasks` и
+`sync_open_procurement_supplier_orders_to_bitrix` собирается отдельный clean
+immutable release, сохраняющий текущее правило исключения ответственных и актуальный
+downstream lead-time pipeline. Кандидат строится от активной production-цепочки,
+проходит адресные и обязательные проверки и выкатывается только через
+`/usr/local/sbin/mm-pricing-service-release deploy`. После успешного smoke последние
+две строки cron переводятся на release; rollback возвращает прежний release и
+сохранённые cron-конфигурации.
 
 ## Проверка после изменения расписания
 
@@ -76,3 +101,16 @@ updated_at: "2026-08-08"
 Переключение ветки в `/opt/MM/pricing-service` меняет код девяти боевых заданий.
 После такого переключения проверить логи ближайших запусков — в первую очередь
 `assortment_lifecycle_classification.log` и `order_fulfillment_sync.log`.
+
+## Changelog
+
+- 2026-08-24 — Устранение runtime split-brain назначено приоритетом №1; принят
+  поэтапный перевод всех активных jobs на единый immutable release source.
+- 2026-08-24 — API monitor, expertise timers, competitor matching, 1С assembly,
+  staffing и SKU jobs переведены на immutable release; mutable source сохранён только
+  для контуров с ещё не выпущенными изменениями.
+- 2026-08-24 — Найден и проаудирован root crontab; telephony и monthly bronze jobs
+  переведены на release, procurement supplier sync оставлен на mutable source до
+  выпуска совместимого downstream lead-time pipeline.
+- 2026-08-24 — Подтверждена сборка и guarded deploy отдельного clean release для
+  последних двух mutable scheduled jobs.

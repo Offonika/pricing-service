@@ -4,7 +4,6 @@ import argparse
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -20,6 +19,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixApi,
     SiteServiceRequestBitrixReader,
     SiteServiceRequestBitrixWriter,
+    SiteServiceRequestFileCleanup,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
     cleanup_uploaded_site_service_request_files,
@@ -84,7 +84,7 @@ def main(
     )
     reader = SiteServiceRequestBitrixReader(resolved_api)
     cipher = build_site_service_request_cipher(settings)
-    cleanup_paths: list[Path] = []
+    cleanup_paths: list[SiteServiceRequestFileCleanup] = []
     with session_scope_factory(read_only=not args.apply) as session:
         planning_failures: list[Any] = []
         plans = build_site_service_request_worker_plans(

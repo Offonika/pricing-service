@@ -710,8 +710,7 @@ def _enum_mapping(spec: dict[str, Any], field: dict[str, Any]) -> dict[str, str]
         enum_ids = {
             _strict_enum_row_id(item)
             for item in enum_rows
-            if (_strict_optional_enum_string(item, "xmlId", "XML_ID") or "").strip()
-            == xml_id
+            if (_strict_optional_enum_string(item, "xmlId", "XML_ID") or "").strip() == xml_id
         }
         if len(enum_ids) > 1:
             raise RuntimeError("site_service_request_enum_mapping_ambiguous")
@@ -729,9 +728,7 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         exact_rows = [
             row
             for row in enum_rows
-            if (_strict_optional_enum_string(row, "xmlId", "XML_ID") or "")
-            .strip()
-            .lower()
+            if (_strict_optional_enum_string(row, "xmlId", "XML_ID") or "").strip().lower()
             == logical_xml_id
         ]
         suffix_rows = [
@@ -745,9 +742,7 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         label_rows = [
             row
             for row in enum_rows
-            if (_strict_optional_enum_string(row, "value", "VALUE") or "")
-            .strip()
-            .casefold()
+            if (_strict_optional_enum_string(row, "value", "VALUE") or "").strip().casefold()
             in label_values
         ]
         candidates = exact_rows or suffix_rows or label_rows
@@ -856,11 +851,7 @@ def _strict_stage_id(item: dict[str, Any], *, expected_prefix: str) -> str:
 
 
 def _strict_stage_semantics(item: dict[str, Any]) -> str:
-    values = [
-        item[field_name]
-        for field_name in ("SEMANTICS", "semantics")
-        if field_name in item
-    ]
+    values = [item[field_name] for field_name in ("SEMANTICS", "semantics") if field_name in item]
     if not values:
         return ""
     normalized_values: list[str] = []

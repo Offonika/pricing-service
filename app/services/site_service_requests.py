@@ -395,6 +395,53 @@ def cleanup_staged_site_service_request_file(result: StagedSiteServiceRequestFil
         pass
 
 
+def cleanup_unreferenced_site_service_request_file(
+    session: Session,
+    *,
+    result: StagedSiteServiceRequestFile,
+) -> None:
+    """Remove a failed spool write while serializing against another PUT.
+
+    The deterministic spool path belongs to the file row, so locking by the
+    durable event/file identity is required. A lookup by ``temporary_path`` can
+    miss a concurrent uncommitted restage and delete its newly written payload.
+    """
+    if not result.cleanup_on_failure or not result.storage_path:
+        return
+
+    event_identity = session.execute(
+        select(
+            SiteServiceRequestEvent.case_id,
+            SiteServiceRequestEvent.source_message_id,
+        ).where(SiteServiceRequestEvent.event_id == result.event_id)
+    ).one_or_none()
+    if event_identity is None:
+        # Missing identity is ambiguous after a failed commit. Retain the private
+        # spool file rather than risk deleting a payload owned by another PUT.
+        return
+    case_id, source_message_id = event_identity
+    case = session.scalar(
+        select(SiteServiceRequestCase).where(SiteServiceRequestCase.id == case_id).with_for_update()
+    )
+    if case is None:
+        return
+    files = session.scalars(
+        select(SiteServiceRequestFile)
+        .where(
+            SiteServiceRequestFile.case_id == case.id,
+            SiteServiceRequestFile.source_message_id == source_message_id,
+            SiteServiceRequestFile.source_file_id == result.file_id,
+        )
+        .limit(2)
+        .with_for_update()
+    ).all()
+    if len(files) != 1:
+        return
+    if files[0].temporary_path == result.storage_path:
+        return
+    cleanup_staged_site_service_request_file(result)
+
+
 def fail_site_service_request_file(
     session: Session,
     *,
@@ -721,10 +768,7 @@ def _update_site_service_request_outbound_checkpoint(
     current_time: datetime,
     error_code: str | None,
 ) -> bool:
-    if (
-        case.outbound_checked_at is not None
-        and _as_utc(case.outbound_checked_at) > current_time
-    ):
+    if case.outbound_checked_at is not None and _as_utc(case.outbound_checked_at) > current_time:
         return False
     case.outbound_checked_at = current_time
     case.outbound_last_error_code = error_code

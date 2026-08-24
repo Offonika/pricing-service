@@ -33,7 +33,9 @@ from app.schemas.site_service_requests import (
 )
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
+    StagedSiteServiceRequestFile,
     acknowledge_site_service_request_command,
+    cleanup_unreferenced_site_service_request_file,
     lease_site_service_request_commands,
 )
 from app.services.site_service_requests_auth import content_sha256, sign_site_request
@@ -856,6 +858,63 @@ def test_uploaded_file_does_not_regress_on_malformed_transport_retry(
     db_session.refresh(file)
     assert file.status == "uploaded"
     assert file.last_error_code is None
+
+
+def test_failed_commit_cleanup_preserves_path_owned_by_same_file_identity(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    payload = _event_payload()
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, payload).status_code == 202
+    file = db_session.scalar(select(SiteServiceRequestFile))
+    assert file is not None
+    path = tmp_path / "ambiguous-commit.bin"
+    path.write_bytes(b"tracked")
+    result = StagedSiteServiceRequestFile(
+        event_id=payload["eventId"],
+        file_id=file.source_file_id,
+        status="staged",
+        duplicate=False,
+        storage_path=str(path),
+        cleanup_on_failure=True,
+    )
+
+    file.status = "staged"
+    file.temporary_path = str(path)
+    db_session.commit()
+    cleanup_unreferenced_site_service_request_file(db_session, result=result)
+
+    assert path.read_bytes() == b"tracked"
+    assert file.temporary_path == str(path)
+
+
+def test_failed_commit_cleanup_removes_path_only_while_identity_is_locked(
+    client,
+    db_session,
+    tmp_path,
+) -> None:
+    payload = _event_payload()
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, payload).status_code == 202
+    file = db_session.scalar(select(SiteServiceRequestFile))
+    assert file is not None
+    path = tmp_path / "unreferenced-commit.bin"
+    path.write_bytes(b"unreferenced")
+    result = StagedSiteServiceRequestFile(
+        event_id=payload["eventId"],
+        file_id=file.source_file_id,
+        status="staged",
+        duplicate=False,
+        storage_path=str(path),
+        cleanup_on_failure=True,
+    )
+
+    cleanup_unreferenced_site_service_request_file(db_session, result=result)
+
+    assert path.exists() is False
+    assert file.temporary_path is None
 
 
 def test_file_api_rejects_unregistered_unsafe_or_changed_content(

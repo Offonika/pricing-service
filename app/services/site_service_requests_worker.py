@@ -152,6 +152,13 @@ class SiteServiceRequestWorkerResult:
     error_code: str | None = None
 
 
+@dataclass(frozen=True)
+class SiteServiceRequestFileCleanup:
+    case_id: int
+    file_id: int
+    path: Path
+
+
 class SiteServiceRequestPermanentError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
@@ -705,10 +712,17 @@ class SiteServiceRequestBitrixWriter:
                 raise RuntimeError("bitrix_timeline_pagination_cycle")
             start = parsed_next
 
-    def notify_user(self, *, user_id: int, message: str) -> None:
+    def notify_user(self, *, user_id: int, message: str, tag: str) -> None:
+        normalized_tag = tag.strip()
+        if not normalized_tag:
+            raise RuntimeError("bitrix_notification_tag_invalid")
         response = self.api.call(
             "im.notify.personal.add",
-            [("USER_ID", str(user_id)), ("MESSAGE", message)],
+            [
+                ("USER_ID", str(user_id)),
+                ("MESSAGE", message),
+                ("TAG", normalized_tag),
+            ],
         )
         if _positive_int(response.get("result")) is None:
             raise RuntimeError("bitrix_notification_failed")
@@ -1481,7 +1495,7 @@ def sync_staged_site_service_request_files(
     writer: SiteServiceRequestBitrixWriter,
     now: datetime | None = None,
     limit: int | None = None,
-    cleanup_paths: list[Path] | None = None,
+    cleanup_paths: list[SiteServiceRequestFileCleanup] | None = None,
 ) -> list[dict[str, Any]]:
     if not settings.site_service_requests_bitrix_writes_enabled:
         return []
@@ -1644,7 +1658,13 @@ def sync_staged_site_service_request_files(
                 case.last_error_code = case.base_error_code
                 case.updated_at = current_time
             if cleanup_paths is not None:
-                cleanup_paths.append(path)
+                cleanup_paths.append(
+                    SiteServiceRequestFileCleanup(
+                        case_id=file.case_id,
+                        file_id=file.id,
+                        path=path,
+                    )
+                )
             results.append(
                 {
                     "fileId": file.source_file_id,
@@ -1662,7 +1682,13 @@ def sync_staged_site_service_request_files(
             case.last_error_code = "file_sync_error"
             case.updated_at = current_time
             if cleanup_paths is not None:
-                cleanup_paths.append(path)
+                cleanup_paths.append(
+                    SiteServiceRequestFileCleanup(
+                        case_id=file.case_id,
+                        file_id=file.id,
+                        path=path,
+                    )
+                )
             if _write_file_sync_error_to_item(
                 file=file,
                 settings=settings,
@@ -1705,12 +1731,16 @@ def sync_staged_site_service_request_files(
 
 def cleanup_uploaded_site_service_request_files(
     session: Session,
-    paths: list[Path],
+    paths: list[SiteServiceRequestFileCleanup],
 ) -> None:
     # Keep temporary_path durable until unlink succeeds. If the process dies
     # after unlink but before commit, missing_ok makes the next retry safe.
-    durable_paths = session.scalars(
-        select(SiteServiceRequestFile.temporary_path).where(
+    durable_rows = session.execute(
+        select(
+            SiteServiceRequestFile.case_id,
+            SiteServiceRequestFile.id,
+            SiteServiceRequestFile.temporary_path,
+        ).where(
             SiteServiceRequestFile.temporary_path.is_not(None),
             or_(
                 SiteServiceRequestFile.status == "uploaded",
@@ -1721,31 +1751,57 @@ def cleanup_uploaded_site_service_request_files(
             ),
         )
     ).all()
-    cleanup_paths = {Path(path) for path in durable_paths if path}
-    cleanup_paths.update(paths)
-    for path in cleanup_paths:
-        files = session.scalars(
-            select(SiteServiceRequestFile)
-            .where(SiteServiceRequestFile.temporary_path == str(path))
-            .with_for_update()
-        ).all()
-        if files and any(
-            file.status != "uploaded"
-            and not (
-                file.status == "failed"
-                and file.last_error_code == "file_payload_invalid"
+    cleanup_candidates = {
+        (candidate.case_id, candidate.file_id, str(candidate.path)): candidate
+        for candidate in paths
+    }
+    cleanup_candidates.update(
+        {
+            (case_id, file_id, str(path)): SiteServiceRequestFileCleanup(
+                case_id=case_id,
+                file_id=file_id,
+                path=Path(path),
             )
-            for file in files
+            for case_id, file_id, path in durable_rows
+            if path
+        }
+    )
+    for candidate in sorted(
+        cleanup_candidates.values(),
+        key=lambda item: (item.case_id, item.file_id, str(item.path)),
+    ):
+        case = session.scalar(
+            select(SiteServiceRequestCase)
+            .where(SiteServiceRequestCase.id == candidate.case_id)
+            .with_for_update()
+        )
+        if case is None:
+            continue
+        file = session.scalar(
+            select(SiteServiceRequestFile)
+            .where(
+                SiteServiceRequestFile.id == candidate.file_id,
+                SiteServiceRequestFile.case_id == case.id,
+            )
+            .with_for_update()
+        )
+        if file is None:
+            continue
+        owns_candidate_path = file.temporary_path == str(candidate.path)
+        if (
+            owns_candidate_path
+            and file.status != "uploaded"
+            and not (file.status == "failed" and file.last_error_code == "file_payload_invalid")
         ):
             # A binary PUT may have restaged the deterministic spool path after
             # the upload/error transaction committed but before cleanup started.
             # The new payload owns the path and must remain available to file sync.
             continue
         try:
-            path.unlink(missing_ok=True)
+            candidate.path.unlink(missing_ok=True)
         except OSError:
             continue
-        for file in files:
+        if owns_candidate_path:
             file.temporary_path = None
     session.flush()
 
@@ -1910,8 +1966,7 @@ def _collect_site_service_request_outbound_case(
         .limit(1)
     )
     may_update_outbound_checkpoint = (
-        case.outbound_checked_at is None
-        or _as_utc(case.outbound_checked_at) <= current_time
+        case.outbound_checked_at is None or _as_utc(case.outbound_checked_at) <= current_time
     )
     if may_update_outbound_checkpoint and case.outbound_last_error_code not in {
         "reply_text_empty",
@@ -1930,8 +1985,7 @@ def _collect_site_service_request_outbound_case(
     if (
         uncleared_command is None
         and latest_command is not None
-        and case.outbound_last_error_code
-        not in {"reply_text_empty", "reply_text_too_long"}
+        and case.outbound_last_error_code not in {"reply_text_empty", "reply_text_too_long"}
         and latest_command.status == "applied"
         and action != send_value
         and str(_item_field_value(item, field_map["site_reply_status"]) or "") != sent_value
@@ -1973,8 +2027,7 @@ def _collect_site_service_request_outbound_case(
     if (
         uncleared_command is None
         and latest_command is not None
-        and case.outbound_last_error_code
-        not in {"reply_text_empty", "reply_text_too_long"}
+        and case.outbound_last_error_code not in {"reply_text_empty", "reply_text_too_long"}
         and latest_command.status == "failed"
         and action != send_value
         and str(_item_field_value(item, field_map["site_reply_status"]) or "") != error_value
@@ -2522,6 +2575,10 @@ def _deliver_site_service_request_escalation(
             message=(
                 "Просрочен SLA первого ответа по сервисному обращению "
                 f"сайта #{case.source_ticket_id}."
+            ),
+            tag=(
+                f"mm-site-service-escalation:{case.id}:"
+                f"{settings.site_service_requests_escalation_user_id}"
             ),
         )
         case.escalation_notification_delivered_at = now
@@ -3193,6 +3250,10 @@ def _notify_needs_attention_if_required(
             "Интеграция сервисных обращений требует внимания: "
             f"событие {result.event_id}, код {result.error_code or 'unknown'}."
         ),
+        tag=(
+            "mm-site-service-needs-attention:"
+            + hashlib.sha256(result.event_id.encode("utf-8")).hexdigest()[:32]
+        ),
     )
 
 
@@ -3490,18 +3551,11 @@ def _item_field_value(
     default: Any = None,
 ) -> Any:
     expected = _normalized_field_key(field_name)
-    values = [
-        value
-        for key, value in item.items()
-        if _normalized_field_key(str(key)) == expected
-    ]
+    values = [value for key, value in item.items() if _normalized_field_key(str(key)) == expected]
     if not values:
         return default
     first_value = values[0]
-    if any(
-        type(value) is not type(first_value) or value != first_value
-        for value in values[1:]
-    ):
+    if any(type(value) is not type(first_value) or value != first_value for value in values[1:]):
         raise RuntimeError("bitrix_item_field_alias_conflict")
     return first_value
 

@@ -1,8 +1,8 @@
 SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PATH=/opt/MM/pricing-service-task43-current/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
 
 # Competitor FTP prices -> competitor_item catalog -> embeddings -> Bitrix matching candidates.
-10 4 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
-45 4 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
-20 5 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_watchdog.sh >> /var/log/pricing/competitor_matching_watchdog.cron.log 2>&1
+10 4 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
+45 4 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
+20 5 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/competitor_matching_watchdog.sh >> /var/log/pricing/competitor_matching_watchdog.cron.log 2>&1

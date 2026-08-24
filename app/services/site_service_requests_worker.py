@@ -2580,9 +2580,7 @@ def reconcile_site_service_request_assignments(
                 case_id=case_id,
                 lane="assignment",
                 current_time=current_time,
-                error_code=(
-                    "escalation_delivery_failed" if assignment_state_committed else None
-                ),
+                error_code=("escalation_delivery_failed" if assignment_state_committed else None),
             )
             if failed_case is not None and checkpoint_recorded:
                 results.append(

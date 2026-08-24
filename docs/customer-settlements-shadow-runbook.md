@@ -169,7 +169,8 @@ production-БД не изменялись.
   `false`, поэтому checkpoint preflight сохраняет контракт `36/36`;
 - отдельный `customer-settlements-staging-api.service` запущен из immutable
   release `ccd19fb` на `127.0.0.1:18081` с отдельным API-env, где оба клиентских
-  флага включены;
+  флага включены; SQL-доступ 1С, CRM webhook и alert webhook из этого API-env
+  удалены как не нужные для read-only выдачи из staging PostgreSQL;
 - Nginx публикует только два settlement endpoint под staging-префиксом и допускает
   только фиксированный исходящий IP `dev.master-mobile.ru`; запрос с другого IP
   получает `403`;

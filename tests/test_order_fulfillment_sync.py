@@ -981,10 +981,9 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "REPO_DIR=/opt/MM/pricing-service-task43-current" in cron_source
     assert "flock -w 600" in wrapper_source
     assert "flock -n" in wrapper_source
-    assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS:-600" in bot_wrapper_source
-    assert bot_wrapper_source.index('source "${REPO_DIR}/.env"') < bot_wrapper_source.index(
-        'WORKER_TIMEOUT_SECONDS="${ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS:-600}"'
-    )
+    assert 'source "${REPO_DIR}/.env"' not in bot_wrapper_source
+    assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS=//p" in bot_wrapper_source
+    assert 'WORKER_TIMEOUT_SECONDS="${WORKER_TIMEOUT_SECONDS:-600}"' in bot_wrapper_source
     assert "--signal=TERM" in bot_wrapper_source
     assert "--kill-after=30s" in bot_wrapper_source
     assert '"${WORKER_TIMEOUT_SECONDS}s"' in bot_wrapper_source

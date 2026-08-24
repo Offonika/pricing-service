@@ -834,6 +834,8 @@ ID существует, активен и соответствует ожида
 
 ## Controlled live smoke
 
+Ответственный за controlled live smoke — Тимур Тибилов (Bitrix user ID `131016`).
+
 Только после отдельного разрешения:
 
 1. создать тестовый тикет известного CRM-клиента и контрольного заказа;
@@ -871,6 +873,8 @@ Rollback:
 
 # Changelog
 
+- 2026-08-25 — ответственным за controlled live smoke и за задачу Bitrix24
+  №3223 назначен Тимур Тибилов (Bitrix user ID `131016`).
 - 2026-08-25 — по отдельному production-разрешению единственный site Agent
   `mm_site_service_ticket_agent();` (ID `1327455`) выключен с обязательным
   readback; site `emit/outbound` остались `N`. Backend commit `3e997f3` развёрнут

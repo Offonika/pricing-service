@@ -308,6 +308,9 @@ class Settings(BaseSettings):
     customer_settlements_mapping_mode: str = "manual_confirmed"
     customer_settlements_access_mode: Literal["pilot_whitelist", "all_linked"] = "pilot_whitelist"
     customer_settlements_max_scope_users: int = Field(default=10, ge=1, le=100_000)
+    customer_settlements_excluded_counterparty_hashes: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     customer_settlements_query_timeout_seconds: int = 30
     customer_settlements_stale_after_seconds: int = 2 * 60 * 60
     customer_settlements_hide_after_seconds: int = 6 * 60 * 60
@@ -627,6 +630,7 @@ class Settings(BaseSettings):
         "receivable_credit_decision_approver_user_ids",
         "receivable_credit_decision_pilot_counterparty_codes",
         "customer_settlements_allowed_source_ips",
+        "customer_settlements_excluded_counterparty_hashes",
         "executive_dashboard_bitrix_allowed_domains",
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",

@@ -260,6 +260,8 @@ CUSTOMER_SETTLEMENTS_SOURCE_MODE=onec_canonical_mutual_statement_7002
 CUSTOMER_SETTLEMENTS_MAPPING_MODE=crm_readonly
 CUSTOMER_SETTLEMENTS_ACCESS_MODE=pilot_whitelist
 CUSTOMER_SETTLEMENTS_MAX_SCOPE_USERS=10
+# Optional SHA-256(ref) hold for a proven data-quality conflict; never store raw refs.
+CUSTOMER_SETTLEMENTS_EXCLUDED_COUNTERPARTY_HASHES=
 CUSTOMER_SETTLEMENTS_CRM_WEBHOOK_URL=<existing-readonly-webhook-for-72h>
 
 CUSTOMER_SETTLEMENTS_QUERY_TIMEOUT_SECONDS=30
@@ -347,7 +349,8 @@ Mapping worker обязан дважды полностью прочитать C
 и семантическое содержимое всех страниц, затем разрешить hashes через read-only
 `_Reference54` и в default-режиме активировать только 10 строк whitelist. В
 `all_linked` активируются все однозначные совместимые строки в пределах явного hard
-limit; scope и access list меняются одной транзакцией. Проверки только первой
+limit, кроме точечных SHA-256 data-quality hold; scope и access list меняются одной
+транзакцией. Проверки только первой
 страницы недостаточно. Отсутствующий пилот получает `not_linked`; несколько cluster
 или counterparty дают `ambiguous` и блокируют ready gate. Email, телефон, ФИО,
 название и ИНН не используются как ключ.

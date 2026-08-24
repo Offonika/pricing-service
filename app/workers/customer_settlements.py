@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -85,6 +86,22 @@ def _source_timeout_is_bounded(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and 0 < float(value) <= 30
 
 
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _excluded_counterparty_hashes(values: object) -> frozenset[str]:
+    if not isinstance(values, list | tuple | set | frozenset):
+        raise ValueError("excluded_counterparty_hashes_invalid")
+    normalized = frozenset(str(value).strip().lower() for value in values)
+    if any(_SHA256_RE.fullmatch(value) is None for value in normalized):
+        raise ValueError("excluded_counterparty_hashes_invalid")
+    return normalized
+
+
+def _counterparty_ref_hash(counterparty_ref: str) -> str:
+    return hashlib.sha256(counterparty_ref.lower().encode("ascii")).hexdigest()
+
+
 @contextmanager
 def _advisory_lock(session: Session, name: str) -> Iterator[bool]:
     """Hold a worker lock until the current transaction commits or rolls back."""
@@ -109,6 +126,12 @@ def run_customer_settlement_mapping_sync(
     mapping_mode = str(settings.customer_settlements_mapping_mode or "").strip().lower()
     access_mode = str(settings.customer_settlements_access_mode or "").strip().lower()
     max_scope_users = settings.customer_settlements_max_scope_users
+    try:
+        excluded_counterparty_hashes = _excluded_counterparty_hashes(
+            settings.customer_settlements_excluded_counterparty_hashes
+        )
+    except ValueError:
+        return {"status": "blocked", "reason": "excluded_counterparty_hashes_invalid"}
     if access_mode not in {"pilot_whitelist", "all_linked"}:
         return {"status": "blocked", "reason": "unsupported_access_mode"}
     if access_mode == "all_linked" and mapping_mode != "crm_readonly":
@@ -203,7 +226,10 @@ def run_customer_settlement_mapping_sync(
                 entries = tuple(
                     item
                     for item in all_entries
-                    if item.status == "linked" and item.counterparty_ref in eligible_refs
+                    if item.status == "linked"
+                    and item.counterparty_ref in eligible_refs
+                    and _counterparty_ref_hash(str(item.counterparty_ref))
+                    not in excluded_counterparty_hashes
                 )
                 pilot_user_ids = tuple(item.site_user_id for item in entries)
             else:
@@ -257,6 +283,8 @@ def run_customer_settlement_mapping_sync(
                     "eligible_counterparties": len(scope_eligibility.eligible_counterparty_refs),
                     "blank_name_counterparties": (scope_eligibility.blank_name_counterparties),
                     "non_rub_counterparties": scope_eligibility.non_rub_counterparties,
+                    "excluded_counterparties": len(eligible_refs)
+                    - len({item.counterparty_ref for item in entries}),
                     "duration_seconds": round(scope_eligibility.duration_seconds, 3),
                 }
             return result

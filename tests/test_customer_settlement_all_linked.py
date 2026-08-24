@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -121,6 +122,9 @@ def test_all_linked_worker_replaces_scope_and_rolls_back_failed_change(
         customer_settlements_mapping_mode="crm_readonly",
         customer_settlements_access_mode="all_linked",
         customer_settlements_max_scope_users=20,
+        customer_settlements_excluded_counterparty_hashes=[
+            hashlib.sha256(_ref(1).encode("ascii")).hexdigest()
+        ],
         customer_settlements_expected_database_name="synthetic",
         customer_settlements_organization_ref=ORG,
         customer_settlements_organization_guid=ORG_GUID,
@@ -166,16 +170,17 @@ def test_all_linked_worker_replaces_scope_and_rolls_back_failed_change(
 
     result = settlement_workers.run_customer_settlement_mapping_sync(settings=settings)
     assert result["status"] == "activated"
-    assert result["mapping_entries"] == 2
+    assert result["mapping_entries"] == 1
     assert result["access_scope_changes"] == {
-        "scope_users": 2,
-        "created": 2,
-        "enabled": 2,
+        "scope_users": 1,
+        "created": 1,
+        "enabled": 1,
         "disabled": 0,
     }
     assert result["scope_eligibility"]["eligible_counterparties"] == 2
+    assert result["scope_eligibility"]["excluded_counterparties"] == 1
     with Session(db_session.get_bind()) as readback:
-        assert active_pilot_site_user_ids(readback) == ("101", "102")
+        assert active_pilot_site_user_ids(readback) == ("102",)
 
     source_rows[:] = [_crm_row("102", _ref(2)), _crm_row("103", _ref(3))]
     original_activate = settlement_workers.activate_mapping_revision
@@ -187,10 +192,25 @@ def test_all_linked_worker_replaces_scope_and_rolls_back_failed_change(
     failed = settlement_workers.run_customer_settlement_mapping_sync(settings=settings)
     assert failed == {"status": "error", "reason": "mapping_sync_failed"}
     with Session(db_session.get_bind()) as readback:
-        assert active_pilot_site_user_ids(readback) == ("101", "102")
+        assert active_pilot_site_user_ids(readback) == ("102",)
 
     monkeypatch.setattr(settlement_workers, "activate_mapping_revision", original_activate)
     recovered = settlement_workers.run_customer_settlement_mapping_sync(settings=settings)
     assert recovered["status"] == "activated"
     with Session(db_session.get_bind()) as readback:
         assert active_pilot_site_user_ids(readback) == ("102", "103")
+
+
+def test_all_linked_worker_blocks_invalid_exclusion_hashes() -> None:
+    settings = Settings(
+        _env_file=None,
+        customer_settlements_shadow_enabled=True,
+        customer_settlements_mapping_mode="crm_readonly",
+        customer_settlements_access_mode="all_linked",
+        customer_settlements_excluded_counterparty_hashes=["not-a-sha256"],
+    )
+
+    assert settlement_workers.run_customer_settlement_mapping_sync(settings=settings) == {
+        "status": "blocked",
+        "reason": "excluded_counterparty_hashes_invalid",
+    }

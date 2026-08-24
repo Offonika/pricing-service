@@ -53,6 +53,7 @@ def _request_type_field() -> dict[str, Any]:
     ]
     return {
         "id": "99",
+        "entityId": "CRM_36",
         "fieldName": bitrix_setup.REQUEST_TYPE_FIELD_NAME,
         "userTypeId": "enumeration",
         "enum": [
@@ -96,7 +97,18 @@ class FakeBitrixApi:
         self.saved_form: list[dict[str, Any]] = deepcopy(
             default_form if existing_form is None else existing_form
         )
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, Any]] = []
+
+    def call(
+        self,
+        method: str,
+        params: list[tuple[str, str]] | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append((method, deepcopy(params)))
+        if method == "crm.type.list":
+            return {"result": {"types": [{"id": 36, "entityTypeId": 1134}]}}
+        raise AssertionError(f"unexpected Bitrix method: {method}")
 
     def call_json(
         self,
@@ -105,10 +117,15 @@ class FakeBitrixApi:
         **_kwargs: Any,
     ) -> dict[str, Any]:
         self.calls.append((method, deepcopy(payload)))
-        if method == "crm.type.get":
-            return {"result": {"type": {"id": 36, "entityTypeId": 1134}}}
         if method == "userfieldconfig.list":
             return {"result": {"fields": deepcopy(self.fields)}}
+        if method == "userfieldconfig.get":
+            matches = [
+                field for field in self.fields if str(field.get("id")) == str(payload.get("id"))
+            ]
+            if len(matches) != 1:
+                raise AssertionError(f"unexpected user field id: {payload.get('id')}")
+            return {"result": {"field": deepcopy(matches[0])}}
         if method == "crm.status.list":
             return {"result": deepcopy(self.stages)}
         if method == "userfieldconfig.add":
@@ -140,6 +157,11 @@ def test_dry_run_reports_missing_fields_without_writes() -> None:
 
     plan = bitrix_setup.ensure(api, settings=_settings(), apply=False)
 
+    assert api.calls[0] == (
+        "crm.type.list",
+        [("filter[entityTypeId]", "1134")],
+    )
+    assert all(method != "crm.type.get" for method, _payload in api.calls)
     assert plan.missing_fields == tuple(spec["key"] for spec in bitrix_setup.FIELD_SPECS)
     assert plan.missing_stages == ()
     assert plan.stage_map == {
@@ -357,23 +379,131 @@ def test_apply_blocks_incomplete_site_enum_before_writes() -> None:
     [
         {},
         {"result": []},
-        {"result": {"type": []}},
-        {"result": {"type": {"id": 0, "entityTypeId": 1134}}},
-        {"result": {"type": {"id": 36.5, "entityTypeId": 1134}}},
-        {"result": {"type": {"id": 36, "entityTypeId": 1134.5}}},
-        {"result": {"type": {"id": 36, "entityTypeId": 999}}},
+        {"result": {"types": {}}},
+        {"result": {"types": [[]]}},
+        {"result": {"types": [{"id": 36}]}},
+        {"result": {"types": [{"id": 0, "entityTypeId": 1134}]}},
+        {"result": {"types": [{"id": 36.5, "entityTypeId": 1134}]}},
+        {"result": {"types": [{"id": " 36", "entityTypeId": 1134}]}},
+        {"result": {"types": [{"id": 36, "entityTypeId": 1134.5}]}},
+        {"result": {"types": [{"id": 36, "entityTypeId": 999}]}},
+        {
+            "result": {
+                "types": [
+                    {"id": 36, "entityTypeId": 1134},
+                    {"id": 37, "entityTypeId": 1134},
+                ]
+            }
+        },
     ],
 )
 def test_apply_rejects_malformed_process_type_before_writes(response: dict[str, Any]) -> None:
     class MalformedTypeApi(FakeBitrixApi):
-        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
-            if method == "crm.type.get":
+        def call(self, method: str, params=None, **kwargs: Any):
+            if method == "crm.type.list":
+                self.calls.append((method, deepcopy(params)))
                 return response
-            return super().call_json(method, payload, **kwargs)
+            return super().call(method, params, **kwargs)
 
     api = MalformedTypeApi(fields=_all_fields())
 
     with pytest.raises(RuntimeError, match="type_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+@pytest.mark.parametrize("next_value", [False, -1, 1.5, "1.5", " 1", "invalid"])
+def test_process_type_list_rejects_invalid_next_offset(next_value: object) -> None:
+    class InvalidPaginationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs: Any):
+            assert method == "crm.type.list"
+            return {
+                "result": {"types": [{"id": 36, "entityTypeId": 1134}]},
+                "next": next_value,
+            }
+
+    with pytest.raises(RuntimeError, match="type_pagination_invalid"):
+        bitrix_setup._require_process_type_id(
+            InvalidPaginationApi(fields=[]),
+            entity_type_id=1134,
+        )
+
+
+def test_process_type_list_reads_nested_next_and_form_encoded_start() -> None:
+    class PaginatedTypeApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs: Any):
+            assert method == "crm.type.list"
+            self.calls.append((method, deepcopy(params)))
+            if params == [("filter[entityTypeId]", "1134")]:
+                return {"result": {"types": [], "next": "50"}}
+            assert params == [
+                ("filter[entityTypeId]", "1134"),
+                ("start", "50"),
+            ]
+            return {"result": {"types": [{"id": "36", "entityTypeId": "1134"}]}}
+
+    api = PaginatedTypeApi(fields=[])
+
+    assert bitrix_setup._require_process_type_id(api, entity_type_id=1134) == 36
+    assert len(api.calls) == 2
+
+
+def test_process_type_list_rejects_conflicting_next_offsets() -> None:
+    class ConflictingPaginationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs: Any):
+            assert method == "crm.type.list"
+            return {"result": {"types": [], "next": 50}, "next": 100}
+
+    with pytest.raises(RuntimeError, match="type_pagination_invalid"):
+        bitrix_setup._require_process_type_id(
+            ConflictingPaginationApi(fields=[]),
+            entity_type_id=1134,
+        )
+
+
+def test_process_type_list_rejects_repeated_offset() -> None:
+    class RepeatedPaginationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs: Any):
+            assert method == "crm.type.list"
+            return {"result": {"types": [], "next": 50}}
+
+    with pytest.raises(RuntimeError, match="type_pagination_loop"):
+        bitrix_setup._require_process_type_id(
+            RepeatedPaginationApi(fields=[]),
+            entity_type_id=1134,
+        )
+
+
+def test_process_type_list_stops_after_100_pages() -> None:
+    calls = 0
+
+    class EndlessPaginationApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs: Any):
+            nonlocal calls
+            assert method == "crm.type.list"
+            calls += 1
+            return {"result": {"types": [], "next": calls}}
+
+    with pytest.raises(RuntimeError, match="type_pagination_invalid"):
+        bitrix_setup._require_process_type_id(
+            EndlessPaginationApi(fields=[]),
+            entity_type_id=1134,
+        )
+    assert calls == 100
+
+
+def test_apply_rejects_mismatched_field_detail_before_writes() -> None:
+    class MismatchedFieldDetailApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            response = super().call_json(method, payload, **kwargs)
+            if method == "userfieldconfig.get":
+                response["result"]["field"]["id"] = "999999"
+            return response
+
+    api = MismatchedFieldDetailApi(fields=_all_fields())
+
+    with pytest.raises(RuntimeError, match="field_details_readback_unrecognized"):
         bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
 
     assert _write_methods(api) == []

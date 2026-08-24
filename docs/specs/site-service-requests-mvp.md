@@ -849,6 +849,13 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — production read-only preflight подтвердил, что `crm.type.get`
+  принимает внутренний `id`, а не `entityTypeId`. Ensure discovery переведён на
+  form-encoded `crm.type.list` с `filter[entityTypeId]`, строгой проверкой ровно
+  одной пары `id/entityTypeId`, обеих форм pagination `next`, циклов и лимита
+  100 страниц. Поскольку `userfieldconfig.list` на Box не возвращает enum,
+  enumeration fields дополнительно перечитываются через `userfieldconfig.get` с
+  проверкой identity; malformed readback завершается fail-closed до любых writes.
 - 2026-08-24 — для production-candidate добавлена no-op Alembic merge migration
   `8c0d2e4f6a57`, объединяющая активную production-голову `2d6f8a0c4b13` с
   проверенной цепочкой №3223 `7b9d1f3a5c46`; schema fork при rollout исключён.

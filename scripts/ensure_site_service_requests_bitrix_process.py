@@ -116,6 +116,13 @@ REQUIRED_STAGE_CODES = {
 
 
 class BitrixJsonApi(Protocol):
+    def call(
+        self,
+        method: str,
+        params: list[tuple[str, str]] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]: ...
+
     def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]: ...
 
 
@@ -323,16 +330,12 @@ def ensure(
     settings: Settings,
     apply: bool,
 ) -> EnsurePlan:
-    type_response = api.call_json(
-        "crm.type.get",
-        {"entityTypeId": settings.site_service_requests_bitrix_entity_type_id},
-    )
     type_id = _require_process_type_id(
-        type_response,
+        api,
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
     )
     entity_id = f"CRM_{type_id}"
-    fields = _list_fields(api, entity_id=entity_id)
+    fields = _read_fields(api, entity_id=entity_id)
     stages = _list_stages(
         api,
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
@@ -385,7 +388,7 @@ def ensure(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,
         category_id=settings.site_service_requests_bitrix_working_category_id,
-        fields=_list_fields(api, entity_id=entity_id),
+        fields=_read_fields(api, entity_id=entity_id),
         stages=_list_stages(
             api,
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
@@ -508,6 +511,65 @@ def _list_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
             raise RuntimeError("site_service_request_fields_pagination_loop")
         seen_starts.add(start)
         payload = {**payload, "start": start}
+
+
+def _read_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
+    fields = _list_fields(api, entity_id=entity_id)
+    enriched_fields: list[dict[str, Any]] = []
+    for field in fields:
+        if field["userTypeId"] != "enumeration":
+            enriched_fields.append(field)
+            continue
+        field_id = _strict_aliased_positive_int(
+            field,
+            "id",
+            "ID",
+            error_code="site_service_request_field_details_readback_unrecognized",
+        )
+        response = api.call_json(
+            "userfieldconfig.get",
+            {"moduleId": "crm", "id": field_id},
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("site_service_request_field_details_readback_unrecognized")
+        result = response.get("result")
+        detailed_field = result.get("field") if isinstance(result, dict) else None
+        if not isinstance(detailed_field, dict):
+            raise RuntimeError("site_service_request_field_details_readback_unrecognized")
+        detailed_id = _strict_aliased_positive_int(
+            detailed_field,
+            "id",
+            "ID",
+            error_code="site_service_request_field_details_readback_unrecognized",
+        )
+        detailed_entity_id = _strict_aliased_string(
+            detailed_field,
+            "entityId",
+            "ENTITY_ID",
+            error_code="site_service_request_field_details_readback_unrecognized",
+        )
+        detailed_field_name = _strict_aliased_string(
+            detailed_field,
+            "fieldName",
+            "FIELD_NAME",
+            error_code="site_service_request_field_details_readback_unrecognized",
+        )
+        detailed_user_type = _strict_aliased_string(
+            detailed_field,
+            "userTypeId",
+            "USER_TYPE_ID",
+            error_code="site_service_request_field_details_readback_unrecognized",
+        )
+        if (
+            detailed_id != field_id
+            or detailed_entity_id != entity_id
+            or detailed_field_name != field["fieldName"]
+            or detailed_user_type != "enumeration"
+            or not isinstance(detailed_field.get("enum"), list)
+        ):
+            raise RuntimeError("site_service_request_field_details_readback_unrecognized")
+        enriched_fields.append({**field, "enum": detailed_field["enum"]})
+    return enriched_fields
 
 
 def _list_stages(
@@ -754,24 +816,52 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
-def _require_process_type_id(response: dict[str, Any], *, entity_type_id: int) -> int:
-    if not isinstance(response, dict):
+def _require_process_type_id(api: BitrixJsonApi, *, entity_type_id: int) -> int:
+    params = [("filter[entityTypeId]", str(entity_type_id))]
+    process_types: list[tuple[int, int]] = []
+    seen_starts: set[int] = {0}
+    page_count = 0
+    while True:
+        page_count += 1
+        response = api.call("crm.type.list", params)
+        if not isinstance(response, dict):
+            raise RuntimeError("site_service_request_type_readback_unrecognized")
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("types"), list):
+            raise RuntimeError("site_service_request_type_readback_unrecognized")
+        for process_type in result["types"]:
+            if not isinstance(process_type, dict):
+                raise RuntimeError("site_service_request_type_readback_unrecognized")
+            type_id = _strict_pagination_offset(
+                process_type.get("id"),
+                error_code="site_service_request_type_readback_unrecognized",
+            )
+            returned_entity_type_id = _strict_pagination_offset(
+                process_type.get("entityTypeId"),
+                error_code="site_service_request_type_readback_unrecognized",
+            )
+            if type_id <= 0 or returned_entity_type_id != entity_type_id:
+                raise RuntimeError("site_service_request_type_readback_unrecognized")
+            process_types.append((type_id, returned_entity_type_id))
+        start = _resolve_pagination_offset(
+            top_next=response.get("next"),
+            nested_next=result.get("next"),
+            error_code="site_service_request_type_pagination_invalid",
+        )
+        if start is None:
+            break
+        if page_count >= 100:
+            raise RuntimeError("site_service_request_type_pagination_invalid")
+        if start in seen_starts:
+            raise RuntimeError("site_service_request_type_pagination_loop")
+        seen_starts.add(start)
+        params = [
+            ("filter[entityTypeId]", str(entity_type_id)),
+            ("start", str(start)),
+        ]
+    if len(process_types) != 1:
         raise RuntimeError("site_service_request_type_readback_unrecognized")
-    result = response.get("result")
-    process_type = result.get("type") if isinstance(result, dict) else None
-    if not isinstance(process_type, dict):
-        raise RuntimeError("site_service_request_type_readback_unrecognized")
-    type_id = _strict_pagination_offset(
-        process_type.get("id"),
-        error_code="site_service_request_type_readback_unrecognized",
-    )
-    returned_entity_type_id = _strict_pagination_offset(
-        process_type.get("entityTypeId"),
-        error_code="site_service_request_type_readback_unrecognized",
-    )
-    if type_id <= 0 or returned_entity_type_id != entity_type_id:
-        raise RuntimeError("site_service_request_type_readback_unrecognized")
-    return type_id
+    return process_types[0][0]
 
 
 def _require_enum_rows(field: dict[str, Any]) -> list[dict[str, Any]]:

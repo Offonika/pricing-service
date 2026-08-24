@@ -6,7 +6,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/opt/MM/pricing-service
-ExecStart=/opt/MM/pricing-service/infra/cron/expertise_sync.sh
+WorkingDirectory=/opt/MM/pricing-service-task43-current
+Environment=REPO_DIR=/opt/MM/pricing-service-task43-current
+ExecStart=/opt/MM/pricing-service-task43-current/infra/cron/expertise_sync.sh
 StandardOutput=append:/var/log/pricing/expertise_sync.log
 StandardError=append:/var/log/pricing/expertise_sync.log

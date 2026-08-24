@@ -5,5 +5,5 @@
 # reports/retail_price_types/customer-price-type-automation/auto/<месяц>/.
 # Лог: /var/log/pricing/bronze_price_type_monthly_inventory.log
 CRON_TZ=Europe/Moscow
-45 6 1 * * /opt/MM/pricing-service/infra/cron/bronze_price_type_monthly_inventory.sh
+45 6 1 * * PYTHONPATH=/opt/MM/pricing-service-task43-current REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/bronze_price_type_monthly_inventory.sh
 # END pricing bronze price type monthly inventory

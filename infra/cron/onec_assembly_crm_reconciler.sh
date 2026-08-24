@@ -47,7 +47,7 @@ if [[ -z "${MM_CRM_1C_ASSEMBLY_TOKEN:-}" && -z "${CRM_1C_ASSEMBLY_TOKEN:-}" ]]; 
 fi
 
 cmd=(
-  "${PYTHON_BIN}" tasks/reconcile_onec_assembly_to_crm.py
+  "${PYTHON_BIN}" -m tasks.reconcile_onec_assembly_to_crm
   --since-hours "${SINCE_HOURS}"
   --limit "${LIMIT}"
 )

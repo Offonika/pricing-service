@@ -3,4 +3,4 @@ Description=Watchdog for pricing-expertise-sync.timer
 
 [Service]
 Type=oneshot
-ExecStart=/opt/MM/pricing-service/infra/cron/expertise_sync_watchdog.sh
+ExecStart=/opt/MM/pricing-service-task43-current/infra/cron/expertise_sync_watchdog.sh

@@ -6,4 +6,4 @@ After=pricing-service.service
 Type=oneshot
 WorkingDirectory=/opt/MM/pricing-service-task43-current
 EnvironmentFile=/opt/MM/pricing-service-task43-current/.env
-ExecStart=/opt/MM/pricing-service/.venv/bin/python scripts/check_executive_dashboard_runtime.py --mode monitor
+ExecStart=/opt/MM/pricing-service-task43-current/.venv/bin/python -m scripts.check_executive_dashboard_runtime --mode monitor

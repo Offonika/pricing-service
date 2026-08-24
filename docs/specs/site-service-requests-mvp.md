@@ -873,6 +873,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-25 — production readback подтвердил, что признак закрытия тикета хранится
+  в `b_ticket.DATE_CLOSE`, а не в отсутствующем `CLOSED`; site bridge переведён на
+  строгий `DATE_CLOSE -> isClosed` и защищён regression fixture. Controlled live
+  smoke остаётся заблокированным до отдельного разрешённого deploy и readback фикса.
 - 2026-08-25 — ответственным за controlled live smoke и за задачу Bitrix24
   №3223 назначен Тимур Тибилов (Bitrix user ID `131016`).
 - 2026-08-25 — по отдельному production-разрешению единственный site Agent

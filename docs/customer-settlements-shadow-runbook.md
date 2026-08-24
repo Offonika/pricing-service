@@ -116,15 +116,33 @@ Settlement migrations объединены с фактически активн�
   source gate;
 - staging credential был немедленно ротирован после диагностического раскрытия его
   фрагмента; production credentials и production БД не затрагивались;
-- client API, eligibility, source validation и alerts остаются выключенными;
-- financial revision, reconciliation и staging cron ещё не запускались.
+- новая нефильтрованная ведомость на конец `2026-08-23` подтвердила `9/9`
+  ненулевых пилотов (`6 debt / 3 advance`); десятый явный SQL `zero` штатно не
+  отображён ведомостью, но подтверждён безопасным unfiltered-report правилом;
+- reconciliation завершилась `matched 10/10`, после чего только staging-флаг
+  `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED` включён; client API и eligibility
+  остаются выключенными;
+- из clean commit `210ebf08fd731c0048f78234a20d7f58fc8ca473` собран immutable release
+  `/opt/MM/releases/pricing-service/customer-settlements-shadow-20260824-210ebf0-r1`
+  с content hash `619401eaf8be3bbea96554429507bfcab4a5770383871cf2746057290576118f`;
+- первый financial snapshot активирован `10/10`, включая `1 zero`; ready-preflight
+  прошёл `36/36`, health вернул `ok`;
+- alerts включены только для staging и задачи №2883; client flags выключены;
+- cron загружен в `10:23 MSK`, технические checkpoints назначены на `10:19 MSK`
+  `25/26/27.08.2026`, а persistent stop timer автоматически переместит cron в
+  `.expired` `2026-08-27 10:22:35 MSK`.
 
-Блокер CRM mapping закрыт точечным исправлением; backend override по заказам не
-использовался. Readiness gate теперь ожидаемо закрыт только до новой ведомости за
-ближайший завершённый день, полной reconciliation на одинаковый `as_of`, включения
-`CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`, первого financial sync и успешного
-`ready` preflight. Исторический файл июля не используется. Только после выполнения
-этих проверок разрешена установка cron и начинается отсчёт 72 часов.
+Блокеры CRM mapping, бухгалтерской сверки и первого financial snapshot закрыты;
+backend override по заказам не использовался. Новый зачётный 72-часовой shadow-run
+начат `2026-08-24 10:22 MSK`. Для бухгалтерских checkpoints нужны новые независимые
+ведомости на завершённые дни `24/25/26.08.2026`; автоматический checkpoint выполняет
+только preflight и health и не заменяет XLSX reconciliation.
+
+При ручной проверке обёрток health и cleanup были ошибочно запущены параллельно.
+Общий context lock безопасно дал временный fail-closed `critical` и отправил один
+обезличенный alert в №2883; cleanup не удалил ни одной active строки. После
+завершения cleanup повторный health сразу вернул `ok` и отправил recovery. В cron
+jobs разнесены на 10 минут и не запускаются параллельно.
 
 ## Точечное разрешение на исправление CRM mapping 2026-08-24
 
@@ -390,6 +408,14 @@ Shadow-run принимается, если 72 часа:
 
 ## Changelog
 
+- 2026-08-24 — новая нефильтрованная ведомость прошла reconciliation `10/10`; из
+  clean commit `210ebf0` собран новый immutable release, активирован первый
+  financial snapshot `10/10`, ready-preflight прошёл `36/36`, staging alerts и cron
+  включены. Shadow-run начат в `10:22 MSK`, автоотключение назначено на
+  `2026-08-27 10:22:35 MSK`; client API и eligibility остаются выключенными.
+- 2026-08-24 — зафиксирован временный fail-closed alert из-за параллельной ручной
+  проверки health/cleanup; данные не изменились, повторный health дал `ok` и
+  recovery, cron сохраняет штатное разнесение этих jobs.
 - 2026-08-24 — разрешено точечное guarded-исправление CRM mapping Арсения с уже
   существующим контрагентом 1С; создание контакта и иные внешние изменения не
   разрешены.

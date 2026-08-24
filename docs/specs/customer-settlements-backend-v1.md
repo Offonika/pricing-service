@@ -855,6 +855,11 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — reconciliation новой ведомости завершилась `matched 10/10`; staging
+  source gate включён, financial snapshot активирован `10/10` с `1 zero`, ready
+  прошёл `36/36`. Из clean commit `210ebf0` собран immutable release и начат новый
+  72-часовой shadow-run с выключенными client API/eligibility и защитным
+  автоотключением `2026-08-27 10:22:35 MSK`.
 - 2026-08-24 — новая полная ведомость без отбора подтвердила `9/9` ненулевых
   пилотов (`6 debt / 3 advance`) с допуском `0,01 RUB`; десятый явный SQL `zero`
   отсутствует в стандартном отчёте 1С. Reconciliation gate научен принимать такой

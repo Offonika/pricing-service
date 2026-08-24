@@ -26,13 +26,22 @@ def _field(spec: dict[str, Any], index: int) -> dict[str, Any]:
         }
         for enum_index, (key, title) in enumerate(spec.get("enum") or (), start=1)
     ]
+    title = str(spec["title"])
+    field_name = bitrix_setup._field_name("CRM_36", spec["key"])
+    technical = field_name in bitrix_setup.TECHNICAL_FORM_FIELD_NAMES
     return {
         "id": str(index),
         "entityId": "CRM_36",
-        "fieldName": bitrix_setup._field_name("CRM_36", spec["key"]),
+        "fieldName": field_name,
         "userTypeId": spec["type"],
         "xmlId": bitrix_setup._xml_id(spec["key"]),
         "enum": enum,
+        "editFormLabel": {"ru": title},
+        "listColumnLabel": {"ru": title},
+        "listFilterLabel": {"ru": title},
+        "showFilter": "N" if technical else "E",
+        "showInList": "N" if technical else "Y",
+        "editInList": "N" if technical else "Y",
     }
 
 
@@ -44,18 +53,30 @@ def _all_fields() -> list[dict[str, Any]]:
 
 def _request_type_field() -> dict[str, Any]:
     rows = [
-        ("clarify", "Разобраться"),
-        ("refund_money", "Вернуть деньги"),
+        ("clarify", "Консультация / уточнение"),
+        ("refund_money", "Возврат денег"),
         ("replacement", "Замена товара"),
-        ("expertise", "Нужна экспертиза"),
-        ("logistics_return", "Доставка / возврат"),
+        ("expertise", "Гарантия / проверка качества"),
+        ("logistics_return", "Доставка или возврат товара"),
         ("other", "Другое"),
     ]
+    request_spec = next(
+        spec
+        for spec in bitrix_setup.LEGACY_FIELD_SPECS
+        if spec["logical_key"] == "customer_request_choice"
+    )
     return {
         "id": "99",
         "entityId": "CRM_36",
         "fieldName": bitrix_setup.REQUEST_TYPE_FIELD_NAME,
         "userTypeId": "enumeration",
+        "xmlId": bitrix_setup.legacy_field_xml_id(request_spec),
+        "editFormLabel": {"ru": "Тип обращения"},
+        "listColumnLabel": {"ru": "Тип обращения"},
+        "listFilterLabel": {"ru": "Тип обращения"},
+        "showFilter": "E",
+        "showInList": "Y",
+        "editInList": "Y",
         "enum": [
             {"id": str(9900 + index), "xmlId": key, "value": title}
             for index, (key, title) in enumerate(rows, start=1)
@@ -65,10 +86,25 @@ def _request_type_field() -> dict[str, Any]:
 
 def _stages() -> list[dict[str, Any]]:
     return [
-        {"STATUS_ID": "DT1134_55:NEW", "SEMANTICS": None},
-        {"STATUS_ID": "DT1134_55:PREPARATION", "SEMANTICS": None},
-        {"STATUS_ID": "DT1134_55:SUCCESS", "SEMANTICS": "S"},
-        {"STATUS_ID": "DT1134_55:FAIL", "SEMANTICS": "F"},
+        {"ID": "1", "STATUS_ID": "DT1134_55:NEW", "NAME": "Новая", "SEMANTICS": None},
+        {
+            "ID": "2",
+            "STATUS_ID": "DT1134_55:PREPARATION",
+            "NAME": "В работе / уточнение",
+            "SEMANTICS": None,
+        },
+        {
+            "ID": "3",
+            "STATUS_ID": "DT1134_55:SUCCESS",
+            "NAME": "Закрыто",
+            "SEMANTICS": "S",
+        },
+        {
+            "ID": "4",
+            "STATUS_ID": "DT1134_55:FAIL",
+            "NAME": "Закрыто без решения",
+            "SEMANTICS": "F",
+        },
     ]
 
 
@@ -81,11 +117,36 @@ class FakeBitrixApi:
         return_saved_form: bool = True,
         stages: list[dict[str, Any]] | None = None,
         existing_form: list[dict[str, Any]] | None = None,
+        process_title: str = bitrix_setup.PROCESS_TITLE,
+        working_category_title: str = bitrix_setup.WORKING_CATEGORY_TITLE,
     ) -> None:
         self.fields = deepcopy(fields)
         self.persist_added_fields = persist_added_fields
         self.return_saved_form = return_saved_form
         self.stages = deepcopy(stages if stages is not None else _stages())
+        self.process_type = {
+            "id": 36,
+            "entityTypeId": 1134,
+            "title": process_title,
+        }
+        self.categories = [
+            {"id": 55, "name": working_category_title},
+            {"id": 56, "name": "Архив старого чата"},
+        ]
+        self.archive_stages = [
+            {
+                "ID": "101",
+                "STATUS_ID": "DT1134_56:ARCHIVE",
+                "NAME": "Архив",
+                "SEMANTICS": None,
+            },
+            {
+                "ID": "102",
+                "STATUS_ID": "DT1134_56:SUCCESS",
+                "NAME": "Закрыто",
+                "SEMANTICS": "S",
+            },
+        ]
         default_form = [
             {
                 "name": "main",
@@ -97,6 +158,14 @@ class FakeBitrixApi:
         self.saved_form: list[dict[str, Any]] = deepcopy(
             default_form if existing_form is None else existing_form
         )
+        self.archive_form: list[dict[str, Any]] = [
+            {
+                "name": "archive_main",
+                "title": "Архив",
+                "type": "section",
+                "elements": [{"name": "TITLE", "optionFlags": 1}],
+            }
+        ]
         self.calls: list[tuple[str, Any]] = []
 
     def call(
@@ -107,7 +176,7 @@ class FakeBitrixApi:
     ) -> dict[str, Any]:
         self.calls.append((method, deepcopy(params)))
         if method == "crm.type.list":
-            return {"result": {"types": [{"id": 36, "entityTypeId": 1134}]}}
+            return {"result": {"types": [deepcopy(self.process_type)]}}
         raise AssertionError(f"unexpected Bitrix method: {method}")
 
     def call_json(
@@ -127,7 +196,12 @@ class FakeBitrixApi:
                 raise AssertionError(f"unexpected user field id: {payload.get('id')}")
             return {"result": {"field": deepcopy(matches[0])}}
         if method == "crm.status.list":
+            entity_id = str((payload.get("filter") or {}).get("ENTITY_ID") or "")
+            if entity_id == "DYNAMIC_1134_STAGE_56":
+                return {"result": deepcopy(self.archive_stages)}
             return {"result": deepcopy(self.stages)}
+        if method == "crm.category.list":
+            return {"result": {"categories": deepcopy(self.categories)}}
         if method == "userfieldconfig.add":
             field = deepcopy(payload["field"])
             field["id"] = str(len(self.fields) + 1)
@@ -136,10 +210,45 @@ class FakeBitrixApi:
             if self.persist_added_fields:
                 self.fields.append(field)
             return {"result": {"field": deepcopy(field)}}
+        if method == "userfieldconfig.update":
+            matches = [
+                field for field in self.fields if str(field.get("id")) == str(payload.get("id"))
+            ]
+            if len(matches) != 1:
+                raise AssertionError(f"unexpected user field id: {payload.get('id')}")
+            matches[0].update(deepcopy(payload["field"]))
+            return {"result": True}
+        if method == "crm.type.update":
+            assert int(payload["id"]) == int(self.process_type["id"])
+            self.process_type.update(deepcopy(payload["fields"]))
+            return {"result": {"type": deepcopy(self.process_type)}}
+        if method == "crm.category.update":
+            matches = [
+                category
+                for category in self.categories
+                if int(category["id"]) == int(payload["id"])
+            ]
+            if len(matches) != 1:
+                raise AssertionError(f"unexpected category id: {payload.get('id')}")
+            matches[0].update(deepcopy(payload["fields"]))
+            return {"result": {"category": deepcopy(matches[0])}}
+        if method == "crm.status.update":
+            matches = [stage for stage in self.stages if int(stage["ID"]) == int(payload["id"])]
+            if len(matches) != 1:
+                raise AssertionError(f"unexpected stage id: {payload.get('id')}")
+            matches[0].update(deepcopy(payload["fields"]))
+            return {"result": True}
         if method == "crm.item.details.configuration.set":
-            self.saved_form = deepcopy(payload["data"])
+            category_id = int((payload.get("extras") or {}).get("categoryId") or 0)
+            if category_id == 56:
+                self.archive_form = deepcopy(payload["data"])
+            else:
+                self.saved_form = deepcopy(payload["data"])
             return {"result": True}
         if method == "crm.item.details.configuration.get":
+            category_id = int((payload.get("extras") or {}).get("categoryId") or 0)
+            if category_id == 56:
+                return {"result": deepcopy(self.archive_form)}
             return {"result": deepcopy(self.saved_form) if self.return_saved_form else []}
         raise AssertionError(f"unexpected Bitrix method: {method}")
 
@@ -148,7 +257,15 @@ def _write_methods(api: FakeBitrixApi) -> list[str]:
     return [
         method
         for method, _payload in api.calls
-        if method in {"userfieldconfig.add", "crm.item.details.configuration.set"}
+        if method
+        in {
+            "userfieldconfig.add",
+            "userfieldconfig.update",
+            "crm.type.update",
+            "crm.category.update",
+            "crm.status.update",
+            "crm.item.details.configuration.set",
+        }
     ]
 
 
@@ -169,6 +286,196 @@ def test_dry_run_reports_missing_fields_without_writes() -> None:
         "success": "DT1134_55:SUCCESS",
         "failure": "DT1134_55:FAIL",
     }
+    assert _write_methods(api) == []
+
+
+def test_dry_run_reports_ux_mismatches_without_writes() -> None:
+    fields = _all_fields()
+    fields[0]["editFormLabel"] = {"ru": "Старое название"}
+    fields[0]["listColumnLabel"] = None
+    fields[0]["listFilterLabel"] = None
+    request_type = fields[-1]
+    request_type["enum"][0]["value"] = "Разобраться"
+    stages = _stages()
+    stages[1]["NAME"] = "Разобраться"
+    existing_form = [
+        {
+            "name": "technical",
+            "title": "Технические данные",
+            "type": "section",
+            "elements": [
+                {"name": "UF_CRM_36_SITETICKETID", "optionFlags": 1},
+                {"name": "UF_CRM_36_BACKENDCASEID", "optionFlags": 1},
+            ],
+        }
+    ]
+    api = FakeBitrixApi(
+        fields=fields,
+        stages=stages,
+        existing_form=existing_form,
+        process_title="Рекламации сайта / Браки сайта",
+        working_category_title="Рабочие рекламации",
+    )
+
+    plan = bitrix_setup.ensure(api, settings=_settings(), apply=False)
+
+    assert "process_title" in plan.ux_mismatches
+    assert "working_category_title" in plan.ux_mismatches
+    assert "stage_title:PREPARATION" in plan.ux_mismatches
+    assert "request_type_label:consultation" in plan.ux_mismatches
+    assert "field_label:UF_CRM_36_SITETICKETID:listColumnLabel" in plan.ux_mismatches
+    assert "working_form" in plan.ux_mismatches
+    assert _write_methods(api) == []
+
+
+def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> None:
+    fields = [
+        field
+        for field in _all_fields()
+        if field.get("xmlId") != bitrix_setup._xml_id("return_decision_approved_by_user")
+    ]
+    ticket_url = next(
+        field for field in fields if field.get("xmlId") == bitrix_setup._xml_id("site_ticket_url")
+    )
+    ticket_url["editFormLabel"] = {"ru": "SITE URL"}
+    ticket_url["listColumnLabel"] = None
+    ticket_url["listFilterLabel"] = None
+    request_type = fields[-1]
+    old_request_ids = [row["id"] for row in request_type["enum"]]
+    old_request_xml_ids = [row["xmlId"] for row in request_type["enum"]]
+    old_labels = [
+        "Разобраться",
+        "Вернуть деньги",
+        "Замена товара",
+        "Нужна экспертиза",
+        "Доставка / возврат",
+        "Другое",
+    ]
+    for row, old_label in zip(request_type["enum"], old_labels, strict=True):
+        row["value"] = old_label
+    stages = _stages()
+    stages[1]["STATUS_ID"] = "DT1134_55:CLARIFY"
+    stages[1]["NAME"] = "Разобраться"
+    existing_form = [
+        {
+            "name": "main",
+            "title": "Рекламация",
+            "type": "section",
+            "elements": [
+                {"name": "TITLE", "optionFlags": 1},
+                {"name": "UF_CRM_36_REACTIONDEADLINE", "optionFlags": 1},
+                {"name": "UF_CRM_36_CONCURRENT", "optionFlags": 1},
+            ],
+        },
+        {
+            "name": "technical",
+            "title": "Технические данные",
+            "type": "section",
+            "elements": [
+                {"name": "UF_CRM_36_SITETICKETID", "optionFlags": 1},
+                {"name": "UF_CRM_36_BACKENDCASEID", "optionFlags": 1},
+            ],
+        },
+    ]
+    api = FakeBitrixApi(
+        fields=fields,
+        stages=stages,
+        existing_form=existing_form,
+        process_title="Рекламации сайта / Браки сайта",
+        working_category_title="Рабочие рекламации",
+    )
+
+    plan = bitrix_setup.ensure(
+        api,
+        settings=_settings(writes_enabled=True),
+        apply=True,
+    )
+
+    assert plan.ux_mismatches == ()
+    assert api.process_type["title"] == bitrix_setup.PROCESS_TITLE
+    assert api.categories == [
+        {"id": 55, "name": bitrix_setup.WORKING_CATEGORY_TITLE},
+        {"id": 56, "name": "Архив старого чата"},
+    ]
+    assert stages[1]["NAME"] == "Разобраться"
+    assert api.stages[1]["NAME"] == bitrix_setup.WORKING_STAGE_TITLES["CLARIFY"]
+    updated_request_type = next(
+        field
+        for field in api.fields
+        if field.get("fieldName") == bitrix_setup.REQUEST_TYPE_FIELD_NAME
+    )
+    assert [row["id"] for row in updated_request_type["enum"]] == old_request_ids
+    assert [row["xmlId"] for row in updated_request_type["enum"]] == old_request_xml_ids
+    assert [row["value"] for row in updated_request_type["enum"]] == [
+        bitrix_setup.REQUEST_TYPE_ENUM_LABELS[key]
+        for key in (
+            "consultation",
+            "refund_money",
+            "replacement",
+            "warranty",
+            "delivery_return",
+            "other",
+        )
+    ]
+    updated_ticket_url = next(
+        field
+        for field in api.fields
+        if field.get("xmlId") == bitrix_setup._xml_id("site_ticket_url")
+    )
+    expected_title = "Открыть тикет сайта"
+    assert updated_ticket_url["editFormLabel"] == {"ru": expected_title}
+    assert updated_ticket_url["listColumnLabel"] == {"ru": expected_title}
+    assert updated_ticket_url["listFilterLabel"] == {"ru": expected_title}
+    approver = next(
+        field
+        for field in api.fields
+        if field.get("xmlId") == bitrix_setup._xml_id("return_decision_approved_by_user")
+    )
+    assert approver["userTypeId"] == "employee"
+    form_names = {
+        element["name"] for section in api.saved_form for element in section.get("elements") or []
+    }
+    assert "UF_CRM_36_CONCURRENT" in form_names
+    assert not (form_names & bitrix_setup.TECHNICAL_FORM_FIELD_NAMES)
+
+
+def test_plan_payload_exposes_ux_plan() -> None:
+    plan = bitrix_setup.ensure(
+        FakeBitrixApi(fields=_all_fields()),
+        settings=_settings(),
+        apply=False,
+    )
+
+    payload = bitrix_setup.plan_payload(plan, applied=False)
+
+    assert payload["uxMismatches"] == list(plan.ux_mismatches)
+    assert payload["desiredProcessTitle"] == "Сервисные обращения сайта"
+    assert payload["desiredWorkingCategoryTitle"] == "Рабочие обращения сайта"
+    assert payload["desiredRequestTypeLabels"] == bitrix_setup.REQUEST_TYPE_ENUM_LABELS
+
+
+def test_process_snapshot_captures_both_categories_without_writes() -> None:
+    api = FakeBitrixApi(fields=_all_fields())
+
+    snapshot = bitrix_setup.build_process_snapshot(api, settings=_settings())
+
+    assert snapshot["processType"]["title"] == bitrix_setup.PROCESS_TITLE
+    assert [category["id"] for category in snapshot["categories"]] == [55, 56]
+    assert set(snapshot["stagesByCategory"]) == {"55", "56"}
+    assert snapshot["stagesByCategory"]["56"] == api.archive_stages
+    assert set(snapshot["formsByCategory"]) == {"55", "56"}
+    assert snapshot["formsByCategory"]["56"] == api.archive_form
+    assert len(snapshot["fields"]) == len(_all_fields())
+    assert _write_methods(api) == []
+
+
+def test_process_snapshot_fails_closed_on_malformed_archive_form() -> None:
+    api = FakeBitrixApi(fields=_all_fields())
+    api.archive_form = []
+
+    with pytest.raises(RuntimeError, match="form_readback_unrecognized"):
+        bitrix_setup.build_process_snapshot(api, settings=_settings())
+
     assert _write_methods(api) == []
 
 
@@ -419,7 +726,15 @@ def test_process_type_list_rejects_invalid_next_offset(next_value: object) -> No
         def call(self, method: str, params=None, **kwargs: Any):
             assert method == "crm.type.list"
             return {
-                "result": {"types": [{"id": 36, "entityTypeId": 1134}]},
+                "result": {
+                    "types": [
+                        {
+                            "id": 36,
+                            "entityTypeId": 1134,
+                            "title": bitrix_setup.PROCESS_TITLE,
+                        }
+                    ]
+                },
                 "next": next_value,
             }
 
@@ -441,7 +756,17 @@ def test_process_type_list_reads_nested_next_and_form_encoded_start() -> None:
                 ("filter[entityTypeId]", "1134"),
                 ("start", "50"),
             ]
-            return {"result": {"types": [{"id": "36", "entityTypeId": "1134"}]}}
+            return {
+                "result": {
+                    "types": [
+                        {
+                            "id": "36",
+                            "entityTypeId": "1134",
+                            "title": bitrix_setup.PROCESS_TITLE,
+                        }
+                    ]
+                }
+            }
 
     api = PaginatedTypeApi(fields=[])
 
@@ -613,6 +938,32 @@ def test_apply_rejects_malformed_or_conflicting_enum_aliases_before_writes(
     assert _write_methods(api) == []
 
 
+@pytest.mark.parametrize(
+    "malformed_metadata",
+    [
+        {"sort": 1.5},
+        {"sort": " 100"},
+        {"sort": 100, "SORT": 200},
+        {"def": True},
+        {"def": "YES"},
+        {"def": "Y", "DEF": "N"},
+        {"value": " Значение с пробелом"},
+        {"xmlId": " value_with_space "},
+    ],
+)
+def test_apply_rejects_malformed_enum_metadata_before_writes(
+    malformed_metadata: dict[str, object],
+) -> None:
+    fields = _all_fields()
+    fields[3]["enum"][0].update(malformed_metadata)
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="enum_readback_(unrecognized|ambiguous)"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_rejects_duplicate_stage_rows_before_writes() -> None:
     stages = _stages()
     stages.append(deepcopy(stages[0]))
@@ -626,7 +977,10 @@ def test_apply_rejects_duplicate_stage_rows_before_writes() -> None:
 
 def test_apply_rejects_duplicate_target_field_before_writes() -> None:
     fields = _all_fields()
-    fields.append(deepcopy(fields[0]))
+    duplicate = deepcopy(fields[0])
+    duplicate["id"] = "1000"
+    duplicate["fieldName"] = "UF_CRM_36_DUPLICATE_SITE_TICKET_ID"
+    fields.append(duplicate)
     api = FakeBitrixApi(fields=fields)
 
     with pytest.raises(RuntimeError, match="field_readback_ambiguous"):
@@ -655,7 +1009,7 @@ def test_apply_rejects_ambiguous_existing_form_before_writes() -> None:
     assert _write_methods(api) == []
 
 
-def test_apply_merges_site_sections_without_replacing_existing_form() -> None:
+def test_apply_replaces_managed_form_and_preserves_unknown_fields() -> None:
     existing_form = [
         {
             "name": "main",
@@ -671,12 +1025,15 @@ def test_apply_merges_site_sections_without_replacing_existing_form() -> None:
 
     bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
 
-    assert api.saved_form[0] == existing_form[0]
+    assert api.saved_form[0]["title"] == "Обращение"
     all_names = {
         element["name"] for section in api.saved_form for element in section.get("elements") or []
     }
     assert "UF_CRM_36_EXISTING" in all_names
     assert "TITLE" in all_names
+    assert "STAGE_ID" in all_names
+    assert "ASSIGNED_BY_ID" in all_names
+    assert not (all_names & bitrix_setup.TECHNICAL_FORM_FIELD_NAMES)
     assert (
         sum(
             element["name"] == "TITLE"

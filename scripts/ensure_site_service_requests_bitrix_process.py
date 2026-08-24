@@ -3,22 +3,56 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from app.core.config import Settings, get_settings
 from app.services.expertise_bitrix import BitrixRestClient
+from scripts.ensure_site_defect_archive_bitrix_process import (
+    CUSTOM_FIELD_SPECS as LEGACY_FIELD_SPECS,
+)
+from scripts.ensure_site_defect_archive_bitrix_process import (
+    _field_xml_id_for_spec as legacy_field_xml_id,
+)
 
+PROCESS_TITLE = "Сервисные обращения сайта"
+WORKING_CATEGORY_TITLE = "Рабочие обращения сайта"
 REQUEST_TYPE_FIELD_NAME = "UF_CRM_36_CUSTOMERREQUESTCHOICE"
 REQUEST_TYPE_ENUM_TARGETS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "warranty": ("expertise", ("Нужна экспертиза",)),
-    "refund_money": ("refund_money", ("Вернуть деньги", "Возврат денег")),
+    "warranty": (
+        "expertise",
+        ("Гарантия / проверка качества", "Нужна экспертиза"),
+    ),
+    "refund_money": ("refund_money", ("Возврат денег", "Вернуть деньги")),
     "replacement": ("replacement", ("Замена товара", "Замена")),
-    "delivery_return": ("logistics_return", ("Доставка / возврат",)),
-    "consultation": ("clarify", ("Разобраться", "Консультация")),
+    "delivery_return": (
+        "logistics_return",
+        ("Доставка или возврат товара", "Доставка / возврат"),
+    ),
+    "consultation": (
+        "clarify",
+        ("Консультация / уточнение", "Разобраться", "Консультация"),
+    ),
     "other": ("other", ("Другое", "Прочее")),
+}
+REQUEST_TYPE_ENUM_LABELS = {
+    key: labels[0] for key, (_xml_id, labels) in REQUEST_TYPE_ENUM_TARGETS.items()
+}
+
+WORKING_STAGE_TITLES = {
+    "NEW": "Новая",
+    "PREPARATION": "В работе / уточнение",
+    "CLARIFY": "В работе / уточнение",
+    "CLIENT": "Ожидаем клиента или товар",
+    "WAITING": "Ожидаем клиента или товар",
+    "NEED_EXPERTISE": "Нужна экспертиза",
+    "LINKED_EXPERTISE": "Экспертиза создана",
+    "REFUND_DECISION": "Решение и возврат",
+    "CLOSED": "Закрыто",
+    "SUCCESS": "Закрыто",
+    "FAIL": "Закрыто без решения",
 }
 
 FIELD_SPECS: tuple[dict[str, Any], ...] = (
@@ -61,33 +95,47 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "site_last_sync_at", "title": "Последняя синхронизация", "type": "datetime"},
     {"key": "first_response_due_at", "title": "Срок первого ответа", "type": "datetime"},
     {"key": "first_response_at", "title": "Первый ответ доставлен", "type": "datetime"},
-    {"key": "site_sync_error", "title": "Техническая ошибка", "type": "string"},
+    {"key": "site_sync_error", "title": "Ошибка синхронизации", "type": "string"},
+    {
+        "key": "return_decision_approved_by_user",
+        "title": "Кто согласовал решение",
+        "type": "employee",
+    },
 )
 
 FORM_SECTIONS = (
     (
-        "site_request",
-        "Обращение сайта",
+        "main",
+        "Обращение",
         (
+            "STAGE_ID",
             "TITLE",
-            "site_ticket_id",
-            "site_ticket_url",
-            "site_sync_status",
+            "ASSIGNED_BY_ID",
+            "UF_CRM_36_CUSTOMERREQUESTCHOICE",
+            "UF_CRM_36_PRIORITYCHOICE",
             "first_response_due_at",
-            "first_response_at",
+            "site_sync_status",
         ),
     ),
     (
-        "customer_context",
-        "Клиент и обращение",
+        "client",
+        "Клиент и заказ",
         (
-            "UF_CRM_36_CUSTOMERCONTACT",
             "UF_CRM_36_CRMCONTACT",
             "UF_CRM_36_CRMCOMPANY",
+            "UF_CRM_36_CUSTOMERCONTACT",
             "UF_CRM_36_CRMDEAL",
             "UF_CRM_36_ORDERREFS",
+            "site_ticket_url",
+        ),
+    ),
+    (
+        "case",
+        "Сообщение клиента",
+        (
+            "UF_CRM_36_PRODUCTMODEL",
             "UF_CRM_36_PROBLEMDESCRIPTION",
-            "UF_CRM_36_CUSTOMERREQUESTCHOICE",
+            "UF_CRM_36_PROBLEMTYPECHOICE",
             "UF_CRM_36_CLIENTFILES",
             "site_history",
         ),
@@ -95,18 +143,96 @@ FORM_SECTIONS = (
     (
         "site_reply",
         "Ответ клиенту",
-        ("site_reply_text", "site_reply_action", "site_reply_status", "site_last_sync_at"),
+        (
+            "site_reply_text",
+            "site_reply_action",
+            "site_reply_status",
+            "first_response_at",
+        ),
     ),
     (
-        "technical",
-        "Технические данные",
+        "return_economics",
+        "Экономика возврата",
         (
-            "UF_CRM_36_BACKENDCASEID",
-            "UF_CRM_36_IDEMPOTENCYKEY",
-            "site_sync_error",
+            "UF_CRM_36_ITEMVALUE",
+            "UF_CRM_36_ESTIMATEDRETURNCOST",
+            "UF_CRM_36_RETURNECONOMICSRESULT",
+            "UF_CRM_36_RETURNGOODSDECISION",
+            "UF_CRM_36_RETURNLEAVEREASON",
+            "return_decision_approved_by_user",
+        ),
+    ),
+    (
+        "work",
+        "Решение и дальнейшие действия",
+        (
+            "UF_CRM_36_NEXTACTION",
+            "UF_CRM_36_LINKEDEXPERTISECRM",
+            "UF_CRM_36_RETURNCARRIER",
+            "UF_CRM_36_RETURNTRACKINGNUMBER",
+            "UF_CRM_36_RETURNTRACKINGCREATEDAT",
+            "UF_CRM_36_RETURNSTATUS",
+            "UF_CRM_36_DECISIONRESULT",
+            "UF_CRM_36_WORKINGFILESURL",
+        ),
+    ),
+    (
+        "hints",
+        "Подсказки для сотрудника",
+        (
+            "UF_CRM_36_NUMBERS",
+            "UF_CRM_36_ANALYSISHINTS",
         ),
     ),
 )
+
+LEGACY_FIELD_TITLE_OVERRIDES = {
+    "source": "Источник обращения",
+    "customer_contact": "Телефон и e-mail клиента",
+    "crm_contact": "Карточка клиента в CRM",
+    "crm_company": "Компания клиента",
+    "crm_deal": "Заказ / сделка в CRM",
+    "order_refs": "Номер заказа или перемещения",
+    "problem_description": "Сообщение клиента / что произошло",
+    "customer_request": "Требование клиента (старое поле)",
+    "customer_request_choice": "Тип обращения",
+    "priority": "Приоритет (старое поле)",
+    "next_action": "Следующее действие",
+    "reaction_deadline": "Старый срок реакции (не используется)",
+    "decision_result": "Решение по обращению",
+    "client_files": "Файлы клиента",
+    "working_files_url": "Рабочая папка с файлами",
+    "return_decision_approved_by": "Кто согласовал решение (старое поле)",
+    "analysis_hints": "Подсказки для сотрудника",
+    "old_dialog_id": "ID старого диалога",
+    "old_post_message_id": "ID сообщения старого чата",
+    "old_comment_chat_id": "ID обсуждения старого чата",
+    "search_text": "Текст для поиска",
+    "problem_type": "Тип проблемы (старое поле)",
+    "problem_type_choice": "Причина обращения",
+    "linked_expertise": "Связанная экспертиза (старое поле)",
+    "backend_case_id": "Внутренний номер обращения",
+    "idempotency_key": "Ключ защиты от дублей",
+}
+
+TECHNICAL_FORM_FIELD_NAMES = {
+    "UF_CRM_36_SOURCE",
+    "UF_CRM_36_CUSTOMERREQUEST",
+    "UF_CRM_36_PRIORITY",
+    "UF_CRM_36_REACTIONDEADLINE",
+    "UF_CRM_36_OLDDIALOGID",
+    "UF_CRM_36_OLDPOSTMESSAGEID",
+    "UF_CRM_36_OLDCOMMENTCHATID",
+    "UF_CRM_36_SEARCHTEXT",
+    "UF_CRM_36_PROBLEMTYPE",
+    "UF_CRM_36_LINKEDEXPERTISE",
+    "UF_CRM_36_BACKENDCASEID",
+    "UF_CRM_36_IDEMPOTENCYKEY",
+    "UF_CRM_36_SITETICKETID",
+    "UF_CRM_36_SITELASTSYNCAT",
+    "UF_CRM_36_SITESYNCERROR",
+    "UF_CRM_36_RETURNDECISIONAPPROVEDBY",
+}
 
 REQUIRED_STAGE_CODES = {
     "new": "NEW",
@@ -140,6 +266,71 @@ class EnsurePlan:
     enum_map: dict[str, str]
     stage_map: dict[str, str]
     form: list[dict[str, Any]]
+    ux_mismatches: tuple[str, ...]
+
+
+def _localized_label(value: Any, *, language: str) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    label = value.get(language)
+    return label if isinstance(label, str) and label.strip() == label and label else None
+
+
+def _desired_field_titles_by_xml_id() -> dict[str, str]:
+    titles = {
+        legacy_field_xml_id(spec): LEGACY_FIELD_TITLE_OVERRIDES.get(
+            str(spec["logical_key"]),
+            str(spec["title"]),
+        )
+        for spec in LEGACY_FIELD_SPECS
+    }
+    titles.update({_xml_id(spec["key"]): str(spec["title"]) for spec in FIELD_SPECS})
+    return titles
+
+
+def _desired_field_title(field: dict[str, Any]) -> str | None:
+    xml_id = str(field.get("xmlId") or field.get("XML_ID") or "").strip()
+    title = _desired_field_titles_by_xml_id().get(xml_id)
+    if title is not None:
+        return title
+    if _normalized_field_name(field.get("fieldName")) == _normalized_field_name(
+        REQUEST_TYPE_FIELD_NAME
+    ):
+        return "Тип обращения"
+    return None
+
+
+def _managed_form_field_names(
+    *,
+    fields: list[dict[str, Any]],
+    field_map: dict[str, str],
+) -> set[str]:
+    known_titles = _desired_field_titles_by_xml_id()
+    managed = {
+        "STAGE_ID",
+        "TITLE",
+        "ASSIGNED_BY_ID",
+        REQUEST_TYPE_FIELD_NAME,
+        *TECHNICAL_FORM_FIELD_NAMES,
+        *field_map.values(),
+    }
+    for field in fields:
+        xml_id = str(field.get("xmlId") or field.get("XML_ID") or "").strip()
+        field_name = field.get("fieldName")
+        if xml_id in known_titles and isinstance(field_name, str) and field_name.strip():
+            managed.add(field_name.strip())
+    return managed
+
+
+def _stage_title(stage: dict[str, Any]) -> str | None:
+    values = [stage[key] for key in ("NAME", "name") if key in stage]
+    if not values:
+        return None
+    if any(not isinstance(value, str) or value.strip() != value or not value for value in values):
+        raise RuntimeError("site_service_request_stages_readback_unrecognized")
+    if any(value != values[0] for value in values[1:]):
+        raise RuntimeError("site_service_request_stage_mapping_ambiguous")
+    return values[0]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -152,6 +343,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path(".local/site-service-requests/bitrix-mapping.json"),
     )
+    parser.add_argument(
+        "--snapshot-output",
+        type=Path,
+        help="Save a metadata-only process snapshot before ensure/apply.",
+    )
     return parser.parse_args(argv)
 
 
@@ -163,6 +359,8 @@ def build_plan(
     fields: list[dict[str, Any]],
     stages: list[dict[str, Any]],
     existing_form: list[dict[str, Any]] | None = None,
+    process_title: str | None = None,
+    category_title: str | None = None,
 ) -> EnsurePlan:
     entity_id = f"CRM_{type_id}"
     expected_xml_id_by_field_name = {
@@ -237,7 +435,16 @@ def build_plan(
         entity_type_id=entity_type_id,
         category_id=category_id,
     )
-    form = merge_form(existing_form or [], build_form(field_map))
+    desired_form = build_form(field_map)
+    managed_form_fields = _managed_form_field_names(
+        fields=fields,
+        field_map=field_map,
+    )
+    form = merge_form(
+        existing_form or [],
+        desired_form,
+        managed_field_names=managed_form_fields,
+    )
     required_enum_mappings = [
         f"{spec['key'].removeprefix('site_')}_{key}"
         for spec in FIELD_SPECS
@@ -248,6 +455,39 @@ def build_plan(
     missing_enum_mappings = tuple(
         mapping_key for mapping_key in required_enum_mappings if not enum_map.get(mapping_key)
     )
+    ux_mismatches: list[str] = []
+    if process_title is not None and process_title != PROCESS_TITLE:
+        ux_mismatches.append("process_title")
+    if category_title is not None and category_title != WORKING_CATEGORY_TITLE:
+        ux_mismatches.append("working_category_title")
+    for field in fields:
+        desired_title = _desired_field_title(field)
+        if desired_title is None:
+            continue
+        for label_key in ("editFormLabel", "listColumnLabel", "listFilterLabel"):
+            if _localized_label(field.get(label_key), language="ru") != desired_title:
+                field_name = str(field.get("fieldName") or "unknown")
+                ux_mismatches.append(f"field_label:{field_name}:{label_key}")
+        if field.get("fieldName") == REQUEST_TYPE_FIELD_NAME:
+            request_mapping = _request_type_enum_mapping(field)
+            enum_by_id = {_strict_enum_row_id(row): row for row in _require_enum_rows(field)}
+            for logical_key, desired_label in REQUEST_TYPE_ENUM_LABELS.items():
+                enum_id = request_mapping.get(f"request_type_{logical_key}")
+                row = enum_by_id.get(str(enum_id or ""))
+                actual_label = _strict_optional_enum_string(row, "value", "VALUE") if row else None
+                if actual_label != desired_label:
+                    ux_mismatches.append(f"request_type_label:{logical_key}")
+    for stage in stages:
+        stage_id = _strict_stage_id(
+            stage,
+            expected_prefix=f"DT{entity_type_id}_{category_id}:",
+        )
+        code = stage_id.rsplit(":", 1)[-1].upper()
+        desired_title = WORKING_STAGE_TITLES.get(code)
+        if desired_title is not None and _stage_title(stage) != desired_title:
+            ux_mismatches.append(f"stage_title:{code}")
+    if existing_form is not None and existing_form != form:
+        ux_mismatches.append("working_form")
     return EnsurePlan(
         entity_type_id=entity_type_id,
         type_id=type_id,
@@ -261,15 +501,20 @@ def build_plan(
         enum_map=enum_map,
         stage_map=stage_map,
         form=form,
+        ux_mismatches=tuple(sorted(set(ux_mismatches))),
     )
 
 
 def build_form(field_map: dict[str, str]) -> list[dict[str, Any]]:
+    builtin_names = {"STAGE_ID", "TITLE", "ASSIGNED_BY_ID"}
     sections: list[dict[str, Any]] = []
     for name, title, keys in FORM_SECTIONS:
         elements = []
         for key in keys:
-            field_name = field_map.get(key, key if key.startswith(("UF_", "TITLE")) else "")
+            field_name = field_map.get(
+                key,
+                key if key in builtin_names or key.startswith("UF_") else "",
+            )
             if field_name:
                 elements.append({"name": field_name, "optionFlags": 1})
         if elements:
@@ -280,48 +525,222 @@ def build_form(field_map: dict[str, str]) -> list[dict[str, Any]]:
 def merge_form(
     existing: list[dict[str, Any]],
     desired: list[dict[str, Any]],
+    *,
+    managed_field_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    merged = json.loads(json.dumps(existing, ensure_ascii=False))
-    existing_names = {
+    managed = set(managed_field_names or ())
+    merged = json.loads(json.dumps(desired, ensure_ascii=False))
+    desired_sections = {
+        str(section.get("name") or ""): section for section in merged if isinstance(section, dict)
+    }
+    desired_names = {
         str(element.get("name") or "")
         for section in merged
         if isinstance(section, dict)
-        for element in (
-            section.get("elements") if isinstance(section.get("elements"), list) else []
-        )
+        for element in section.get("elements") or []
         if isinstance(element, dict)
     }
-    sections_by_name = {
-        str(section.get("name") or ""): section
-        for section in merged
-        if isinstance(section, dict)
-        and section.get("type") == "section"
-        and isinstance(section.get("elements"), list)
-    }
-    for desired_section in desired:
-        section_name = str(desired_section.get("name") or "")
-        target = sections_by_name.get(section_name)
-        if target is None:
-            target = {
-                **desired_section,
-                "elements": [],
-            }
-            merged.append(target)
-            sections_by_name[section_name] = target
-        target_elements = target.setdefault("elements", [])
-        target_names = {
-            str(element.get("name") or "")
-            for element in target_elements
+    preserved_sections: list[dict[str, Any]] = []
+    for source_section in existing:
+        if not isinstance(source_section, dict):
+            continue
+        unknown_elements = [
+            json.loads(json.dumps(element, ensure_ascii=False))
+            for element in source_section.get("elements") or []
             if isinstance(element, dict)
-        }
-        for element in desired_section.get("elements") or []:
-            element_name = str(element.get("name") or "")
-            if not element_name or element_name in existing_names or element_name in target_names:
-                continue
-            target_elements.append(element)
-            target_names.add(element_name)
-            existing_names.add(element_name)
+            and str(element.get("name") or "") not in managed
+            and str(element.get("name") or "") not in desired_names
+        ]
+        if not unknown_elements:
+            continue
+        section_name = str(source_section.get("name") or "")
+        target = desired_sections.get(section_name)
+        if target is not None:
+            target.setdefault("elements", []).extend(unknown_elements)
+            desired_names.update(str(element.get("name") or "") for element in unknown_elements)
+            continue
+        preserved = json.loads(json.dumps(source_section, ensure_ascii=False))
+        preserved["elements"] = unknown_elements
+        preserved_sections.append(preserved)
+        desired_names.update(str(element.get("name") or "") for element in unknown_elements)
+    merged.extend(preserved_sections)
     return merged
+
+
+def _request_type_enum_update(field: dict[str, Any]) -> list[dict[str, Any]]:
+    mapping = _request_type_enum_mapping(field)
+    desired_by_id = {
+        str(mapping[f"request_type_{logical_key}"]): desired_label
+        for logical_key, desired_label in REQUEST_TYPE_ENUM_LABELS.items()
+    }
+    rows: list[dict[str, Any]] = []
+    for index, current in enumerate(_require_enum_rows(field), start=1):
+        enum_id = _strict_enum_row_id(current)
+        value = desired_by_id.get(
+            enum_id,
+            _strict_optional_enum_string(current, "value", "VALUE") or "",
+        )
+        xml_id = _strict_optional_enum_string(current, "xmlId", "XML_ID") or ""
+        rows.append(
+            {
+                "id": enum_id,
+                "value": value,
+                "xmlId": xml_id,
+                "sort": _strict_enum_sort(current, fallback=index * 100),
+                "def": _strict_enum_default(current),
+            }
+        )
+    return rows
+
+
+def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | None:
+    desired_title = _desired_field_title(field)
+    if desired_title is None:
+        return None
+    update: dict[str, Any] = {"languageId": "ru"}
+    for label_key in ("editFormLabel", "listColumnLabel", "listFilterLabel"):
+        if _localized_label(field.get(label_key), language="ru") != desired_title:
+            update[label_key] = {"ru": desired_title}
+    field_name = str(field.get("fieldName") or "").strip()
+    if field_name in TECHNICAL_FORM_FIELD_NAMES:
+        for key, desired in (
+            ("showFilter", "N"),
+            ("showInList", "N"),
+            ("editInList", "N"),
+        ):
+            if str(field.get(key) or "") != desired:
+                update[key] = desired
+    if field_name == REQUEST_TYPE_FIELD_NAME:
+        desired_enum = _request_type_enum_update(field)
+        actual_labels = [
+            _strict_optional_enum_string(row, "value", "VALUE") for row in _require_enum_rows(field)
+        ]
+        if actual_labels != [row["value"] for row in desired_enum]:
+            update["userTypeId"] = "enumeration"
+            update["enum"] = desired_enum
+    return update if len(update) > 1 else None
+
+
+def _ensure_field_metadata(
+    api: BitrixJsonApi,
+    *,
+    fields: list[dict[str, Any]],
+) -> None:
+    for field in fields:
+        update = _field_metadata_update_payload(field)
+        if update is None:
+            continue
+        field_id = _strict_aliased_positive_int(
+            field,
+            "id",
+            "ID",
+            error_code="site_service_request_field_readback_unrecognized",
+        )
+        api.call_json(
+            "userfieldconfig.update",
+            {
+                "moduleId": "crm",
+                "id": field_id,
+                "field": update,
+            },
+        )
+
+
+def _ensure_process_title(
+    api: BitrixJsonApi,
+    *,
+    process_type: dict[str, Any],
+) -> None:
+    if process_type["title"] == PROCESS_TITLE:
+        return
+    api.call_json(
+        "crm.type.update",
+        {"id": int(process_type["id"]), "fields": {"title": PROCESS_TITLE}},
+    )
+
+
+def _ensure_working_category_title(
+    api: BitrixJsonApi,
+    *,
+    entity_type_id: int,
+    category: dict[str, Any],
+) -> None:
+    if category["name"] == WORKING_CATEGORY_TITLE:
+        return
+    api.call_json(
+        "crm.category.update",
+        {
+            "entityTypeId": entity_type_id,
+            "id": int(category["id"]),
+            "fields": {"name": WORKING_CATEGORY_TITLE},
+        },
+    )
+
+
+def _ensure_working_stage_titles(
+    api: BitrixJsonApi,
+    *,
+    entity_type_id: int,
+    category_id: int,
+    stages: list[dict[str, Any]],
+) -> None:
+    expected_prefix = f"DT{entity_type_id}_{category_id}:"
+    for stage in stages:
+        stage_id = _strict_stage_id(stage, expected_prefix=expected_prefix)
+        code = stage_id.rsplit(":", 1)[-1].upper()
+        desired_title = WORKING_STAGE_TITLES.get(code)
+        if desired_title is None or _stage_title(stage) == desired_title:
+            continue
+        internal_id = _strict_aliased_positive_int(
+            stage,
+            "ID",
+            "id",
+            error_code="site_service_request_stages_readback_unrecognized",
+        )
+        api.call_json(
+            "crm.status.update",
+            {"id": internal_id, "fields": {"NAME": desired_title}},
+        )
+
+
+def build_process_snapshot(
+    api: BitrixJsonApi,
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    entity_type_id = settings.site_service_requests_bitrix_entity_type_id
+    process_type = _require_process_type(api, entity_type_id=entity_type_id)
+    entity_id = f"CRM_{int(process_type['id'])}"
+    categories = _list_categories(api, entity_type_id=entity_type_id)
+    fields = _read_fields(api, entity_id=entity_id)
+    stages_by_category: dict[str, list[dict[str, Any]]] = {}
+    forms_by_category: dict[str, list[dict[str, Any]]] = {}
+    for category in categories:
+        category_id = int(category["id"])
+        stages_by_category[str(category_id)] = _list_stages(
+            api,
+            entity_type_id=entity_type_id,
+            category_id=category_id,
+        )
+        forms_by_category[str(category_id)] = _require_recognized_form(
+            api.call_json(
+                "crm.item.details.configuration.get",
+                {
+                    "entityTypeId": entity_type_id,
+                    "scope": "C",
+                    "extras": {"categoryId": category_id},
+                },
+            )
+        )
+    return {
+        "capturedAt": datetime.now(UTC).isoformat(),
+        "entityTypeId": entity_type_id,
+        "processType": process_type,
+        "categories": categories,
+        "fields": fields,
+        "stagesByCategory": stages_by_category,
+        "formsByCategory": forms_by_category,
+    }
 
 
 def ensure(
@@ -330,11 +749,17 @@ def ensure(
     settings: Settings,
     apply: bool,
 ) -> EnsurePlan:
-    type_id = _require_process_type_id(
+    process_type = _require_process_type(
         api,
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
     )
+    type_id = int(process_type["id"])
     entity_id = f"CRM_{type_id}"
+    category = _require_category(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
+    )
     fields = _read_fields(api, entity_id=entity_id)
     stages = _list_stages(
         api,
@@ -360,6 +785,8 @@ def ensure(
         fields=fields,
         stages=stages,
         existing_form=existing_form,
+        process_title=str(process_type["title"]),
+        category_title=str(category["name"]),
     )
     if not apply:
         return plan
@@ -384,17 +811,21 @@ def ensure(
                 "field": _field_payload(entity_id=entity_id, spec=spec),
             },
         )
+    refreshed_fields = _read_fields(api, entity_id=entity_id)
+    refreshed_stages = _list_stages(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
+    )
     refreshed = build_plan(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         type_id=type_id,
         category_id=settings.site_service_requests_bitrix_working_category_id,
-        fields=_read_fields(api, entity_id=entity_id),
-        stages=_list_stages(
-            api,
-            entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-            category_id=settings.site_service_requests_bitrix_working_category_id,
-        ),
+        fields=refreshed_fields,
+        stages=refreshed_stages,
         existing_form=existing_form,
+        process_title=str(process_type["title"]),
+        category_title=str(category["name"]),
     )
     if (
         refreshed.missing_fields
@@ -403,35 +834,86 @@ def ensure(
         or refreshed.missing_enum_mappings
     ):
         raise RuntimeError("site_service_request_fields_readback_failed")
+    _ensure_field_metadata(api, fields=refreshed_fields)
+    _ensure_process_title(api, process_type=process_type)
+    _ensure_working_category_title(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category=category,
+    )
+    _ensure_working_stage_titles(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
+        stages=refreshed_stages,
+    )
     # Re-read immediately before the write so a concurrent administrator change
     # is merged instead of being replaced by the stale initial snapshot.
     latest_form = _require_recognized_form(
         api.call_json("crm.item.details.configuration.get", configuration_payload)
     )
-    refreshed = replace(
-        refreshed,
-        form=merge_form(latest_form, build_form(refreshed.field_map)),
+    process_type = _require_process_type(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
     )
-    api.call_json(
-        "crm.item.details.configuration.set",
-        {
-            "entityTypeId": refreshed.entity_type_id,
-            "scope": "C",
-            "extras": {"categoryId": refreshed.category_id},
-            "data": refreshed.form,
-        },
+    category = _require_category(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
     )
-    form_readback = api.call_json(
-        "crm.item.details.configuration.get",
-        {
-            "entityTypeId": refreshed.entity_type_id,
-            "scope": "C",
-            "extras": {"categoryId": refreshed.category_id},
-        },
+    refreshed_fields = _read_fields(api, entity_id=entity_id)
+    refreshed_stages = _list_stages(
+        api,
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
     )
-    if not _form_contains(refreshed.form, _require_recognized_form(form_readback)):
-        raise RuntimeError("site_service_request_form_readback_failed")
-    return refreshed
+    refreshed = build_plan(
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        type_id=type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
+        fields=refreshed_fields,
+        stages=refreshed_stages,
+        existing_form=latest_form,
+        process_title=str(process_type["title"]),
+        category_title=str(category["name"]),
+    )
+    non_form_ux_mismatches = [
+        mismatch for mismatch in refreshed.ux_mismatches if mismatch != "working_form"
+    ]
+    if non_form_ux_mismatches:
+        raise RuntimeError("site_service_request_ux_readback_failed")
+    if latest_form != refreshed.form:
+        api.call_json(
+            "crm.item.details.configuration.set",
+            {
+                "entityTypeId": refreshed.entity_type_id,
+                "scope": "C",
+                "extras": {"categoryId": refreshed.category_id},
+                "data": refreshed.form,
+            },
+        )
+    final_form = _require_recognized_form(
+        api.call_json("crm.item.details.configuration.get", configuration_payload)
+    )
+    final_plan = build_plan(
+        entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+        type_id=type_id,
+        category_id=settings.site_service_requests_bitrix_working_category_id,
+        fields=refreshed_fields,
+        stages=refreshed_stages,
+        existing_form=final_form,
+        process_title=str(process_type["title"]),
+        category_title=str(category["name"]),
+    )
+    if (
+        final_plan.missing_fields
+        or final_plan.type_mismatches
+        or final_plan.missing_stages
+        or final_plan.missing_enum_mappings
+        or final_plan.ux_mismatches
+    ):
+        raise RuntimeError("site_service_request_ux_readback_failed")
+    return final_plan
 
 
 def plan_payload(plan: EnsurePlan, *, applied: bool) -> dict[str, Any]:
@@ -445,6 +927,12 @@ def plan_payload(plan: EnsurePlan, *, applied: bool) -> dict[str, Any]:
         "typeMismatches": list(plan.type_mismatches),
         "missingStages": list(plan.missing_stages),
         "missingEnumMappings": list(plan.missing_enum_mappings),
+        "uxMismatches": list(plan.ux_mismatches),
+        "desiredProcessTitle": PROCESS_TITLE,
+        "desiredWorkingCategoryTitle": WORKING_CATEGORY_TITLE,
+        "desiredWorkingStageTitles": WORKING_STAGE_TITLES,
+        "desiredRequestTypeLabels": REQUEST_TYPE_ENUM_LABELS,
+        "technicalFormFields": sorted(TECHNICAL_FORM_FIELD_NAMES),
         "fieldMap": plan.field_map,
         "enumMap": plan.enum_map,
         "stageMap": plan.stage_map,
@@ -458,8 +946,16 @@ def main(argv: list[str] | None = None) -> int:
     webhook = settings.site_service_requests_bitrix_webhook_url
     if not webhook:
         raise RuntimeError("SITE_SERVICE_REQUESTS_BITRIX_WEBHOOK_URL is not configured")
+    api = BitrixRestClient(webhook)
+    if args.snapshot_output is not None:
+        snapshot = build_process_snapshot(api, settings=settings)
+        args.snapshot_output.parent.mkdir(parents=True, exist_ok=True)
+        args.snapshot_output.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     plan = ensure(
-        BitrixRestClient(webhook),
+        api,
         settings=settings,
         apply=args.apply,
     )
@@ -517,9 +1013,6 @@ def _read_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
     fields = _list_fields(api, entity_id=entity_id)
     enriched_fields: list[dict[str, Any]] = []
     for field in fields:
-        if field["userTypeId"] != "enumeration":
-            enriched_fields.append(field)
-            continue
         field_id = _strict_aliased_positive_int(
             field,
             "id",
@@ -564,11 +1057,12 @@ def _read_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
             detailed_id != field_id
             or detailed_entity_id != entity_id
             or detailed_field_name != field["fieldName"]
-            or detailed_user_type != "enumeration"
-            or not isinstance(detailed_field.get("enum"), list)
+            or detailed_user_type != field["userTypeId"]
         ):
             raise RuntimeError("site_service_request_field_details_readback_unrecognized")
-        enriched_fields.append({**field, "enum": detailed_field["enum"]})
+        if detailed_user_type == "enumeration" and not isinstance(detailed_field.get("enum"), list):
+            raise RuntimeError("site_service_request_field_details_readback_unrecognized")
+        enriched_fields.append({**field, **detailed_field})
     return enriched_fields
 
 
@@ -816,9 +1310,9 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
     return mapping
 
 
-def _require_process_type_id(api: BitrixJsonApi, *, entity_type_id: int) -> int:
+def _require_process_type(api: BitrixJsonApi, *, entity_type_id: int) -> dict[str, Any]:
     params = [("filter[entityTypeId]", str(entity_type_id))]
-    process_types: list[tuple[int, int]] = []
+    process_types: list[dict[str, Any]] = []
     seen_starts: set[int] = {0}
     page_count = 0
     while True:
@@ -840,9 +1334,23 @@ def _require_process_type_id(api: BitrixJsonApi, *, entity_type_id: int) -> int:
                 process_type.get("entityTypeId"),
                 error_code="site_service_request_type_readback_unrecognized",
             )
-            if type_id <= 0 or returned_entity_type_id != entity_type_id:
+            title = process_type.get("title")
+            if (
+                type_id <= 0
+                or returned_entity_type_id != entity_type_id
+                or not isinstance(title, str)
+                or not title.strip()
+                or title.strip() != title
+            ):
                 raise RuntimeError("site_service_request_type_readback_unrecognized")
-            process_types.append((type_id, returned_entity_type_id))
+            process_types.append(
+                {
+                    **process_type,
+                    "id": type_id,
+                    "entityTypeId": returned_entity_type_id,
+                    "title": title,
+                }
+            )
         start = _resolve_pagination_offset(
             top_next=response.get("next"),
             nested_next=result.get("next"),
@@ -861,7 +1369,69 @@ def _require_process_type_id(api: BitrixJsonApi, *, entity_type_id: int) -> int:
         ]
     if len(process_types) != 1:
         raise RuntimeError("site_service_request_type_readback_unrecognized")
-    return process_types[0][0]
+    return process_types[0]
+
+
+def _require_process_type_id(api: BitrixJsonApi, *, entity_type_id: int) -> int:
+    return int(_require_process_type(api, entity_type_id=entity_type_id)["id"])
+
+
+def _list_categories(api: BitrixJsonApi, *, entity_type_id: int) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {"entityTypeId": entity_type_id}
+    categories: list[dict[str, Any]] = []
+    seen_starts: set[int] = {0}
+    page_count = 0
+    while True:
+        page_count += 1
+        response = api.call_json("crm.category.list", payload)
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get("categories"), list):
+            raise RuntimeError("site_service_request_categories_readback_unrecognized")
+        for category in result["categories"]:
+            if not isinstance(category, dict):
+                raise RuntimeError("site_service_request_categories_readback_unrecognized")
+            category_id = _strict_aliased_positive_int(
+                category,
+                "id",
+                "ID",
+                error_code="site_service_request_categories_readback_unrecognized",
+            )
+            name = _strict_aliased_string(
+                category,
+                "name",
+                "NAME",
+                error_code="site_service_request_categories_readback_unrecognized",
+            )
+            if name is None or not name or name.strip() != name:
+                raise RuntimeError("site_service_request_categories_readback_unrecognized")
+            categories.append({**category, "id": category_id, "name": name})
+        start = _resolve_pagination_offset(
+            top_next=response.get("next"),
+            nested_next=result.get("next"),
+            error_code="site_service_request_categories_pagination_invalid",
+        )
+        if start is None:
+            return categories
+        if page_count >= 100 or start in seen_starts:
+            raise RuntimeError("site_service_request_categories_pagination_invalid")
+        seen_starts.add(start)
+        payload = {"entityTypeId": entity_type_id, "start": start}
+
+
+def _require_category(
+    api: BitrixJsonApi,
+    *,
+    entity_type_id: int,
+    category_id: int,
+) -> dict[str, Any]:
+    matches = [
+        category
+        for category in _list_categories(api, entity_type_id=entity_type_id)
+        if int(category["id"]) == category_id
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("site_service_request_category_readback_unrecognized")
+    return matches[0]
 
 
 def _require_enum_rows(field: dict[str, Any]) -> list[dict[str, Any]]:
@@ -869,10 +1439,18 @@ def _require_enum_rows(field: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise RuntimeError("site_service_request_enum_readback_unrecognized")
     enum_ids = [_strict_enum_row_id(row) for row in rows]
-    for row in rows:
-        _strict_optional_enum_string(row, "xmlId", "XML_ID")
-        if _strict_optional_enum_string(row, "value", "VALUE") is None:
+    for index, row in enumerate(rows, start=1):
+        xml_id = _strict_optional_enum_string(row, "xmlId", "XML_ID")
+        value = _strict_optional_enum_string(row, "value", "VALUE")
+        if (
+            value is None
+            or not value
+            or value.strip() != value
+            or (xml_id is not None and xml_id.strip() != xml_id)
+        ):
             raise RuntimeError("site_service_request_enum_readback_unrecognized")
+        _strict_enum_sort(row, fallback=index * 100)
+        _strict_enum_default(row)
     if len(enum_ids) != len(set(enum_ids)):
         raise RuntimeError("site_service_request_enum_readback_ambiguous")
     return rows
@@ -900,6 +1478,35 @@ def _strict_optional_enum_string(
     if not values:
         return None
     if any(not isinstance(value, str) for value in values):
+        raise RuntimeError("site_service_request_enum_readback_unrecognized")
+    first_value = values[0]
+    if any(value != first_value for value in values[1:]):
+        raise RuntimeError("site_service_request_enum_readback_ambiguous")
+    return first_value
+
+
+def _strict_enum_sort(row: dict[str, Any], *, fallback: int) -> int:
+    values = [row[field_name] for field_name in ("sort", "SORT") if field_name in row]
+    if not values:
+        return fallback
+    parsed_values = [
+        _strict_pagination_offset(
+            value,
+            error_code="site_service_request_enum_readback_unrecognized",
+        )
+        for value in values
+    ]
+    first_value = parsed_values[0]
+    if any(value != first_value for value in parsed_values[1:]):
+        raise RuntimeError("site_service_request_enum_readback_ambiguous")
+    return first_value
+
+
+def _strict_enum_default(row: dict[str, Any]) -> str:
+    values = [row[field_name] for field_name in ("def", "DEF") if field_name in row]
+    if not values:
+        return "N"
+    if any(not isinstance(value, str) or value not in {"Y", "N"} for value in values):
         raise RuntimeError("site_service_request_enum_readback_unrecognized")
     first_value = values[0]
     if any(value != first_value for value in values[1:]):

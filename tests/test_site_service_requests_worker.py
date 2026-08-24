@@ -403,6 +403,28 @@ def test_user_preflight_requires_active_users_with_expected_identity() -> None:
         preflight_site_service_request_users(api=mismatched_api, settings=settings)
 
 
+def test_user_preflight_accepts_boolean_active_from_box() -> None:
+    api = FakeBitrixApi()
+    for user in api.users.values():
+        user["ACTIVE"] = True
+
+    result = preflight_site_service_request_users(api=api, settings=_worker_settings())
+
+    assert len(result) == 4
+
+
+@pytest.mark.parametrize("active", [1, 1.0, "true", " Y", "", None, [True]])
+def test_user_preflight_rejects_malformed_active(active: object) -> None:
+    api = FakeBitrixApi()
+    api.users[1001]["ACTIVE"] = active
+
+    with pytest.raises(
+        SiteServiceRequestConfigurationError,
+        match="pilot user readback failed",
+    ):
+        preflight_site_service_request_users(api=api, settings=_worker_settings())
+
+
 def test_user_preflight_rejects_malformed_extra_user_row() -> None:
     class MalformedUserApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):

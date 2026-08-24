@@ -849,6 +849,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — production env preflight подтвердил boolean `ACTIVE=true` в
+  `user.get`; pilot-user validation теперь строго принимает только boolean или
+  строки `Y/N` и по-прежнему отклоняет conflicting aliases. Пример списка первой
+  линии исправлен на JSON-массив, совместимый с Pydantic dotenv-source.
 - 2026-08-24 — production read-only preflight подтвердил, что `crm.type.get`
   принимает внутренний `id`, а не `entityTypeId`. Ensure discovery переведён на
   form-encoded `crm.type.list` с `filter[entityTypeId]`, строгой проверкой ровно

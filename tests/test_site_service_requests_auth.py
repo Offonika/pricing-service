@@ -61,6 +61,18 @@ def test_settings_are_disabled_by_default_and_parse_pilot_user_ids() -> None:
     assert configured.site_service_requests_first_line_user_ids == [132252, 12587]
 
 
+def test_settings_parse_pilot_user_ids_from_dotenv_source(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "SITE_SERVICE_REQUESTS_FIRST_LINE_USER_IDS='[132252,12587]'\n",
+        encoding="utf-8",
+    )
+
+    configured = Settings(_env_file=env_file)
+
+    assert configured.site_service_requests_first_line_user_ids == [132252, 12587]
+
+
 def test_signature_fixture_is_stable_for_php_contract() -> None:
     headers = _headers()
     assert headers["content_sha256_header"] == (

@@ -148,6 +148,7 @@ def customer_settlement_summary(
                 movement_organization_field=str(
                     settings.customer_settlements_movement_organization_field or ""
                 ),
+                max_scope_users=settings.customer_settlements_max_scope_users,
             )
         )
         summary = get_customer_settlement_summary(
@@ -167,6 +168,7 @@ def customer_settlement_summary(
             expected_source_system="ut103",
             expected_organization_ref=str(settings.customer_settlements_organization_ref or ""),
             expected_organization_guid=str(settings.customer_settlements_organization_guid or ""),
+            max_scope_users=settings.customer_settlements_max_scope_users,
         )
     except Exception as exc:
         _rollback_quietly(db)
@@ -213,6 +215,7 @@ def customer_settlement_eligibility(
                 movement_organization_field=str(
                     settings.customer_settlements_movement_organization_field or ""
                 ),
+                max_scope_users=settings.customer_settlements_max_scope_users,
             )
         )
         status = get_customer_settlement_eligibility(
@@ -229,6 +232,7 @@ def customer_settlement_eligibility(
             expected_source_system="ut103",
             expected_organization_ref=str(settings.customer_settlements_organization_ref or ""),
             expected_organization_guid=str(settings.customer_settlements_organization_guid or ""),
+            max_scope_users=settings.customer_settlements_max_scope_users,
         )
     except Exception as exc:
         _rollback_quietly(db)

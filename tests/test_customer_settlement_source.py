@@ -17,7 +17,9 @@ from app.core.config import Settings
 from app.models.customer_settlement import CustomerSettlementPilotAccess
 from app.services.customer_settlement_source import (
     CustomerSettlementSourceError,
+    _insert_counterparty_scope,
     fetch_customer_settlement_balances,
+    fetch_customer_settlement_scope_eligibility,
     fetch_manual_customer_settlement_controls,
     validate_organization_field,
 )
@@ -37,6 +39,7 @@ from tasks import (
 ORG = "0x" + "a" * 32
 CP_1 = "0x" + "1" * 32
 CP_2 = "0x" + "2" * 32
+CP_3 = "0x" + "3" * 32
 
 
 class _FakeResult:
@@ -172,6 +175,43 @@ class _ManualControlEngine(_FakeEngine):
         self.connection = _ManualControlConnection()
 
 
+class _EligibilityConnection(_FakeConnection):
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.sql.append(sql)
+        self.parameters.append(parameters)
+        if "AS active_element" in sql:
+            return _FakeResult(
+                [
+                    {
+                        "counterparty_ref": CP_1,
+                        "active_element": 1,
+                        "blank_name": 0,
+                        "has_non_rub_contract": 0,
+                    },
+                    {
+                        "counterparty_ref": CP_2,
+                        "active_element": 1,
+                        "blank_name": 1,
+                        "has_non_rub_contract": 0,
+                    },
+                    {
+                        "counterparty_ref": CP_3,
+                        "active_element": 1,
+                        "blank_name": 0,
+                        "has_non_rub_contract": 1,
+                    },
+                ]
+            )
+        return _FakeResult([])
+
+
+class _EligibilityEngine(_FakeEngine):
+    def __init__(self):
+        self.dialect = SimpleNamespace(name="mssql")
+        self.connection = _EligibilityConnection()
+
+
 def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     engine = _FakeEngine()
     as_of = datetime(2026, 7, 29, 9, 15, tzinfo=UTC)
@@ -199,9 +239,10 @@ def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     assert "COALESCE(balances.signed_balance, 0)" in rendered_sql
     assert "counterparty._Folder = 0x01" in rendered_sql
     assert "#CustomerSettlementPilot" in rendered_sql
+    assert "OBJECT_ID('tempdb..#CustomerSettlementPilot')" in rendered_sql
     assert "SET TRANSACTION ISOLATION LEVEL SNAPSHOT" in rendered_sql
     assert "CONVERT(varchar(34), :organization_ref)" in rendered_sql
-    assert "CONVERT(varchar(34), :counterparty_ref)" in rendered_sql
+    assert "CONVERT(varchar(34), :counterparty_ref_0)" in rendered_sql
     query_parameters = next(
         value
         for value in engine.connection.parameters
@@ -210,6 +251,43 @@ def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     assert query_parameters["movement_end"] == datetime(2026, 7, 29, 12, 15)
     assert engine.connection.isolation_level is None
     assert engine.connection.clock_transaction_states == [False, True]
+
+
+def test_temp_scope_is_inserted_in_parameterized_batches() -> None:
+    connection = _FakeConnection()
+    refs = tuple(f"0x{value:032x}" for value in range(1001))
+
+    _insert_counterparty_scope(
+        connection,
+        table_name="#CustomerSettlementPilot",
+        refs=refs,
+    )
+
+    assert len(connection.sql) == 3
+    assert [len(value) for value in connection.parameters] == [500, 500, 1]
+    assert all(isinstance(value, dict) for value in connection.parameters)
+    assert all("0x" not in sql for sql in connection.sql)
+    with pytest.raises(
+        CustomerSettlementSourceError,
+        match="customer_settlement_temp_table_is_invalid",
+    ):
+        _insert_counterparty_scope(connection, table_name="#untrusted", refs=(CP_1,))
+
+
+def test_all_linked_scope_excludes_blank_names_and_non_rub_contracts() -> None:
+    engine = _EligibilityEngine()
+    result = fetch_customer_settlement_scope_eligibility(
+        engine,
+        counterparty_refs=(CP_3, CP_2, CP_1),
+        query_timeout_seconds=30,
+        max_counterparties=10,
+    )
+
+    assert result.total_counterparties == 3
+    assert result.eligible_counterparty_refs == (CP_1,)
+    assert result.blank_name_counterparties == 1
+    assert result.non_rub_counterparties == 1
+    assert "OBJECT_ID('tempdb..#CustomerSettlementManualPilot')" in "\n".join(engine.connection.sql)
 
 
 def test_extractor_derives_onec_boundary_from_sql_utc_clock() -> None:

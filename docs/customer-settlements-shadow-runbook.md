@@ -258,6 +258,8 @@ CUSTOMER_SETTLEMENTS_MOVEMENT_ORGANIZATION_FIELD=_Fld7005RRef
 CUSTOMER_SETTLEMENTS_COUNTERPARTY_INN_FIELD=_Fld611
 CUSTOMER_SETTLEMENTS_SOURCE_MODE=onec_canonical_mutual_statement_7002
 CUSTOMER_SETTLEMENTS_MAPPING_MODE=crm_readonly
+CUSTOMER_SETTLEMENTS_ACCESS_MODE=pilot_whitelist
+CUSTOMER_SETTLEMENTS_MAX_SCOPE_USERS=10
 CUSTOMER_SETTLEMENTS_CRM_WEBHOOK_URL=<existing-readonly-webhook-for-72h>
 
 CUSTOMER_SETTLEMENTS_QUERY_TIMEOUT_SECONDS=30
@@ -343,7 +345,9 @@ Whitelist содержит только утверждённые пилотны�
 
 Mapping worker обязан дважды полностью прочитать CRM и подтвердить одинаковые total
 и семантическое содержимое всех страниц, затем разрешить hashes через read-only
-`_Reference54` и активировать только 10 строк whitelist. Проверки только первой
+`_Reference54` и в default-режиме активировать только 10 строк whitelist. В
+`all_linked` активируются все однозначные совместимые строки в пределах явного hard
+limit; scope и access list меняются одной транзакцией. Проверки только первой
 страницы недостаточно. Отсутствующий пилот получает `not_linked`; несколько cluster
 или counterparty дают `ambiguous` и блокируют ready gate. Email, телефон, ФИО,
 название и ИНН не используются как ключ.
@@ -367,13 +371,29 @@ active mapping и pilot scope; financial worker под тем же lock повт
 Историческая ведомость `2026-07-29` не заменяет ни одну из новых контрольных
 ведомостей.
 
+Для изолированного `all_linked` dev-контура вместо неполной ведомости из отдельной
+папки используется точная витрина контроля дебиторки:
+
+```bash
+"${PYTHON_BIN}" -m tasks.reconcile_customer_settlements_receivables \
+  --completed-date <YYYY-MM-DD> \
+  --receivable-env-file "${CUSTOMER_SETTLEMENTS_RECEIVABLE_ENV_FILE}" \
+  --expected-receivable-database-name \
+    "${CUSTOMER_SETTLEMENTS_RECEIVABLE_EXPECTED_DATABASE_NAME}" \
+  --expected-scope-count "${CUSTOMER_SETTLEMENTS_EXPECTED_PILOT_COUNT}"
+```
+
+Команда read-only читает 1С и витрину, затем пишет только matched/mismatched
+evidence в staging PostgreSQL под тем же context lock. Любое расхождение, смена
+mapping, неполный scope или превышение `0,01 RUB` остаётся fail-closed.
+
 Financial sync должен вернуть ровно все уникальные контрагенты включённых пилотов,
 включая явные нулевые строки.
 `ready` требует:
 
 - ровно одну свежую active mapping revision;
 - ровно одну свежую active financial revision;
-- 10 linked и 0 ambiguous пилотов;
+- expected scope linked и 0 ambiguous entries (`10` только для default whitelist);
 - совместимую финансовую строку для каждого пилота;
 - последнюю сохранённую сверку ведомости со статусом `matched` именно для текущего
   mapping/source context и полного текущего набора пилотов;

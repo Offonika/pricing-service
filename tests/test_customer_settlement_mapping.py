@@ -188,6 +188,18 @@ def test_unresolved_onec_counterparty_hash_is_ambiguous() -> None:
     assert build_mapping_entries(resolved)[0].status == "ambiguous"
 
 
+def test_direct_counterparty_ref_must_resolve_to_active_onec_element() -> None:
+    row = _row("14", "cluster-direct", ("104",), (CP_1,))
+
+    resolved = resolve_crm_counterparty_hashes([row], onec_engine=_HashEngine([CP_1]))
+    assert resolved[0].has_invalid_counterparty_ref is False
+    assert build_mapping_entries(resolved)[0].status == "linked"
+
+    stale = resolve_crm_counterparty_hashes([row], onec_engine=_HashEngine([]))
+    assert stale[0].has_invalid_counterparty_ref is True
+    assert build_mapping_entries(stale)[0].status == "ambiguous"
+
+
 def test_fetch_crm_cluster_rows_checks_complete_pagination(monkeypatch) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
     responses = [

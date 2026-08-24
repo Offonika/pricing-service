@@ -89,6 +89,7 @@ def main() -> int:
             expected_source_system="ut103",
             expected_organization_ref=settings.customer_settlements_organization_ref,
             expected_organization_guid=settings.customer_settlements_organization_guid,
+            max_scope_users=settings.customer_settlements_max_scope_users,
         )
         reconciliation_current = (
             settings.customer_settlements_source_validated
@@ -103,6 +104,7 @@ def main() -> int:
                 movement_organization_field=str(
                     settings.customer_settlements_movement_organization_field or ""
                 ),
+                max_scope_users=settings.customer_settlements_max_scope_users,
             )
         )
         metrics["reconciliation_current"] = reconciliation_current

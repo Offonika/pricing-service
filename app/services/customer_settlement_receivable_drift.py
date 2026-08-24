@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+from app.services.customer_settlement_reconciliation import (
+    CustomerSettlementReconciliationResult,
+    customer_settlement_reconciliation_input_hash,
+    customer_settlement_reconciliation_source_hash,
+)
+from app.services.customer_settlement_source import CustomerSettlementSourceResult
 
 MONEY_QUANTUM = Decimal("0.01")
 MATCH_TOLERANCE = Decimal("0.01")
@@ -70,6 +79,7 @@ class CustomerSettlementReceivableDriftResult:
     missing_zero_count: int
     missing_nonzero_count: int
     unexpected_receivable_count: int
+    max_abs_difference: Decimal
     source_states: dict[str, int]
     receivable_present_states: dict[str, int]
 
@@ -98,6 +108,7 @@ class CustomerSettlementReceivableDriftResult:
             "missing_zero_count": self.missing_zero_count,
             "missing_nonzero_count": self.missing_nonzero_count,
             "unexpected_receivable_count": self.unexpected_receivable_count,
+            "max_abs_difference": format(self.max_abs_difference, ".2f"),
             "source_states": self.source_states,
             "receivable_present_states": self.receivable_present_states,
         }
@@ -129,6 +140,7 @@ def compare_customer_settlement_with_receivables(
     mismatch_count = 0
     missing_zero_count = 0
     missing_nonzero_count = 0
+    differences: list[Decimal] = []
     for counterparty_ref, source_balance in source_balances.items():
         if counterparty_ref not in receivable_balances:
             if source_balance == 0:
@@ -136,8 +148,10 @@ def compare_customer_settlement_with_receivables(
                 matched_count += 1
             else:
                 missing_nonzero_count += 1
+                differences.append(abs(source_balance))
             continue
         difference = abs(receivable_balances[counterparty_ref] - source_balance)
+        differences.append(difference)
         if difference <= MATCH_TOLERANCE:
             matched_count += 1
         else:
@@ -154,6 +168,76 @@ def compare_customer_settlement_with_receivables(
         missing_zero_count=missing_zero_count,
         missing_nonzero_count=missing_nonzero_count,
         unexpected_receivable_count=len(unexpected_refs),
+        max_abs_difference=max(differences, default=Decimal("0.00")),
         source_states=_state_counts(source_balances),
         receivable_present_states=_state_counts(receivable_balances),
     )
+
+
+def build_customer_settlement_receivable_reconciliation(
+    *,
+    context_hash: str,
+    source: CustomerSettlementSourceResult,
+    completed_date: date,
+    expected_count: int,
+    receivable_rows: Iterable[tuple[object, object]],
+    receivable_total_rows: int,
+) -> tuple[
+    CustomerSettlementReconciliationResult,
+    CustomerSettlementReceivableDriftResult,
+]:
+    normalized_receivable = normalize_balance_mapping(
+        receivable_rows,
+        duplicate_error_code="duplicate_receivable_counterparty",
+    )
+    normalized_rows = tuple(
+        (counterparty_ref, balance)
+        for counterparty_ref, balance in sorted(normalized_receivable.items())
+    )
+    drift = compare_customer_settlement_with_receivables(
+        completed_date=completed_date,
+        source_as_of=source.as_of,
+        expected_pilot_count=expected_count,
+        source_rows=((row.counterparty_ref, row.signed_balance) for row in source.balances),
+        receivable_rows=normalized_rows,
+    )
+    if receivable_total_rows <= 0:
+        raise CustomerSettlementReceivableDriftError("receivable_snapshot_is_missing")
+    report_payload = {
+        "source": "receivable_balance_snapshot",
+        "completed_date": completed_date.isoformat(),
+        "total_rows": receivable_total_rows,
+        "scope_rows": [
+            {"counterparty_ref": ref, "balance": format(balance, ".2f")}
+            for ref, balance in normalized_rows
+        ],
+    }
+    report_hash = hashlib.sha256(
+        json.dumps(
+            report_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    source_hash = customer_settlement_reconciliation_source_hash(source)
+    input_hash = customer_settlement_reconciliation_input_hash(
+        report_hash=report_hash,
+        context_hash=context_hash,
+        source_hash=source_hash,
+    )
+    mismatch_count = expected_count - drift.matched_count
+    result = CustomerSettlementReconciliationResult(
+        report_date=completed_date,
+        as_of=source.as_of,
+        report_hash=report_hash,
+        context_hash=context_hash,
+        source_hash=source_hash,
+        input_hash=input_hash,
+        status="matched" if drift.status == "ok" else "mismatched",
+        expected_count=expected_count,
+        matched_count=drift.matched_count,
+        mismatch_count=mismatch_count,
+        max_abs_difference=drift.max_abs_difference,
+    )
+    return result, drift

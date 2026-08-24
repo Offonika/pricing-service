@@ -49,6 +49,12 @@ CUSTOMER_SETTLEMENT_HIDE_AFTER_SECONDS = 21600
 CUSTOMER_SETTLEMENT_MAPPING_STALE_AFTER_SECONDS = 7200
 
 
+def validate_customer_settlement_scope_limit(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 100_000:
+        raise ValueError("customer_settlement_scope_limit_is_invalid")
+    return value
+
+
 class CustomerSettlementRuntimeGuardError(RuntimeError):
     pass
 
@@ -305,6 +311,7 @@ def activate_financial_revision(
     expected_counterparty_refs: Sequence[str],
     balances: Sequence[SettlementBalanceInput],
     synced_at: datetime | None = None,
+    max_scope_users: int = MAX_PILOT_USERS,
 ) -> tuple[CustomerSettlementRevision, bool]:
     _require_customer_settlement_context_lock(session)
     organization = normalize_counterparty_ref(organization_ref)
@@ -316,7 +323,8 @@ def activate_financial_revision(
     expected_refs = {normalize_counterparty_ref(value) for value in expected_counterparty_refs}
     if not expected_refs:
         raise ValueError("financial_revision_scope_is_empty")
-    if len(expected_refs) > MAX_PILOT_USERS:
+    max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    if len(expected_refs) > max_scope:
         raise ValueError("financial_revision_scope_limit_exceeded")
     normalized_rows = _normalized_balance_rows(balances)
     loaded_refs = {item.counterparty_ref for item in normalized_rows}
@@ -694,6 +702,7 @@ def activate_mapping_revision(
     source_system: str = DEFAULT_SOURCE_SYSTEM,
     organization_ref: str = DEFAULT_ORGANIZATION_REF,
     organization_guid: str = DEFAULT_ORGANIZATION_GUID,
+    max_scope_users: int = MAX_PILOT_USERS,
 ) -> tuple[CustomerSettlementMappingRevision, bool]:
     _require_customer_settlement_context_lock(session)
     checked_at = ensure_utc(source_checked_at or utc_now())
@@ -763,7 +772,8 @@ def activate_mapping_revision(
     normalized_entries.sort(key=lambda item: item.site_user_id)
     if not normalized_entries:
         raise ValueError("mapping_revision_scope_is_empty")
-    if len(normalized_entries) > MAX_PILOT_USERS:
+    max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    if len(normalized_entries) > max_scope:
         raise ValueError("mapping_revision_scope_limit_exceeded")
     desired_identity_by_site_user = {
         item.site_user_id: (
@@ -996,8 +1006,10 @@ def set_pilot_access(
     site_user_id: str | int,
     enabled: bool,
     reason: str | None = None,
+    max_scope_users: int = MAX_PILOT_USERS,
 ) -> tuple[CustomerSettlementPilotAccess, bool]:
     _require_customer_settlement_context_lock(session)
+    max_scope = validate_customer_settlement_scope_limit(max_scope_users)
     normalized = normalize_site_user_id(site_user_id)
     item = session.scalar(
         select(CustomerSettlementPilotAccess).where(
@@ -1010,7 +1022,7 @@ def set_pilot_access(
             .select_from(CustomerSettlementPilotAccess)
             .where(CustomerSettlementPilotAccess.enabled.is_(True))
         )
-        if int(enabled_count or 0) >= MAX_PILOT_USERS:
+        if int(enabled_count or 0) >= max_scope:
             raise ValueError("pilot_whitelist_limit_exceeded")
     created = item is None
     if item is None:
@@ -1020,6 +1032,73 @@ def set_pilot_access(
     item.reason = str(reason).strip()[:255] if reason else None
     session.flush()
     return item, created
+
+
+def replace_pilot_access_scope(
+    session: Session,
+    *,
+    site_user_ids: Sequence[str | int],
+    max_scope_users: int = MAX_PILOT_USERS,
+    enabled_reason: str = "all_linked_crm",
+    disabled_reason: str = "all_linked_revoked",
+) -> dict[str, int]:
+    """Atomically replace the enabled access scope inside the caller transaction."""
+
+    _require_customer_settlement_context_lock(session)
+    max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    normalized_ids = tuple(sorted({normalize_site_user_id(value) for value in site_user_ids}))
+    if not normalized_ids:
+        raise ValueError("pilot_whitelist_scope_is_empty")
+    if len(normalized_ids) > max_scope:
+        raise ValueError("pilot_whitelist_limit_exceeded")
+
+    desired = set(normalized_ids)
+    existing_rows = tuple(session.scalars(select(CustomerSettlementPilotAccess)))
+    existing_by_user = {str(item.site_user_id): item for item in existing_rows}
+    created = 0
+    enabled = 0
+    disabled = 0
+
+    for site_user_id in normalized_ids:
+        item = existing_by_user.get(site_user_id)
+        if item is None:
+            session.add(
+                CustomerSettlementPilotAccess(
+                    site_user_id=site_user_id,
+                    enabled=True,
+                    reason=enabled_reason[:255],
+                )
+            )
+            created += 1
+            enabled += 1
+        elif not item.enabled:
+            item.enabled = True
+            item.reason = enabled_reason[:255]
+            enabled += 1
+
+    for item in existing_rows:
+        if item.enabled and str(item.site_user_id) not in desired:
+            item.enabled = False
+            item.reason = disabled_reason[:255]
+            disabled += 1
+
+    session.flush()
+    enabled_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CustomerSettlementPilotAccess)
+            .where(CustomerSettlementPilotAccess.enabled.is_(True))
+        )
+        or 0
+    )
+    if enabled_count != len(normalized_ids):
+        raise ValueError("pilot_whitelist_readback_mismatch")
+    return {
+        "scope_users": len(normalized_ids),
+        "created": created,
+        "enabled": enabled,
+        "disabled": disabled,
+    }
 
 
 def active_pilot_counterparty_refs(session: Session) -> tuple[str, ...]:
@@ -1095,7 +1174,12 @@ def _mapping_revision_is_complete(
     session: Session,
     *,
     revision: CustomerSettlementMappingRevision,
+    max_scope_users: int = MAX_PILOT_USERS,
 ) -> bool:
+    try:
+        max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    except ValueError:
+        return False
     rows = tuple(
         session.execute(
             select(
@@ -1122,7 +1206,7 @@ def _mapping_revision_is_complete(
         if status == MAPPING_AMBIGUOUS:
             ambiguous_count += 1
     return bool(
-        0 < len(rows) <= MAX_PILOT_USERS
+        0 < len(rows) <= max_scope
         and len(set(mapping_user_ids)) == len(mapping_user_ids)
         and revision.expected_entry_count == len(rows)
         and revision.loaded_entry_count == len(rows)
@@ -1184,6 +1268,7 @@ def get_customer_settlement_eligibility(
     expected_source_system: str | None = None,
     expected_organization_ref: str | None = None,
     expected_organization_guid: str | None = None,
+    max_scope_users: int = MAX_PILOT_USERS,
     now: datetime | None = None,
 ) -> EligibilityStatus:
     if not enabled:
@@ -1222,7 +1307,11 @@ def get_customer_settlement_eligibility(
         and mapping_age > timedelta(seconds=mapping_stale_after_seconds)
     ):
         return "temporarily_unavailable"
-    if not _mapping_revision_is_complete(session, revision=mapping_revision):
+    if not _mapping_revision_is_complete(
+        session,
+        revision=mapping_revision,
+        max_scope_users=max_scope_users,
+    ):
         return "temporarily_unavailable"
     mapping = session.scalar(
         select(CustomerSettlementMappingEntry).where(
@@ -1301,6 +1390,7 @@ def get_customer_settlement_summary(
     expected_source_system: str | None = None,
     expected_organization_ref: str | None = None,
     expected_organization_guid: str | None = None,
+    max_scope_users: int = MAX_PILOT_USERS,
     now: datetime | None = None,
 ) -> SettlementSummary:
     current_time = ensure_utc(now or utc_now())
@@ -1341,7 +1431,11 @@ def get_customer_settlement_summary(
         and mapping_age > timedelta(seconds=mapping_stale_after_seconds)
     ):
         return SettlementSummary(status="temporarily_unavailable")
-    if not _mapping_revision_is_complete(session, revision=mapping_revision):
+    if not _mapping_revision_is_complete(
+        session,
+        revision=mapping_revision,
+        max_scope_users=max_scope_users,
+    ):
         return SettlementSummary(status="temporarily_unavailable")
     mapping = session.scalar(
         select(CustomerSettlementMappingEntry).where(
@@ -1491,8 +1585,13 @@ def customer_settlement_health_metrics(
     expected_source_system: str | None = None,
     expected_organization_ref: str | None = None,
     expected_organization_guid: str | None = None,
+    max_scope_users: int = MAX_PILOT_USERS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    try:
+        max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    except ValueError:
+        max_scope = 0
     current_time = ensure_utc(now or utc_now())
     if not try_customer_settlement_context_read_lock(session):
         return {
@@ -1687,7 +1786,7 @@ def customer_settlement_health_metrics(
         and ensure_utc(financial.as_of) <= ensure_utc(financial.source_db_time)
         and ensure_utc(financial.as_of) <= current_time + timedelta(seconds=30)
         and ensure_utc(financial.source_db_time) <= current_time + timedelta(seconds=30)
-        and 0 < pilot_counterparties <= MAX_PILOT_USERS
+        and 0 < pilot_counterparties <= max_scope
         and financial.currency == "RUB"
         and (expected_source_mode is None or financial.source_mode == expected_source_mode)
         and (
@@ -1734,7 +1833,7 @@ def customer_settlement_health_metrics(
             expected_mapping_source_name is None
             or mapping.source_name == expected_mapping_source_name
         )
-        and 0 < enabled_pilots <= MAX_PILOT_USERS
+        and 0 < enabled_pilots <= max_scope
         and mapping.expected_entry_count == enabled_pilots
         and mapping.loaded_entry_count == mapping_entries == enabled_pilots
         and mapping.ambiguous_count == ambiguous_entries == 0

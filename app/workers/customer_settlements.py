@@ -31,9 +31,9 @@ from app.services.customer_settlement_reconciliation import (
 from app.services.customer_settlement_source import (
     CustomerSettlementSourceError,
     fetch_customer_settlement_balances,
+    fetch_customer_settlement_scope_eligibility,
 )
 from app.services.customer_settlements import (
-    MAX_PILOT_USERS,
     CustomerSettlementContextBusyError,
     CustomerSettlementRuntimeGuardError,
     SettlementMappingInput,
@@ -45,6 +45,7 @@ from app.services.customer_settlements import (
     cleanup_customer_settlements,
     mark_financial_revision_failed,
     mark_mapping_revision_failed,
+    replace_pilot_access_scope,
     try_customer_settlement_context_lock,
     utc_now,
 )
@@ -106,6 +107,12 @@ def run_customer_settlement_mapping_sync(
     if not (settings.customer_settlements_shadow_enabled or settings.customer_settlements_enabled):
         return {"status": "disabled"}
     mapping_mode = str(settings.customer_settlements_mapping_mode or "").strip().lower()
+    access_mode = str(settings.customer_settlements_access_mode or "").strip().lower()
+    max_scope_users = settings.customer_settlements_max_scope_users
+    if access_mode not in {"pilot_whitelist", "all_linked"}:
+        return {"status": "blocked", "reason": "unsupported_access_mode"}
+    if access_mode == "all_linked" and mapping_mode != "crm_readonly":
+        return {"status": "blocked", "reason": "all_linked_requires_crm_mapping"}
     if mapping_mode == "manual_confirmed":
         session = get_application_session_factory()()
         try:
@@ -176,23 +183,45 @@ def run_customer_settlement_mapping_sync(
             )
             all_entries = build_mapping_entries(rows)
             entries_by_user = {item.site_user_id: item for item in all_entries}
+            scope_eligibility = None
+            if access_mode == "all_linked":
+                linked_counterparty_refs = tuple(
+                    item.counterparty_ref
+                    for item in all_entries
+                    if item.status == "linked" and item.counterparty_ref
+                )
+                scope_eligibility = fetch_customer_settlement_scope_eligibility(
+                    onec_engine,
+                    counterparty_refs=linked_counterparty_refs,
+                    query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
+                    max_counterparties=max_scope_users,
+                )
             if not try_customer_settlement_context_lock(session):
                 return {"status": "skipped_lock", "reason": "context_lock"}
-            pilot_user_ids = active_pilot_site_user_ids(session)
+            if access_mode == "all_linked":
+                eligible_refs = set(scope_eligibility.eligible_counterparty_refs)
+                entries = tuple(
+                    item
+                    for item in all_entries
+                    if item.status == "linked" and item.counterparty_ref in eligible_refs
+                )
+                pilot_user_ids = tuple(item.site_user_id for item in entries)
+            else:
+                pilot_user_ids = active_pilot_site_user_ids(session)
+                entries = tuple(
+                    entries_by_user.get(user_id)
+                    or SettlementMappingInput(
+                        site_user_id=user_id,
+                        cluster_id=None,
+                        counterparty_ref=None,
+                        status="not_linked",
+                    )
+                    for user_id in pilot_user_ids
+                )
             if not pilot_user_ids:
                 return {"status": "blocked", "reason": "pilot_users_not_configured"}
-            if len(pilot_user_ids) > MAX_PILOT_USERS:
+            if len(pilot_user_ids) > max_scope_users:
                 return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
-            entries = tuple(
-                entries_by_user.get(user_id)
-                or SettlementMappingInput(
-                    site_user_id=user_id,
-                    cluster_id=None,
-                    counterparty_ref=None,
-                    status="not_linked",
-                )
-                for user_id in pilot_user_ids
-            )
             invalid_source_rows = sum(
                 row.has_invalid_site_user_id or row.has_invalid_counterparty_ref for row in rows
             )
@@ -202,9 +231,17 @@ def run_customer_settlement_mapping_sync(
                 source_checked_at=utc_now(),
                 organization_ref=str(settings.customer_settlements_organization_ref),
                 organization_guid=str(settings.customer_settlements_organization_guid),
+                max_scope_users=max_scope_users,
             )
+            scope_changes = None
+            if access_mode == "all_linked":
+                scope_changes = replace_pilot_access_scope(
+                    session,
+                    site_user_ids=pilot_user_ids,
+                    max_scope_users=max_scope_users,
+                )
             session.commit()
-            return {
+            result = {
                 "status": "activated" if activated else "unchanged",
                 "revision_id": revision.id,
                 "source_rows": len(rows),
@@ -213,6 +250,16 @@ def run_customer_settlement_mapping_sync(
                 "ambiguous_entries": revision.ambiguous_count,
                 "invalid_source_rows": invalid_source_rows,
             }
+            if scope_changes is not None:
+                result["access_scope_changes"] = scope_changes
+                result["scope_eligibility"] = {
+                    "total_counterparties": scope_eligibility.total_counterparties,
+                    "eligible_counterparties": len(scope_eligibility.eligible_counterparty_refs),
+                    "blank_name_counterparties": (scope_eligibility.blank_name_counterparties),
+                    "non_rub_counterparties": scope_eligibility.non_rub_counterparties,
+                    "duration_seconds": round(scope_eligibility.duration_seconds, 3),
+                }
+            return result
     except CustomerSettlementRuntimeGuardError:
         _rollback_quietly(session)
         return {"status": "blocked", "reason": "runtime_database_guard_failed"}
@@ -256,6 +303,7 @@ def run_customer_settlement_financial_sync(
 
     session = get_application_session_factory()()
     onec_engine = None
+    max_scope_users = settings.customer_settlements_max_scope_users
     try:
         assert_expected_application_database(
             session,
@@ -268,7 +316,7 @@ def run_customer_settlement_financial_sync(
             if not counterparty_refs:
                 return {"status": "blocked", "reason": "pilot_counterparties_not_configured"}
             pilot_user_ids = active_pilot_site_user_ids(session)
-            if len(pilot_user_ids) > MAX_PILOT_USERS:
+            if len(pilot_user_ids) > max_scope_users:
                 return {"status": "blocked", "reason": "pilot_user_limit_exceeded"}
             mapping_revision = session.scalar(
                 select(CustomerSettlementMappingRevision).where(
@@ -290,6 +338,7 @@ def run_customer_settlement_financial_sync(
                         settings.customer_settlements_movement_organization_field
                     ),
                     counterparty_refs=counterparty_refs,
+                    max_scope_users=max_scope_users,
                 )
             except CustomerSettlementReconciliationError:
                 return {"status": "blocked", "reason": "financial_reconciliation_not_current"}
@@ -321,6 +370,7 @@ def run_customer_settlement_financial_sync(
                 ),
                 counterparty_refs=counterparty_refs,
                 query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
+                max_counterparties=max_scope_users,
             )
             if not try_customer_settlement_context_lock(session):
                 return {"status": "skipped_lock", "reason": "context_lock"}
@@ -357,6 +407,7 @@ def run_customer_settlement_financial_sync(
                 source_mode=settings.customer_settlements_source_mode,
                 expected_counterparty_refs=counterparty_refs,
                 balances=source.balances,
+                max_scope_users=max_scope_users,
             )
             session.commit()
             return {

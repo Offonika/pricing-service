@@ -33,6 +33,7 @@ from app.services.customer_settlements import (
     onec_ref_to_guid,
     try_customer_settlement_context_read_lock,
     utc_now,
+    validate_customer_settlement_scope_limit,
 )
 from app.services.importers.onec_mutual_settlements import (
     OneCMutualSettlementCurrentBalanceRow,
@@ -93,7 +94,12 @@ def customer_settlement_reconciliation_context_hash(
     opening_organization_field: str,
     movement_organization_field: str,
     counterparty_refs: Sequence[str],
+    max_scope_users: int = 10,
 ) -> str:
+    try:
+        max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    except ValueError as exc:
+        raise CustomerSettlementReconciliationError("pilot_scope_is_invalid") from exc
     normalized_mapping_hash = str(mapping_source_hash or "").strip().lower()
     if not _SHA256_RE.fullmatch(normalized_mapping_hash):
         raise CustomerSettlementReconciliationError("mapping_source_hash_is_invalid")
@@ -108,7 +114,7 @@ def customer_settlement_reconciliation_context_hash(
         ) from exc
     if onec_guid_to_ref(normalized_organization_guid) != normalized_organization_ref:
         raise CustomerSettlementReconciliationError("reconciliation_context_identity_is_invalid")
-    if not 0 < len(normalized_refs) <= 10:
+    if not 0 < len(normalized_refs) <= max_scope:
         raise CustomerSettlementReconciliationError("pilot_scope_is_invalid")
     if len(set(normalized_refs)) != len(normalized_refs):
         raise CustomerSettlementReconciliationError("pilot_scope_has_duplicates")
@@ -235,7 +241,12 @@ def active_customer_settlement_reconciliation_is_current(
     source_mode: str,
     opening_organization_field: str,
     movement_organization_field: str,
+    max_scope_users: int = 10,
 ) -> bool:
+    try:
+        max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    except ValueError:
+        return False
     if not try_customer_settlement_context_read_lock(session):
         return False
     mapping = session.scalar(
@@ -244,7 +255,7 @@ def active_customer_settlement_reconciliation_is_current(
         )
     )
     counterparty_refs = active_pilot_counterparty_refs(session)
-    if mapping is None or not 0 < len(counterparty_refs) <= 10:
+    if mapping is None or not 0 < len(counterparty_refs) <= max_scope:
         return False
     try:
         context_hash = customer_settlement_reconciliation_context_hash(
@@ -255,6 +266,7 @@ def active_customer_settlement_reconciliation_is_current(
             opening_organization_field=opening_organization_field,
             movement_organization_field=movement_organization_field,
             counterparty_refs=counterparty_refs,
+            max_scope_users=max_scope,
         )
     except CustomerSettlementReconciliationError:
         return False
@@ -274,7 +286,15 @@ def reconcile_customer_settlement_rows(
     source: CustomerSettlementSourceResult,
     tolerance: Decimal = RECONCILIATION_TOLERANCE,
     report_allows_implicit_zero_rows: bool = False,
+    max_scope_users: int = 10,
+    aggregate_duplicate_names: bool = False,
 ) -> CustomerSettlementReconciliationResult:
+    try:
+        max_scope = validate_customer_settlement_scope_limit(max_scope_users)
+    except ValueError as exc:
+        raise CustomerSettlementReconciliationError(
+            "reconciliation_pilot_count_is_invalid"
+        ) from exc
     try:
         normalized_tolerance = Decimal(str(tolerance))
     except (ArithmeticError, TypeError, ValueError) as exc:
@@ -294,7 +314,7 @@ def reconcile_customer_settlement_rows(
     expected_as_of = end_of_day_boundary_utc(report_date)
     if source.as_of != expected_as_of:
         raise CustomerSettlementReconciliationError("source_as_of_does_not_match_report_day")
-    if not 0 < len(controls) <= 10:
+    if not 0 < len(controls) <= max_scope:
         raise CustomerSettlementReconciliationError("reconciliation_pilot_count_is_invalid")
 
     control_refs: set[str] = set()
@@ -321,8 +341,13 @@ def reconcile_customer_settlement_rows(
         control_guids.add(counterparty_guid)
 
     control_names = [_canonical_name(item.counterparty_name) for item in controls]
-    if any(not name for name in control_names) or len(set(control_names)) != len(control_names):
+    if any(not name for name in control_names) or (
+        not aggregate_duplicate_names and len(set(control_names)) != len(control_names)
+    ):
         raise CustomerSettlementReconciliationError("duplicate_pilot_name_in_controls")
+    controls_by_name: dict[str, list[ManualCustomerSettlementControl]] = {}
+    for control, name in zip(controls, control_names, strict=True):
+        controls_by_name.setdefault(name, []).append(control)
 
     report_by_name: dict[str, Decimal] = {}
     duplicate_names: set[str] = set()
@@ -330,7 +355,11 @@ def reconcile_customer_settlement_rows(
         name = _canonical_name(item.counterparty_name)
         if name in report_by_name:
             duplicate_names.add(name)
-        report_by_name[name] = normalize_money(item.current_balance_rub)
+        balance = normalize_money(item.current_balance_rub)
+        if aggregate_duplicate_names:
+            report_by_name[name] = normalize_money(report_by_name.get(name, Decimal("0")) + balance)
+        else:
+            report_by_name[name] = balance
 
     source_by_ref: dict[str, Decimal] = {}
     for item in source.balances:
@@ -360,19 +389,22 @@ def reconcile_customer_settlement_rows(
         raise CustomerSettlementReconciliationError("source_pilot_count_mismatch")
 
     differences: list[Decimal] = []
-    for control in controls:
-        name = _canonical_name(control.counterparty_name)
-        if name in duplicate_names:
+    for name, grouped_controls in controls_by_name.items():
+        if not aggregate_duplicate_names and name in duplicate_names:
             raise CustomerSettlementReconciliationError("duplicate_pilot_name_in_report")
-        if control.counterparty_ref not in source_by_ref:
-            raise CustomerSettlementReconciliationError("pilot_missing_from_report_or_source")
-        source_balance = normalize_money(source_by_ref[control.counterparty_ref])
+        source_balance = normalize_money(
+            sum(
+                (source_by_ref[control.counterparty_ref] for control in grouped_controls),
+                Decimal("0"),
+            )
+        )
         if name not in report_by_name:
             if report_allows_implicit_zero_rows is True and source_balance == Decimal("0.00"):
-                differences.append(Decimal("0.00"))
+                differences.extend(Decimal("0.00") for _ in grouped_controls)
                 continue
             raise CustomerSettlementReconciliationError("pilot_missing_from_report_or_source")
-        differences.append(abs(source_balance - report_by_name[name]))
+        difference = abs(source_balance - report_by_name[name])
+        differences.extend(difference for _ in grouped_controls)
 
     matched_count = sum(value <= normalized_tolerance for value in differences)
     mismatch_count = len(differences) - matched_count

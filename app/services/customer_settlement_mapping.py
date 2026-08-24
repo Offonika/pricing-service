@@ -132,10 +132,12 @@ def resolve_crm_counterparty_hashes(
 ) -> tuple[CrmClusterSourceRow, ...]:
     source_rows = tuple(rows)
     required_hashes = {value for row in source_rows for value in row.counterparty_hashes}
-    if not required_hashes:
+    direct_refs = {value for row in source_rows for value in row.counterparty_refs}
+    if not required_hashes and not direct_refs:
         return source_rows
 
     refs_by_hash: dict[str, set[str]] = defaultdict(set)
+    active_refs: set[str] = set()
     with onec_engine.connect() as connection:
         result = connection.execute(text("""
                 SELECT CONVERT(varchar(34), _IDRRef, 1) AS counterparty_ref
@@ -146,6 +148,7 @@ def resolve_crm_counterparty_hashes(
                 """)).mappings()
         for item in result:
             counterparty_ref = normalize_counterparty_ref(str(item["counterparty_ref"]))
+            active_refs.add(counterparty_ref)
             value_hash = onec_counterparty_identity_hash(counterparty_ref)
             if value_hash in required_hashes:
                 refs_by_hash[value_hash].add(counterparty_ref)
@@ -153,7 +156,9 @@ def resolve_crm_counterparty_hashes(
     resolved_rows: list[CrmClusterSourceRow] = []
     for row in source_rows:
         counterparty_refs = set(row.counterparty_refs)
-        has_invalid_counterparty_ref = row.has_invalid_counterparty_ref
+        has_invalid_counterparty_ref = row.has_invalid_counterparty_ref or any(
+            value not in active_refs for value in counterparty_refs
+        )
         for value_hash in row.counterparty_hashes:
             matches = refs_by_hash.get(value_hash, set())
             if len(matches) == 1:

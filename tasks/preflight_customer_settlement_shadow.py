@@ -219,6 +219,7 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
                     settings.customer_settlements_movement_organization_field or ""
                 ),
                 counterparty_refs=pilot_counterparty_refs,
+                max_scope_users=settings.customer_settlements_max_scope_users,
             )
         except CustomerSettlementReconciliationError:
             expected_reconciliation_context_hash = None
@@ -445,6 +446,7 @@ def _collect_database_facts(session: Session, settings: Settings) -> dict[str, A
         expected_source_system="ut103",
         expected_organization_ref=settings.customer_settlements_organization_ref,
         expected_organization_guid=settings.customer_settlements_organization_guid,
+        max_scope_users=settings.customer_settlements_max_scope_users,
     )
     return facts
 

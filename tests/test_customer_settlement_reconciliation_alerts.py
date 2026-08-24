@@ -253,6 +253,48 @@ def test_reconciliation_rejects_duplicate_control_names_and_source_rows() -> Non
         )
 
 
+def test_all_linked_reconciliation_aggregates_duplicate_names() -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    result = reconcile_customer_settlement_rows(
+        report_hash="b" * 64,
+        context_hash="f" * 64,
+        report_rows=[
+            OneCMutualSettlementCurrentBalanceRow(
+                REPORT_DATE,
+                "Одинаковое имя",
+                Decimal("7.00"),
+                1,
+            ),
+            OneCMutualSettlementCurrentBalanceRow(
+                REPORT_DATE,
+                "Одинаковое имя",
+                Decimal("3.00"),
+                2,
+            ),
+        ],
+        controls=(
+            _control(CP_1, "Одинаковое имя"),
+            _control(CP_2, "Одинаковое имя"),
+        ),
+        source=CustomerSettlementSourceResult(
+            source_db_time=as_of + timedelta(minutes=5),
+            as_of=as_of,
+            balances=(
+                SettlementBalanceInput(CP_1, Decimal("4.00")),
+                SettlementBalanceInput(CP_2, Decimal("6.00")),
+            ),
+            isolation_level="SNAPSHOT",
+            duration_seconds=0.1,
+        ),
+        max_scope_users=20,
+        aggregate_duplicate_names=True,
+    )
+
+    assert result.status == "matched"
+    assert result.expected_count == result.matched_count == 2
+    assert result.max_abs_difference == Decimal("0.00")
+
+
 def test_reconciliation_requires_exact_unique_control_and_source_scope() -> None:
     as_of = end_of_day_boundary_utc(REPORT_DATE)
     rows = [

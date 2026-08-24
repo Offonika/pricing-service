@@ -24,6 +24,7 @@ related_code:
   - tasks/mock_customer_settlement_client.py
   - tasks/preflight_customer_settlement_shadow.py
   - tasks/reconcile_customer_settlements.py
+  - tasks/reconcile_customer_settlements_receivables.py
   - tasks/sync_customer_settlement_mapping.py
   - tasks/sync_customer_settlements.py
   - infra/cron/customer_settlements.cron
@@ -68,7 +69,9 @@ updated_at: "2026-08-24"
 - одна итоговая сумма по контрагенту без договоров;
 - постоянный `customer_account_id` и GUID mapping
   `site_user_id -> customer_account_id -> source_system + CounterpartyGuid`;
-- полный read-only CRM mapping, активируемый только для pilot whitelist;
+- полный read-only CRM mapping; безопасный default активирует только pilot whitelist;
+- отдельный dev-режим `all_linked`, который атомарно материализует все однозначные
+  CRM-связи в пределах явного hard limit;
 - исторический ручной importer как rollback-инструмент, но не источник нового пилота;
 - отдельный pilot whitelist;
 - HMAC assertion между сервером сайта и `pricing-service`;
@@ -132,6 +135,11 @@ updated_at: "2026-08-24"
   бухгалтерская приёмка по новым ведомостям.
 - [x] Server-side mock-адаптер разрешён и подготовлен только для
   `dev.master-mobile.ru`; production не изменяется.
+- [x] Scope больше 10 требует одновременно `all_linked` и отдельный
+  `CUSTOMER_SETTLEMENTS_MAX_SCOPE_USERS`; default остаётся `pilot_whitelist/10`.
+- [x] Полный all-linked scope сверяется по точному `counterparty_ref` с
+  `receivable_balance_snapshot`; неполный XLSX из папки покупателей не может дать
+  ложный matched для более широкого состава.
 
 # Source of Truth
 
@@ -147,9 +155,10 @@ updated_at: "2026-08-24"
 # Data Flow
 
 ```text
-full CRM read -> pilot whitelist filter -> durable account/GUID mapping -> atomic activate
+full CRM read -> pilot whitelist filter OR explicit all_linked scope
+              -> durable account/GUID mapping + access scope -> atomic activate
                                                                      \
-separate pilot whitelist -> УТ 10.3 (:17) -> financial revision -> atomic activate
+active access scope -> УТ 10.3 (:17) -> financial revision -> atomic activate
                                                        \
 Bitrix $USER session -> eligibility/summary assertion -> server-rendered block
 ```
@@ -650,6 +659,10 @@ Read-only проверка CRM подтвердила все пять service fi
   ложную ошибку процесса и не создаёт дубль.
 - Частичная revision никогда не активируется.
 - Feature flag по умолчанию выключен; shadow flag не открывает клиентский API.
+- `CUSTOMER_SETTLEMENTS_ACCESS_MODE=pilot_whitelist` и scope limit `10` являются
+  безопасными defaults. `all_linked` совместим только с `crm_readonly`; превышение
+  явного лимита, пустой linked scope или ошибка readback откатывают mapping и
+  access scope одной транзакцией.
 - Секреты существуют только в локальном env/secret-контуре.
 
 # Errors / Edge Cases
@@ -695,8 +708,10 @@ Read-only проверка CRM подтвердила все пять service fi
 - Внешняя доставка жёстко ограничена HTTPS и задачей Bitrix24 №2883.
 - CRM response читается с жёстким пределом 16 MiB; oversized/не-UTF-8 ответ не
   активирует mapping revision.
-- Бухгалтерская сверка принимает только непустой scope до 10 контрагентов,
-  фиксированный допуск `0,01 RUB` и действующие канонические ref/GUID в RUB.
+- Бухгалтерская сверка принимает только непустой scope в пределах настроенного
+  hard limit, фиксированный допуск `0,01 RUB` и действующие канонические ref/GUID
+  в RUB. Режим больше 10 требует точной read-only сверки по `counterparty_ref` с
+  полной витриной дебиторки; XLSX по имени остаётся пилотным доказательством.
 - Pilot whitelist dry-run получает общий context lock до чтения текущего состояния,
   выполняет реальную mutation/readback в транзакции и обязан подтвердить rollback.
 
@@ -731,6 +746,15 @@ mapping, организацией, SQL-настройками и точным н
 scope. Фильтрованный или неизвестный формат и любая отсутствующая ненулевая строка
 остаются fail-closed.
 
+Для `all_linked` используется
+`tasks.reconcile_customer_settlements_receivables`: completed-day SQL-срез
+сравнивается по точному `counterparty_ref` с read-only
+`receivable_balance_snapshot`. Evidence hash включает дату, полный scope витрины и
+её total; результат сохраняется с тем же context/source/input hash-контрактом.
+Смена mapping или набора контрагентов немедленно делает прежнюю сверку неактуальной.
+Контрагенты без имени либо с активным нерублёвым договором исключаются до mapping
+activation и не получают доступ в первой очереди.
+
 Никогда не логируются сумма, ФИО, email, телефон, полный ID пользователя,
 cluster/counterparty ref, assertion, подпись, сырой `jti` или секрет.
 
@@ -751,6 +775,7 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - [x] Worker, advisory locks, retry и cron-артефакты.
 - [x] Health probe и безопасные structured events.
 - [x] Reconciliation CLI, operational migration, transition alerts и PostgreSQL outbox.
+- [x] Точная receivables-reconciliation для большого `all_linked` scope.
 - [x] Synthetic regression tests и contract vector.
 - [x] Dedicated assertion scope `customer:settlements:read`.
 - [x] Живая read-only сверка SQL: 10/10 пилотов, максимальная разница `0,00 RUB`.
@@ -855,6 +880,14 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — full-scope dry-run показал ограниченность XLSX из папки покупателей
+  (`27 481/28 730`), после чего точная read-only витрина дебиторки подтвердила
+  `28 730/28 730` без расхождений; для all-linked добавлен воспроизводимый
+  receivables-reconciliation gate по `counterparty_ref`.
+- 2026-08-24 — для изолированного `dev.master-mobile.ru` добавлен opt-in режим
+  `all_linked`: полный однозначный CRM scope и access list меняются атомарно,
+  удалённые связи отзываются; hard limit настраивается, default production остаётся
+  `pilot_whitelist/10`, а production этим решением не включается.
 - 2026-08-24 — reconciliation новой ведомости завершилась `matched 10/10`; staging
   source gate включён, financial snapshot активирован `10/10` с `1 zero`, ready
   прошёл `36/36`. Из clean commit `210ebf0` собран immutable release и начат новый

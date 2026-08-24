@@ -19,15 +19,41 @@ from app.services.customer_settlements import (
     normalize_money,
     onec_guid_to_ref,
     onec_ref_to_guid,
+    validate_customer_settlement_scope_limit,
 )
 
 SOURCE_MODE = "onec_canonical_mutual_statement_7002"
 _ORGANIZATION_FIELD_RE = re.compile(r"^_Fld[0-9]+RRef$")
 _COUNTERPARTY_FIELD_RE = re.compile(r"^_Fld[0-9]+$")
+_TEMP_SCOPE_INSERT_BATCH_SIZE = 500
+_TEMP_SCOPE_TABLES = {
+    "#CustomerSettlementPilot",
+    "#CustomerSettlementManualPilot",
+}
 
 
 class CustomerSettlementSourceError(RuntimeError):
     pass
+
+
+def _insert_counterparty_scope(connection, *, table_name: str, refs: Sequence[str]) -> None:
+    if table_name not in _TEMP_SCOPE_TABLES:
+        raise CustomerSettlementSourceError("customer_settlement_temp_table_is_invalid")
+    for start in range(0, len(refs), _TEMP_SCOPE_INSERT_BATCH_SIZE):
+        batch = refs[start : start + _TEMP_SCOPE_INSERT_BATCH_SIZE]
+        parameters = {f"counterparty_ref_{index}": value for index, value in enumerate(batch)}
+        values = ",\n".join(
+            "("
+            "CONVERT(binary(16), CONVERT(varchar(34), "
+            f":counterparty_ref_{index}), 1), "
+            f":counterparty_ref_{index}"
+            ")"
+            for index in range(len(batch))
+        )
+        connection.execute(
+            text(f"INSERT INTO {table_name} (counterparty_ref, ref_text) " f"VALUES {values}"),
+            parameters,
+        )
 
 
 @dataclass(frozen=True)
@@ -47,6 +73,15 @@ class ManualCustomerSettlementControl:
     counterparty_name: str
     counterparty_inn: str
     active_contract_currency_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CustomerSettlementScopeEligibility:
+    eligible_counterparty_refs: tuple[str, ...]
+    total_counterparties: int
+    blank_name_counterparties: int
+    non_rub_counterparties: int
+    duration_seconds: float
 
 
 def validate_organization_field(value: str | None) -> str:
@@ -92,6 +127,7 @@ def fetch_customer_settlement_balances(
     query_timeout_seconds: int,
     onec_timezone: str = "Europe/Moscow",
     as_of: datetime | None = None,
+    max_counterparties: int = 100,
 ) -> CustomerSettlementSourceResult:
     if onec_engine.dialect.name != "mssql":
         raise CustomerSettlementSourceError("customer settlement source requires MSSQL")
@@ -108,7 +144,8 @@ def fetch_customer_settlement_balances(
     )
     if not normalized_refs:
         raise CustomerSettlementSourceError("pilot_counterparty_list_is_empty")
-    if len(normalized_refs) > 100:
+    max_scope = validate_customer_settlement_scope_limit(max_counterparties)
+    if len(normalized_refs) > max_scope:
         raise CustomerSettlementSourceError("pilot_counterparty_limit_exceeded")
     query_timeout_seconds = _validate_query_timeout(query_timeout_seconds)
 
@@ -225,24 +262,19 @@ def fetch_customer_settlement_balances(
             opening_cutoff = datetime(query_as_of.year, query_as_of.month, 1)
             connection.exec_driver_sql(f"SET LOCK_TIMEOUT {query_timeout_seconds * 1000}")
             connection.exec_driver_sql("""
+                IF OBJECT_ID('tempdb..#CustomerSettlementPilot') IS NOT NULL
+                    DROP TABLE #CustomerSettlementPilot
+                """)
+            connection.exec_driver_sql("""
                 CREATE TABLE #CustomerSettlementPilot (
                     counterparty_ref binary(16) NOT NULL PRIMARY KEY,
                     ref_text varchar(34) NOT NULL UNIQUE
                 )
                 """)
-            connection.execute(
-                text("""
-                    INSERT INTO #CustomerSettlementPilot (counterparty_ref, ref_text)
-                    VALUES (
-                        CONVERT(
-                            binary(16),
-                            CONVERT(varchar(34), :counterparty_ref),
-                            1
-                        ),
-                        :counterparty_ref
-                    )
-                    """),
-                [{"counterparty_ref": value} for value in normalized_refs],
+            _insert_counterparty_scope(
+                connection,
+                table_name="#CustomerSettlementPilot",
+                refs=normalized_refs,
             )
             raw_rows = tuple(
                 connection.execute(
@@ -288,6 +320,7 @@ def fetch_manual_customer_settlement_controls(
     counterparty_guids: Sequence[str],
     counterparty_inn_field: str,
     query_timeout_seconds: int,
+    max_counterparties: int = 10,
 ) -> tuple[ManualCustomerSettlementControl, ...]:
     """Read and validate identity controls for a small manually approved pilot batch."""
 
@@ -301,7 +334,8 @@ def fetch_manual_customer_settlement_controls(
     normalized_guids = tuple(sorted({normalize_guid(value) for value in counterparty_guids}))
     if not normalized_guids:
         raise CustomerSettlementSourceError("manual_mapping_batch_is_empty")
-    if len(normalized_guids) > 10:
+    max_scope = validate_customer_settlement_scope_limit(max_counterparties)
+    if len(normalized_guids) > max_scope:
         raise CustomerSettlementSourceError("manual_mapping_batch_limit_exceeded")
     query_timeout_seconds = _validate_query_timeout(query_timeout_seconds)
     refs_by_guid = {guid: onec_guid_to_ref(guid) for guid in normalized_guids}
@@ -356,24 +390,19 @@ def fetch_manual_customer_settlement_controls(
         with connection.begin():
             connection.exec_driver_sql(f"SET LOCK_TIMEOUT {query_timeout_seconds * 1000}")
             connection.exec_driver_sql("""
+                IF OBJECT_ID('tempdb..#CustomerSettlementManualPilot') IS NOT NULL
+                    DROP TABLE #CustomerSettlementManualPilot
+                """)
+            connection.exec_driver_sql("""
                 CREATE TABLE #CustomerSettlementManualPilot (
                     counterparty_ref binary(16) NOT NULL PRIMARY KEY,
                     ref_text varchar(34) NOT NULL UNIQUE
                 )
                 """)
-            connection.execute(
-                text("""
-                    INSERT INTO #CustomerSettlementManualPilot (counterparty_ref, ref_text)
-                    VALUES (
-                        CONVERT(
-                            binary(16),
-                            CONVERT(varchar(34), :counterparty_ref),
-                            1
-                        ),
-                        :counterparty_ref
-                    )
-                    """),
-                [{"counterparty_ref": refs_by_guid[guid]} for guid in normalized_guids],
+            _insert_counterparty_scope(
+                connection,
+                table_name="#CustomerSettlementManualPilot",
+                refs=tuple(refs_by_guid[guid] for guid in normalized_guids),
             )
             organization_rows = tuple(
                 connection.execute(
@@ -424,3 +453,103 @@ def fetch_manual_customer_settlement_controls(
     if {item.counterparty_guid for item in controls} != set(normalized_guids):
         raise CustomerSettlementSourceError("manual_mapping_guid_readback_mismatch")
     return tuple(sorted(controls, key=lambda item: item.counterparty_guid))
+
+
+def fetch_customer_settlement_scope_eligibility(
+    onec_engine: Engine,
+    *,
+    counterparty_refs: Sequence[str],
+    query_timeout_seconds: int,
+    max_counterparties: int = 10,
+) -> CustomerSettlementScopeEligibility:
+    """Return the all-linked refs that are safe for a RUB/name-based reconciliation."""
+
+    if onec_engine.dialect.name != "mssql":
+        raise CustomerSettlementSourceError("customer settlement source requires MSSQL")
+    normalized_refs = tuple(
+        sorted({normalize_counterparty_ref(value) for value in counterparty_refs})
+    )
+    if not normalized_refs:
+        raise CustomerSettlementSourceError("pilot_counterparty_list_is_empty")
+    max_scope = validate_customer_settlement_scope_limit(max_counterparties)
+    if len(normalized_refs) > max_scope:
+        raise CustomerSettlementSourceError("pilot_counterparty_limit_exceeded")
+    query_timeout_seconds = _validate_query_timeout(query_timeout_seconds)
+
+    started = time.monotonic()
+    with onec_engine.connect() as connection:
+        with connection.begin():
+            connection.exec_driver_sql(f"SET LOCK_TIMEOUT {query_timeout_seconds * 1000}")
+            connection.exec_driver_sql("""
+                IF OBJECT_ID('tempdb..#CustomerSettlementManualPilot') IS NOT NULL
+                    DROP TABLE #CustomerSettlementManualPilot
+                """)
+            connection.exec_driver_sql("""
+                CREATE TABLE #CustomerSettlementManualPilot (
+                    counterparty_ref binary(16) NOT NULL PRIMARY KEY,
+                    ref_text varchar(34) NOT NULL UNIQUE
+                )
+                """)
+            _insert_counterparty_scope(
+                connection,
+                table_name="#CustomerSettlementManualPilot",
+                refs=normalized_refs,
+            )
+            rows = tuple(connection.execute(text("""
+                    SELECT
+                        pilot.ref_text AS counterparty_ref,
+                        CASE
+                            WHEN counterparty._IDRRef IS NOT NULL
+                             AND counterparty._Marked = 0x00
+                             AND counterparty._Folder = 0x01
+                            THEN 1 ELSE 0
+                        END AS active_element,
+                        CASE
+                            WHEN NULLIF(LTRIM(RTRIM(counterparty._Description)), '') IS NULL
+                            THEN 1 ELSE 0
+                        END AS blank_name,
+                        MAX(
+                            CASE
+                                WHEN currency._Code IS NOT NULL
+                                 AND RTRIM(currency._Code) <> '643'
+                                THEN 1 ELSE 0
+                            END
+                        ) AS has_non_rub_contract
+                    FROM #CustomerSettlementManualPilot AS pilot
+                    LEFT JOIN dbo._Reference54 AS counterparty
+                      ON counterparty._IDRRef = pilot.counterparty_ref
+                    LEFT JOIN dbo._Reference37 AS contract
+                      ON contract._OwnerIDRRef = pilot.counterparty_ref
+                     AND contract._Marked = 0x00
+                    LEFT JOIN dbo._Reference20 AS currency
+                      ON currency._IDRRef = contract._Fld498RRef
+                    GROUP BY
+                        pilot.ref_text,
+                        counterparty._IDRRef,
+                        counterparty._Marked,
+                        counterparty._Folder,
+                        counterparty._Description
+                    ORDER BY pilot.ref_text
+                    """)).mappings())
+
+    duration_seconds = time.monotonic() - started
+    if duration_seconds > query_timeout_seconds:
+        raise CustomerSettlementSourceError("customer_settlement_query_timeout")
+    if len(rows) != len(normalized_refs):
+        raise CustomerSettlementSourceError("incomplete_customer_settlement_scope_eligibility")
+    blank_name_count = sum(bool(row["blank_name"]) for row in rows)
+    non_rub_count = sum(bool(row["has_non_rub_contract"]) for row in rows)
+    eligible_refs = tuple(
+        normalize_counterparty_ref(str(row["counterparty_ref"]))
+        for row in rows
+        if bool(row["active_element"])
+        and not bool(row["blank_name"])
+        and not bool(row["has_non_rub_contract"])
+    )
+    return CustomerSettlementScopeEligibility(
+        eligible_counterparty_refs=eligible_refs,
+        total_counterparties=len(rows),
+        blank_name_counterparties=blank_name_count,
+        non_rub_counterparties=non_rub_count,
+        duration_seconds=duration_seconds,
+    )

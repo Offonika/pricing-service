@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 from app.services.customer_settlement_receivable_drift import (
     CustomerSettlementReceivableDriftError,
+    build_customer_settlement_receivable_reconciliation,
     compare_customer_settlement_with_receivables,
 )
+from app.services.customer_settlement_source import CustomerSettlementSourceResult
+from app.services.customer_settlements import SettlementBalanceInput
 from tasks import check_customer_settlement_receivable_drift as task
 
 
@@ -98,6 +101,36 @@ def test_difference_at_tolerance_matches() -> None:
 
     assert result.status == "ok"
     assert result.matched_count == 3
+    assert result.max_abs_difference == Decimal("0.01")
+
+
+def test_receivable_checkpoint_builds_current_reconciliation_evidence() -> None:
+    completed_date = date(2026, 8, 24)
+    source_as_of = datetime(2026, 8, 24, 21, tzinfo=timezone.utc)
+    result, drift = build_customer_settlement_receivable_reconciliation(
+        context_hash="f" * 64,
+        source=CustomerSettlementSourceResult(
+            source_db_time=source_as_of + timedelta(minutes=1),
+            as_of=source_as_of,
+            balances=(
+                SettlementBalanceInput(_ref(1), Decimal("100.00")),
+                SettlementBalanceInput(_ref(2), Decimal("0.00")),
+            ),
+            isolation_level="READ COMMITTED",
+            duration_seconds=0.1,
+        ),
+        completed_date=completed_date,
+        expected_count=2,
+        receivable_rows=[(_ref(1), Decimal("100.00"))],
+        receivable_total_rows=10,
+    )
+
+    assert drift.status == "ok"
+    assert result.status == "matched"
+    assert result.expected_count == result.matched_count == 2
+    assert result.mismatch_count == 0
+    assert result.max_abs_difference == Decimal("0.00")
+    assert len(result.report_hash) == len(result.source_hash) == len(result.input_hash) == 64
 
 
 def test_duplicate_source_counterparty_is_rejected() -> None:

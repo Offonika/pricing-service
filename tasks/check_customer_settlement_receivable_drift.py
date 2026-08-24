@@ -240,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
             onec_timezone="Europe/Moscow",
             as_of=source_as_of,
+            max_counterparties=settings.customer_settlements_max_scope_users,
         )
 
         receivable_database_url = _read_database_url_from_env_file(str(args.receivable_env_file))

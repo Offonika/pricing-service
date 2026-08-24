@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -306,6 +306,8 @@ class Settings(BaseSettings):
     customer_settlements_source_mode: str = "onec_canonical_mutual_statement_7002"
     customer_settlements_source_validated: bool = False
     customer_settlements_mapping_mode: str = "manual_confirmed"
+    customer_settlements_access_mode: Literal["pilot_whitelist", "all_linked"] = "pilot_whitelist"
+    customer_settlements_max_scope_users: int = Field(default=10, ge=1, le=100_000)
     customer_settlements_query_timeout_seconds: int = 30
     customer_settlements_stale_after_seconds: int = 2 * 60 * 60
     customer_settlements_hide_after_seconds: int = 6 * 60 * 60

@@ -54,7 +54,6 @@ namespace MasterMobile\SiteServiceRequests {
         private const OPTION_SUPPORT_USER_ID = 'mm_site_service_requests_support_user_id';
         private const OPTION_BATCH_SIZE = 'mm_site_service_requests_batch_size';
         private const DEFAULT_BATCH_SIZE = 20;
-        private const MAX_FILE_BYTES = 10485760;
         private const RETRY_DELAYS = array(60, 120, 300, 900, 1800);
         private const REQUEST_TYPES = array(
             'warranty',
@@ -85,11 +84,17 @@ namespace MasterMobile\SiteServiceRequests {
         public static function onAfterTicketAdd(...$arguments)
         {
             self::captureEvent('OnAfterTicketAdd', $arguments);
+            return isset($arguments[0]) && is_array($arguments[0])
+                ? $arguments[0]
+                : array();
         }
 
         public static function onAfterTicketUpdate(...$arguments)
         {
             self::captureEvent('OnAfterTicketUpdate', $arguments);
+            return isset($arguments[0]) && is_array($arguments[0])
+                ? $arguments[0]
+                : array();
         }
 
         public static function extractEventReference($eventName, array $arguments)
@@ -268,7 +273,9 @@ namespace MasterMobile\SiteServiceRequests {
             if (!class_exists('CUserTypeEntity') || !class_exists('CUserFieldEnum')) {
                 throw new BridgeFailure('support_user_field_api_unavailable');
             }
+            $entity = new \CUserTypeEntity();
             foreach (self::supportUserFieldDefinitions() as $definition) {
+                $enum = isset($definition['ENUM']) ? $definition['ENUM'] : array();
                 $existing = \CUserTypeEntity::GetList(
                     array(),
                     array(
@@ -280,34 +287,81 @@ namespace MasterMobile\SiteServiceRequests {
                     if ((string) $existing['USER_TYPE_ID'] !== $definition['USER_TYPE_ID']) {
                         throw new BridgeFailure('support_user_field_type_mismatch');
                     }
+                    if ((string) $existing['MANDATORY'] !== $definition['MANDATORY']) {
+                        if (
+                            !$entity->Update(
+                                (int) $existing['ID'],
+                                array('MANDATORY' => $definition['MANDATORY'])
+                            )
+                        ) {
+                            throw new BridgeFailure('support_user_field_update_failed');
+                        }
+                    }
+                    if ($enum) {
+                        self::ensureSupportFieldEnum((int) $existing['ID'], $enum);
+                    }
                     continue;
                 }
-                $enum = isset($definition['ENUM']) ? $definition['ENUM'] : array();
                 unset($definition['ENUM']);
-                $entity = new \CUserTypeEntity();
                 $fieldId = (int) $entity->Add($definition);
                 if ($fieldId <= 0) {
                     throw new BridgeFailure('support_user_field_create_failed');
                 }
                 if ($enum) {
-                    $values = array();
-                    $sort = 100;
-                    foreach ($enum as $xmlId => $title) {
-                        $values['n' . $sort] = array(
-                            'VALUE' => $title,
-                            'XML_ID' => $xmlId,
-                            'DEF' => 'N',
-                            'SORT' => $sort,
-                        );
-                        $sort += 100;
-                    }
-                    $enumApi = new \CUserFieldEnum();
-                    if (!$enumApi->SetEnumValues($fieldId, $values)) {
-                        throw new BridgeFailure('support_user_field_enum_create_failed');
-                    }
+                    self::ensureSupportFieldEnum($fieldId, $enum);
                 }
             }
             self::readbackSupportUserFields();
+        }
+
+        private static function ensureSupportFieldEnum($fieldId, array $expected)
+        {
+            $values = array();
+            $actualXmlIds = array();
+            $maxSort = 0;
+            $rows = \CUserFieldEnum::GetList(
+                array('SORT' => 'ASC'),
+                array('USER_FIELD_ID' => (int) $fieldId)
+            );
+            while ($rows && ($row = $rows->Fetch())) {
+                $rowId = (int) ($row['ID'] ?? 0);
+                if ($rowId <= 0) {
+                    continue;
+                }
+                $sort = max(0, (int) ($row['SORT'] ?? 0));
+                $maxSort = max($maxSort, $sort);
+                $xmlId = (string) ($row['XML_ID'] ?? '');
+                if ($xmlId !== '') {
+                    $actualXmlIds[] = $xmlId;
+                }
+                $values[(string) $rowId] = array(
+                    'VALUE' => (string) ($row['VALUE'] ?? ''),
+                    'XML_ID' => $xmlId,
+                    'DEF' => (string) ($row['DEF'] ?? 'N'),
+                    'SORT' => $sort,
+                );
+            }
+            $changed = false;
+            foreach ($expected as $xmlId => $title) {
+                if (in_array((string) $xmlId, $actualXmlIds, true)) {
+                    continue;
+                }
+                $maxSort += 100;
+                $values['n' . $maxSort] = array(
+                    'VALUE' => (string) $title,
+                    'XML_ID' => (string) $xmlId,
+                    'DEF' => 'N',
+                    'SORT' => $maxSort,
+                );
+                $changed = true;
+            }
+            if (!$changed) {
+                return;
+            }
+            $enumApi = new \CUserFieldEnum();
+            if (!$enumApi->SetEnumValues((int) $fieldId, $values)) {
+                throw new BridgeFailure('support_user_field_enum_create_failed');
+            }
         }
 
         private static function readbackSupportUserFields()
@@ -373,13 +427,16 @@ namespace MasterMobile\SiteServiceRequests {
             $safeEventKey = $DB->ForSql($eventKey, 191);
             $safeEventType = $DB->ForSql((string) $eventType, 32);
             $now = date('Y-m-d H:i:s');
-            $DB->Query(
+            $insertResult = $DB->Query(
                 "INSERT IGNORE INTO `" . self::OUTBOX_TABLE . "` "
                 . "(`event_key`, `ticket_id`, `message_id`, `event_type`, `attempts`, "
                 . "`next_attempt_at`, `created_at`, `updated_at`) VALUES ("
                 . "'{$safeEventKey}', {$ticketId}, {$messageId}, '{$safeEventType}', 0, "
                 . "'{$now}', '{$now}', '{$now}')"
             );
+            if (!$insertResult) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
         }
 
         private static function latestMessageId($ticketId)
@@ -391,7 +448,10 @@ namespace MasterMobile\SiteServiceRequests {
                 "SELECT `ID` FROM `b_ticket_message` WHERE `TICKET_ID` = {$ticketId} "
                 . "ORDER BY `ID` DESC LIMIT 1"
             );
-            $row = $result ? $result->Fetch() : false;
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            $row = $result->Fetch();
             return $row ? (int) $row['ID'] : 0;
         }
 
@@ -408,7 +468,10 @@ namespace MasterMobile\SiteServiceRequests {
                 . "WHERE `sent_at` IS NULL AND `next_attempt_at` <= NOW() "
                 . "ORDER BY `id` ASC LIMIT {$batchSize}"
             );
-            while ($result && ($row = $result->Fetch())) {
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            while ($row = $result->Fetch()) {
                 try {
                     self::deliverOutboxRow($row);
                     self::markOutboxSent((int) $row['id']);
@@ -448,17 +511,150 @@ namespace MasterMobile\SiteServiceRequests {
             if ($response['status'] !== 202) {
                 throw new BridgeFailure('event_http_' . $response['status'], $response['status']);
             }
-            $accepted = self::decodeJson($response['body']);
-            if ((string) ($accepted['eventId'] ?? '') !== (string) $row['event_key']) {
+            $accepted = self::decodeJson(
+                $response['body'],
+                array('missingFileIds')
+            );
+            if (
+                !array_key_exists('eventId', $accepted)
+                || !is_string($accepted['eventId'])
+                || $accepted['eventId'] !== (string) $row['event_key']
+                || !array_key_exists('status', $accepted)
+                || !is_string($accepted['status'])
+                || $accepted['status'] !== 'accepted'
+                || !array_key_exists('duplicate', $accepted)
+                || !is_bool($accepted['duplicate'])
+                || !array_key_exists('missingFileIds', $accepted)
+                || !is_array($accepted['missingFileIds'])
+            ) {
                 throw new BridgeFailure('event_response_mismatch', 202);
             }
-            $missingFileIds = $accepted['missingFileIds'] ?? array();
-            if (!is_array($missingFileIds)) {
-                throw new BridgeFailure('event_response_invalid', 202);
-            }
+            $missingFileIds = $accepted['missingFileIds'];
+            $knownFileIds = self::payloadSourceFileIds(
+                $payload,
+                (int) $row['message_id']
+            );
+            $seenMissingFileIds = array();
             foreach ($missingFileIds as $fileId) {
-                self::uploadEventFile((string) $row['event_key'], (int) $fileId);
+                if (
+                    !is_int($fileId)
+                    || $fileId <= 0
+                    || !isset($knownFileIds[$fileId])
+                    || isset($seenMissingFileIds[$fileId])
+                ) {
+                    throw new BridgeFailure('event_response_invalid', 202);
+                }
+                $seenMissingFileIds[$fileId] = true;
+                if (
+                    self::payloadFileIsUnavailable(
+                        $payload,
+                        (int) $row['message_id'],
+                        (int) $fileId
+                    )
+                ) {
+                    self::reportUnavailableEventFile(
+                        (string) $row['event_key'],
+                        (int) $fileId
+                    );
+                } else {
+                    // If a previously readable file disappears between event
+                    // construction and upload, keep the outbox row retryable.
+                    // The next event rebuild will carry the explicit zero hash.
+                    self::uploadEventFile((string) $row['event_key'], (int) $fileId);
+                }
             }
+        }
+
+        private static function payloadSourceFileIds(array $payload, $messageId)
+        {
+            $fileIds = array();
+            foreach (($payload['history'] ?? array()) as $message) {
+                if (
+                    !is_array($message)
+                    || (int) ($message['messageId'] ?? 0) !== (int) $messageId
+                ) {
+                    continue;
+                }
+                if (!isset($message['files']) || !is_array($message['files'])) {
+                    throw new BridgeFailure('event_payload_invalid');
+                }
+                foreach ($message['files'] as $file) {
+                    $fileId = is_array($file) ? (int) ($file['fileId'] ?? 0) : 0;
+                    if ($fileId <= 0 || isset($fileIds[$fileId])) {
+                        throw new BridgeFailure('event_payload_invalid');
+                    }
+                    $fileIds[$fileId] = true;
+                }
+                return $fileIds;
+            }
+            throw new BridgeFailure('event_payload_invalid');
+        }
+
+        private static function reportUnavailableEventFile($eventKey, $fileId)
+        {
+            if (!preg_match('/^site-support:[1-9][0-9]*:[1-9][0-9]*$/', (string) $eventKey)) {
+                throw new BridgeFailure('event_identity_invalid');
+            }
+            $path = '/api/internal/site-service-requests/events/'
+                . (string) $eventKey
+                . '/files/' . (int) $fileId;
+            $response = self::signedRequest(
+                'PUT',
+                $path,
+                '',
+                array(
+                    'Content-Type: application/octet-stream',
+                    'Content-Length: 0',
+                    'X-MM-Site-File-Error: file_unavailable',
+                )
+            );
+            if ($response['status'] !== 200) {
+                throw new BridgeFailure(
+                    'file_error_report_http_' . $response['status'],
+                    $response['status']
+                );
+            }
+            $reported = self::decodeJson($response['body']);
+            if (
+                !array_key_exists('eventId', $reported)
+                || !is_string($reported['eventId'])
+                || $reported['eventId'] !== (string) $eventKey
+                || !array_key_exists('fileId', $reported)
+                || !is_int($reported['fileId'])
+                || $reported['fileId'] !== (int) $fileId
+                || !array_key_exists('status', $reported)
+                || !is_string($reported['status'])
+                || !array_key_exists('duplicate', $reported)
+                || !is_bool($reported['duplicate'])
+                || !in_array($reported['status'], array('failed', 'staged', 'uploaded'), true)
+                || (
+                    $reported['status'] === 'failed'
+                    && (string) ($reported['errorCode'] ?? '') !== 'file_unavailable'
+                )
+            ) {
+                throw new BridgeFailure('file_error_report_response_mismatch', 200);
+            }
+        }
+
+        private static function payloadFileIsUnavailable(array $payload, $messageId, $fileId)
+        {
+            foreach ((array) ($payload['history'] ?? array()) as $message) {
+                if (
+                    !is_array($message)
+                    || (int) ($message['messageId'] ?? 0) !== (int) $messageId
+                ) {
+                    continue;
+                }
+                foreach ((array) ($message['files'] ?? array()) as $file) {
+                    if (
+                        is_array($file)
+                        && (int) ($file['fileId'] ?? 0) === (int) $fileId
+                    ) {
+                        return (string) ($file['sha256'] ?? '') === str_repeat('0', 64);
+                    }
+                }
+            }
+            return false;
         }
 
         private static function buildEventPayload($ticketId, $messageId, $eventKey, $eventType)
@@ -469,7 +665,10 @@ namespace MasterMobile\SiteServiceRequests {
                 "SELECT `ID`, `SITE_ID`, `OWNER_USER_ID`, `TITLE`, `CLOSED` "
                 . "FROM `b_ticket` WHERE `ID` = " . (int) $ticketId . " LIMIT 1"
             );
-            $ticket = $ticketResult ? $ticketResult->Fetch() : false;
+            if (!$ticketResult) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            $ticket = $ticketResult->Fetch();
             if (!$ticket) {
                 throw new BridgeFailure('ticket_not_found');
             }
@@ -488,7 +687,7 @@ namespace MasterMobile\SiteServiceRequests {
             if ($phone === '') {
                 throw new BridgeFailure('ticket_phone_missing');
             }
-            $history = self::ticketHistory((int) $ticketId);
+            $history = self::ticketHistory((int) $ticketId, (int) $messageId);
             $occurredAt = null;
             foreach ($history as $message) {
                 if ((int) $message['messageId'] === (int) $messageId) {
@@ -527,21 +726,26 @@ namespace MasterMobile\SiteServiceRequests {
             );
         }
 
-        private static function ticketHistory($ticketId)
+        private static function ticketHistory($ticketId, $throughMessageId)
         {
             global $DB;
             $messages = array();
             $result = $DB->Query(
-                "SELECT `ID`, `DATE_CREATE`, `MESSAGE`, `MESSAGE_BY_SUPPORT_TEAM` "
+                "SELECT `ID`, `DATE_CREATE`, `MESSAGE`, `MESSAGE_BY_SUPPORT_TEAM`, `IS_HIDDEN` "
                 . "FROM `b_ticket_message` WHERE `TICKET_ID` = " . (int) $ticketId
+                . " AND `ID` <= " . (int) $throughMessageId
                 . " ORDER BY `ID` ASC"
             );
-            while ($result && ($row = $result->Fetch())) {
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            while ($row = $result->Fetch()) {
                 $messages[] = array(
                     'messageId' => (int) $row['ID'],
                     'authorKind' => (string) $row['MESSAGE_BY_SUPPORT_TEAM'] === 'Y'
-                        ? 'support'
+                        ? 'support-team'
                         : 'customer',
+                    'isVisibleToCustomer' => (string) $row['IS_HIDDEN'] !== 'Y',
                     'createdAt' => self::isoDate((string) $row['DATE_CREATE']),
                     'text' => self::limitText(self::plainText((string) $row['MESSAGE']), 200000),
                     'files' => self::messageFiles((int) $row['ID']),
@@ -558,13 +762,18 @@ namespace MasterMobile\SiteServiceRequests {
             global $DB;
             $files = array();
             $result = $DB->Query(
-                "SELECT F.`ID`, F.`FILE_NAME`, F.`CONTENT_TYPE`, F.`FILE_SIZE` "
+                "SELECT MF.`FILE_ID` AS `ATTACHED_FILE_ID`, F.`ID`, F.`FILE_NAME`, "
+                . "F.`CONTENT_TYPE`, F.`FILE_SIZE` "
                 . "FROM `b_ticket_message_2_file` MF "
-                . "INNER JOIN `b_file` F ON F.`ID` = MF.`FILE_ID` "
-                . "WHERE MF.`MESSAGE_ID` = " . (int) $messageId . " ORDER BY F.`ID` ASC"
+                . "LEFT JOIN `b_file` F ON F.`ID` = MF.`FILE_ID` "
+                . "WHERE MF.`MESSAGE_ID` = " . (int) $messageId
+                . " ORDER BY MF.`FILE_ID` ASC"
             );
-            while ($result && ($row = $result->Fetch())) {
-                $metadata = self::fileMetadata($row);
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            while ($row = $result->Fetch()) {
+                $metadata = self::fileMetadata($row, true);
                 $files[] = array(
                     'fileId' => $metadata['fileId'],
                     'name' => $metadata['name'],
@@ -578,21 +787,22 @@ namespace MasterMobile\SiteServiceRequests {
 
         private static function uploadEventFile($eventKey, $fileId)
         {
+            if (!preg_match('/^site-support:[1-9][0-9]*:[1-9][0-9]*$/', (string) $eventKey)) {
+                throw new BridgeFailure('event_identity_invalid');
+            }
             $metadata = self::loadFileMetadata((int) $fileId);
             $body = file_get_contents($metadata['path']);
             if ($body === false || strlen($body) !== $metadata['size']) {
                 throw new BridgeFailure('file_read_failed');
             }
             $path = '/api/internal/site-service-requests/events/'
-                . rawurlencode((string) $eventKey)
+                . (string) $eventKey
                 . '/files/' . (int) $fileId;
-            $asciiName = preg_replace('/[^A-Za-z0-9._-]+/', '_', $metadata['name']);
-            if (!is_string($asciiName) || $asciiName === '') {
-                $asciiName = 'attachment.bin';
-            }
-            $disposition = 'Content-Disposition: attachment; filename="'
-                . str_replace('"', '', $asciiName)
-                . '"; filename*=UTF-8\'\'' . rawurlencode($metadata['name']);
+            // The event carries the original UTF-8 name. Sending only RFC 5987
+            // filename* avoids the ASCII fallback winning during backend parsing
+            // and causing a false file_metadata_conflict.
+            $disposition = 'Content-Disposition: attachment; filename*=UTF-8\'\''
+                . rawurlencode($metadata['name']);
             $response = self::signedRequest(
                 'PUT',
                 $path,
@@ -606,6 +816,26 @@ namespace MasterMobile\SiteServiceRequests {
             if ($response['status'] !== 200) {
                 throw new BridgeFailure('file_http_' . $response['status'], $response['status']);
             }
+            $uploaded = self::decodeJson($response['body']);
+            if (
+                !array_key_exists('eventId', $uploaded)
+                || !is_string($uploaded['eventId'])
+                || $uploaded['eventId'] !== (string) $eventKey
+                || !array_key_exists('fileId', $uploaded)
+                || !is_int($uploaded['fileId'])
+                || $uploaded['fileId'] !== (int) $fileId
+                || !array_key_exists('status', $uploaded)
+                || !is_string($uploaded['status'])
+                || !array_key_exists('duplicate', $uploaded)
+                || !is_bool($uploaded['duplicate'])
+                || !in_array(
+                    $uploaded['status'],
+                    array('staged', 'uploaded'),
+                    true
+                )
+            ) {
+                throw new BridgeFailure('file_response_mismatch', 200);
+            }
         }
 
         private static function loadFileMetadata($fileId)
@@ -615,45 +845,80 @@ namespace MasterMobile\SiteServiceRequests {
                 "SELECT `ID`, `FILE_NAME`, `CONTENT_TYPE`, `FILE_SIZE` FROM `b_file` "
                 . "WHERE `ID` = " . (int) $fileId . " LIMIT 1"
             );
-            $row = $result ? $result->Fetch() : false;
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            $row = $result->Fetch();
             if (!$row) {
                 throw new BridgeFailure('file_not_found');
             }
             return self::fileMetadata($row);
         }
 
-        private static function fileMetadata(array $row)
+        private static function fileMetadata(array $row, $allowUnavailable = false)
         {
+            $fileId = (int) ($row['ID'] ?? $row['ATTACHED_FILE_ID'] ?? 0);
+            if ($fileId <= 0) {
+                throw new BridgeFailure('file_not_found');
+            }
+            $size = (int) ($row['FILE_SIZE'] ?? 0);
+            $name = basename(str_replace('\\', '/', (string) ($row['FILE_NAME'] ?? '')));
+            if ($name === '' || $name === '.' || $name === '..') {
+                $name = 'attachment-' . $fileId . '.bin';
+            }
+            $mimeType = trim((string) ($row['CONTENT_TYPE'] ?? ''))
+                ?: 'application/octet-stream';
+            $fileRecordExists = (int) ($row['ID'] ?? 0) > 0;
+            if (!$fileRecordExists) {
+                if (!$allowUnavailable) {
+                    throw new BridgeFailure('file_not_found');
+                }
+                return array(
+                    'fileId' => $fileId,
+                    'name' => self::limitText($name, 255),
+                    'mimeType' => $mimeType,
+                    'size' => max(0, $size),
+                    'sha256' => str_repeat('0', 64),
+                    'path' => '',
+                );
+            }
             if (!class_exists('CFile')) {
                 throw new BridgeFailure('file_api_unavailable');
             }
-            $relativePath = (string) \CFile::GetPath((int) $row['ID']);
+            $relativePath = (string) \CFile::GetPath($fileId);
+            if (trim($relativePath) === '') {
+                throw new BridgeFailure('file_api_unavailable');
+            }
             $documentRoot = class_exists('Bitrix\\Main\\Application')
                 ? (string) \Bitrix\Main\Application::getDocumentRoot()
                 : (string) ($_SERVER['DOCUMENT_ROOT'] ?? '');
+            $documentRoot = trim($documentRoot);
+            if ($documentRoot === '') {
+                throw new BridgeFailure('file_api_unavailable');
+            }
             $documentRoot = rtrim($documentRoot, '/');
             $path = $documentRoot . '/' . ltrim($relativePath, '/');
-            $size = (int) $row['FILE_SIZE'];
-            if (
-                $size < 0
-                || $size > self::MAX_FILE_BYTES
-                || !is_file($path)
-                || !is_readable($path)
-            ) {
-                throw new BridgeFailure('file_unavailable');
+            if ($size < 0 || !is_file($path) || !is_readable($path)) {
+                if (!$allowUnavailable) {
+                    throw new BridgeFailure('file_unavailable');
+                }
+                return array(
+                    'fileId' => $fileId,
+                    'name' => self::limitText($name, 255),
+                    'mimeType' => $mimeType,
+                    'size' => max(0, $size),
+                    'sha256' => str_repeat('0', 64),
+                    'path' => $path,
+                );
             }
             $sha256 = hash_file('sha256', $path);
             if (!is_string($sha256) || strlen($sha256) !== 64) {
                 throw new BridgeFailure('file_hash_failed');
             }
-            $name = basename(str_replace('\\', '/', (string) $row['FILE_NAME']));
-            if ($name === '' || $name === '.' || $name === '..') {
-                $name = 'attachment-' . (int) $row['ID'] . '.bin';
-            }
             return array(
-                'fileId' => (int) $row['ID'],
+                'fileId' => $fileId,
                 'name' => self::limitText($name, 255),
-                'mimeType' => trim((string) $row['CONTENT_TYPE']) ?: 'application/octet-stream',
+                'mimeType' => $mimeType,
                 'size' => $size,
                 'sha256' => $sha256,
                 'path' => $path,
@@ -664,11 +929,14 @@ namespace MasterMobile\SiteServiceRequests {
         {
             global $DB;
             $id = (int) $id;
-            $DB->Query(
+            $updateResult = $DB->Query(
                 "UPDATE `" . self::OUTBOX_TABLE . "` SET `sent_at` = NOW(), "
                 . "`last_http_status` = 202, `last_error_code` = NULL, `updated_at` = NOW() "
                 . "WHERE `id` = {$id} AND `sent_at` IS NULL"
             );
+            if (!$updateResult) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
         }
 
         private static function markOutboxFailed($id, $attempts, $errorCode, $httpStatus)
@@ -676,6 +944,11 @@ namespace MasterMobile\SiteServiceRequests {
             global $DB;
             $id = (int) $id;
             $nextAttempts = max(1, (int) $attempts + 1);
+            // A 413 may be caused by the accumulated full ticket history. Keep
+            // the event retryable so an operator can raise the configured API
+            // limit or repair the payload without silently losing the outbox row.
+            $isPermanentHttpError = $httpStatus !== null
+                && in_array((int) $httpStatus, array(400, 409, 415, 422), true);
             $index = min($nextAttempts, count(self::RETRY_DELAYS)) - 1;
             $delay = $nextAttempts <= count(self::RETRY_DELAYS)
                 ? self::RETRY_DELAYS[$index]
@@ -683,12 +956,17 @@ namespace MasterMobile\SiteServiceRequests {
             $nextAttemptAt = date('Y-m-d H:i:s', time() + $delay);
             $safeErrorCode = $DB->ForSql(self::stableCode($errorCode), 64);
             $statusSql = $httpStatus === null ? 'NULL' : (string) max(0, (int) $httpStatus);
-            $DB->Query(
+            $sentAtSql = $isPermanentHttpError ? 'NOW()' : '`sent_at`';
+            $updateResult = $DB->Query(
                 "UPDATE `" . self::OUTBOX_TABLE . "` SET `attempts` = {$nextAttempts}, "
-                . "`next_attempt_at` = '{$nextAttemptAt}', `last_http_status` = {$statusSql}, "
+                . "`next_attempt_at` = '{$nextAttemptAt}', `sent_at` = {$sentAtSql}, "
+                . "`last_http_status` = {$statusSql}, "
                 . "`last_error_code` = '{$safeErrorCode}', `updated_at` = NOW() "
                 . "WHERE `id` = {$id} AND `sent_at` IS NULL"
             );
+            if (!$updateResult) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
         }
 
         private static function deliverCommands()
@@ -702,13 +980,26 @@ namespace MasterMobile\SiteServiceRequests {
             if ($response['status'] !== 200) {
                 throw new BridgeFailure('commands_http_' . $response['status'], $response['status']);
             }
-            $payload = self::decodeJson($response['body']);
-            $commands = $payload['commands'] ?? array();
-            if (!is_array($commands)) {
+            $payload = self::decodeJson(
+                $response['body'],
+                array(),
+                array('commands')
+            );
+            if (
+                !array_key_exists('schemaVersion', $payload)
+                || !is_int($payload['schemaVersion'])
+                || $payload['schemaVersion'] !== 1
+                || !array_key_exists('commands', $payload)
+                || !is_array($payload['commands'])
+                || count($payload['commands']) > 20
+            ) {
                 throw new BridgeFailure('commands_response_invalid', 200);
             }
-            foreach (array_slice($commands, 0, 20) as $command) {
-                self::deliverCommand(is_array($command) ? $command : array());
+            foreach ($payload['commands'] as $command) {
+                if (!is_array($command)) {
+                    throw new BridgeFailure('commands_response_invalid', 200);
+                }
+                self::deliverCommand($command);
             }
         }
 
@@ -716,17 +1007,45 @@ namespace MasterMobile\SiteServiceRequests {
         {
             $commandId = (int) ($command['commandId'] ?? 0);
             $ticketId = (int) ($command['ticketId'] ?? 0);
-            if ($commandId <= 0 || $ticketId <= 0) {
-                return;
+            $leaseToken = trim((string) ($command['leaseToken'] ?? ''));
+            $commandKey = $command['commandKey'] ?? null;
+            $replyText = $command['replyText'] ?? null;
+            $leaseUntil = $command['leaseUntil'] ?? null;
+            $leaseUntilTimestamp = is_string($leaseUntil) ? strtotime($leaseUntil) : false;
+            if (
+                !is_int($command['commandId'] ?? null)
+                || !is_int($command['ticketId'] ?? null)
+                || $commandId <= 0
+                || $ticketId <= 0
+                || !is_string($commandKey)
+                || trim($commandKey) === ''
+                || strlen($commandKey) > 255
+                || !is_string($replyText)
+                || trim($replyText) === ''
+                || !is_string($leaseUntil)
+                || $leaseUntilTimestamp === false
+                || !is_string($command['leaseToken'] ?? null)
+                || $leaseToken !== $command['leaseToken']
+                || strlen($leaseToken) < 32
+                || strlen($leaseToken) > 128
+            ) {
+                throw new BridgeFailure('commands_response_invalid', 200);
+            }
+            if ((int) $leaseUntilTimestamp <= time()) {
+                // Never perform an external write for an expired lease. The
+                // command remains retryable and will be returned with a new token.
+                throw new BridgeFailure('command_lease_expired');
             }
             try {
                 $messageId = self::applyCommand(
                     $commandId,
                     $ticketId,
-                    (string) ($command['replyText'] ?? '')
+                    $replyText,
+                    (int) $leaseUntilTimestamp
                 );
                 $ack = array(
                     'schemaVersion' => 1,
+                    'leaseToken' => $leaseToken,
                     'status' => 'applied',
                     'ticketId' => $ticketId,
                     'messageId' => $messageId,
@@ -738,11 +1057,13 @@ namespace MasterMobile\SiteServiceRequests {
                     'support_user_invalid',
                     'message_write_failed',
                 );
-                $errorCode = in_array($error->errorCode(), $allowed, true)
-                    ? $error->errorCode()
-                    : 'message_write_failed';
+                if (!in_array($error->errorCode(), $allowed, true)) {
+                    throw $error;
+                }
+                $errorCode = $error->errorCode();
                 $ack = array(
                     'schemaVersion' => 1,
+                    'leaseToken' => $leaseToken,
                     'status' => 'failed',
                     'errorCode' => $errorCode,
                 );
@@ -770,72 +1091,151 @@ namespace MasterMobile\SiteServiceRequests {
             return null;
         }
 
-        private static function applyCommand($commandId, $ticketId, $replyText)
+        private static function applyCommand(
+            $commandId,
+            $ticketId,
+            $replyText,
+            $leaseUntilTimestamp
+        )
         {
             global $DB;
             self::requireSupportModule();
             self::requireLegacyDatabase($DB);
             $marker = self::commandMarker($commandId);
-            $existingMessageId = self::findExistingCommandMessageId($ticketId, $marker);
-            if ($existingMessageId > 0) {
-                return $existingMessageId;
+            $lockName = self::acquireCommandLock($commandId);
+            try {
+                $messageId = self::findExistingCommandMessageId($ticketId, $marker);
+                if ($messageId > 0) {
+                    return $messageId;
+                }
+                if ((int) $leaseUntilTimestamp <= time()) {
+                    throw new BridgeFailure('command_lease_expired');
+                }
+                $ticketResult = $DB->Query(
+                    "SELECT `ID` FROM `b_ticket` WHERE `ID` = "
+                    . (int) $ticketId . " LIMIT 1"
+                );
+                if (!$ticketResult) {
+                    throw new BridgeFailure('site_database_unavailable');
+                }
+                if (!$ticketResult->Fetch()) {
+                    throw new BridgeFailure('ticket_not_found');
+                }
+                $supportUserId = (int) self::option(self::OPTION_SUPPORT_USER_ID, 0);
+                self::validateSupportUser($supportUserId);
+                $plainText = trim(self::plainText($replyText));
+                if ($plainText === '') {
+                    throw new BridgeFailure('message_write_failed');
+                }
+                $fields = array(
+                    'ID' => (int) $ticketId,
+                    'MESSAGE' => $plainText,
+                    'MESSAGE_AUTHOR_USER_ID' => $supportUserId,
+                    'MESSAGE_CREATED_USER_ID' => $supportUserId,
+                    'MESSAGE_BY_SUPPORT_TEAM' => 'Y',
+                    'EXTERNAL_ID' => (string) (int) $commandId,
+                    'EXTERNAL_FIELD_1' => $marker,
+                    'HIDDEN' => 'N',
+                );
+                try {
+                    self::callTicketSet($fields, $ticketId);
+                } catch (BridgeFailure $error) {
+                    $messageId = self::findExistingCommandMessageId($ticketId, $marker);
+                    if ($messageId > 0) {
+                        return $messageId;
+                    }
+                    throw $error;
+                }
+                $messageId = self::findExistingCommandMessageId($ticketId, $marker);
+                if ($messageId <= 0) {
+                    throw new BridgeFailure('message_write_failed');
+                }
+                return $messageId;
+            } finally {
+                self::releaseCommandLock($lockName);
             }
-            $ticketResult = $DB->Query(
-                "SELECT `ID` FROM `b_ticket` WHERE `ID` = " . (int) $ticketId . " LIMIT 1"
-            );
-            if (!$ticketResult || !$ticketResult->Fetch()) {
-                throw new BridgeFailure('ticket_not_found');
-            }
-            $supportUserId = (int) self::option(self::OPTION_SUPPORT_USER_ID, 0);
-            self::validateSupportUser($supportUserId);
-            $plainText = trim(self::plainText($replyText));
-            if ($plainText === '') {
-                throw new BridgeFailure('message_write_failed');
-            }
-            $fields = array(
-                'ID' => (int) $ticketId,
-                'MESSAGE' => $plainText,
-                'MESSAGE_AUTHOR_USER_ID' => $supportUserId,
-                'MESSAGE_CREATED_USER_ID' => $supportUserId,
-                'MESSAGE_BY_SUPPORT_TEAM' => 'Y',
-                'EXTERNAL_ID' => (string) (int) $commandId,
-                'EXTERNAL_FIELD_1' => $marker,
-                'HIDDEN' => 'N',
-            );
-            self::callTicketSet($fields);
-            $messageId = self::findExistingCommandMessageId($ticketId, $marker);
-            if ($messageId <= 0) {
-                throw new BridgeFailure('message_write_failed');
-            }
-            return $messageId;
         }
 
-        private static function callTicketSet(array $fields)
+        private static function acquireCommandLock($commandId)
+        {
+            global $DB;
+            $lockName = self::commandMarker($commandId);
+            $safeLockName = $DB->ForSql($lockName, 64);
+            $result = $DB->Query(
+                "SELECT GET_LOCK('{$safeLockName}', 10) AS `LOCKED`"
+            );
+            $row = $result ? $result->Fetch() : false;
+            if (!$row || (int) ($row['LOCKED'] ?? 0) !== 1) {
+                throw new BridgeFailure('command_lock_unavailable');
+            }
+            return $lockName;
+        }
+
+        private static function releaseCommandLock($lockName)
+        {
+            global $DB;
+            $safeLockName = $DB->ForSql((string) $lockName, 64);
+            $result = $DB->Query(
+                "SELECT RELEASE_LOCK('{$safeLockName}') AS `RELEASED`"
+            );
+            $row = $result ? $result->Fetch() : false;
+            if (!$row || (int) ($row['RELEASED'] ?? 0) !== 1) {
+                // The DB connection owns advisory locks; log without converting a
+                // successfully marker-confirmed customer reply into a failed ACK.
+                self::safeLog('command_lock_release_failed');
+            }
+        }
+
+        private static function callTicketSet(array $fields, $ticketId)
         {
             if (!class_exists('CTicket') || !method_exists('CTicket', 'Set')) {
                 throw new BridgeFailure('message_write_failed');
             }
+            $ticketId = (int) $ticketId;
+            if ($ticketId <= 0) {
+                throw new BridgeFailure('message_write_failed');
+            }
             $method = new \ReflectionMethod('CTicket', 'Set');
             $parameters = $method->getParameters();
+            if (!$method->isStatic() || count($parameters) < 2) {
+                throw new BridgeFailure('message_write_failed');
+            }
             $messageId = 0;
             $checkRights = 'N';
-            $sendEmail = 'N';
-            $sendEvent = 'N';
+            $sendEmailToAuthor = 'N';
+            $sendEmailToTechsupport = 'N';
             $arguments = array(&$fields);
             $secondName = isset($parameters[1])
                 ? strtolower($parameters[1]->getName())
                 : '';
             if (strpos($secondName, 'mid') !== false || strpos($secondName, 'message') !== false) {
+                $thirdName = isset($parameters[2])
+                    ? strtolower($parameters[2]->getName())
+                    : '';
+                if (
+                    count($parameters) < 3
+                    || ($thirdName !== 'id' && strpos($thirdName, 'ticket') === false)
+                ) {
+                    throw new BridgeFailure('message_write_failed');
+                }
                 $arguments[] = &$messageId;
+                $arguments[] = &$ticketId;
                 $arguments[] = &$checkRights;
-                $arguments[] = &$sendEmail;
-                $arguments[] = &$sendEvent;
+                $arguments[] = &$sendEmailToAuthor;
+                $arguments[] = &$sendEmailToTechsupport;
             } else {
+                if ($secondName !== 'id' && strpos($secondName, 'ticket') === false) {
+                    throw new BridgeFailure('message_write_failed');
+                }
+                $arguments[] = &$ticketId;
                 $arguments[] = &$checkRights;
-                $arguments[] = &$sendEmail;
-                $arguments[] = &$sendEvent;
+                $arguments[] = &$sendEmailToAuthor;
+                $arguments[] = &$sendEmailToTechsupport;
             }
             $arguments = array_slice($arguments, 0, count($parameters));
+            if (count($arguments) < $method->getNumberOfRequiredParameters()) {
+                throw new BridgeFailure('message_write_failed');
+            }
             try {
                 $result = $method->invokeArgs(null, $arguments);
             } catch (\Throwable $error) {
@@ -855,7 +1255,10 @@ namespace MasterMobile\SiteServiceRequests {
                 . (int) $ticketId . " AND `EXTERNAL_FIELD_1` = '{$safeMarker}' "
                 . "ORDER BY `ID` ASC LIMIT 1"
             );
-            $row = $result ? $result->Fetch() : false;
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            $row = $result->Fetch();
             return $row ? (int) $row['ID'] : 0;
         }
 
@@ -886,6 +1289,19 @@ namespace MasterMobile\SiteServiceRequests {
             );
             if ($response['status'] !== 200) {
                 throw new BridgeFailure('command_ack_http_' . $response['status'], $response['status']);
+            }
+            $acknowledged = self::decodeJson($response['body']);
+            if (
+                !array_key_exists('commandId', $acknowledged)
+                || !is_int($acknowledged['commandId'])
+                || $acknowledged['commandId'] !== (int) $commandId
+                || !array_key_exists('status', $acknowledged)
+                || !is_string($acknowledged['status'])
+                || $acknowledged['status'] !== (string) ($payload['status'] ?? '')
+                || !array_key_exists('duplicate', $acknowledged)
+                || !is_bool($acknowledged['duplicate'])
+            ) {
+                throw new BridgeFailure('command_ack_response_mismatch', 200);
             }
         }
 
@@ -1042,9 +1458,9 @@ namespace MasterMobile\SiteServiceRequests {
 
         private static function plainText($value)
         {
-            $text = preg_replace('/<br\s*\/?\s*>/i', "\n", (string) $value);
+            $text = html_entity_decode((string) $value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $text = preg_replace('/<br\s*\/?\s*>/i', "\n", (string) $text);
             $text = strip_tags((string) $text);
-            $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
             return str_replace(array("\r\n", "\r"), "\n", $text);
         }
 
@@ -1072,10 +1488,30 @@ namespace MasterMobile\SiteServiceRequests {
             return $json;
         }
 
-        private static function decodeJson($value)
+        private static function decodeJson(
+            $value,
+            array $listFields = array(),
+            array $objectListFields = array()
+        )
         {
+            $shape = json_decode((string) $value);
+            if (!($shape instanceof \stdClass) || json_last_error() !== JSON_ERROR_NONE) {
+                throw new BridgeFailure('json_decode_failed');
+            }
+            foreach (array_merge($listFields, $objectListFields) as $fieldName) {
+                if (!property_exists($shape, $fieldName) || !is_array($shape->{$fieldName})) {
+                    throw new BridgeFailure('json_decode_failed');
+                }
+            }
+            foreach ($objectListFields as $fieldName) {
+                foreach ($shape->{$fieldName} as $item) {
+                    if (!($item instanceof \stdClass)) {
+                        throw new BridgeFailure('json_decode_failed');
+                    }
+                }
+            }
             $payload = json_decode((string) $value, true);
-            if (!is_array($payload)) {
+            if (!is_array($payload) || json_last_error() !== JSON_ERROR_NONE) {
                 throw new BridgeFailure('json_decode_failed');
             }
             return $payload;

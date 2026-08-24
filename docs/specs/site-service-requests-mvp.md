@@ -855,7 +855,9 @@ Rollback:
   проверяется и записывается под MySQL advisory lock с повторной проверкой lease,
   а персональные escalation/needs-attention уведомления получают стабильный Bitrix
   `TAG`, исключающий второй экземпляр после неоднозначного timeout. Регрессионные
-  тесты добавлены, но пока не запускались по решению пользователя.
+  тесты добавлены; адресный suite №3223 и полный локальный `pytest` пройдены
+  (`2804 passed`, `11 skipped`; PHP runtime-тесты пропущены из-за отсутствия
+  локального PHP runtime).
 - 2026-08-24 — command lease теперь сверяет расшифрованный payload с
   `reply_sha256`; quarantine сохраняет `max(outbound checkpoint)`, но всегда
   деградирует health для последней повреждённой command. CRM deal/contact/item/

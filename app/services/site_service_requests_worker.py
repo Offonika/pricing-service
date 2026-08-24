@@ -195,6 +195,35 @@ def _preflight_aliased_string(
     return normalized
 
 
+def _preflight_aliased_active(
+    user: dict[str, Any],
+    *field_names: str,
+    role: str,
+) -> bool:
+    values = [user[field_name] for field_name in field_names if field_name in user]
+    if not values:
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    normalized_values: list[bool] = []
+    for value in values:
+        if type(value) is bool:
+            normalized_values.append(value)
+            continue
+        if isinstance(value, str) and value in {"Y", "N"}:
+            normalized_values.append(value == "Y")
+            continue
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    first_value = normalized_values[0]
+    if any(value != first_value for value in normalized_values[1:]):
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    return first_value
+
+
 def preflight_site_service_request_users(
     *,
     api: SiteServiceRequestBitrixApi,
@@ -245,14 +274,13 @@ def preflight_site_service_request_users(
             raise SiteServiceRequestConfigurationError(
                 f"site service request pilot user readback failed for {role}"
             )
-        active = _preflight_aliased_string(
+        active = _preflight_aliased_active(
             user,
             "ACTIVE",
             "active",
             role=role,
-            required=True,
         )
-        if active.upper() != "Y":
+        if not active:
             raise SiteServiceRequestConfigurationError(
                 f"site service request pilot user is inactive for {role}"
             )
@@ -310,14 +338,6 @@ class SiteServiceRequestBitrixReader:
                 != contact_id
             ):
                 raise RuntimeError("bitrix_contact_readback_failed")
-            active_status = _strict_aliased_string(contact, "ACTIVE", "active")
-            if active_status is None:
-                raise RuntimeError("bitrix_contact_readback_failed")
-            active_status = active_status.strip().upper()
-            if active_status not in {"Y", "N"}:
-                raise RuntimeError("bitrix_contact_readback_failed")
-            if active_status == "N":
-                continue
             company_id = _strict_optional_aliased_positive_int(
                 contact,
                 "COMPANY_ID",

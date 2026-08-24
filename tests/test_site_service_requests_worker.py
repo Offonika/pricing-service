@@ -403,6 +403,28 @@ def test_user_preflight_requires_active_users_with_expected_identity() -> None:
         preflight_site_service_request_users(api=mismatched_api, settings=settings)
 
 
+def test_user_preflight_accepts_boolean_active_from_box() -> None:
+    api = FakeBitrixApi()
+    for user in api.users.values():
+        user["ACTIVE"] = True
+
+    result = preflight_site_service_request_users(api=api, settings=_worker_settings())
+
+    assert len(result) == 4
+
+
+@pytest.mark.parametrize("active", [1, 1.0, "true", " Y", "", None, [True]])
+def test_user_preflight_rejects_malformed_active(active: object) -> None:
+    api = FakeBitrixApi()
+    api.users[1001]["ACTIVE"] = active
+
+    with pytest.raises(
+        SiteServiceRequestConfigurationError,
+        match="pilot user readback failed",
+    ):
+        preflight_site_service_request_users(api=api, settings=_worker_settings())
+
+
 def test_user_preflight_rejects_malformed_extra_user_row() -> None:
     class MalformedUserApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -454,30 +476,27 @@ def test_contact_lookup_rejects_missing_contract_fields() -> None:
             email=None,
         )
 
-    missing_active = FakeBitrixApi()
-    missing_active.contacts[501].pop("ACTIVE")
+    missing_id = FakeBitrixApi()
+    missing_id.contacts[501].pop("ID")
     with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
-        SiteServiceRequestBitrixReader(missing_active).find_contact(
+        SiteServiceRequestBitrixReader(missing_id).find_contact(
             phone="+79000000000",
             email=None,
         )
 
 
-@pytest.mark.parametrize(
-    "malformed_active",
-    ["", "UNKNOWN", True, ["Y"], {"value": "Y"}],
-)
-def test_contact_lookup_rejects_malformed_active_status(
-    malformed_active: object,
-) -> None:
+def test_contact_lookup_accepts_bitrix_contact_without_active_field() -> None:
     api = FakeBitrixApi()
-    api.contacts[501]["ACTIVE"] = malformed_active
+    api.contacts[501].pop("ACTIVE")
 
-    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
-        SiteServiceRequestBitrixReader(api).find_contact(
-            phone="+79000000000",
-            email=None,
-        )
+    match = SiteServiceRequestBitrixReader(api).find_contact(
+        phone="+79000000000",
+        email=None,
+    )
+
+    assert match.status == "matched"
+    assert match.contact_id == 501
+    assert match.company_id == 601
 
 
 @pytest.mark.parametrize(

@@ -849,6 +849,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — contact readback приведён к фактическому контракту
+  `crm.contact.get`: поле `ACTIVE` у CRM-контакта не требуется, а защита от
+  ошибочной связи остаётся fail-closed по строгим `ID/id` и `COMPANY_ID/companyId`.
+
 - 2026-08-24 — ambiguous-commit и post-upload spool cleanup переведены с path-only
   readback на блокировки владельца `case -> file` по durable IDs, поэтому
   незакоммиченный конкурентный PUT не теряет payload. Site command marker теперь

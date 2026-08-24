@@ -74,6 +74,16 @@
       "spec": "docs/specs/customer-settlements-backend-v1.md",
       "remove_after": null
     },
+    "check_customer_settlement_receivable_drift.py": {
+      "owner": "receivables",
+      "kind": "maintenance",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only_by_completed_date",
+      "side_effect_level": "read_only",
+      "db_access": "mixed",
+      "spec": "docs/specs/customer-settlements-backend-v1.md",
+      "remove_after": null
+    },
     "cleanup_customer_settlements.py": {
       "owner": "receivables",
       "kind": "permanent_cli",

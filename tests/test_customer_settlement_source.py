@@ -925,7 +925,9 @@ printf '%s\n' "$*" >> "${FAKE_CHECKPOINT_CALLS}"
     fake_python.chmod(0o700)
     env_file = tmp_path / "shadow.env"
     env_file.write_text(
-        "CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME=settlements-shadow-test\n",
+        "CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME=settlements-shadow-test\n"
+        "CUSTOMER_SETTLEMENTS_RECEIVABLE_ENV_FILE=/secure/receivables.env\n"
+        "CUSTOMER_SETTLEMENTS_RECEIVABLE_EXPECTED_DATABASE_NAME=pricing\n",
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -946,6 +948,9 @@ printf '%s\n' "$*" >> "${FAKE_CHECKPOINT_CALLS}"
     assert result.returncode == 0
     invocations = calls.read_text(encoding="utf-8")
     assert "--expected-database-name settlements-shadow-test" in invocations
+    assert "tasks.check_customer_settlement_receivable_drift" in invocations
+    assert "--receivable-env-file /secure/receivables.env" in invocations
+    assert "--expected-receivable-database-name pricing" in invocations
     assert "tasks.check_customer_settlement_health" in invocations
 
 

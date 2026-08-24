@@ -8,7 +8,11 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.infrastructure.db.engines import build_application_engine, build_onec_engine
+from app.infrastructure.db.engines import (
+    build_application_engine,
+    build_onec_engine,
+    build_readonly_postgres_engine,
+)
 from app.infrastructure.db.session import session_scope
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
@@ -61,6 +65,34 @@ def test_application_engine_enables_pre_ping_without_forcing_pool_overrides(tmp_
         assert engine.pool._pre_ping is True
     finally:
         engine.dispose()
+
+
+def test_readonly_postgres_engine_enforces_server_side_read_only(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_create_engine(database_url: str, **options):
+        captured.update({"database_url": database_url, **options})
+        return sentinel
+
+    monkeypatch.setattr(
+        "app.infrastructure.db.engines.sqlalchemy_create_engine", fake_create_engine
+    )
+
+    result = build_readonly_postgres_engine(
+        "postgresql+psycopg2://readonly:secret@localhost/pricing"
+    )
+
+    assert result is sentinel
+    assert captured["pool_pre_ping"] is True
+    assert captured["pool_size"] == 1
+    assert captured["max_overflow"] == 0
+    assert captured["connect_args"] == {"options": "-c default_transaction_read_only=on"}
+
+
+def test_readonly_postgres_engine_rejects_other_dialects() -> None:
+    with pytest.raises(ValueError, match="must use PostgreSQL"):
+        build_readonly_postgres_engine("sqlite:///unsafe.db")
 
 
 def test_onec_pytds_engine_passes_distinct_query_and_login_timeouts(monkeypatch) -> None:

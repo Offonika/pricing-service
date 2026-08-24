@@ -134,9 +134,13 @@ Settlement migrations объединены с фактически активн�
 
 Блокеры CRM mapping, бухгалтерской сверки и первого financial snapshot закрыты;
 backend override по заказам не использовался. Новый зачётный 72-часовой shadow-run
-начат `2026-08-24 10:22 MSK`. Для бухгалтерских checkpoints нужны новые независимые
-ведомости на завершённые дни `24/25/26.08.2026`; автоматический checkpoint выполняет
-только preflight и health и не заменяет XLSX reconciliation.
+начат `2026-08-24 10:22 MSK`.
+
+ОТМЕНЕНО (2026-08-24): обязательные новые XLSX на контрольных точках 24/48/72 часа.
+Контроль выполняется автоматически по данным 1С и production-витрине дебиторки с
+одинаковой границей завершённого дня и нормализацией отсутствующей строки только в
+явный ноль. Исходная нефильтрованная XLSX-сверка `10/10` сохраняется как независимое
+бухгалтерское подтверждение формулы.
 
 При ручной проверке обёрток health и cleanup были ошибочно запущены параллельно.
 Общий context lock безопасно дал временный fail-closed `critical` и отправил один
@@ -214,12 +218,17 @@ CUSTOMER_SETTLEMENTS_ALERTS_ENABLED=false
 CUSTOMER_SETTLEMENTS_ALERT_TASK_ID=2883
 CUSTOMER_SETTLEMENTS_ALERT_WEBHOOK_URL=<existing-webhook-for-72h>
 CUSTOMER_SETTLEMENTS_ALERT_REPEAT_SECONDS=21600
+CUSTOMER_SETTLEMENTS_RECEIVABLE_ENV_FILE=<protected-env-containing-receivables-database-url>
+CUSTOMER_SETTLEMENTS_RECEIVABLE_EXPECTED_DATABASE_NAME=pricing
 ```
 
 `ONEC_DATABASE_URL` использует только read-only доступ. Пароли и URL не выводить
 в логи. Разрешённый webhook хранится только в защищённом staging secret-файле на
 время запуска и удаляется из него после 72 часов. Запись в CRM запрещена; alert
 может добавлять только обезличенный комментарий в задачу №2883.
+Файл `CUSTOMER_SETTLEMENTS_RECEIVABLE_ENV_FILE` читается только checkpoint-командой;
+подключение к витрине принудительно открывается с PostgreSQL
+`default_transaction_read_only=on`, а фактическое имя БД проверяется до выборки.
 
 ## 2. Bootstrap preflight
 
@@ -361,11 +370,20 @@ secret-файл. До установки путь необходимо заме�
 
 ## 5. Контрольные точки
 
-В момент старта, через 24, 48 и 72 часа выполнить:
+ОТМЕНЕНО (2026-08-24): формировать новую ведомость XLSX для каждой контрольной
+точки и запускать `tasks.reconcile_customer_settlements` повторно. Исходная
+нефильтрованная ведомость уже подтвердила `10/10` и остаётся независимым
+бухгалтерским доказательством.
+
+Через 24, 48 и 72 часа выполнить автоматическую read-only сверку ближайшего
+завершённого дня, затем штатные preflight и health:
 
 ```bash
-"${PYTHON_BIN}" -m tasks.reconcile_customer_settlements \
-  /secure/vedomost-<completed-date-for-this-checkpoint>.xlsx
+"${PYTHON_BIN}" -m tasks.check_customer_settlement_receivable_drift \
+  --receivable-env-file "${CUSTOMER_SETTLEMENTS_RECEIVABLE_ENV_FILE}" \
+  --expected-receivable-database-name \
+  "${CUSTOMER_SETTLEMENTS_RECEIVABLE_EXPECTED_DATABASE_NAME}" \
+  --expected-pilot-count 10
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \
   --phase ready \
   --expected-pilot-count 10 \
@@ -373,18 +391,21 @@ secret-файл. До установки путь необходимо заме�
 "${PYTHON_BIN}" -m tasks.check_customer_settlement_health
 ```
 
-Для каждой точки формируется новая ведомость за ближайший завершённый день; файл
-предыдущей точки повторно не используется. SQL и отчёт обязаны иметь одну границу
-`as_of`, допуск — `0,01 RUB`. В журнал контроля записывать только агрегаты:
-expected/loaded/zero, возраст revision, duration, retry/timeout/lock и число
-расхождений. Суммы и идентификаторы пилотов в cron-логи не писать.
+Автоматическая сверка берёт ближайший завершённый день по timezone `Europe/Moscow`,
+читает production-витрину дебиторки в транзакции `read only` и повторно рассчитывает
+пилотные остатки из 1С на ту же границу `as_of`. Отсутствующая строка старой витрины
+может считаться совпадением только при явном `0,00` в расчёте 1С. Допуск —
+`0,01 RUB`. В журнал контроля записываются только агрегаты: expected/loaded/zero,
+возраст revision, duration, retry/timeout/lock и число расхождений. Суммы и
+идентификаторы пилотов в cron-логи не пишутся.
 
 Shadow-run принимается, если 72 часа:
 
 - `CUSTOMER_SETTLEMENTS_ENABLED=false`;
 - `CUSTOMER_SETTLEMENTS_ELIGIBILITY_ENABLED=false`;
 - не было потери active revision или частичной активации;
-- все четыре сверки дали расхождение не более `0,01 RUB`;
+- исходная независимая XLSX-сверка и три автоматические контрольные сверки дали
+  расхождение не более `0,01 RUB`;
 - нет critical security/data-quality ошибок;
 - fault-проверки timeout, retry, lock и replay прошли;
 - mapping все 72 часа обновлялся из полного CRM read, alerts публиковались только
@@ -408,6 +429,13 @@ Shadow-run принимается, если 72 часа:
 
 ## Changelog
 
+- 2026-08-24 — read-only dry-run автоматической сверки на завершённом дне
+  `23.08.2026` прошёл `10/10`: `9` строк найдены в витрине, отсутствующая десятая
+  подтверждена явным нулём 1С, расхождений и пропущенных ненулевых остатков нет.
+- 2026-08-24 — отменены обязательные новые XLSX на точках 24/48/72 часа;
+  промежуточный контроль переведён на автоматическую read-only сверку 1С с
+  production-витриной дебиторки на одинаковой границе завершённого дня, исходная
+  XLSX `10/10` сохранена как независимое бухгалтерское подтверждение.
 - 2026-08-24 — новая нефильтрованная ведомость прошла reconciliation `10/10`; из
   clean commit `210ebf0` собран новый immutable release, активирован первый
   financial snapshot `10/10`, ready-preflight прошёл `36/36`, staging alerts и cron

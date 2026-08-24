@@ -58,6 +58,25 @@ def build_application_engine(
     return sqlalchemy_create_engine(database_url, **engine_options)
 
 
+def build_readonly_postgres_engine(
+    database_url: str,
+    *,
+    pool_size: int = 1,
+    max_overflow: int = 0,
+) -> Engine:
+    """Build a fail-closed PostgreSQL engine for a secondary read-only source."""
+
+    if make_url(database_url).get_backend_name() != "postgresql":
+        raise ValueError("read-only source must use PostgreSQL")
+    return sqlalchemy_create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        connect_args={"options": "-c default_transaction_read_only=on"},
+    )
+
+
 def build_onec_engine(
     database_url: str,
     *,

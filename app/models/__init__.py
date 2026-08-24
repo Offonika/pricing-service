@@ -142,6 +142,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionEvent,
         SiteOrderFulfillmentOutbox,
     )
+    from app.models.site_service_requests import (
+        SiteServiceRequestCase,
+        SiteServiceRequestCommand,
+        SiteServiceRequestEvent,
+        SiteServiceRequestFile,
+        SiteServiceRequestNonce,
+    )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
     from app.models.staff_member import StaffMember
@@ -270,6 +277,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "BitrixChatAction",
         "SiteOrderExecutionEvent",
         "SiteOrderFulfillmentOutbox",
+        "SiteServiceRequestCase",
+        "SiteServiceRequestEvent",
+        "SiteServiceRequestFile",
+        "SiteServiceRequestCommand",
+        "SiteServiceRequestNonce",
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",

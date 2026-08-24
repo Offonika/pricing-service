@@ -1,14 +1,21 @@
-from typing import Generator
+from typing import Annotated, Generator
 
-from fastapi import HTTPException, Security
+from fastapi import Depends, Header, HTTPException, Request, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.infrastructure.db import (
     SqlAlchemyUnitOfWork,
     get_application_engine,
     get_application_session_factory,
+)
+from app.services.site_service_requests_auth import (
+    SiteServiceRequestAuthError,
+    VerifiedSiteRequest,
+    verify_site_request,
 )
 
 security = HTTPBearer(auto_error=False)
@@ -44,6 +51,190 @@ def get_db() -> Generator[Session, None, None]:
 def get_uow() -> Generator[SqlAlchemyUnitOfWork, None, None]:
     with SqlAlchemyUnitOfWork() as unit_of_work:
         yield unit_of_work
+
+
+def get_site_service_request_settings() -> Settings:
+    return get_settings()
+
+
+async def require_site_service_request_signature(
+    request: Request,
+    timestamp_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Timestamp"),
+    ],
+    nonce_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Nonce"),
+    ],
+    content_sha256_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Content-SHA256"),
+    ],
+    signature_header: Annotated[
+        str,
+        Header(alias="X-MM-Site-Signature"),
+    ],
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_site_service_request_settings),
+) -> VerifiedSiteRequest:
+    try:
+        body_limit = _site_service_request_body_limit(request, settings=settings)
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="request_size_invalid") from exc
+            if declared_length < 0:
+                raise HTTPException(status_code=422, detail="request_size_invalid")
+            if declared_length > body_limit:
+                raise HTTPException(status_code=413, detail="request_body_too_large")
+        body = await request.body()
+        if len(body) > body_limit:
+            raise HTTPException(status_code=413, detail="request_body_too_large")
+        verified = verify_site_request(
+            db,
+            method=request.method,
+            path=request.url.path,
+            body=body,
+            timestamp_header=timestamp_header,
+            nonce_header=nonce_header,
+            content_sha256_header=content_sha256_header,
+            signature_header=signature_header,
+            settings=settings,
+        )
+        db.commit()
+        return verified
+    except SiteServiceRequestAuthError as exc:
+        db.rollback()
+        if exc.code == "auth_not_configured":
+            raise HTTPException(
+                status_code=503,
+                detail="site_service_requests_auth_not_configured",
+            ) from exc
+        if exc.code == "nonce_replay":
+            raise HTTPException(status_code=409, detail="nonce_replay") from exc
+        raise HTTPException(status_code=401, detail="unauthorized") from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="site_service_requests_auth_unavailable",
+        ) from exc
+
+
+def _site_service_request_body_limit(request: Request, *, settings: Settings) -> int:
+    return _site_service_request_body_limit_for_path(
+        method=request.method,
+        path=request.url.path,
+        settings=settings,
+    )
+
+
+def _site_service_request_body_limit_for_path(
+    *,
+    method: str,
+    path: str,
+    settings: Settings,
+) -> int:
+    if method.upper() == "PUT" and "/files/" in path:
+        return settings.site_service_requests_max_file_bytes
+    if method.upper() == "POST" and path.endswith("/events"):
+        return settings.site_service_requests_max_event_body_bytes
+    if method.upper() == "POST" and path.endswith("/ack"):
+        return settings.site_service_requests_max_ack_body_bytes
+    return settings.site_service_requests_max_ack_body_bytes
+
+
+class SiteServiceRequestBodyLimitMiddleware:
+    """Reject oversized site requests while ASGI chunks are still arriving."""
+
+    def __init__(self, app, *, settings: Settings) -> None:
+        self.app = app
+        self.settings = settings
+
+    async def __call__(self, scope, receive, send) -> None:
+        path = str(scope.get("path") or "")
+        if scope.get("type") != "http" or not path.startswith(
+            "/api/internal/site-service-requests/"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        method = str(scope.get("method") or "GET")
+        limit = _site_service_request_body_limit_for_path(
+            method=method,
+            path=path,
+            settings=self.settings,
+        )
+        headers = {
+            key.lower(): value
+            for key, value in scope.get("headers", [])
+            if isinstance(key, bytes) and isinstance(value, bytes)
+        }
+        raw_content_length = headers.get(b"content-length")
+        if raw_content_length is not None:
+            try:
+                declared_length = int(raw_content_length)
+            except ValueError:
+                await JSONResponse(
+                    status_code=422,
+                    content={"detail": "request_size_invalid"},
+                )(scope, receive, send)
+                return
+            if declared_length < 0:
+                await JSONResponse(
+                    status_code=422,
+                    content={"detail": "request_size_invalid"},
+                )(scope, receive, send)
+                return
+            if declared_length > limit:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "request_body_too_large"},
+                )(scope, receive, send)
+                return
+
+        buffered = bytearray()
+        while True:
+            message = await receive()
+            if message.get("type") != "http.request":
+                await self.app(scope, _single_message_receive(message, receive), send)
+                return
+            chunk = message.get("body") or b""
+            remaining = limit + 1 - len(buffered)
+            buffered.extend(chunk[:remaining])
+            if len(chunk) > remaining or len(buffered) > limit:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "request_body_too_large"},
+                )(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        await self.app(
+            scope,
+            _single_message_receive(
+                {"type": "http.request", "body": bytes(buffered), "more_body": False},
+                receive,
+            ),
+            send,
+        )
+
+
+def _single_message_receive(first_message, receive):
+    delivered = False
+
+    async def replay():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return first_message
+        return await receive()
+
+    return replay
 
 
 def require_management_internal_token(

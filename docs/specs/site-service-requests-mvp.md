@@ -849,6 +849,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — contact readback приведён к фактическому контракту
+  `crm.contact.get`: поле `ACTIVE` у CRM-контакта не требуется, а защита от
+  ошибочной связи остаётся fail-closed по строгим `ID/id` и `COMPANY_ID/companyId`.
+
 - 2026-08-24 — production env preflight подтвердил boolean `ACTIVE=true` в
   `user.get`; pilot-user validation теперь строго принимает только boolean или
   строки `Y/N` и по-прежнему отклоняет conflicting aliases. Пример списка первой

@@ -476,30 +476,27 @@ def test_contact_lookup_rejects_missing_contract_fields() -> None:
             email=None,
         )
 
-    missing_active = FakeBitrixApi()
-    missing_active.contacts[501].pop("ACTIVE")
+    missing_id = FakeBitrixApi()
+    missing_id.contacts[501].pop("ID")
     with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
-        SiteServiceRequestBitrixReader(missing_active).find_contact(
+        SiteServiceRequestBitrixReader(missing_id).find_contact(
             phone="+79000000000",
             email=None,
         )
 
 
-@pytest.mark.parametrize(
-    "malformed_active",
-    ["", "UNKNOWN", True, ["Y"], {"value": "Y"}],
-)
-def test_contact_lookup_rejects_malformed_active_status(
-    malformed_active: object,
-) -> None:
+def test_contact_lookup_accepts_bitrix_contact_without_active_field() -> None:
     api = FakeBitrixApi()
-    api.contacts[501]["ACTIVE"] = malformed_active
+    api.contacts[501].pop("ACTIVE")
 
-    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
-        SiteServiceRequestBitrixReader(api).find_contact(
-            phone="+79000000000",
-            email=None,
-        )
+    match = SiteServiceRequestBitrixReader(api).find_contact(
+        phone="+79000000000",
+        email=None,
+    )
+
+    assert match.status == "matched"
+    assert match.contact_id == 501
+    assert match.company_id == 601
 
 
 @pytest.mark.parametrize(

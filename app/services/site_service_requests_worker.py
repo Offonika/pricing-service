@@ -338,14 +338,6 @@ class SiteServiceRequestBitrixReader:
                 != contact_id
             ):
                 raise RuntimeError("bitrix_contact_readback_failed")
-            active_status = _strict_aliased_string(contact, "ACTIVE", "active")
-            if active_status is None:
-                raise RuntimeError("bitrix_contact_readback_failed")
-            active_status = active_status.strip().upper()
-            if active_status not in {"Y", "N"}:
-                raise RuntimeError("bitrix_contact_readback_failed")
-            if active_status == "N":
-                continue
             company_id = _strict_optional_aliased_positive_int(
                 contact,
                 "COMPANY_ID",

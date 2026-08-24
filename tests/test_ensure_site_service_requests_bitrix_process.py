@@ -219,6 +219,27 @@ def test_apply_rejects_conflicting_target_xml_id_aliases_before_writes() -> None
     assert _write_methods(api) == []
 
 
+@pytest.mark.parametrize(
+    "malformed_alias",
+    [
+        {"XML_ID": "CONFLICTING_XML_ID"},
+        {"xmlId": ["MM_SITE_SERVICE_SITE_TICKET_ID"]},
+    ],
+)
+def test_apply_rejects_malformed_xml_aliases_on_noncanonical_field_before_writes(
+    malformed_alias: dict[str, object],
+) -> None:
+    fields = _all_fields()
+    fields[0]["fieldName"] = "UF_CRM_36_RENAMED_TICKET_ID"
+    fields[0].update(malformed_alias)
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="field_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_requires_created_field_readback() -> None:
     api = FakeBitrixApi(
         fields=_all_fields()[1:],
@@ -396,6 +417,27 @@ def test_apply_rejects_conflicting_stage_id_aliases_before_writes() -> None:
     assert _write_methods(api) == []
 
 
+@pytest.mark.parametrize(
+    "malformed_semantics",
+    [
+        {"semantics": "F"},
+        {"SEMANTICS": ["S"]},
+        {"SEMANTICS": "UNKNOWN"},
+    ],
+)
+def test_apply_rejects_malformed_or_conflicting_stage_semantics_before_writes(
+    malformed_semantics: dict[str, object],
+) -> None:
+    stages = _stages()
+    stages[2].update(malformed_semantics)
+    api = FakeBitrixApi(fields=_all_fields(), stages=stages)
+
+    with pytest.raises(RuntimeError, match="stages_readback_unrecognized"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
 def test_apply_rejects_malformed_enum_rows_before_writes() -> None:
     fields = _all_fields()
     fields[3]["enum"] = ["unknown-row"]
@@ -413,6 +455,29 @@ def test_apply_rejects_duplicate_enum_ids_before_writes() -> None:
     api = FakeBitrixApi(fields=fields)
 
     with pytest.raises(RuntimeError, match="enum_readback_ambiguous"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert _write_methods(api) == []
+
+
+@pytest.mark.parametrize(
+    "malformed_aliases",
+    [
+        {"ID": "999"},
+        {"XML_ID": "MM_SITE_CONFLICT"},
+        {"VALUE": "Другое значение"},
+        {"xmlId": ["MM_SITE_INVALID"]},
+        {"value": {"title": "Некорректно"}},
+    ],
+)
+def test_apply_rejects_malformed_or_conflicting_enum_aliases_before_writes(
+    malformed_aliases: dict[str, object],
+) -> None:
+    fields = _all_fields()
+    fields[3]["enum"][0].update(malformed_aliases)
+    api = FakeBitrixApi(fields=fields)
+
+    with pytest.raises(RuntimeError, match="enum_readback_(unrecognized|ambiguous)"):
         bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
 
     assert _write_methods(api) == []
@@ -624,6 +689,27 @@ def test_userfield_list_rejects_malformed_page(response: dict[str, Any]) -> None
 
     with pytest.raises(RuntimeError, match="fields_readback_unrecognized"):
         bitrix_setup._list_fields(MalformedApi(), entity_id="CRM_36")
+
+
+def test_userfield_list_rejects_conflicting_id_aliases() -> None:
+    class ConflictingIdApi:
+        def call_json(self, method: str, payload: dict[str, Any], **_kwargs: Any):
+            assert method == "userfieldconfig.list"
+            return {
+                "result": {
+                    "fields": [
+                        {
+                            "id": "1",
+                            "ID": "2",
+                            "fieldName": "UF_CRM_1_VALUE",
+                            "userTypeId": "string",
+                        }
+                    ]
+                }
+            }
+
+    with pytest.raises(RuntimeError, match="fields_readback_unrecognized"):
+        bitrix_setup._list_fields(ConflictingIdApi(), entity_id="CRM_36")
 
 
 @pytest.mark.parametrize("next_value", [False, -1, 1.5, "1.5", " 1", "invalid"])

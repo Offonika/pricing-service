@@ -25,6 +25,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestFile,
 )
 from app.schemas.site_service_requests import (
+    SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestEventPayload,
 )
@@ -530,10 +531,11 @@ def lease_site_service_request_commands(
         if len(leased) >= lease_limit:
             break
         try:
-            reply_text = cipher.decrypt(
+            reply_bytes = cipher.decrypt(
                 command.reply_encrypted,
                 event_id=command.command_key,
-            ).decode("utf-8")
+            )
+            reply_text = reply_bytes.decode("utf-8")
         except SiteServiceRequestConfigurationError as exc:
             crypto_error_commands.append(command)
             if first_crypto_error is None:
@@ -542,7 +544,11 @@ def lease_site_service_request_commands(
         except UnicodeDecodeError:
             invalid_text_commands.append(command)
             continue
-        if not reply_text:
+        if (
+            not reply_text.strip()
+            or len(reply_text) > SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH
+            or hashlib.sha256(reply_bytes).hexdigest() != command.reply_sha256
+        ):
             invalid_text_commands.append(command)
             continue
         command.status = "leased"
@@ -588,7 +594,9 @@ def lease_site_service_request_commands(
             .limit(1)
         )
         if latest_command_id == command.id:
-            command.case.outbound_checked_at = current_time
+            existing_checkpoint = command.case.outbound_checked_at
+            if existing_checkpoint is None or _as_utc(existing_checkpoint) <= current_time:
+                command.case.outbound_checked_at = current_time
             command.case.outbound_last_error_code = "command_payload_invalid"
     session.flush()
     return leased
@@ -668,8 +676,11 @@ def acknowledge_site_service_request_command(
             payload.message_id,
         )
         if is_latest_command:
-            case.outbound_checked_at = current_time
-            case.outbound_last_error_code = None
+            _update_site_service_request_outbound_checkpoint(
+                case,
+                current_time=current_time,
+                error_code=None,
+            )
         result_status = "applied"
     else:
         assert payload.error_code is not None
@@ -688,8 +699,11 @@ def acknowledge_site_service_request_command(
         command.last_error_code = payload.error_code
         command.lease_until = None
         if is_latest_command:
-            case.outbound_checked_at = current_time
-            case.outbound_last_error_code = payload.error_code
+            _update_site_service_request_outbound_checkpoint(
+                case,
+                current_time=current_time,
+                error_code=payload.error_code,
+            )
         result_status = "failed"
 
     command.updated_at = current_time
@@ -699,6 +713,22 @@ def acknowledge_site_service_request_command(
         status=result_status,
         duplicate=False,
     )
+
+
+def _update_site_service_request_outbound_checkpoint(
+    case: SiteServiceRequestCase,
+    *,
+    current_time: datetime,
+    error_code: str | None,
+) -> bool:
+    if (
+        case.outbound_checked_at is not None
+        and _as_utc(case.outbound_checked_at) > current_time
+    ):
+        return False
+    case.outbound_checked_at = current_time
+    case.outbound_last_error_code = error_code
+    return True
 
 
 def build_site_service_request_health(

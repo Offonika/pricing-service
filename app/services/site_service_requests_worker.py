@@ -22,7 +22,10 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
 )
-from app.schemas.site_service_requests import SiteServiceRequestEventPayload
+from app.schemas.site_service_requests import (
+    SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
+    SiteServiceRequestEventPayload,
+)
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     SiteServiceRequestConfigurationError,
@@ -155,6 +158,36 @@ class SiteServiceRequestPermanentError(RuntimeError):
         self.code = code
 
 
+def _preflight_aliased_string(
+    user: dict[str, Any],
+    *field_names: str,
+    role: str,
+    required: bool,
+) -> str:
+    values = [user[field_name] for field_name in field_names if field_name in user]
+    if not values:
+        if not required:
+            return ""
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    if any(not isinstance(value, str) for value in values):
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    first_value = values[0]
+    if any(value != first_value for value in values[1:]):
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    normalized = first_value.strip()
+    if required and not normalized:
+        raise SiteServiceRequestConfigurationError(
+            f"site service request pilot user readback failed for {role}"
+        )
+    return normalized
+
+
 def preflight_site_service_request_users(
     *,
     api: SiteServiceRequestBitrixApi,
@@ -190,17 +223,46 @@ def preflight_site_service_request_users(
                 f"site service request pilot user readback failed for {role}"
             )
         user = users[0]
-        returned_user_id = _positive_int(user.get("ID") or user.get("id"))
+        try:
+            returned_user_id = _strict_aliased_positive_int(
+                user,
+                "ID",
+                "id",
+                error_code="site_service_request_pilot_user_readback_failed",
+            )
+        except RuntimeError as exc:
+            raise SiteServiceRequestConfigurationError(
+                f"site service request pilot user readback failed for {role}"
+            ) from exc
         if returned_user_id != user_id:
             raise SiteServiceRequestConfigurationError(
                 f"site service request pilot user readback failed for {role}"
             )
-        if str(user.get("ACTIVE") or user.get("active") or "").upper() != "Y":
+        active = _preflight_aliased_string(
+            user,
+            "ACTIVE",
+            "active",
+            role=role,
+            required=True,
+        )
+        if active.upper() != "Y":
             raise SiteServiceRequestConfigurationError(
                 f"site service request pilot user is inactive for {role}"
             )
-        first_name = str(user.get("NAME") or user.get("name") or "").strip()
-        last_name = str(user.get("LAST_NAME") or user.get("lastName") or "").strip()
+        first_name = _preflight_aliased_string(
+            user,
+            "NAME",
+            "name",
+            role=role,
+            required=True,
+        )
+        last_name = _preflight_aliased_string(
+            user,
+            "LAST_NAME",
+            "lastName",
+            role=role,
+            required=False,
+        )
         actual_names = {
             _normalized_person_name(f"{first_name} {last_name}"),
             _normalized_person_name(f"{last_name} {first_name}"),
@@ -229,9 +291,16 @@ class SiteServiceRequestBitrixReader:
         for contact_id in candidate_ids:
             response = self.api.call("crm.contact.get", [("id", str(contact_id))])
             contact = response.get("result")
+            if not isinstance(contact, dict):
+                raise RuntimeError("bitrix_contact_readback_failed")
             if (
-                not isinstance(contact, dict)
-                or _positive_int(contact.get("ID") or contact.get("id")) != contact_id
+                _strict_aliased_positive_int(
+                    contact,
+                    "ID",
+                    "id",
+                    error_code="bitrix_contact_readback_failed",
+                )
+                != contact_id
             ):
                 raise RuntimeError("bitrix_contact_readback_failed")
             active_status = _strict_aliased_string(contact, "ACTIVE", "active")
@@ -289,8 +358,14 @@ class SiteServiceRequestBitrixReader:
                 {
                     deal_id
                     for row in exact_rows
-                    for deal_id in [_positive_int(row.get("ID") or row.get("id"))]
-                    if deal_id is not None
+                    for deal_id in [
+                        _strict_aliased_positive_int(
+                            row,
+                            "ID",
+                            "id",
+                            error_code="bitrix_deal_readback_invalid",
+                        )
+                    ]
                 }
             )
             if len(exact_ids) == 1:
@@ -355,12 +430,15 @@ class SiteServiceRequestBitrixReader:
                 raise RuntimeError("bitrix_deal_readback_invalid")
             if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
                 raise RuntimeError("bitrix_deal_readback_invalid")
-            if any(
-                _positive_int(row.get("ID") or row.get("id")) is None
-                or _strict_deal_title(row) is None
-                for row in page
-            ):
-                raise RuntimeError("bitrix_deal_readback_invalid")
+            for row in page:
+                _strict_aliased_positive_int(
+                    row,
+                    "ID",
+                    "id",
+                    error_code="bitrix_deal_readback_invalid",
+                )
+                if _strict_deal_title(row) is None:
+                    raise RuntimeError("bitrix_deal_readback_invalid")
             rows.extend(page)
             parsed_next = _resolve_pagination_offset(
                 top_next=response.get("next"),
@@ -484,8 +562,13 @@ class SiteServiceRequestBitrixWriter:
                 raise RuntimeError("crm_contact_readback_invalid")
             if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
                 raise RuntimeError("crm_contact_readback_invalid")
-            if any(_positive_int(row.get("ID") or row.get("id")) is None for row in page):
-                raise RuntimeError("crm_contact_readback_invalid")
+            for row in page:
+                _strict_aliased_positive_int(
+                    row,
+                    "ID",
+                    "id",
+                    error_code="crm_contact_readback_invalid",
+                )
             rows.extend(page)
             parsed_next = _resolve_pagination_offset(
                 top_next=response.get("next"),
@@ -503,8 +586,14 @@ class SiteServiceRequestBitrixWriter:
             {
                 contact_id
                 for row in rows
-                for contact_id in [_positive_int(row.get("ID") or row.get("id"))]
-                if contact_id is not None
+                for contact_id in [
+                    _strict_aliased_positive_int(
+                        row,
+                        "ID",
+                        "id",
+                        error_code="crm_contact_readback_invalid",
+                    )
+                ]
             }
         )
         if len(contact_ids) > 1:
@@ -518,9 +607,18 @@ class SiteServiceRequestBitrixWriter:
         contact = response.get("result")
         if (
             not isinstance(contact, dict)
-            or _positive_int(contact.get("ID") or contact.get("id")) != contact_id
             or str(contact.get("ORIGINATOR_ID") or "") != "site-service-request"
             or str(contact.get("ORIGIN_ID") or "") != origin_id
+        ):
+            raise RuntimeError("crm_contact_write_readback_failed")
+        if (
+            _strict_aliased_positive_int(
+                contact,
+                "ID",
+                "id",
+                error_code="crm_contact_write_readback_failed",
+            )
+            != contact_id
         ):
             raise RuntimeError("crm_contact_write_readback_failed")
 
@@ -757,10 +855,16 @@ class SiteServiceRequestBitrixWriter:
             items = result["items"]
             if any(not isinstance(item, dict) for item in items):
                 raise RuntimeError("bitrix_item_readback_invalid")
-            parsed_ids = [_positive_int(item.get("id") or item.get("ID")) for item in items]
-            if any(item_id is None for item_id in parsed_ids):
-                raise RuntimeError("bitrix_item_readback_invalid")
-            item_ids.update(item_id for item_id in parsed_ids if item_id is not None)
+            parsed_ids = [
+                _strict_aliased_positive_int(
+                    item,
+                    "id",
+                    "ID",
+                    error_code="bitrix_item_readback_invalid",
+                )
+                for item in items
+            ]
+            item_ids.update(parsed_ids)
             parsed_next = _resolve_pagination_offset(
                 top_next=response.get("next"),
                 nested_next=result.get("next"),
@@ -781,7 +885,14 @@ class SiteServiceRequestBitrixWriter:
         )
         result = response.get("result") or {}
         item = result.get("item") if isinstance(result, dict) else None
-        item_id = _positive_int(item.get("id") if isinstance(item, dict) else result)
+        if isinstance(item, dict):
+            return _strict_aliased_positive_int(
+                item,
+                "id",
+                "ID",
+                error_code="bitrix_item_write_failed",
+            )
+        item_id = _positive_int(result)
         if item_id is None:
             raise RuntimeError("bitrix_item_write_failed")
         return item_id
@@ -809,7 +920,17 @@ class SiteServiceRequestBitrixWriter:
         )
         result = response.get("result") or {}
         item = result.get("item") if isinstance(result, dict) else None
-        if not isinstance(item, dict) or _positive_int(item.get("id") or item.get("ID")) != item_id:
+        if not isinstance(item, dict):
+            raise RuntimeError("bitrix_item_readback_failed")
+        if (
+            _strict_aliased_positive_int(
+                item,
+                "id",
+                "ID",
+                error_code="bitrix_item_readback_failed",
+            )
+            != item_id
+        ):
             raise RuntimeError("bitrix_item_readback_failed")
         return item
 
@@ -1275,6 +1396,8 @@ def create_site_service_request_command(
     normalized_reply = reply_text.strip()
     if not normalized_reply:
         raise SiteServiceRequestPermanentError("reply_text_empty")
+    if len(normalized_reply) > SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH:
+        raise SiteServiceRequestPermanentError("reply_text_too_long")
     reply = normalized_reply.encode("utf-8")
     reply_sha256 = hashlib.sha256(reply).hexdigest()
     base_command_key = f"site-support-reply:{case.source_ticket_id}:{reply_sha256}"
@@ -1520,7 +1643,6 @@ def sync_staged_site_service_request_files(
                 case.sync_status = case.base_sync_status
                 case.last_error_code = case.base_error_code
                 case.updated_at = current_time
-            file.temporary_path = None
             if cleanup_paths is not None:
                 cleanup_paths.append(path)
             results.append(
@@ -1539,7 +1661,6 @@ def sync_staged_site_service_request_files(
             case.sync_status = "file_sync_error"
             case.last_error_code = "file_sync_error"
             case.updated_at = current_time
-            file.temporary_path = None
             if cleanup_paths is not None:
                 cleanup_paths.append(path)
             if _write_file_sync_error_to_item(
@@ -1582,12 +1703,51 @@ def sync_staged_site_service_request_files(
     return results
 
 
-def cleanup_uploaded_site_service_request_files(paths: list[Path]) -> None:
-    for path in paths:
+def cleanup_uploaded_site_service_request_files(
+    session: Session,
+    paths: list[Path],
+) -> None:
+    # Keep temporary_path durable until unlink succeeds. If the process dies
+    # after unlink but before commit, missing_ok makes the next retry safe.
+    durable_paths = session.scalars(
+        select(SiteServiceRequestFile.temporary_path).where(
+            SiteServiceRequestFile.temporary_path.is_not(None),
+            or_(
+                SiteServiceRequestFile.status == "uploaded",
+                and_(
+                    SiteServiceRequestFile.status == "failed",
+                    SiteServiceRequestFile.last_error_code == "file_payload_invalid",
+                ),
+            ),
+        )
+    ).all()
+    cleanup_paths = {Path(path) for path in durable_paths if path}
+    cleanup_paths.update(paths)
+    for path in cleanup_paths:
+        files = session.scalars(
+            select(SiteServiceRequestFile)
+            .where(SiteServiceRequestFile.temporary_path == str(path))
+            .with_for_update()
+        ).all()
+        if files and any(
+            file.status != "uploaded"
+            and not (
+                file.status == "failed"
+                and file.last_error_code == "file_payload_invalid"
+            )
+            for file in files
+        ):
+            # A binary PUT may have restaged the deterministic spool path after
+            # the upload/error transaction committed but before cleanup started.
+            # The new payload owns the path and must remain available to file sync.
+            continue
         try:
             path.unlink(missing_ok=True)
         except OSError:
             continue
+        for file in files:
+            file.temporary_path = None
+    session.flush()
 
 
 def _write_file_sync_error_to_item(
@@ -1749,7 +1909,14 @@ def _collect_site_service_request_outbound_case(
         )
         .limit(1)
     )
-    if case.outbound_last_error_code != "reply_text_empty":
+    may_update_outbound_checkpoint = (
+        case.outbound_checked_at is None
+        or _as_utc(case.outbound_checked_at) <= current_time
+    )
+    if may_update_outbound_checkpoint and case.outbound_last_error_code not in {
+        "reply_text_empty",
+        "reply_text_too_long",
+    }:
         if latest_command is None:
             case.outbound_last_error_code = None
         elif latest_command.status == "applied":
@@ -1763,7 +1930,8 @@ def _collect_site_service_request_outbound_case(
     if (
         uncleared_command is None
         and latest_command is not None
-        and case.outbound_last_error_code != "reply_text_empty"
+        and case.outbound_last_error_code
+        not in {"reply_text_empty", "reply_text_too_long"}
         and latest_command.status == "applied"
         and action != send_value
         and str(_item_field_value(item, field_map["site_reply_status"]) or "") != sent_value
@@ -1805,7 +1973,8 @@ def _collect_site_service_request_outbound_case(
     if (
         uncleared_command is None
         and latest_command is not None
-        and case.outbound_last_error_code != "reply_text_empty"
+        and case.outbound_last_error_code
+        not in {"reply_text_empty", "reply_text_too_long"}
         and latest_command.status == "failed"
         and action != send_value
         and str(_item_field_value(item, field_map["site_reply_status"]) or "") != error_value
@@ -1856,21 +2025,26 @@ def _collect_site_service_request_outbound_case(
             item,
             field_name=field_map["site_reply_text"],
         )
+        reply_validation_error = None
         if not reply_text:
-            empty_reply_item = writer.update_item_fields(
+            reply_validation_error = "reply_text_empty"
+        elif len(reply_text) > SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH:
+            reply_validation_error = "reply_text_too_long"
+        if reply_validation_error is not None:
+            invalid_reply_sha256 = hashlib.sha256(reply_text.encode("utf-8")).hexdigest()
+            invalid_reply_item = writer.update_item_fields(
                 entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
                 item_id=int(case.bitrix_item_id),
                 fields={
                     field_map["site_reply_status"]: error_value,
-                    field_map["site_sync_error"]: "reply_text_empty",
+                    field_map["site_sync_error"]: reply_validation_error,
                 },
             )
             updated_reply_sha256 = _site_service_request_reply_sha256(
-                empty_reply_item,
+                invalid_reply_item,
                 field_name=field_map["site_reply_text"],
             )
-            empty_reply_sha256 = hashlib.sha256(b"").hexdigest()
-            if updated_reply_sha256 != empty_reply_sha256:
+            if updated_reply_sha256 != invalid_reply_sha256:
                 _restore_site_service_request_send_action(
                     case=case,
                     settings=settings,
@@ -1885,20 +2059,20 @@ def _collect_site_service_request_outbound_case(
                 )
                 result = None
             else:
-                empty_reply_action = _site_service_request_reply_action(
-                    empty_reply_item,
+                invalid_reply_action = _site_service_request_reply_action(
+                    invalid_reply_item,
                     field_name=field_map["site_reply_action"],
                 )
                 if (
-                    empty_reply_action != send_value
+                    invalid_reply_action != send_value
                     and not _item_field_is_cleared(
-                        empty_reply_item,
+                        invalid_reply_item,
                         field_map["site_reply_action"],
                     )
                 ) or (
                     str(
                         _item_field_value(
-                            empty_reply_item,
+                            invalid_reply_item,
                             field_map["site_reply_status"],
                             default=_MISSING_ITEM_FIELD,
                         )
@@ -1906,18 +2080,19 @@ def _collect_site_service_request_outbound_case(
                     )
                     != error_value
                     or not _item_field_matches(
-                        empty_reply_item,
+                        invalid_reply_item,
                         field_map["site_sync_error"],
-                        "reply_text_empty",
+                        reply_validation_error,
                     )
                 ):
                     raise RuntimeError("bitrix_reply_status_readback_failed")
-                case.outbound_last_error_code = "reply_text_empty"
+                if may_update_outbound_checkpoint:
+                    case.outbound_last_error_code = reply_validation_error
                 result = {
                     "caseId": case.id,
                     "ticketId": case.source_ticket_id,
                     "status": "failed",
-                    "errorCode": "reply_text_empty",
+                    "errorCode": reply_validation_error,
                 }
             _commit_site_service_request_outbound_success(
                 session,
@@ -1925,7 +2100,10 @@ def _collect_site_service_request_outbound_case(
                 current_time=current_time,
             )
             return result
-        if case.outbound_last_error_code == "reply_text_empty":
+        if may_update_outbound_checkpoint and case.outbound_last_error_code in {
+            "reply_text_empty",
+            "reply_text_too_long",
+        }:
             if latest_command is not None and latest_command.status == "failed":
                 case.outbound_last_error_code = (
                     latest_command.last_error_code or "outbound_delivery_failed"
@@ -2091,6 +2269,32 @@ def _commit_site_service_request_outbound_success(
     session.commit()
 
 
+def _update_site_service_request_assignment_checkpoint(
+    case: SiteServiceRequestCase,
+    *,
+    current_time: datetime,
+    error_code: str | None,
+) -> bool:
+    if (
+        case.assignment_checked_at is not None
+        and _as_utc(case.assignment_checked_at) > current_time
+    ):
+        return False
+    case.assignment_checked_at = current_time
+    case.assignment_last_error_code = error_code
+    _advance_site_service_request_case_updated_at(case, current_time=current_time)
+    return True
+
+
+def _advance_site_service_request_case_updated_at(
+    case: SiteServiceRequestCase,
+    *,
+    current_time: datetime,
+) -> None:
+    if case.updated_at is None or _as_utc(case.updated_at) < current_time:
+        case.updated_at = current_time
+
+
 def _checkpoint_site_service_request_reconcile_failure(
     session: Session,
     *,
@@ -2154,7 +2358,10 @@ def _checkpoint_site_service_request_reconcile_failure(
             return failed_case, False
         failed_case.outbound_checked_at = current_time
         failed_case.outbound_last_error_code = error_code or "outbound_reconcile_failed"
-    failed_case.updated_at = current_time
+    _advance_site_service_request_case_updated_at(
+        failed_case,
+        current_time=current_time,
+    )
     session.commit()
     return failed_case, True
 
@@ -2409,9 +2616,11 @@ def reconcile_site_service_request_assignments(
                 delivery_ticket_id = case.source_ticket_id
                 delivery_assignment_state = case.assignment_state
                 delivery_assigned_user_id = case.assigned_user_id
-                case.assignment_checked_at = current_time
-                case.assignment_last_error_code = None
-                case.updated_at = current_time
+                _update_site_service_request_assignment_checkpoint(
+                    case,
+                    current_time=current_time,
+                    error_code=None,
+                )
                 _deliver_site_service_request_escalation(
                     session,
                     case_id=case_id,
@@ -2488,10 +2697,12 @@ def reconcile_site_service_request_assignments(
             case.sla_paused_at = decision.sla_paused_at
             case.escalated_at = decision.escalated_at
             case.round_robin_seq = decision.round_robin_seq
-            case.assignment_checked_at = current_time
-            case.assignment_last_error_code = "timeman_unavailable" if timeman_failed else None
+            _update_site_service_request_assignment_checkpoint(
+                case,
+                current_time=current_time,
+                error_code="timeman_unavailable" if timeman_failed else None,
+            )
             _apply_assignment_base_status(case, assignment_state=decision.state)
-            case.updated_at = current_time
             close_reverted = False
             fields: dict[str, Any] = {
                 field_map["first_response_due_at"]: decision.first_response_due_at,
@@ -2739,8 +2950,11 @@ def _apply_site_service_request_worker_plan(
     case.sla_paused_at = assignment.sla_paused_at
     case.escalated_at = assignment.escalated_at
     case.round_robin_seq = assignment.round_robin_seq
-    case.assignment_checked_at = now
-    case.assignment_last_error_code = "timeman_unavailable" if timeman_failed else None
+    _update_site_service_request_assignment_checkpoint(
+        case,
+        current_time=now,
+        error_code="timeman_unavailable" if timeman_failed else None,
+    )
 
     file_error_code = session.scalar(
         select(SiteServiceRequestFile.last_error_code)
@@ -2833,7 +3047,7 @@ def _apply_site_service_request_worker_plan(
     case.sync_status = sync_status
     case.last_error_code = error_code
     case.version += 1
-    case.updated_at = now
+    _advance_site_service_request_case_updated_at(case, current_time=now)
     event.status = "processed"
     event.attempts += 1
     event.next_retry_at = None
@@ -3250,12 +3464,20 @@ def _disk_file_from_payload(
         raise RuntimeError("bitrix_file_readback_invalid")
     if not isinstance(item, dict):
         raise RuntimeError("bitrix_file_readback_invalid")
-    file_id = item.get("ID") or item.get("id") or item.get("REAL_OBJECT_ID")
-    if _positive_int(file_id) is None:
-        raise RuntimeError("bitrix_file_readback_invalid")
+    if "ID" in item or "id" in item:
+        file_id = _strict_aliased_positive_int(
+            item,
+            "ID",
+            "id",
+            error_code="bitrix_file_readback_invalid",
+        )
+    else:
+        file_id = _positive_int(item.get("REAL_OBJECT_ID"))
+        if file_id is None:
+            raise RuntimeError("bitrix_file_readback_invalid")
     if expected_name is not None:
-        actual_name = item.get("NAME") or item.get("name")
-        if not isinstance(actual_name, str) or actual_name != expected_name:
+        actual_name = _strict_aliased_string(item, "NAME", "name")
+        if actual_name != expected_name:
             raise RuntimeError("bitrix_file_readback_invalid")
     url = item.get("DETAIL_URL") or item.get("detailUrl") or item.get("DOWNLOAD_URL")
     return str(file_id), str(url) if url else None
@@ -3268,10 +3490,20 @@ def _item_field_value(
     default: Any = None,
 ) -> Any:
     expected = _normalized_field_key(field_name)
-    for key, value in item.items():
-        if _normalized_field_key(str(key)) == expected:
-            return value
-    return default
+    values = [
+        value
+        for key, value in item.items()
+        if _normalized_field_key(str(key)) == expected
+    ]
+    if not values:
+        return default
+    first_value = values[0]
+    if any(
+        type(value) is not type(first_value) or value != first_value
+        for value in values[1:]
+    ):
+        raise RuntimeError("bitrix_item_field_alias_conflict")
+    return first_value
 
 
 def _item_field_is_cleared(item: dict[str, Any], field_name: str) -> bool:
@@ -3289,12 +3521,27 @@ def _item_field_matches(item: dict[str, Any], field_name: str, expected: Any) ->
 def _item_field_contains(item: dict[str, Any], field_name: str, expected_id: str) -> bool:
     value = _item_field_value(item, field_name)
     values = value if isinstance(value, list) else [value]
+    parsed_values: list[int] = []
     for candidate in values:
         if isinstance(candidate, dict):
-            candidate = candidate.get("id") or candidate.get("ID") or candidate.get("value")
-        if str(candidate or "") == str(expected_id):
-            return True
-    return False
+            parsed_values.append(
+                _strict_aliased_positive_int(
+                    candidate,
+                    "id",
+                    "ID",
+                    "value",
+                    error_code="bitrix_file_readback_failed",
+                )
+            )
+            continue
+        parsed_candidate = _positive_int(candidate)
+        if parsed_candidate is None:
+            raise RuntimeError("bitrix_file_readback_failed")
+        parsed_values.append(parsed_candidate)
+    parsed_expected_id = _positive_int(expected_id)
+    if parsed_expected_id is None:
+        raise RuntimeError("bitrix_file_readback_failed")
+    return parsed_expected_id in parsed_values
 
 
 def _normalized_field_key(value: str) -> str:
@@ -3342,6 +3589,21 @@ def _strict_optional_aliased_positive_int(
     return first_value
 
 
+def _strict_aliased_positive_int(
+    item: dict[str, Any],
+    *field_names: str,
+    error_code: str,
+) -> int:
+    value = _strict_optional_aliased_positive_int(
+        item,
+        *field_names,
+        error_code=error_code,
+    )
+    if value is None:
+        raise RuntimeError(error_code)
+    return value
+
+
 def _deal_ids(payload: dict[str, Any]) -> list[int]:
     return [deal_id for deal_id, _title in _deal_id_titles(payload)]
 
@@ -3358,9 +3620,14 @@ def _deal_id_titles_from_rows(result: list[dict[str, Any]]) -> list[tuple[int, s
     for item in result:
         if not isinstance(item, dict):
             continue
-        deal_id = _positive_int(item.get("ID") or item.get("id"))
+        deal_id = _strict_aliased_positive_int(
+            item,
+            "ID",
+            "id",
+            error_code="bitrix_deal_readback_invalid",
+        )
         title = _strict_deal_title(item)
-        if deal_id is None or title is None:
+        if title is None:
             raise RuntimeError("bitrix_deal_readback_invalid")
         rows.append((deal_id, title))
     return rows

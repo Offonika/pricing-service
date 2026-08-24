@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _EVENT_ID = re.compile(r"^site-support:(\d+):(\d+)$")
+SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH = 200_000
 
 
 class SiteServiceRequestFilePayload(BaseModel):
@@ -150,7 +151,11 @@ class SiteServiceRequestCommandPayload(BaseModel):
     command_id: int = Field(alias="commandId", gt=0)
     command_key: str = Field(alias="commandKey", min_length=1, max_length=255)
     ticket_id: int = Field(alias="ticketId", gt=0)
-    reply_text: str = Field(alias="replyText", min_length=1, max_length=200_000)
+    reply_text: str = Field(
+        alias="replyText",
+        min_length=1,
+        max_length=SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
+    )
     lease_until: datetime = Field(alias="leaseUntil")
     lease_token: str = Field(alias="leaseToken", min_length=32, max_length=128)
 

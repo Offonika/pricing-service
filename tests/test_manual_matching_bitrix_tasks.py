@@ -115,6 +115,30 @@ def test_manual_matching_bitrix_tasks_dry_run_does_not_call_bitrix(
     assert "/rest/" not in output
 
 
+def test_manual_matching_bitrix_tasks_excludes_responsible_ids_from_env(
+    db_session: Session,
+    sqlite_engine,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MANUAL_MATCHING_TASK_EXCLUDED_RESPONSIBLE_IDS", "130757")
+
+    result = manual_matching_bitrix_tasks.main(
+        [
+            "--date",
+            REPORT_DATE.isoformat(),
+            "--database-url",
+            str(sqlite_engine.url),
+            "--state-path",
+            str(tmp_path / "state.json"),
+        ]
+    )
+
+    assert result["excluded_responsible_ids"] == [130757]
+    assert result["summary"]["would_create"] == 3
+    assert [item["responsible_id"] for item in result["tasks"]] == [130756, 130917, 130747]
+
+
 def test_manual_matching_bitrix_tasks_apply_is_idempotent_with_state(
     db_session: Session,
     sqlite_engine,

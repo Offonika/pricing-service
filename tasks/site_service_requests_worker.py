@@ -125,7 +125,8 @@ def main(
             # File rows and the corresponding Bitrix readback must be durable
             # before outbound polling starts committing per-card checkpoints.
             session.commit()
-            cleanup_uploaded_site_service_request_files(cleanup_paths)
+            cleanup_uploaded_site_service_request_files(session, cleanup_paths)
+            session.commit()
             cleanup_paths.clear()
             commands = collect_site_service_request_outbound_commands(
                 session,
@@ -157,8 +158,6 @@ def main(
                 "count": len(plans),
                 "plans": [safe_site_service_request_plan_dict(plan) for plan in plans],
             }
-    if cleanup_paths:
-        cleanup_uploaded_site_service_request_files(cleanup_paths)
     _print_result(result, compact=args.compact)
     return result
 

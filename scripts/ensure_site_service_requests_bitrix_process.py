@@ -166,7 +166,12 @@ def build_plan(
     for field in fields:
         normalized_field_name = _normalized_field_name(field.get("fieldName"))
         expected_xml_id = expected_xml_id_by_field_name.get(normalized_field_name)
-        raw_xml_id = _strict_aliased_string(field, "xmlId", "XML_ID")
+        raw_xml_id = _strict_aliased_string(
+            field,
+            "xmlId",
+            "XML_ID",
+            error_code="site_service_request_field_readback_unrecognized",
+        )
         if expected_xml_id is not None and raw_xml_id != expected_xml_id:
             raise RuntimeError("site_service_request_field_readback_unrecognized")
         xml_id = (raw_xml_id or "").strip()
@@ -474,16 +479,21 @@ def _list_fields(api: BitrixJsonApi, *, entity_id: str) -> list[dict[str, Any]]:
         if not isinstance(result, dict) or not isinstance(result.get("fields"), list):
             raise RuntimeError("site_service_request_fields_readback_unrecognized")
         page = result["fields"]
-        if any(
-            not isinstance(item, dict)
-            or _positive_int(item.get("id") or item.get("ID")) is None
-            or not isinstance(item.get("fieldName"), str)
-            or not item["fieldName"].strip()
-            or not isinstance(item.get("userTypeId"), str)
-            or not item["userTypeId"].strip()
-            for item in page
-        ):
-            raise RuntimeError("site_service_request_fields_readback_unrecognized")
+        for item in page:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("fieldName"), str)
+                or not item["fieldName"].strip()
+                or not isinstance(item.get("userTypeId"), str)
+                or not item["userTypeId"].strip()
+            ):
+                raise RuntimeError("site_service_request_fields_readback_unrecognized")
+            _strict_aliased_positive_int(
+                item,
+                "id",
+                "ID",
+                error_code="site_service_request_fields_readback_unrecognized",
+            )
         fields.extend(page)
         start = _resolve_pagination_offset(
             top_next=response.get("next"),
@@ -571,9 +581,10 @@ def _stage_mapping(
         if existing_stage_id is not None and existing_stage_id != stage_id:
             raise RuntimeError("site_service_request_stage_mapping_ambiguous")
         by_code[code] = stage_id
-        if str(stage.get("SEMANTICS") or stage.get("semantics") or "").upper() == "S":
+        semantics = _strict_stage_semantics(stage)
+        if semantics == "S":
             success_stage_ids.add(stage_id)
-        if str(stage.get("SEMANTICS") or stage.get("semantics") or "").upper() == "F":
+        if semantics == "F":
             failure_stage_ids.add(stage_id)
     mapping = {
         logical_key: by_code[code]
@@ -697,10 +708,10 @@ def _enum_mapping(spec: dict[str, Any], field: dict[str, Any]) -> dict[str, str]
     for key, _title in spec["enum"]:
         xml_id = f"MM_SITE_{spec['key'].upper()}_{key.upper()}"
         enum_ids = {
-            str(item.get("id") or item.get("ID") or "").strip()
+            _strict_enum_row_id(item)
             for item in enum_rows
-            if str(item.get("xmlId") or item.get("XML_ID") or "").strip() == xml_id
-            and str(item.get("id") or item.get("ID") or "").strip()
+            if (_strict_optional_enum_string(item, "xmlId", "XML_ID") or "").strip()
+            == xml_id
         }
         if len(enum_ids) > 1:
             raise RuntimeError("site_service_request_enum_mapping_ambiguous")
@@ -718,12 +729,15 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         exact_rows = [
             row
             for row in enum_rows
-            if str(row.get("xmlId") or row.get("XML_ID") or "").strip().lower() == logical_xml_id
+            if (_strict_optional_enum_string(row, "xmlId", "XML_ID") or "")
+            .strip()
+            .lower()
+            == logical_xml_id
         ]
         suffix_rows = [
             row
             for row in enum_rows
-            if str(row.get("xmlId") or row.get("XML_ID") or "")
+            if (_strict_optional_enum_string(row, "xmlId", "XML_ID") or "")
             .strip()
             .lower()
             .endswith(f"_{logical_xml_id}")
@@ -731,14 +745,13 @@ def _request_type_enum_mapping(field: dict[str, Any]) -> dict[str, str]:
         label_rows = [
             row
             for row in enum_rows
-            if str(row.get("value") or row.get("VALUE") or "").strip().casefold() in label_values
+            if (_strict_optional_enum_string(row, "value", "VALUE") or "")
+            .strip()
+            .casefold()
+            in label_values
         ]
         candidates = exact_rows or suffix_rows or label_rows
-        enum_ids = {
-            str(row.get("id") or row.get("ID") or "").strip()
-            for row in candidates
-            if str(row.get("id") or row.get("ID") or "").strip()
-        }
+        enum_ids = {_strict_enum_row_id(row) for row in candidates}
         if len(enum_ids) > 1:
             raise RuntimeError("site_service_request_request_type_enum_ambiguous")
         if enum_ids:
@@ -770,26 +783,68 @@ def _require_enum_rows(field: dict[str, Any]) -> list[dict[str, Any]]:
     rows = field.get("enum")
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise RuntimeError("site_service_request_enum_readback_unrecognized")
-    enum_ids = [_positive_int(row.get("id") or row.get("ID")) for row in rows]
-    if any(enum_id is None for enum_id in enum_ids):
-        raise RuntimeError("site_service_request_enum_readback_unrecognized")
+    enum_ids = [_strict_enum_row_id(row) for row in rows]
+    for row in rows:
+        _strict_optional_enum_string(row, "xmlId", "XML_ID")
+        if _strict_optional_enum_string(row, "value", "VALUE") is None:
+            raise RuntimeError("site_service_request_enum_readback_unrecognized")
     if len(enum_ids) != len(set(enum_ids)):
         raise RuntimeError("site_service_request_enum_readback_ambiguous")
     return rows
 
 
-def _strict_aliased_string(item: dict[str, Any], *field_names: str) -> str | None:
-    values = [item[field_name] for field_name in field_names if field_name in item]
-    if not values or any(not isinstance(value, str) for value in values):
+def _strict_enum_row_id(row: dict[str, Any]) -> str:
+    values = [row[field_name] for field_name in ("id", "ID") if field_name in row]
+    if not values:
+        raise RuntimeError("site_service_request_enum_readback_unrecognized")
+    parsed_values = [_positive_int(value) for value in values]
+    if any(value is None for value in parsed_values):
+        raise RuntimeError("site_service_request_enum_readback_unrecognized")
+    first_value = parsed_values[0]
+    if any(value != first_value for value in parsed_values[1:]):
+        raise RuntimeError("site_service_request_enum_readback_ambiguous")
+    assert first_value is not None
+    return str(first_value)
+
+
+def _strict_optional_enum_string(
+    row: dict[str, Any],
+    *field_names: str,
+) -> str | None:
+    values = [row[field_name] for field_name in field_names if field_name in row]
+    if not values:
         return None
+    if any(not isinstance(value, str) for value in values):
+        raise RuntimeError("site_service_request_enum_readback_unrecognized")
     first_value = values[0]
     if any(value != first_value for value in values[1:]):
+        raise RuntimeError("site_service_request_enum_readback_ambiguous")
+    return first_value
+
+
+def _strict_aliased_string(
+    item: dict[str, Any],
+    *field_names: str,
+    error_code: str,
+) -> str | None:
+    values = [item[field_name] for field_name in field_names if field_name in item]
+    if not values:
         return None
+    if any(not isinstance(value, str) for value in values):
+        raise RuntimeError(error_code)
+    first_value = values[0]
+    if any(value != first_value for value in values[1:]):
+        raise RuntimeError(error_code)
     return first_value
 
 
 def _strict_stage_id(item: dict[str, Any], *, expected_prefix: str) -> str:
-    stage_id = _strict_aliased_string(item, "STATUS_ID", "statusId")
+    stage_id = _strict_aliased_string(
+        item,
+        "STATUS_ID",
+        "statusId",
+        error_code="site_service_request_stages_readback_unrecognized",
+    )
     if (
         stage_id is None
         or not stage_id
@@ -798,6 +853,49 @@ def _strict_stage_id(item: dict[str, Any], *, expected_prefix: str) -> str:
     ):
         raise RuntimeError("site_service_request_stages_readback_unrecognized")
     return stage_id
+
+
+def _strict_stage_semantics(item: dict[str, Any]) -> str:
+    values = [
+        item[field_name]
+        for field_name in ("SEMANTICS", "semantics")
+        if field_name in item
+    ]
+    if not values:
+        return ""
+    normalized_values: list[str] = []
+    for value in values:
+        if value is None:
+            normalized_values.append("")
+            continue
+        if not isinstance(value, str) or value.strip() != value:
+            raise RuntimeError("site_service_request_stages_readback_unrecognized")
+        normalized = value.upper()
+        if normalized not in {"", "S", "F"}:
+            raise RuntimeError("site_service_request_stages_readback_unrecognized")
+        normalized_values.append(normalized)
+    first_value = normalized_values[0]
+    if any(value != first_value for value in normalized_values[1:]):
+        raise RuntimeError("site_service_request_stages_readback_unrecognized")
+    return first_value
+
+
+def _strict_aliased_positive_int(
+    item: dict[str, Any],
+    *field_names: str,
+    error_code: str,
+) -> int:
+    values = [item[field_name] for field_name in field_names if field_name in item]
+    if not values:
+        raise RuntimeError(error_code)
+    parsed_values = [_positive_int(value) for value in values]
+    if any(value is None for value in parsed_values):
+        raise RuntimeError(error_code)
+    first_value = parsed_values[0]
+    if any(value != first_value for value in parsed_values[1:]):
+        raise RuntimeError(error_code)
+    assert first_value is not None
+    return first_value
 
 
 def _positive_int(value: Any) -> int | None:

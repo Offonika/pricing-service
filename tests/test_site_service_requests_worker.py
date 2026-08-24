@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -17,10 +18,14 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
 )
-from app.schemas.site_service_requests import SiteServiceRequestEventPayload
+from app.schemas.site_service_requests import (
+    SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
+    SiteServiceRequestEventPayload,
+)
 from app.services import site_service_requests_worker as worker_module
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
+    SiteServiceRequestConfigurationError,
     accept_site_service_request_event,
     build_site_service_request_health,
 )
@@ -28,6 +33,7 @@ from app.services.site_service_requests_auth import content_sha256
 from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixReader,
     SiteServiceRequestBitrixWriter,
+    SiteServiceRequestPermanentError,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
     choose_site_service_assignee,
@@ -404,6 +410,29 @@ def test_user_preflight_rejects_malformed_extra_user_row() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("alias", "conflicting_value"),
+    [
+        ("id", "9999"),
+        ("active", "N"),
+        ("name", "Другая"),
+        ("lastName", "Фамилия"),
+    ],
+)
+def test_user_preflight_rejects_conflicting_user_aliases(
+    alias: str,
+    conflicting_value: str,
+) -> None:
+    api = FakeBitrixApi()
+    api.users[1001][alias] = conflicting_value
+
+    with pytest.raises(
+        SiteServiceRequestConfigurationError,
+        match="pilot user readback failed",
+    ):
+        preflight_site_service_request_users(api=api, settings=_worker_settings())
+
+
 def test_contact_lookup_rejects_missing_contract_fields() -> None:
     class MalformedContactApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -463,6 +492,17 @@ def test_contact_lookup_rejects_malformed_company_id(
 def test_contact_lookup_rejects_conflicting_company_id_aliases() -> None:
     api = FakeBitrixApi()
     api.contacts[501]["companyId"] = "602"
+
+    with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
+        SiteServiceRequestBitrixReader(api).find_contact(
+            phone="+79000000000",
+            email=None,
+        )
+
+
+def test_contact_lookup_rejects_conflicting_id_aliases() -> None:
+    api = FakeBitrixApi()
+    api.contacts[501]["id"] = "502"
 
     with pytest.raises(RuntimeError, match="bitrix_contact_readback_failed"):
         SiteServiceRequestBitrixReader(api).find_contact(
@@ -655,6 +695,29 @@ def test_deal_lookup_rejects_non_string_title(malformed_title: object) -> None:
         )
 
 
+def test_deal_lookup_rejects_conflicting_id_aliases() -> None:
+    class ConflictingDealIdApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.deal.list":
+                return {
+                    "result": [
+                        {
+                            "ID": "701",
+                            "id": "702",
+                            "TITLE": "Заказ 000001",
+                        }
+                    ]
+                }
+            return super().call(method, params, **kwargs)
+
+    with pytest.raises(RuntimeError, match="bitrix_deal_readback_invalid"):
+        SiteServiceRequestBitrixReader(ConflictingDealIdApi()).find_order(
+            contact_id=501,
+            order_number="000001",
+            order_field="UF_CRM_ORDER",
+        )
+
+
 def test_contact_create_timeout_recovers_by_origin_id() -> None:
     api = FakeBitrixApi()
     api.raise_after_contact_add = True
@@ -695,6 +758,20 @@ def test_contact_create_requires_origin_readback() -> None:
 
     with pytest.raises(RuntimeError, match="crm_contact_write_readback_failed"):
         SiteServiceRequestBitrixWriter(WrongOriginApi()).create_contact(
+            SiteServiceRequestEventPayload.model_validate(_event_payload())
+        )
+
+
+def test_contact_create_rejects_conflicting_id_aliases() -> None:
+    class ConflictingContactIdApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.contact.get":
+                response["result"]["id"] = "901"
+            return response
+
+    with pytest.raises(RuntimeError, match="crm_contact_write_readback_failed"):
+        SiteServiceRequestBitrixWriter(ConflictingContactIdApi()).create_contact(
             SiteServiceRequestEventPayload.model_validate(_event_payload())
         )
 
@@ -1171,7 +1248,8 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     )
     assert path.exists() is True
     db_session.commit()
-    cleanup_uploaded_site_service_request_files(cleanup_paths)
+    cleanup_uploaded_site_service_request_files(db_session, cleanup_paths)
+    db_session.commit()
 
     assert results[0]["status"] == "uploaded"
     db_session.refresh(file)
@@ -1183,6 +1261,146 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     assert case.sync_status == "order_not_found"
     assert case.last_error_code == "order_not_found"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
+
+
+def test_uploaded_file_cleanup_retries_after_unlink_failure(
+    db_session,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "uploaded.bin"
+    path.write_bytes(b"uploaded")
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=8,
+        sha256=hashlib.sha256(b"uploaded").hexdigest(),
+        status="uploaded",
+        bitrix_object_id="2000",
+        bitrix_file_id="2000",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    original_unlink = Path.unlink
+
+    def fail_unlink(self, *args, **kwargs):
+        if self == path:
+            raise OSError("simulated unlink failure")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    cleanup_uploaded_site_service_request_files(db_session, [])
+    db_session.commit()
+
+    db_session.refresh(file)
+    assert path.exists() is True
+    assert file.temporary_path == str(path)
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    cleanup_uploaded_site_service_request_files(db_session, [])
+    db_session.commit()
+
+    db_session.refresh(file)
+    assert path.exists() is False
+    assert file.temporary_path is None
+
+
+def test_uploaded_file_cleanup_preserves_concurrently_restaged_payload(
+    db_session,
+    tmp_path,
+) -> None:
+    path = tmp_path / "restaged.bin"
+    path.write_bytes(b"invalid")
+    case = _case(
+        bitrix_item_id=1000,
+        base_sync_status="synced",
+        sync_status="file_sync_error",
+    )
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=7,
+        sha256=hashlib.sha256(b"invalid").hexdigest(),
+        status="failed",
+        last_error_code="file_payload_invalid",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    stale_cleanup_paths = [path]
+
+    path.write_bytes(b"recovered")
+    file.status = "staged"
+    file.last_error_code = None
+    file.byte_size = 9
+    file.sha256 = hashlib.sha256(b"recovered").hexdigest()
+    db_session.commit()
+
+    cleanup_uploaded_site_service_request_files(db_session, stale_cleanup_paths)
+    db_session.commit()
+
+    db_session.refresh(file)
+    assert path.read_bytes() == b"recovered"
+    assert file.status == "staged"
+    assert file.temporary_path == str(path)
+
+
+def test_staged_file_upload_rejects_conflicting_file_id_aliases(
+    db_session,
+    tmp_path,
+) -> None:
+    class ConflictingFileFieldApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get":
+                response["result"]["item"]["ufCrm36Clientfiles"] = [
+                    {"id": "2000", "ID": "9999"}
+                ]
+            return response
+
+    content = b"file-content"
+    path = tmp_path / "staged.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = ConflictingFileFieldApi()
+    api.items[1000] = {}
+    cleanup_paths = []
+
+    results = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cleanup_paths=cleanup_paths,
+    )
+
+    db_session.refresh(file)
+    assert results[0]["status"] == "failed"
+    assert file.status == "failed"
+    assert file.bitrix_object_id is None
+    assert file.temporary_path == str(path)
+    assert cleanup_paths == []
+    assert path.exists() is True
 
 
 def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_path) -> None:
@@ -1488,6 +1706,31 @@ def test_outbound_rejects_non_scalar_reply_action(
     assert case.outbound_last_error_code == "outbound_reconcile_failed"
 
 
+def test_outbound_rejects_conflicting_item_field_aliases(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "UF_SITE_REPLY_ACTION": "",
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "Ответ не должен быть потерян",
+    }
+
+    results = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert results[0]["errorCode"] == "outbound_reconcile_failed"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert case.outbound_last_error_code == "outbound_reconcile_failed"
+
+
 def test_outbound_empty_send_sets_explicit_error_until_text_is_fixed(db_session) -> None:
     case = _case(bitrix_item_id=1000)
     db_session.add(case)
@@ -1551,6 +1794,70 @@ def test_outbound_empty_send_sets_explicit_error_until_text_is_fixed(db_session)
     assert api.items[1000]["ufSiteReplyAction"] == ""
     assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
     assert case.outbound_last_error_code is None
+
+
+def test_outbound_oversized_send_sets_explicit_error_until_text_is_fixed(
+    db_session,
+) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "x" * (SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH + 1),
+    }
+    settings = _worker_settings(
+        site_service_requests_ingest_enabled=True,
+        site_service_requests_outbound_replies_enabled=True,
+    )
+
+    failed = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert failed[0]["status"] == "failed"
+    assert failed[0]["errorCode"] == "reply_text_too_long"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyStatus"] == "ERROR"
+    assert api.items[1000]["ufSiteSyncError"] == "reply_text_too_long"
+    assert case.outbound_last_error_code == "reply_text_too_long"
+
+    api.items[1000]["ufSiteReplyText"] = "Исправленный короткий ответ"
+    retried = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    db_session.refresh(case)
+    assert retried[0]["status"] == "pending"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 1
+    assert api.items[1000]["ufSiteReplyAction"] == ""
+    assert api.items[1000]["ufSiteReplyStatus"] == "PENDING"
+    assert case.outbound_last_error_code is None
+
+
+def test_command_factory_rejects_oversized_reply(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.flush()
+
+    with pytest.raises(SiteServiceRequestPermanentError, match="reply_text_too_long"):
+        create_site_service_request_command(
+            db_session,
+            case=case,
+            reply_text="x" * (SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH + 1),
+            cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        )
+
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
 
 
 def test_outbound_empty_send_error_survives_cancel_with_terminal_history(
@@ -1658,6 +1965,7 @@ def test_outbound_empty_send_concurrent_cancel_preserves_durable_error(
 def test_outbound_success_checkpoint_never_moves_backward(db_session) -> None:
     newer_time = datetime(2026, 8, 23, 9, 0, tzinfo=UTC)
     case = _case(bitrix_item_id=1000, outbound_checked_at=newer_time)
+    case.outbound_last_error_code = "newer_outbound_failure"
     db_session.add(case)
     db_session.commit()
     api = FakeBitrixApi()
@@ -1675,6 +1983,11 @@ def test_outbound_success_checkpoint_never_moves_backward(db_session) -> None:
     assert results == []
     assert case.outbound_checked_at is not None
     assert case.outbound_checked_at.replace(tzinfo=UTC) == newer_time
+    assert case.outbound_last_error_code == "newer_outbound_failure"
+    assert build_site_service_request_health(
+        db_session,
+        settings=_worker_settings(site_service_requests_outbound_replies_enabled=True),
+    )["status"] == "degraded"
 
 
 def test_outbound_command_is_durable_before_card_action_clear(db_session) -> None:
@@ -3356,6 +3669,41 @@ def test_assignment_failure_is_recorded_and_does_not_starve_next_case(db_session
     assert second.assignment_last_error_code is None
 
 
+def test_stale_assignment_success_does_not_regress_newer_failure_checkpoint(
+    db_session,
+) -> None:
+    newer_time = datetime(2026, 8, 23, 9, 0, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assignment_checked_at=newer_time,
+        assignment_last_error_code="timeman_unavailable",
+        updated_at=newer_time,
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": "DT1134_55:NEW"}
+    settings = _worker_settings(site_service_requests_ingest_enabled=True)
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=settings,
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 23, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    health = build_site_service_request_health(db_session, settings=settings)
+    assert results[0].get("errorCode") is None
+    assert case.assignment_checked_at is not None
+    assert case.assignment_checked_at.replace(tzinfo=UTC) == newer_time
+    assert case.assignment_last_error_code == "timeman_unavailable"
+    assert case.updated_at.replace(tzinfo=UTC) == newer_time
+    assert health["status"] == "degraded"
+    assert health["alert_codes"] == ["assignment_failure"]
+
+
 def test_assignment_database_error_degrades_health_until_successful_retry(db_session) -> None:
     case = _case(bitrix_item_id=1000)
     db_session.add(case)
@@ -3764,6 +4112,27 @@ def test_item_lookup_rejects_malformed_and_conflicting_pagination() -> None:
             idempotency_key="key",
         )
 
+    writer = SiteServiceRequestBitrixWriter(
+        MalformedItemApi(
+            {
+                "result": {
+                    "items": [
+                        {
+                            "id": "1000",
+                            "ID": "1001",
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    with pytest.raises(RuntimeError, match="bitrix_item_readback_invalid"):
+        writer._find_items(
+            entity_type_id=1134,
+            idempotency_field="UF_BACKEND_KEY",
+            idempotency_key="key",
+        )
+
 
 def test_disk_lookup_rejects_wrong_name_and_pagination() -> None:
     wrong_name_api = FakeBitrixApi()
@@ -3789,6 +4158,19 @@ def test_disk_lookup_rejects_wrong_name_and_pagination() -> None:
 
     with pytest.raises(RuntimeError, match="bitrix_file_readback_ambiguous"):
         SiteServiceRequestBitrixWriter(PaginatedDiskApi()).upload_file(
+            folder_id=777,
+            deterministic_name="expected.bin",
+            content=b"payload",
+        )
+
+    conflicting_id_api = FakeBitrixApi()
+    conflicting_id_api.disk_files["expected.bin"] = {
+        "ID": "2000",
+        "id": "2001",
+        "NAME": "expected.bin",
+    }
+    with pytest.raises(RuntimeError, match="bitrix_file_readback_invalid"):
+        SiteServiceRequestBitrixWriter(conflicting_id_api).upload_file(
             folder_id=777,
             deterministic_name="expected.bin",
             content=b"payload",

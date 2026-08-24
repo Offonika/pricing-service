@@ -25,7 +25,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-23"
+updated_at: "2026-08-24"
 ---
 
 # Назначение
@@ -295,8 +295,21 @@ malformed-типы завершаются fail-closed до создания comm
 только из пробелов `SEND` не очищается: карточка получает `ERROR` и технический код
 `reply_text_empty`, а health остаётся `degraded` до исправления текста. После
 исправления следующий tick обрабатывает сохранённый `SEND` обычным hash-guard.
-Снятие action без исправления текста не скрывает `reply_text_empty`; checkpoint
-очищается только после чтения непустого ответа и начала создания command. Action
+Ответ ограничен 200 000 символами, одинаково в worker и command API. Более длинный
+`SEND` также не очищается, получает `ERROR`/`reply_text_too_long` и остаётся
+`degraded` до сокращения текста. Старая oversized command-запись карантинируется
+как `command_payload_invalid` до построения API response model, поэтому malformed
+durable data не превращает весь `GET /commands` в ошибку валидации.
+Перед lease SHA-256 расшифрованного текста обязан совпасть с durable
+`reply_sha256`; несовпавшая command также карантинируется и не выдаётся сайту.
+Quarantine обновляет outbound health-checkpoint только монотонно и не стирает
+состояние более новой попытки. Успешный stale tick также не очищает
+`outbound_last_error_code`, если сохранённый `outbound_checked_at` новее времени
+его попытки; в success-ветке timestamp и error защищаются как единый
+монотонный checkpoint.
+Снятие action без исправления текста не скрывает `reply_text_empty` или
+`reply_text_too_long`; checkpoint очищается только после чтения допустимого ответа
+и начала создания command. Action
 принимается только как строковый/целочисленный scalar либо пустое значение;
 контейнеры и boolean завершаются fail-closed.
 Повторный `SEND` с тем же текстом остаётся дубликатом, пока последняя команда
@@ -429,12 +442,18 @@ v1
 Старое значение `authorKind=support` принимается при readback истории вместе с
 каноническим `support-team`, чтобы события предыдущей версии bridge продолжали
 подтверждать доставленный ответ.
+HTTP `413` не помечает строку site outbox как доставленную: полная история тикета
+может временно превысить настроенный предел backend, поэтому событие остаётся
+retryable до изменения лимита или исправления payload.
 
 ## `PUT /events/{event_id}/files/{file_id}`
 
 Binary body загружается отдельно. Дополнительно передаются безопасное имя, MIME,
 размер и SHA-256. Сервер сверяет размер/hash, запрещает path traversal и удаляет
-временный файл после загрузки в Bitrix. Максимум MVP — 10 МБ на файл.
+временный файл после загрузки в Bitrix. Перед `unlink` cleanup блокирует и повторно
+читает файловую строку: переведённый обратно в `staged` payload уже владеет тем же
+deterministic path и не удаляется устаревшей cleanup-попыткой. Максимум MVP —
+10 МБ на файл.
 
 Если файл уже отсутствует или недоступен на сайте, bridge передаёт в event
 нулевой SHA-256 placeholder и затем выполняет подписанный пустой `PUT` с
@@ -463,6 +482,8 @@ ID нового файла. При файловом overlay локальные `
 Возвращает не более 20 pending-команд с lease на 5 минут и новым `leaseToken`.
 Повтор после окончания lease допустим и безопасен за счёт `command_key`,
 `EXTERNAL_FIELD_1` и ротации lease-token.
+До выдачи проверяются UTF-8, непустой текст, предел длины и соответствие
+`reply_sha256`; повреждённая строка не попадает в response.
 Site bridge проверяет `schemaVersion` и полную форму каждой команды до записи в
 тикет. Malformed command не подтверждается как `failed`: lease истекает, и ответ
 остаётся доступен для повторной доставки.
@@ -636,8 +657,8 @@ ID существует, активен и соответствует ожида
 - HTTP `429/500/502/503/504`: повторы через 1, 2, 5, 15 и 30 минут, далее не чаще
   одного раза в час до 24 часов;
 - site outbox считает terminal только явные payload/contract HTTP
-  `400/409/413/415/422`; auth/routing/outage ответы остаются retryable, чтобы
-  исправление настроек или deploy не потеряло уже созданный тикет;
+  `400/409/415/422`; HTTP `413`, auth/routing/outage ответы остаются retryable,
+  чтобы исправление лимита, настроек или deploy не потеряло уже созданный тикет;
 - `202/200` считается успехом только после строгой проверки JSON response,
   типов идентификаторов, статуса, boolean `duplicate` и обязательного списка файлов;
   неизвестный file ID, повтор ID или отсутствие `missingFileIds` оставляет outbox
@@ -672,10 +693,12 @@ ID существует, активен и соответствует ожида
   `stageId`, `TITLE` сделки и `COMMENT` принимаются только как строки; страница
   timeline принимается только как list. Malformed значения не участвуют в mapping,
   matching, marker readback и не записываются обратно в Bitrix;
-- ensure принимает целевое поле с ожидаемым `fieldName` только при точном
-  строковом `xmlId`; stage ID должен быть строкой текущего scope
-  `DT<entityTypeId>_<categoryId>:`. Контейнеры, конфликтующие алиасы и stage из
-  другой category завершают проверку до любых writes;
+- CRM deal/contact/item/Disk IDs с aliases `ID/id` принимаются только при одинаковом
+  положительном целом значении; конфликт завершается fail-closed до выбора или write;
+- ensure проверяет `xmlId/XML_ID` у каждой прочитанной строки поля, а целевое поле
+  с ожидаемым `fieldName` принимает только при точном строковом `xmlId`; stage ID
+  должен быть строкой текущего scope `DT<entityTypeId>_<categoryId>:`. Контейнеры,
+  конфликтующие алиасы и stage из другой category завершают проверку до любых writes;
 - ambiguous DB commit после атомарной записи spool-файла удаляет payload только
   после DB readback, подтвердившего отсутствие сохранённого пути; при недоступном
   readback файл остаётся fail-safe;
@@ -708,6 +731,10 @@ ID существует, активен и соответствует ожида
 - [ ] Срок при обращении вне смены равен 12:00 первого дня с открывшейся сменой.
 - [ ] Просрочка эскалируется Тимуру ровно один раз.
 - [ ] Выбор «Отправить клиенту» создаёт один ответ в исходном тикете.
+- [ ] Пустой или более длинный чем 200 000 символов `SEND` не создаёт command,
+  не очищает action и сохраняет явную degraded-ошибку до исправления текста.
+- [ ] HTTP `413` от event endpoint не выставляет `sent_at` в site outbox и
+  повторяется после backoff.
 - [ ] Клиент видит текст ответа в `/personal/tickets/?ID=<ticket_id>`.
 - [ ] Повтор command/ack не создаёт второе сообщение.
 - [ ] Карточка без подтверждённого ответа не остаётся в `SUCCESS`.
@@ -812,6 +839,24 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — command lease теперь сверяет расшифрованный payload с
+  `reply_sha256`; quarantine сохраняет `max(outbound checkpoint)`, но всегда
+  деградирует health для последней повреждённой command. CRM deal/contact/item/
+  Disk и file-field ID aliases, а также aliases ID/активности/имени пилотных
+  пользователей проверяются строго и fail-closed. ACK не откатывает более новый
+  outbound checkpoint; stale success также не стирает его error. Spool-path
+  сохраняется до успешного durable cleanup, а cleanup повторно проверяет
+  владение path под row lock и не удаляет конкурентно повторно загруженный
+  payload. Ensure
+  строго отклоняет conflicting field IDs, stage semantics и malformed/
+  conflicting `xmlId/XML_ID` даже у переименованного поля до writes.
+  Регрессионные тесты добавлены, но пока не запускались по решению пользователя.
+- 2026-08-24 — outbound reply ограничен 200 000 символами: oversized `SEND`
+  сохраняет action и получает durable `reply_text_too_long`, а старые oversized
+  command-записи карантинируются до построения response model. HTTP `413` удалён
+  из terminal site-outbox ответов и остаётся retryable. Enum aliases ensure и
+  assignment checkpoints дополнительно сделаны fail-closed/монотонными;
+  регрессионные тесты добавлены, но пока не запускались по решению пользователя.
 - 2026-08-23 — command lease/quarantine приведены к единому порядку row locks
   `case -> command`; notification result и company ID строго валидируются,
   а ensure требует точный строковый XML ID целевого поля и stage текущего

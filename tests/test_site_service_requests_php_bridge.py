@@ -54,7 +54,8 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert source.count("throw new BridgeFailure('file_hash_failed');") == 1
     assert "array(\n                                'file_not_found'" not in source
     assert "$isPermanentHttpError" in source
-    assert "array(400, 409, 413, 415, 422)" in source
+    assert "array(400, 409, 415, 422)" in source
+    assert "array(400, 409, 413, 415, 422)" not in source
     assert "event_response_invalid" in source
     assert "commands_response_invalid" in source
     assert "command_ack_response_mismatch" in source

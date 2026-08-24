@@ -79,6 +79,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Comma-separated observer ids. Empty by default for this contour.",
     )
     parser.add_argument(
+        "--exclude-responsible-ids",
+        default=os.getenv("MANUAL_MATCHING_TASK_EXCLUDED_RESPONSIBLE_IDS", ""),
+        help=(
+            "Comma-separated responsible ids to skip. Defaults to "
+            "MANUAL_MATCHING_TASK_EXCLUDED_RESPONSIBLE_IDS."
+        ),
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Create tasks in Bitrix. Without this flag the command is a dry-run.",
@@ -109,6 +117,8 @@ def main(
         matching_url=args.matching_url,
         report_path=report_path,
     )
+    excluded_responsible_ids = set(_parse_csv_ints(args.exclude_responsible_ids))
+    drafts = [draft for draft in drafts if draft.responsible_id not in excluded_responsible_ids]
 
     state_path = Path(args.state_path)
     state = _load_state(state_path)
@@ -152,6 +162,7 @@ def main(
         "created_by_id": args.created_by_id,
         "group_id": args.group_id,
         "auditors": _parse_csv_ints(args.auditors),
+        "excluded_responsible_ids": sorted(excluded_responsible_ids),
         "state_path": str(state_path),
         "summary": {
             "planned_tasks": len(tasks),

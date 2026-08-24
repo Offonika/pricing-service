@@ -27,7 +27,10 @@ from app.models.site_service_requests import (
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
 )
-from app.schemas.site_service_requests import SiteServiceRequestCommandAckPayload
+from app.schemas.site_service_requests import (
+    SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
+    SiteServiceRequestCommandAckPayload,
+)
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     acknowledge_site_service_request_command,
@@ -1073,6 +1076,132 @@ def test_invalid_command_text_is_quarantined_without_blocking_valid_batch(
     assert invalid.card_action_cleared_at is not None
 
 
+def test_oversized_command_text_is_quarantined_before_response_validation(
+    client,
+    db_session,
+) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        oversized = _create_command(
+            db_session,
+            case_id=case.id,
+            command_key="site-support-reply:741:oversized",
+            reply_text="x" * (SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH + 1),
+        )
+        response = _get_commands(client)
+
+    assert response.status_code == 200
+    assert response.json()["commands"] == []
+    db_session.refresh(oversized)
+    assert oversized.status == "failed"
+    assert oversized.last_error_code == "command_payload_invalid"
+    assert oversized.card_action_cleared_at is not None
+
+
+def test_blank_command_text_is_quarantined_before_response_validation(
+    client,
+    db_session,
+) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        blank = _create_command(
+            db_session,
+            case_id=case.id,
+            command_key="site-support-reply:741:blank",
+            reply_text="   ",
+        )
+        response = _get_commands(client)
+
+    assert response.status_code == 200
+    assert response.json()["commands"] == []
+    db_session.refresh(blank)
+    assert blank.status == "failed"
+    assert blank.last_error_code == "command_payload_invalid"
+    assert blank.card_action_cleared_at is not None
+
+
+def test_mismatched_command_hash_is_quarantined_before_delivery(
+    client,
+    db_session,
+) -> None:
+    settings = _settings(site_service_requests_outbound_replies_enabled=True)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        command = _create_command(
+            db_session,
+            case_id=case.id,
+            command_key="site-support-reply:741:hash-mismatch",
+        )
+        command.reply_sha256 = "0" * 64
+        db_session.commit()
+
+        response = _get_commands(client)
+
+    assert response.status_code == 200
+    assert response.json()["commands"] == []
+    db_session.refresh(command)
+    assert command.status == "failed"
+    assert command.last_error_code == "command_payload_invalid"
+    assert command.card_action_cleared_at is not None
+
+
+def test_invalid_command_quarantine_preserves_newer_outbound_checkpoint(
+    client,
+    db_session,
+) -> None:
+    newer_time = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+    older_time = datetime(2026, 8, 24, 8, 0, tzinfo=UTC)
+    case = SiteServiceRequestCase(
+        source_ticket_id=741,
+        first_seen_at=older_time,
+        outbound_checked_at=newer_time,
+        outbound_last_error_code=None,
+    )
+    db_session.add(case)
+    db_session.commit()
+    command = _create_command(
+        db_session,
+        case_id=case.id,
+        command_key="site-support-reply:741:stale-quarantine",
+        reply_text="   ",
+    )
+
+    leased = lease_site_service_request_commands(
+        db_session,
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        enabled=True,
+        lease_seconds=300,
+        now=older_time,
+    )
+
+    assert leased == []
+    db_session.refresh(case)
+    db_session.refresh(command)
+    assert command.status == "failed"
+    assert case.outbound_checked_at is not None
+    assert case.outbound_checked_at.replace(tzinfo=UTC) == newer_time
+    assert case.outbound_last_error_code == "command_payload_invalid"
+
+    with _api_dependencies(db_session, _settings()):
+        health = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    assert health.status_code == 200
+    assert health.json()["status"] == "degraded"
+    assert health.json()["alertCodes"] == ["outbound_failure"]
+    assert health.json()["outboundFailures"] == 1
+
+
 def test_latest_invalid_command_degrades_outbound_health(client, db_session) -> None:
     settings = _settings(site_service_requests_outbound_replies_enabled=True)
     with _api_dependencies(db_session, settings):
@@ -1209,6 +1338,59 @@ def test_command_ack_is_idempotent_and_does_not_complete_sla_without_readback(
     assert command.lease_until is None
     assert case.latest_outbound_message_id == 1301
     assert case.first_response_at is None
+
+
+@pytest.mark.parametrize("ack_status", ["applied", "failed"])
+def test_command_ack_preserves_newer_outbound_checkpoint(
+    db_session,
+    ack_status: str,
+) -> None:
+    older_time = datetime(2026, 8, 24, 8, 0, tzinfo=UTC)
+    newer_time = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+    case = SiteServiceRequestCase(
+        source_ticket_id=741,
+        first_seen_at=older_time,
+        outbound_checked_at=newer_time,
+        outbound_last_error_code="newer_outbound_failure",
+    )
+    db_session.add(case)
+    db_session.commit()
+    command = _create_command(
+        db_session,
+        case_id=case.id,
+        command_key=f"site-support-reply:741:stale-{ack_status}",
+    )
+    command.status = "leased"
+    command.lease_token = "l" * 32
+    db_session.commit()
+    payload: dict[str, object] = {
+        "schemaVersion": 1,
+        "leaseToken": command.lease_token,
+        "status": ack_status,
+    }
+    if ack_status == "applied":
+        payload.update(
+            {
+                "ticketId": 741,
+                "messageId": 1301,
+                "appliedAt": "2026-08-24T11:00:00+03:00",
+            }
+        )
+    else:
+        payload["errorCode"] = "message_write_failed"
+
+    result = acknowledge_site_service_request_command(
+        db_session,
+        command_id=command.id,
+        payload=SiteServiceRequestCommandAckPayload.model_validate(payload),
+        now=older_time,
+    )
+
+    assert result.status == ack_status
+    db_session.refresh(case)
+    assert case.outbound_checked_at is not None
+    assert case.outbound_checked_at.replace(tzinfo=UTC) == newer_time
+    assert case.outbound_last_error_code == "newer_outbound_failure"
 
 
 def test_command_ack_locks_case_before_command(client, db_session) -> None:

@@ -62,6 +62,12 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
         supplier_order_rows=[
             {
                 "nomenclature_ref": "0xA",
+                "order_date": "2024-01-01",
+                "cargo_handoff_date": "2024-01-05",
+                "historical_aggregate": True,
+            },
+            {
+                "nomenclature_ref": "0xA",
                 "order_date": "2026-01-01",
                 "cargo_handoff_date": "2026-01-05",
                 "line_price": "300",
@@ -109,7 +115,8 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
     assert first["short_name_1c"] == "Дисп. тест A (ORIG)"
     assert first["additional_name_1c"] == "Display test A (ORIG)"
     assert first["vendor_sku_1c"] == "OEM-DSP-TEST-BLK-OR"
-    assert first["first_supplier_order_at"] == "2026-01-01"
+    assert first["first_supplier_order_at"] == "2024-01-01"
+    assert first["historical_first_cargo_handoff_at"] == "2024-01-05"
     assert first["supplier_order_cargo_handoff_dates"] == ["2026-01-05", "2026-02-05"]
     assert first["receipt_dates"] == [
         "2026-01-10",

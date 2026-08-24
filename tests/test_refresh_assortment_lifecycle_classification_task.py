@@ -13,6 +13,7 @@ from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_RUN_TABLE,
 )
 from tasks.refresh_assortment_lifecycle_classification import (
+    _default_fact_status_decisions_json,
     _default_history_months,
     _default_limit,
 )
@@ -36,6 +37,15 @@ def test_refresh_assortment_lifecycle_classification_task_uses_safe_default_limi
 
     monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
     assert _default_limit() == 1200
+
+
+def test_refresh_does_not_load_legacy_fact_status_decisions_from_env(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "ASSORTMENT_FACT_STATUS_DECISIONS_JSON",
+        "config/assortment/display-fact-status-decisions.json",
+    )
+
+    assert _default_fact_status_decisions_json() is None
 
 
 def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
@@ -264,6 +274,7 @@ def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisio
         database_url=database_url,
         run_key="classification-fact-status-decision",
         classified_at="2026-07-09T10:00:00",
+        dry_run=True,
         extra_args=["--fact-status-decisions-json", str(decisions_path)],
     )
 
@@ -272,15 +283,10 @@ def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisio
 
     engine = create_engine(database_url)
     with engine.connect() as conn:
-        row = conn.execute(select(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE)).mappings().one()
+        rows = conn.execute(select(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE)).all()
     engine.dispose()
 
-    assert row["status"] == "sales_start"
-    assert row["status_label"] == "Пошли продажи"
-    assert row["export_blockers"] == [
-        "ut103_export_blocked",
-        "fact_status_decision_requires_1c_approval",
-    ]
+    assert rows == []
 
 
 def test_refresh_assortment_lifecycle_classification_task_rejects_ut103_export(

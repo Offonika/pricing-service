@@ -277,15 +277,29 @@ function firstBlockingLineId(order: ProcurementOrderFormation) {
   return order.lines.find((line) => numbers.includes(line.line_number))?.id;
 }
 
+function currencyLabel(value?: string | null) {
+  const normalized = value?.trim().toUpperCase() || "";
+  const aliases: Record<string, string> = {
+    "156": "CNY",
+    "643": "RUB",
+    "784": "AED",
+    "840": "USD",
+    "978": "EUR",
+  };
+  return aliases[normalized] || normalized;
+}
+
 function priceHistoryLabel(line: ProcurementOrderFormationLine) {
   const change = numeric(line.price_change_pct);
   if (change !== null) {
     const history = line.price_history_count ? ` · ${line.price_history_count} заказ.` : "";
     return `${change > 0 ? "+" : ""}${percent(change)}${history}`;
   }
-  const currency = line.price_history_expected_currency || line.currency;
+  const currency = currencyLabel(line.price_history_expected_currency || line.currency);
   if (line.price_change_status === "currency_mismatch") {
-    const available = line.price_history_available_currencies?.join(", ");
+    const available = [...new Set(
+      line.price_history_available_currencies?.map(currencyLabel).filter(Boolean) || []
+    )].join(", ");
     return available
       ? `Нет истории в ${currency}; есть ${available}`
       : `Нет истории в ${currency}`;

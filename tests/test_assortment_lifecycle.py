@@ -505,6 +505,36 @@ def test_old_sales_history_is_not_sales_start() -> None:
     assert "sales_history_beyond_start" in veteran.reason_codes
 
 
+def test_old_sales_history_without_recent_supplier_window_is_not_fruit() -> None:
+    veteran = _decision(
+        first_sale_at=date(2014, 1, 21),
+        last_sale_at=date(2026, 1, 10),
+        as_of=date(2026, 8, 2),
+        sales_qty_short=Decimal("0"),
+        sales_qty_medium=Decimal("0"),
+        sales_qty_long=Decimal("0"),
+    )
+
+    assert veteran.status == AssortmentStatus.WORKING
+    assert "sales_history_beyond_start" in veteran.reason_codes
+
+
+def test_historical_supplier_activity_without_sales_requires_review() -> None:
+    veteran = _decision(
+        first_supplier_order_at=date(2016, 3, 20),
+        historical_first_cargo_handoff_at=date(2016, 4, 1),
+        as_of=date(2026, 8, 2),
+        sales_qty_short=Decimal("0"),
+        sales_qty_medium=Decimal("0"),
+        sales_qty_long=Decimal("0"),
+    )
+
+    assert veteran.status == AssortmentStatus.WORKING
+    assert veteran.reason_codes == ("historical_supplier_activity_without_sales",)
+    assert veteran.manual_review_required
+    assert not veteran.auto_order_allowed
+
+
 def test_recent_first_sale_still_gives_sales_start() -> None:
     fresh = _decision(
         first_sale_at=date(2026, 5, 1),

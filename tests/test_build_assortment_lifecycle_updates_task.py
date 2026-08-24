@@ -83,7 +83,7 @@ def test_build_assortment_lifecycle_updates_task_writes_export_rows(
     assert rows[-1]["new_value_tag"] == "fast_expensive"
 
 
-def test_build_assortment_lifecycle_updates_applies_fact_status_decision_without_ut103_export(
+def test_build_assortment_lifecycle_updates_ignores_legacy_fact_status_decision(
     tmp_path: Path,
 ) -> None:
     input_path = tmp_path / "facts.json"
@@ -130,13 +130,10 @@ def test_build_assortment_lifecycle_updates_applies_fact_status_decision_without
     summary = json.loads(result.stdout)
     assert summary["rows"] == 0
     item = summary["items"][0]
-    assert item["status"] == "sales_start"
-    assert item["status_label"] == "Пошли продажи"
-    assert item["reason_codes"] == ["fact_status_decision", "cargo_handoff_confirmed"]
-    assert item["export_blockers"] == [
-        "ut103_export_blocked",
-        "fact_status_decision_requires_1c_approval",
-    ]
+    assert item["status"] == "fruit"
+    assert item["status_label"] == "Рассматриваем"
+    assert item["reason_codes"] == ["product_created"]
+    assert item["export_blockers"] == ["lifecycle_stage_not_exported"]
     assert json.loads(output_path.read_text(encoding="utf-8"))["items"] == []
 
 

@@ -130,6 +130,84 @@ def test_end_of_day_reconciliation_is_exact_and_idempotently_stored(
         store_reconciliation_result(db_session, result)
 
 
+def test_unfiltered_report_may_omit_only_an_explicit_source_zero() -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    source = CustomerSettlementSourceResult(
+        source_db_time=as_of + timedelta(minutes=5),
+        as_of=as_of,
+        balances=(
+            SettlementBalanceInput(CP_1, Decimal("10.00")),
+            SettlementBalanceInput(CP_2, Decimal("0.00")),
+        ),
+        isolation_level="SNAPSHOT",
+        duration_seconds=0.1,
+    )
+    report_rows = [
+        OneCMutualSettlementCurrentBalanceRow(
+            REPORT_DATE,
+            "Клиент Один",
+            Decimal("10.00"),
+            1,
+        )
+    ]
+    controls = (_control(CP_1, "Клиент Один"), _control(CP_2, "Клиент Два"))
+
+    with pytest.raises(
+        CustomerSettlementReconciliationError,
+        match="pilot_missing_from_report_or_source",
+    ):
+        reconcile_customer_settlement_rows(
+            report_hash="a" * 64,
+            context_hash="f" * 64,
+            report_rows=report_rows,
+            controls=controls,
+            source=source,
+        )
+
+    result = reconcile_customer_settlement_rows(
+        report_hash="a" * 64,
+        context_hash="f" * 64,
+        report_rows=report_rows,
+        controls=controls,
+        source=source,
+        report_allows_implicit_zero_rows=True,
+    )
+    assert result.status == "matched"
+    assert result.expected_count == 2
+    assert result.matched_count == 2
+
+
+def test_unfiltered_report_cannot_hide_a_nonzero_source_balance() -> None:
+    as_of = end_of_day_boundary_utc(REPORT_DATE)
+    source = CustomerSettlementSourceResult(
+        source_db_time=as_of + timedelta(minutes=5),
+        as_of=as_of,
+        balances=(SettlementBalanceInput(CP_1, Decimal("0.01")),),
+        isolation_level="SNAPSHOT",
+        duration_seconds=0.1,
+    )
+
+    with pytest.raises(
+        CustomerSettlementReconciliationError,
+        match="pilot_missing_from_report_or_source",
+    ):
+        reconcile_customer_settlement_rows(
+            report_hash="a" * 64,
+            context_hash="f" * 64,
+            report_rows=[
+                OneCMutualSettlementCurrentBalanceRow(
+                    REPORT_DATE,
+                    "Другой клиент",
+                    Decimal("0.00"),
+                    1,
+                )
+            ],
+            controls=(_control(CP_1, "Клиент Один"),),
+            source=source,
+            report_allows_implicit_zero_rows=True,
+        )
+
+
 def test_reconciliation_rejects_duplicate_control_names_and_source_rows() -> None:
     as_of = end_of_day_boundary_utc(REPORT_DATE)
     rows = [

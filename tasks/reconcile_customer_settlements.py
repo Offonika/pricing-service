@@ -34,6 +34,7 @@ from app.services.customer_settlements import (
 )
 from app.services.importers.onec_mutual_settlements import (
     load_onec_mutual_settlements_current_balances_file,
+    onec_mutual_settlements_report_file_allows_implicit_zero_rows,
 )
 
 
@@ -81,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
             report_rows = load_onec_mutual_settlements_current_balances_file(
                 args.report_path,
                 counterparty_filter_mode="all",
+            )
+            report_allows_implicit_zero_rows = (
+                onec_mutual_settlements_report_file_allows_implicit_zero_rows(args.report_path)
             )
         except Exception as exc:
             raise CustomerSettlementReconciliationError("report_parse_failed") from exc
@@ -152,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
             report_rows=report_rows,
             controls=controls,
             source=source,
+            report_allows_implicit_zero_rows=report_allows_implicit_zero_rows,
         )
         if not try_customer_settlement_context_lock(session):
             raise CustomerSettlementReconciliationError("settlement_context_busy")

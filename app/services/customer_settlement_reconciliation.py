@@ -273,6 +273,7 @@ def reconcile_customer_settlement_rows(
     controls: tuple[ManualCustomerSettlementControl, ...],
     source: CustomerSettlementSourceResult,
     tolerance: Decimal = RECONCILIATION_TOLERANCE,
+    report_allows_implicit_zero_rows: bool = False,
 ) -> CustomerSettlementReconciliationResult:
     try:
         normalized_tolerance = Decimal(str(tolerance))
@@ -363,11 +364,15 @@ def reconcile_customer_settlement_rows(
         name = _canonical_name(control.counterparty_name)
         if name in duplicate_names:
             raise CustomerSettlementReconciliationError("duplicate_pilot_name_in_report")
-        if name not in report_by_name or control.counterparty_ref not in source_by_ref:
+        if control.counterparty_ref not in source_by_ref:
             raise CustomerSettlementReconciliationError("pilot_missing_from_report_or_source")
-        differences.append(
-            abs(normalize_money(source_by_ref[control.counterparty_ref]) - report_by_name[name])
-        )
+        source_balance = normalize_money(source_by_ref[control.counterparty_ref])
+        if name not in report_by_name:
+            if report_allows_implicit_zero_rows is True and source_balance == Decimal("0.00"):
+                differences.append(Decimal("0.00"))
+                continue
+            raise CustomerSettlementReconciliationError("pilot_missing_from_report_or_source")
+        differences.append(abs(source_balance - report_by_name[name]))
 
     matched_count = sum(value <= normalized_tolerance for value in differences)
     mismatch_count = len(differences) - matched_count

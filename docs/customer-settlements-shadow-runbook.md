@@ -102,18 +102,43 @@ Settlement migrations объединены с фактически активн�
 - первый полный `crm_readonly` sync прочитал `50 035` строк и активировал ровно
   `10` pilot entries: `9 linked / 1 not_linked / 0 ambiguous`; `not_linked` —
   Арсений Кештов, чья ранее доказанная заказами связь пока отсутствует в CRM cluster;
+- после отдельного разрешения выполнено ровно одно guarded-обновление service fields
+  существующего CRM-контакта Арсения: dry-run, защищённый backup, apply и readback
+  прошли успешно; webhook не сохранялся, другие CRM-контакты не изменялись;
+- повторный полный `crm_readonly` sync стабильно прочитал `50 036` строк и активировал
+  mapping revision `2`: `10 linked / 0 not_linked / 0 ambiguous`; ready-preflight
+  подтверждает `linked_pilots=10`, `enabled_pilots=10` и отсутствие ambiguous;
+- контрольный повтор mapping sync вернул `status=unchanged`, повторно прочитал
+  `50 036` строк и сохранил `10 linked / 0 ambiguous` без новой revision;
+- отдельный read-only source probe на `2026-08-24 08:51:42 MSK` вернул полный
+  текущий срез `10/10`: `6 debt / 3 advance / 1 zero`, `READ COMMITTED`,
+  длительность `1,833` секунды; probe не создавал financial revision и не открывал
+  source gate;
 - staging credential был немедленно ротирован после диагностического раскрытия его
   фрагмента; production credentials и production БД не затрагивались;
 - client API, eligibility, source validation и alerts остаются выключенными;
 - financial revision, reconciliation и staging cron ещё не запускались.
 
-Readiness gate сначала остановлен до отдельного решения по Арсению: исправить его
-CRM cluster mapping либо заменить пилота другим однозначно связанным сотрудником.
-Автоматически использовать связь по заказам как backend override запрещено. Новую
-ведомость за завершённый день нужно формировать только после стабилизации состава
-пилота; исторический файл июля не используется. Затем обязательны reconciliation,
-включение `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`, первый financial sync и
-`ready` preflight; только после этого разрешена установка cron и отсчёт 72 часов.
+Блокер CRM mapping закрыт точечным исправлением; backend override по заказам не
+использовался. Readiness gate теперь ожидаемо закрыт только до новой ведомости за
+ближайший завершённый день, полной reconciliation на одинаковый `as_of`, включения
+`CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`, первого financial sync и успешного
+`ready` preflight. Исторический файл июля не используется. Только после выполнения
+этих проверок разрешена установка cron и начинается отсчёт 72 часов.
+
+## Точечное разрешение на исправление CRM mapping 2026-08-24
+
+Владелец пилота выбрал исправление CRM-связи Арсения с уже существующим
+контрагентом 1С вместо замены пилота. Это исключение к общему запрету записи в CRM
+распространяется ровно на одну управляемую операцию с service fields одного уже
+существующего CRM-контакта и не разрешает создавать новый контакт.
+
+До записи необходимо read-only проверкой доказать, что выбранный контакт точно
+принадлежит Арсению, не связан с другим cluster или контрагентом и не создаёт
+duplicate/conflict. Затем обязательны dry-run, лимит `1`, локальная защищённая
+резервная копия исходных service fields, apply и readback. Если принадлежность
+контакта не доказана однозначно, операция блокируется до отдельного решения.
+Остальные CRM-строки, сайт и 1С не изменяются.
 
 ## ОТМЕНЁННЫЙ shadow-run 2026-08-22
 
@@ -195,7 +220,8 @@ load_env_file_preserve_json "${CUSTOMER_SETTLEMENTS_ENV_FILE}"
 cd "${REPO_DIR}"
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \
   --phase bootstrap \
-  --expected-pilot-count 10
+  --expected-pilot-count 10 \
+  --expected-database-name "${CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME}"
 ```
 
 Дефицит сотруднических кабинетов устранён отбором `10/10`. Bootstrap запускать
@@ -227,7 +253,8 @@ Whitelist содержит только утверждённые пилотны�
 "${PYTHON_BIN}" -m tasks.sync_customer_settlements
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \
   --phase ready \
-  --expected-pilot-count 10
+  --expected-pilot-count 10 \
+  --expected-database-name "${CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME}"
 ```
 
 Mapping worker обязан дважды полностью прочитать CRM и подтвердить одинаковые total
@@ -247,6 +274,12 @@ Reconciliation принимает ведомость только за один 
 Перед сохранением reconciliation получает общий context lock и повторно сверяет
 active mapping и pilot scope; financial worker под тем же lock повторно читает
 последнюю reconciliation непосредственно перед активацией.
+Стандартная ведомость 1С может не выводить контрагента без движений и с нулевым
+конечным остатком. Такой пропуск считается подтверждённым `zero` только когда
+нативный XLSX содержит печатные заголовки отчёта, периода, показателей и группировок,
+не содержит строки `Отборы:`, а точный SQL scope возвращает для этого контрагента
+канонический `0.00 RUB`. Любой отбор, неизвестный формат файла или отсутствующая
+ненулевая строка по-прежнему блокируют сверку.
 Историческая ведомость `2026-07-29` не заменяет ни одну из новых контрольных
 ведомостей.
 
@@ -317,7 +350,8 @@ secret-файл. До установки путь необходимо заме�
   /secure/vedomost-<completed-date-for-this-checkpoint>.xlsx
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \
   --phase ready \
-  --expected-pilot-count 10
+  --expected-pilot-count 10 \
+  --expected-database-name "${CUSTOMER_SETTLEMENTS_EXPECTED_DATABASE_NAME}"
 "${PYTHON_BIN}" -m tasks.check_customer_settlement_health
 ```
 
@@ -353,3 +387,14 @@ Shadow-run принимается, если 72 часа:
 Следующий этап после успешных 72 часов — отчёт, письменная приёмка бухгалтером и
 отдельное разрешение пользователя на real-подключение dev-адаптера; production
 `master-mobile.ru` остаётся неизменным.
+
+## Changelog
+
+- 2026-08-24 — разрешено точечное guarded-исправление CRM mapping Арсения с уже
+  существующим контрагентом 1С; создание контакта и иные внешние изменения не
+  разрешены.
+- 2026-08-24 — точечное исправление применено и подтверждено readback; повторный
+  полный CRM sync дал `10 linked / 0 not_linked / 0 ambiguous`.
+- 2026-08-24 — повторный mapping sync подтвердил неизменный полный mapping, а
+  read-only УТ probe вернул текущий срез `10/10` (`6 debt / 3 advance / 1 zero`);
+  в preflight-команды добавлено явное ожидаемое имя staging-БД.

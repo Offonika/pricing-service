@@ -44,6 +44,26 @@
     }
   ],
   "commands": {
+    "manual_matching_control.py": {
+      "owner": "matching",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_report_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "manual_matching_bitrix_tasks.py": {
+      "owner": "matching",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "state_file_and_remote_title_check",
+      "side_effect_level": "mixed",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "competitor_matching_watchdog.py": {
       "owner": "matching",
       "kind": "permanent_cli",

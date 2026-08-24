@@ -24,7 +24,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-21"
+updated_at: "2026-08-24"
 ---
 
 # Назначение
@@ -104,6 +104,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести read-only команды nightly matching на central read-only session scope.
 - [x] Добавить `db_access` policy и проверку для мигрированных CLI.
 - [x] Покрыть read-only rollback тестом DB infrastructure.
+- [x] Перевести manual matching report и Bitrix task adapter на central read-only
+  scope с сохранением application DB override для тестов и one-off запусков.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -132,6 +134,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-24 — `manual_matching_control.py` и `manual_matching_bitrix_tasks.py`
+  переведены на central read-only session scope; их DB access и side effects
+  зафиксированы в CLI registry.
 - 2026-08-21 — `report_exclusive_auto_detect_candidates.py` переведён на центральный
   read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-21 — `report_product_classification_diff.py` переведён на центральный

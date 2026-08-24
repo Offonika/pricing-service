@@ -100,16 +100,20 @@ Settlement migrations объединены с фактически активн�
 - whitelist перенесён штатной CLI-командой: dry-run/apply/readback `10/10`;
 - bootstrap preflight прошёл `34/34` на чистом settlement-контуре;
 - первый полный `crm_readonly` sync прочитал `50 035` строк и активировал ровно
-  `10` pilot entries, ambiguous pilot entries — `0`;
+  `10` pilot entries: `9 linked / 1 not_linked / 0 ambiguous`; `not_linked` —
+  Арсений Кештов, чья ранее доказанная заказами связь пока отсутствует в CRM cluster;
 - staging credential был немедленно ротирован после диагностического раскрытия его
   фрагмента; production credentials и production БД не затрагивались;
 - client API, eligibility, source validation и alerts остаются выключенными;
 - financial revision, reconciliation и staging cron ещё не запускались.
 
-Readiness gate остановлен до новой ведомости за один завершённый день. Исторический
-файл июля не используется. После получения ведомости обязательны reconciliation,
+Readiness gate сначала остановлен до отдельного решения по Арсению: исправить его
+CRM cluster mapping либо заменить пилота другим однозначно связанным сотрудником.
+Автоматически использовать связь по заказам как backend override запрещено. Новую
+ведомость за завершённый день нужно формировать только после стабилизации состава
+пилота; исторический файл июля не используется. Затем обязательны reconciliation,
 включение `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`, первый financial sync и
-`ready` preflight; только затем разрешена установка cron и фактический отсчёт 72 часов.
+`ready` preflight; только после этого разрешена установка cron и отсчёт 72 часов.
 
 ## ОТМЕНЁННЫЙ shadow-run 2026-08-22
 

@@ -30,8 +30,7 @@ import json
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models.product import Product
 from app.models.product_match import ProductMatch
 from app.services.assortment_lifecycle_classification_store import (
@@ -121,9 +120,7 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         report = build_report(session, folder_filter=args.folder, limit=args.limit)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
+
 from sqlalchemy.orm import Session
 
 from app.models import Product
 from app.services.product_classification import recompute_product_classification
+from tasks import report_product_classification_diff
 from tasks.normalize_product_nomenclature_kind import normalize_kinds
 from tasks.normalize_product_subject import normalize_subjects
 from tasks.report_product_classification_diff import build_report
@@ -136,3 +140,36 @@ def test_build_report_returns_only_differences(db_session: Session) -> None:
 
     assert report["count"] == 1
     assert report["items"][0]["article"] == "p-5"
+
+
+def test_report_cli_uses_read_only_scope(db_session: Session, monkeypatch, capsys) -> None:
+    product = Product(
+        article="p-6",
+        name="CLI diff",
+        subject_1c="Аккумулятор",
+        subject_generated="дисплей",
+        subject="Аккумулятор",
+        subject_source="1c",
+        vid_nomenklatury_1c="Питание и зарядка (розница + сервис)",
+        vid_nomenklatury_generated="Дисплеи/сенсор/стекло",
+        vid_nomenklatury="Питание и зарядка (розница + сервис)",
+        vid_nomenklatury_source="1c",
+    )
+    db_session.add(product)
+    db_session.commit()
+    calls: list[bool] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        calls.append(read_only)
+        yield db_session
+
+    monkeypatch.setattr(report_product_classification_diff, "session_scope", fake_session_scope)
+    monkeypatch.setattr("sys.argv", ["report_product_classification_diff"])
+
+    report_product_classification_diff.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == [True]
+    assert payload["count"] == 1
+    assert payload["items"][0]["article"] == "p-6"

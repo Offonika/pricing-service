@@ -25,7 +25,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-24"
+updated_at: "2026-08-25"
 ---
 
 # Назначение
@@ -811,10 +811,10 @@ ID существует, активен и соответствует ожида
   pagination `next` и не выполняет writes после неизвестного readback.
 - Timeline/уведомления не являются source of truth доставки ответа; требуется MID
   модуля support и последующий readback.
-- Production readback 2026-08-24: site Agent зарегистрирован с `ACTIVE=Y`, хотя
-  `emit=N` и `outbound=N`, поэтому сейчас он выполняет только безопасный no-op.
-  До пилота его нужно отдельно перевести в `ACTIVE=N` либо явно принять активный
-  polling; изменение сайта требует отдельного разрешения.
+- Production change/readback 2026-08-25: единственный site Agent
+  `mm_site_service_ticket_agent();` (ID `1327455`) переведён в `ACTIVE=N`;
+  `emit=N`, `outbound=N`, а option служебного support user остаётся настроенной.
+  До отдельного разрешения на пилот Agent остаётся выключенным.
 
 # Tests
 
@@ -871,6 +871,14 @@ Rollback:
 
 # Changelog
 
+- 2026-08-25 — по отдельному production-разрешению единственный site Agent
+  `mm_site_service_ticket_agent();` (ID `1327455`) выключен с обязательным
+  readback; site `emit/outbound` остались `N`. Backend commit `3e997f3` развёрнут
+  штатным `/usr/local/sbin/mm-pricing-service-release`: active source и Alembic
+  head подтверждены, systemd и release-smoke healthy. Backend-флаги сохранены как
+  `ingest=true`, `Bitrix writes=false`, `outbound=false`; synthetic event остался
+  в `retry` с `attempts=2`, а synthetic contact `70319` и item `372` остались
+  единственными. Worker, site emit и outbound не запускались.
 - 2026-08-24 — production UX apply процесса 1134 завершён с обязательным
   readback: процесс и рабочая воронка переименованы, 58/58 типов и CRM-настроек
   полей проверены, добавлено employee-поле согласующего, технические поля скрыты,

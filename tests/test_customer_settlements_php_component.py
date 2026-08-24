@@ -56,8 +56,8 @@ def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
     ).read_text(encoding="utf-8")
 
     assert "CURLOPT_FOLLOWLOCATION => false" in client
-    assert "CURLOPT_CONNECTTIMEOUT_MS => $probe ? 500 : 2000" in client
-    assert "CURLOPT_TIMEOUT_MS => $probe ? 1000 : 3000" in client
+    assert "CURLOPT_CONNECTTIMEOUT_MS => $probe ? 1000 : 2000" in client
+    assert "CURLOPT_TIMEOUT_MS => $probe ? 2000 : 3000" in client
     assert "CURLOPT_SSL_VERIFYPEER => true" in client
     assert "CURLOPT_SSL_VERIFYHOST => 2" in client
     assert "allowed_hosts" in client
@@ -68,7 +68,9 @@ def test_php_adapter_hardening_and_eligibility_cache_are_explicit() -> None:
     assert "|eligibility" in client
     assert "MM_CUSTOMER_SETTLEMENTS_ELIGIBILITY" in menu_visibility
     assert "time() + 300" in menu_visibility
-    assert "customer-settlements-eligibility|" in menu_visibility
+    assert "customer-settlements-eligibility-v2|" in menu_visibility
+    assert "array('eligible', 'not_eligible')" in menu_visibility
+    assert "temporarily_unavailable" not in menu_visibility
     assert "Composite\\Engine::setEnable(false)" in page
     assert "is_mock" in component
     assert "(float)" not in template

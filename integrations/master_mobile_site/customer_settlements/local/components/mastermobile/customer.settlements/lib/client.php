@@ -315,8 +315,8 @@ final class Client
         curl_setopt_array($curl, array(
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT_MS => $probe ? 500 : 2000,
-            CURLOPT_TIMEOUT_MS => $probe ? 1000 : 3000,
+            CURLOPT_CONNECTTIMEOUT_MS => $probe ? 1000 : 2000,
+            CURLOPT_TIMEOUT_MS => $probe ? 2000 : 3000,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_HTTPHEADER => array(

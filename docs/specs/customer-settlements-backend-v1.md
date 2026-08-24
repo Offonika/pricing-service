@@ -883,6 +883,11 @@ Rollback:
 
 # Changelog
 
+- 2026-08-24 — all-linked dev-контур фактически включён для `28 729` безопасных
+  связей: readiness `36/36`, receivables drift `28 729/28 729` и `0,00 RUB`,
+  health `ok`; live PHP-smoke подтвердил debt/advance/zero, новый аккаунт,
+  replay-защиту и fail-closed hold. Устранён граничный timeout eligibility:
+  probe использует 2 секунды, transient не кешируется, session key обновлён.
 - 2026-08-24 — all-linked rollout получил хэшированный data-quality hold для
   единичных конфликтов между текущим регистром и контрольной ведомостью; сырой
   идентификатор не сохраняется, конфликтный аккаунт остаётся fail-closed.

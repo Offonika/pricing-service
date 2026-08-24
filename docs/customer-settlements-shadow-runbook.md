@@ -1,8 +1,10 @@
 # Shadow-run взаиморасчётов на staging
 
-Документ описывает только изолированный 72-часовой staging-запуск. Он не разрешает
+Документ описывает только изолированный staging/dev-запуск. Он не разрешает
 изменения production, сайта `master-mobile.ru`, CRM или 1С. CRM и 1С в этом
-сценарии только читаются, а клиентский API и eligibility остаются выключенными.
+сценарии только читаются. ОТМЕНЕНО (2026-08-24) только для
+`dev.master-mobile.ru`: обязательное выключение client API и eligibility после
+успешного readiness gate; production по-прежнему остаётся выключен.
 
 ## Подтверждённая база запуска
 
@@ -509,6 +511,13 @@ Shadow-run принимается, если 72 часа:
 
 ## Changelog
 
+- 2026-08-24 — all-linked real provider включён только на
+  `dev.master-mobile.ru`: active scope `28 729`, readiness `36/36`, автоматическая
+  сверка `28 729/28 729`, максимальная разница `0,00 RUB`, health `ok`; PHP-smoke
+  подтвердил debt/advance/zero, новый аккаунт вне прежней десятки, replay `401` и
+  fail-closed hold. Probe-timeout увеличен до 2 секунд, временный eligibility-сбой
+  больше не кешируется, session-cache переведён на новую версию. Production не
+  изменён.
 - 2026-08-24 — real provider досрочно включён только на `dev.master-mobile.ru`:
   отдельный staging API, IP allowlist, PHP-пакет `b8e60d9`, live smoke `10/10`,
   cache/replay/cross-session проверки и повторный shadow preflight `36/36`

@@ -132,10 +132,14 @@ JSON/CSV/XLSX артефактов сохраняются.
 3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
 4. Rollback выполняется переключением release symlink; миграций схемы в этом релизе нет.
 5. Для manual matching slice разрешены push ветки и создание PR для полного GitHub CI.
-   Merge в `main` и production release требуют отдельного подтверждения.
+   ОТМЕНЕНО (2026-08-25): требование отдельного подтверждения merge выполнено для
+   PR №57; разрешён merge в `main`. Production release по-прежнему требует
+   отдельного подтверждения.
 
 # Changelog
 
+- 2026-08-25 — после зелёного GitHub CI разрешён merge PR №57 в `main`;
+  production release оставлен за отдельным подтверждением.
 - 2026-08-25 — разрешены push manual matching slice и создание PR для полного
   GitHub CI; merge и production release оставлены за отдельным подтверждением.
 - 2026-08-24 — `manual_matching_control.py` и `manual_matching_bitrix_tasks.py`

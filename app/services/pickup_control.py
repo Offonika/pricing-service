@@ -27,6 +27,7 @@ def poll_pickup_control_chats(
     *,
     client: fulfillment.BitrixChatClient,
     settings: Settings,
+    onec_validator: Callable[[str], bot.OneCPickupValidation] | None = None,
     external_apply_enabled: bool | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -67,6 +68,18 @@ def poll_pickup_control_chats(
             run_ocr=False,
             settings=settings,
         )
+    if settings.order_fulfillment_pickup_evidence_tracking_enabled:
+        if onec_validator is None:
+            raise RuntimeError("pickup_evidence_onec_validator_required")
+        stats["evidence"] = reconcile_strict_pickup_evidence(
+            session,
+            client=client,
+            settings=settings,
+            onec_validator=onec_validator,
+            now=now,
+        )
+    else:
+        stats["evidence"] = {"checked": 0, "recorded": 0, "duplicate": 0, "blocked": 0}
     stats["inventory"] = persist_pending_inventory_messages(
         session,
         settings=settings,
@@ -112,6 +125,280 @@ def build_crm_order_exists_probe(
     return exists_in_crm
 
 
+def reconcile_strict_pickup_evidence(
+    session: Session,
+    *,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    onec_validator: Callable[[str], bot.OneCPickupValidation],
+    limit: int = 1000,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Persist strict dispatch/receipt evidence without changing CRM or sending messages."""
+
+    stats = {"checked": 0, "recorded": 0, "duplicate": 0, "blocked": 0}
+    cutover = settings.order_fulfillment_bot_cutover_at
+    if not settings.order_fulfillment_pickup_evidence_tracking_enabled or cutover is None:
+        return stats
+    now = bot._naive_utc(now or bot.utcnow())  # noqa: SLF001
+    cutoff_naive = bot._naive_utc(cutover)  # noqa: SLF001
+    messages = session.scalars(
+        select(BitrixChatMessage)
+        .where(
+            BitrixChatMessage.chat_code.in_(
+                [
+                    fulfillment.CHAT_SITE_MASTER_MOBILE,
+                    fulfillment.CHAT_PICKUP_READY,
+                ]
+            ),
+            BitrixChatMessage.message_at >= cutoff_naive,
+            BitrixChatMessage.parse_status != "edited_manual_review",
+        )
+        .order_by(BitrixChatMessage.message_at.asc(), BitrixChatMessage.id.asc())
+        .limit(max(1, min(limit, 5000)))
+    ).all()
+    excluded_authors = {
+        str(item).strip().casefold() for item in settings.order_fulfillment_bot_excluded_user_ids
+    }
+    if settings.order_fulfillment_bot_id is not None:
+        excluded_authors.add(str(settings.order_fulfillment_bot_id))
+        excluded_authors.add(f"bot{settings.order_fulfillment_bot_id}")
+    for message in messages:
+        stats["checked"] += 1
+        if str(message.author_id or "").strip().casefold() in excluded_authors:
+            continue
+        text_value = fulfillment.bitrix_message_text_for_parsing(message)
+        mentions = bot.parse_pickup_candidate_text(
+            text_value,
+            dialog_id=message.dialog_id,
+            order_limit=bot.STRICT_ARRIVAL_ORDER_LIMIT,
+        )
+        resolution = pickup_inventory.resolve_pickup_inventory_warehouse(
+            session,
+            text_value,
+            pickup_aliases=settings.order_fulfillment_pickup_warehouse_aliases,
+        )
+        if message.chat_code == fulfillment.CHAT_SITE_MASTER_MOBILE:
+            event_type = fulfillment.EVENT_PICKUP_MOVING
+            strict = bot.strict_pickup_movement_message(
+                text_value,
+                mentions=mentions,
+                resolution=resolution,
+            )
+        else:
+            event_type = fulfillment.EVENT_PICKUP_STORED
+            strict = bot._strict_pickup_arrival_message(  # noqa: SLF001
+                text_value,
+                mentions=mentions,
+                resolution=resolution,
+            )
+        if not strict or resolution.warehouse is None:
+            continue
+        for mention in mentions:
+            existing = session.scalar(
+                select(SiteOrderExecutionEvent.id)
+                .join(
+                    SiteOrderExecutionCase,
+                    SiteOrderExecutionCase.id == SiteOrderExecutionEvent.case_id,
+                )
+                .where(
+                    SiteOrderExecutionEvent.raw_message_id == message.id,
+                    SiteOrderExecutionEvent.event_type == event_type,
+                    SiteOrderExecutionCase.site_order_number == mention.site_order_number,
+                )
+            )
+            if existing is not None:
+                stats["duplicate"] += 1
+                continue
+            try:
+                deals = client.list_deals_by_site_order(mention.site_order_number)
+            except Exception:
+                stats["blocked"] += 1
+                continue
+            if len(deals) != 1:
+                stats["blocked"] += 1
+                continue
+            deal = deals[0]
+            if fulfillment._clean_string(
+                deal.stage_id
+            ) in bot.TERMINAL_STAGES or not fulfillment._is_internal_pickup_deal(
+                deal
+            ):  # noqa: SLF001
+                stats["blocked"] += 1
+                continue
+            case = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == mention.site_order_number
+                )
+            )
+            expected_ids = bot.pickup_expected_warehouse_ids(
+                session,
+                case=case,
+                deal=deal,
+                settings=settings,
+            )
+            if expected_ids != {resolution.warehouse.id}:
+                stats["blocked"] += 1
+                continue
+            onec = onec_validator(mention.site_order_number)
+            if not onec.available or not onec.assembled or onec.return_confirmed:
+                stats["blocked"] += 1
+                continue
+            event = fulfillment.upsert_execution_event(
+                session,
+                site_order_number=mention.site_order_number,
+                event_type=event_type,
+                event_at=message.message_at or now,
+                source="bitrix_chat",
+                source_ref=f"pickup_evidence:{message.id}",
+                confidence="strong",
+                raw_message_id=message.id,
+                warehouse_id=resolution.warehouse.id,
+                actor_ref=message.author_id,
+                payload={"strict": True, "silent": True},
+            )
+            if event is None:
+                stats["duplicate"] += 1
+                continue
+            case = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == mention.site_order_number
+                )
+            )
+            assert case is not None
+            case.bitrix_deal_id = deal.deal_id
+            case.delivery_method = deal.delivery
+            case.current_crm_stage = deal.stage_id
+            case.pickup_point_warehouse_id = resolution.warehouse.id
+            if event_type == fulfillment.EVENT_PICKUP_STORED:
+                event_at = message.message_at or now
+                if case.storage_started_at is None or event_at > case.storage_started_at:
+                    case.storage_started_at = event_at
+            case.updated_at = now
+            stats["recorded"] += 1
+    session.commit()
+    return stats
+
+
+def enqueue_missing_receipt_followups(
+    session: Session,
+    *,
+    settings: Settings,
+    limit: int = 1000,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Find dispatches without a later receipt and queue one question plus later tasks."""
+
+    stats = {
+        "checked": 0,
+        "due": 0,
+        "prompt_queued": 0,
+        "task_queued": 0,
+        "dry_run": 0,
+    }
+    cutover = settings.order_fulfillment_bot_cutover_at
+    if not settings.order_fulfillment_pickup_evidence_tracking_enabled or cutover is None:
+        return stats
+    now = bot._naive_utc(now or bot.utcnow())  # noqa: SLF001
+    question_hours = settings.order_fulfillment_pickup_receipt_question_after_hours
+    task_hours = max(
+        question_hours,
+        settings.order_fulfillment_pickup_receipt_task_after_hours,
+    )
+    cutoff_naive = bot._naive_utc(cutover)  # noqa: SLF001
+    movements = session.scalars(
+        select(SiteOrderExecutionEvent)
+        .where(
+            SiteOrderExecutionEvent.event_type.in_(
+                [fulfillment.EVENT_PICKUP_MOVING, fulfillment.EVENT_PICKUP_REDIRECTED]
+            ),
+            SiteOrderExecutionEvent.event_at >= cutoff_naive,
+            SiteOrderExecutionEvent.event_at <= now - timedelta(hours=question_hours),
+        )
+        .order_by(SiteOrderExecutionEvent.event_at.asc(), SiteOrderExecutionEvent.id.asc())
+        .limit(max(1, min(limit, 5000)))
+    ).all()
+    prompt_groups: dict[tuple[int, int], list[SiteOrderExecutionEvent]] = {}
+    task_movements: list[SiteOrderExecutionEvent] = []
+    for movement in movements:
+        stats["checked"] += 1
+        if not bot.missing_receipt_movement_is_open(session, movement=movement):
+            continue
+        case = session.get(SiteOrderExecutionCase, movement.case_id)
+        if (
+            case is None
+            or case.bitrix_deal_id is None
+            or movement.warehouse_id is None
+            or case.delivered_at is not None
+            or case.cancelled_at is not None
+        ):
+            continue
+        stats["due"] += 1
+        fulfillment.upsert_execution_event(
+            session,
+            site_order_number=case.site_order_number,
+            event_type=fulfillment.EVENT_PICKUP_RECEIPT_OVERDUE,
+            event_at=(movement.event_at or now) + timedelta(hours=question_hours),
+            source="system",
+            source_ref=f"movement:{movement.id}",
+            confidence="strong",
+            raw_message_id=movement.raw_message_id,
+            warehouse_id=movement.warehouse_id,
+            payload={"movement_event_id": movement.id},
+        )
+        if not settings.order_fulfillment_pickup_missing_receipt_enabled:
+            stats["dry_run"] += 1
+            continue
+        group_source_id = movement.raw_message_id or movement.id
+        prompt_groups.setdefault((group_source_id, movement.warehouse_id), []).append(movement)
+        if movement.event_at is not None and movement.event_at <= now - timedelta(hours=task_hours):
+            task_movements.append(movement)
+    for (source_id, warehouse_id), grouped_movements in prompt_groups.items():
+        key = f"movement-source:{source_id}:warehouse:{warehouse_id}:missing-receipt:prompt"
+        if (
+            session.scalar(
+                select(SiteOrderFulfillmentOutbox.id).where(
+                    SiteOrderFulfillmentOutbox.idempotency_key == key
+                )
+            )
+            is not None
+        ):
+            continue
+        bot.enqueue_outbox(
+            session,
+            operation=bot.OP_PUBLISH_MISSING_RECEIPT_PROMPT,
+            idempotency_key=key,
+            target_type="pickup_movement_batch",
+            target_id=str(source_id),
+            payload={"movement_event_ids": [item.id for item in grouped_movements]},
+            now=now,
+        )
+        stats["prompt_queued"] += 1
+    for movement in task_movements:
+        key = f"movement:{movement.id}:missing-receipt:task"
+        if (
+            session.scalar(
+                select(SiteOrderFulfillmentOutbox.id).where(
+                    SiteOrderFulfillmentOutbox.idempotency_key == key
+                )
+            )
+            is not None
+        ):
+            continue
+        bot.enqueue_outbox(
+            session,
+            operation=bot.OP_CREATE_MISSING_RECEIPT_TASK,
+            idempotency_key=key,
+            target_type="pickup_movement_event",
+            target_id=str(movement.id),
+            payload={"movement_event_id": movement.id},
+            now=now,
+        )
+        stats["task_queued"] += 1
+    session.commit()
+    return stats
+
+
 def create_missing_pickup_candidates(
     session: Session,
     *,
@@ -123,14 +410,19 @@ def create_missing_pickup_candidates(
     if cutover is None:
         return stats
     cutoff_naive = bot._naive_utc(cutover)  # noqa: SLF001
+    message_filters = [
+        BitrixChatMessage.dialog_id.in_(settings.order_fulfillment_bot_source_chat_ids),
+        BitrixChatMessage.message_at >= cutoff_naive,
+        BitrixChatMessage.parse_status != "edited_manual_review",
+        ~exists().where(BitrixChatActionCandidate.raw_message_id == BitrixChatMessage.id),
+    ]
+    if settings.order_fulfillment_pickup_evidence_tracking_enabled:
+        message_filters.append(
+            ~exists().where(SiteOrderExecutionEvent.raw_message_id == BitrixChatMessage.id)
+        )
     messages = session.scalars(
         select(BitrixChatMessage)
-        .where(
-            BitrixChatMessage.dialog_id.in_(settings.order_fulfillment_bot_source_chat_ids),
-            BitrixChatMessage.message_at >= cutoff_naive,
-            BitrixChatMessage.parse_status != "edited_manual_review",
-            ~exists().where(BitrixChatActionCandidate.raw_message_id == BitrixChatMessage.id),
-        )
+        .where(*message_filters)
         .order_by(BitrixChatMessage.message_at.asc(), BitrixChatMessage.id.asc())
         .limit(max(1, min(limit, 5000)))
     ).all()
@@ -481,6 +773,27 @@ def pickup_operational_metrics(
         )
         or 0
     )
+    missing_receipt_due = 0
+    if cutover_naive is not None:
+        due_movements = session.scalars(
+            select(SiteOrderExecutionEvent).where(
+                SiteOrderExecutionEvent.event_type.in_(
+                    [
+                        fulfillment.EVENT_PICKUP_MOVING,
+                        fulfillment.EVENT_PICKUP_REDIRECTED,
+                    ]
+                ),
+                SiteOrderExecutionEvent.event_at >= cutover_naive,
+                SiteOrderExecutionEvent.event_at
+                <= now
+                - timedelta(hours=settings.order_fulfillment_pickup_receipt_question_after_hours),
+            )
+        ).all()
+        missing_receipt_due = sum(
+            1
+            for movement in due_movements
+            if bot.missing_receipt_movement_is_open(session, movement=movement)
+        )
     outbox_counts = {
         status: int(count_value or 0)
         for status, count_value in session.execute(
@@ -516,6 +829,7 @@ def pickup_operational_metrics(
         "sla_96_due": sla_96_due,
         "active_holds": active_holds,
         "lost_orders": lost_orders,
+        "missing_receipt_due": missing_receipt_due,
         "task_routing_errors": routing_errors,
         "task_route_configuration_errors": bot.task_route_configuration_errors(
             session,

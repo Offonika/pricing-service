@@ -910,6 +910,28 @@ def test_runtime_apply_probe_rereads_env_and_is_fail_closed(tmp_path) -> None:
     assert invalid_probe() is False
 
 
+def test_missing_receipt_probe_rereads_its_independent_flag(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "ORDER_FULFILLMENT_BOT_APPLY_ENABLED=false\n"
+        "ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    probe = outbox_script.build_runtime_missing_receipt_enabled_probe(
+        initial_enabled=True,
+        env_file=env_file,
+    )
+
+    assert probe() is True
+    env_file.write_text(
+        "ORDER_FULFILLMENT_BOT_APPLY_ENABLED=true\n"
+        "ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED=false\n",
+        encoding="utf-8",
+    )
+    assert probe() is False
+    assert probe() is False
+
+
 def test_expired_open_candidate_card_is_closed_without_buttons(db_session) -> None:
     settings = _settings()
     candidate = _create_candidate(db_session, settings=settings)

@@ -165,6 +165,8 @@ OP_PROCESS_INVENTORY_CLARIFICATION = "process_inventory_clarification"
 OP_UPDATE_INVENTORY_CLARIFICATION = "update_inventory_clarification"
 OP_REFRESH_INTERACTIVE_CARD = "refresh_interactive_card"
 OP_FINALIZE_STRUCTURED_ARRIVAL = "finalize_structured_arrival"
+OP_PUBLISH_MISSING_RECEIPT_PROMPT = "publish_missing_receipt_prompt"
+OP_CREATE_MISSING_RECEIPT_TASK = "create_missing_receipt_task"
 
 APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
     {
@@ -184,12 +186,15 @@ NON_RETRYABLE_EXTERNAL_OPERATIONS = {
     OP_UPDATE_INVENTORY_CLARIFICATION,
     OP_REFRESH_INTERACTIVE_CARD,
     OP_FINALIZE_STRUCTURED_ARRIVAL,
+    OP_PUBLISH_MISSING_RECEIPT_PROMPT,
+    OP_CREATE_MISSING_RECEIPT_TASK,
     OP_START_SMS_WORKFLOW,
     OP_CREATE_TASK,
 }
 CANDIDATE_CREATE_ADVISORY_LOCK_KEY = 5_584_927_483_672
 SLA_TASK_ADVISORY_LOCK_KEY = 5_584_927_483_673
 APPLY_ENABLED_ENV_KEY = "ORDER_FULFILLMENT_BOT_APPLY_ENABLED"
+MISSING_RECEIPT_ENABLED_ENV_KEY = "ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED"
 TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 DEFAULT_RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
@@ -238,6 +243,7 @@ STRICT_ARRIVAL_ALLOWED_WORDS = frozenset(
         "прибыли",
         "прибыло",
         "привезли",
+        "получили",
         "приехал",
         "приехала",
         "приехали",
@@ -287,6 +293,7 @@ ARRIVAL_MARKERS = (
     "приехал",
     "приехала",
     "привезли",
+    "получили",
     "поступил",
     "поступила",
     "на точке",
@@ -294,12 +301,53 @@ ARRIVAL_MARKERS = (
     "готова к выдаче",
 )
 MOVING_MARKERS = (
+    "отправили",
+    "отправлен",
+    "отправлена",
+    "отправлены",
+    "передали",
+    "передан",
+    "передана",
+    "переданы",
     "отправили на",
     "отправлен на",
     "отправлена на",
     "передали на точку",
     "передан на точку",
     "едет на точку",
+)
+
+STRICT_MOVEMENT_ALLOWED_WORDS = frozenset(
+    {
+        "в",
+        "для",
+        "добрый",
+        "день",
+        "заказ",
+        "заказа",
+        "заказы",
+        "магазин",
+        "на",
+        "с",
+        "склад",
+        "склада",
+        "со",
+        "отправил",
+        "отправила",
+        "отправили",
+        "отправлен",
+        "отправлена",
+        "отправлены",
+        "передал",
+        "передала",
+        "передали",
+        "передан",
+        "передана",
+        "переданы",
+        "точка",
+        "точке",
+        "точку",
+    }
 )
 
 
@@ -343,6 +391,15 @@ class OneCPickupValidation:
     issued_confirmed: bool = False
     return_confirmed: bool = False
     evidence: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MissingReceiptSnapshot:
+    movement: SiteOrderExecutionEvent
+    case: SiteOrderExecutionCase
+    deal: fulfillment.BitrixDealSnapshot
+    warehouse: LogisticsWarehouse
+    onec: OneCPickupValidation
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +525,41 @@ def _strict_pickup_arrival_message(
     normalized = re.sub(r"\b2\d{5}\b", " ", normalized)
     words = [word for word in normalized.split() if word]
     return all(word in STRICT_ARRIVAL_ALLOWED_WORDS for word in words)
+
+
+def strict_pickup_movement_message(
+    text_value: str,
+    *,
+    mentions: list[PickupCandidateMention],
+    resolution: Any,
+) -> bool:
+    """Accept only an explicit, point-resolved warehouse dispatch message."""
+
+    if not mentions or resolution.warehouse is None:
+        return False
+    if any(mention.detected_action != ACTION_MOVING for mention in mentions):
+        return False
+    all_orders = fulfillment.extract_order_numbers(text_value)
+    if not all_orders or len(all_orders) > STRICT_ARRIVAL_ORDER_LIMIT:
+        return False
+    normalized = pickup_inventory._normalize_alias_text(  # noqa: SLF001
+        fulfillment._strict_chat_text(text_value)  # noqa: SLF001
+    )
+    normalized = re.sub(r"[^0-9a-zа-я]+", " ", normalized.replace("ё", "е"))
+    for match in resolution.matches:
+        alias = pickup_inventory._normalize_alias_text(  # noqa: SLF001
+            str(match.get("alias") or "")
+        )
+        alias = re.sub(r"[^0-9a-zа-я]+", " ", alias.replace("ё", "е")).strip()
+        if alias:
+            normalized = re.sub(
+                rf"\b{re.escape(alias)}[а-я]{{0,5}}\b",
+                " ",
+                normalized,
+            )
+    normalized = re.sub(r"\b2\d{5}\b", " ", normalized)
+    words = [word for word in normalized.split() if word]
+    return all(word in STRICT_MOVEMENT_ALLOWED_WORDS for word in words)
 
 
 def _source_is_after_cutover(
@@ -1868,6 +1960,168 @@ def decide_pickup_action(
     )
 
 
+def missing_receipt_movement_is_open(
+    session: Session,
+    *,
+    movement: SiteOrderExecutionEvent,
+) -> bool:
+    """Return whether a dispatch still lacks a later point-receipt fact."""
+
+    if (
+        movement.event_type
+        not in {
+            fulfillment.EVENT_PICKUP_MOVING,
+            fulfillment.EVENT_PICKUP_REDIRECTED,
+        }
+        or movement.event_at is None
+    ):
+        return False
+    case = session.get(SiteOrderExecutionCase, movement.case_id)
+    if case is None or case.delivered_at is not None or case.cancelled_at is not None:
+        return False
+    latest_movement_id = session.scalar(
+        select(SiteOrderExecutionEvent.id)
+        .where(
+            SiteOrderExecutionEvent.case_id == movement.case_id,
+            SiteOrderExecutionEvent.event_type.in_(
+                [
+                    fulfillment.EVENT_PICKUP_MOVING,
+                    fulfillment.EVENT_PICKUP_REDIRECTED,
+                ]
+            ),
+            SiteOrderExecutionEvent.event_at.is_not(None),
+        )
+        .order_by(
+            SiteOrderExecutionEvent.event_at.desc(),
+            SiteOrderExecutionEvent.id.desc(),
+        )
+        .limit(1)
+    )
+    if latest_movement_id != movement.id:
+        return False
+    later_receipt = session.scalar(
+        select(SiteOrderExecutionEvent.id)
+        .where(
+            SiteOrderExecutionEvent.case_id == movement.case_id,
+            SiteOrderExecutionEvent.event_type.in_(
+                [
+                    fulfillment.EVENT_PICKUP_STORED,
+                    fulfillment.EVENT_PICKUP_RECEIVED,
+                    fulfillment.EVENT_PICKUP_UNCLAIMED,
+                    fulfillment.EVENT_PICKUP_DISMANTLING,
+                    fulfillment.EVENT_PICKUP_DISMANTLED,
+                    fulfillment.EVENT_PICKUP_EXCEPTION,
+                    fulfillment.EVENT_PICKUP_DISMANTLE_CANDIDATE,
+                ]
+            ),
+            or_(
+                SiteOrderExecutionEvent.event_at > movement.event_at,
+                (
+                    (SiteOrderExecutionEvent.event_at == movement.event_at)
+                    & (SiteOrderExecutionEvent.id > movement.id)
+                ),
+            ),
+        )
+        .limit(1)
+    )
+    return later_receipt is None
+
+
+def pickup_expected_warehouse_ids(
+    session: Session,
+    *,
+    case: SiteOrderExecutionCase | None,
+    deal: fulfillment.BitrixDealSnapshot,
+    settings: Settings,
+) -> set[int]:
+    expected_ids: set[int] = set()
+    if case is not None and case.pickup_point_warehouse_id is not None:
+        expected_ids.add(case.pickup_point_warehouse_id)
+    resolution = pickup_inventory.resolve_pickup_inventory_warehouse(
+        session,
+        " ".join(value for value in (deal.delivery, deal.post_delivery_type) if value),
+        pickup_aliases=settings.order_fulfillment_pickup_warehouse_aliases,
+    )
+    if resolution.warehouse is not None:
+        expected_ids.add(resolution.warehouse.id)
+    return expected_ids
+
+
+def _missing_receipt_snapshot(
+    session: Session,
+    *,
+    movement_id: int,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    onec_validator: Callable[[str], OneCPickupValidation],
+) -> tuple[MissingReceiptSnapshot | None, str]:
+    movement = session.get(SiteOrderExecutionEvent, movement_id)
+    if movement is None or not missing_receipt_movement_is_open(session, movement=movement):
+        return None, "receipt_or_later_movement_recorded"
+    case = session.get(SiteOrderExecutionCase, movement.case_id)
+    warehouse = (
+        session.get(LogisticsWarehouse, movement.warehouse_id)
+        if movement.warehouse_id is not None
+        else None
+    )
+    if case is None or warehouse is None or case.bitrix_deal_id is None:
+        return None, "movement_context_incomplete"
+    try:
+        deals = client.list_deals_by_site_order(case.site_order_number)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if len(deals) != 1:
+        return None, "deal_not_unique"
+    deal = deals[0]
+    live_order_number = fulfillment._clean_string(
+        (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+    )
+    if deal.deal_id != case.bitrix_deal_id or live_order_number != case.site_order_number:
+        return None, "deal_identity_changed"
+    if fulfillment._clean_string(deal.stage_id) in TERMINAL_STAGES:
+        return None, "deal_closed"
+    if not fulfillment._is_internal_pickup_deal(deal):  # noqa: SLF001
+        return None, "deal_not_internal_pickup"
+    expected_ids = pickup_expected_warehouse_ids(
+        session,
+        case=case,
+        deal=deal,
+        settings=settings,
+    )
+    if expected_ids != {warehouse.id}:
+        return None, "pickup_point_conflict"
+    try:
+        onec = onec_validator(case.site_order_number)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if not onec.available:
+        raise RetryableBeforeExternalEffect("onec_read_unavailable")
+    if not onec.assembled:
+        raise RetryableBeforeExternalEffect("onec_assembly_not_confirmed")
+    if onec.return_confirmed:
+        return None, "onec_return_confirmed"
+    if onec.issued_confirmed:
+        return None, "onec_issue_confirmed"
+    return (
+        MissingReceiptSnapshot(
+            movement=movement,
+            case=case,
+            deal=deal,
+            warehouse=warehouse,
+            onec=onec,
+        ),
+        "open",
+    )
+
+
+def _suppress_missing_receipt_row(
+    row: SiteOrderFulfillmentOutbox,
+    *,
+    reason: str,
+) -> None:
+    row.payload = {**(row.payload or {}), "suppressed_reason": reason}
+
+
 def process_outbox(
     session: Session,
     *,
@@ -1875,6 +2129,7 @@ def process_outbox(
     settings: Settings,
     onec_validator: Callable[[str], OneCPickupValidation],
     apply_enabled_probe: Callable[[], bool] | None = None,
+    missing_receipt_enabled_probe: Callable[[], bool] | None = None,
     limit: int = 50,
     now: datetime | None = None,
 ) -> dict[str, int]:
@@ -2058,6 +2313,7 @@ def process_outbox(
                 settings=settings,
                 onec_validator=onec_validator,
                 apply_enabled_probe=apply_enabled_probe,
+                missing_receipt_enabled_probe=missing_receipt_enabled_probe,
                 now=now,
             )
             _finish_outbox(row, status=OUTBOX_COMPLETED, error=None, now=now)
@@ -2159,6 +2415,48 @@ def runtime_apply_enabled_from_env(
     return str(raw_value or "").strip().casefold() in TRUE_ENV_VALUES
 
 
+def runtime_feature_enabled_from_env(
+    *,
+    initial_enabled: bool,
+    env_key: str,
+    env_file: Path = DEFAULT_RUNTIME_ENV_FILE,
+) -> bool:
+    """Re-read an independently gated feature flag immediately before effects."""
+
+    if not initial_enabled:
+        return False
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    raw_value: str | None = None
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == env_key:
+            raw_value = value.strip().strip('"').strip("'")
+    return str(raw_value or "").strip().casefold() in TRUE_ENV_VALUES
+
+
+def _runtime_missing_receipt_enabled(
+    settings: Settings,
+    enabled_probe: Callable[[], bool] | None,
+) -> bool:
+    if not settings.order_fulfillment_pickup_missing_receipt_enabled:
+        return False
+    return bool(enabled_probe()) if enabled_probe is not None else True
+
+
+def _require_missing_receipt_enabled(
+    settings: Settings,
+    enabled_probe: Callable[[], bool] | None,
+) -> None:
+    if not _runtime_missing_receipt_enabled(settings, enabled_probe):
+        raise ApplyDisabledBeforeSideEffect("order_fulfillment_pickup_missing_receipt_disabled")
+
+
 def _require_runtime_apply_enabled(
     settings: Settings,
     apply_enabled_probe: Callable[[], bool] | None,
@@ -2184,6 +2482,7 @@ def _dispatch_outbox(
     settings: Settings,
     onec_validator: Callable[[str], OneCPickupValidation],
     apply_enabled_probe: Callable[[], bool] | None = None,
+    missing_receipt_enabled_probe: Callable[[], bool] | None = None,
     now: datetime,
 ) -> None:
     if row.operation in APPLY_GATED_OUTBOX_OPERATIONS and not _runtime_apply_enabled(
@@ -2219,6 +2518,11 @@ def _dispatch_outbox(
         OP_UPDATE_INVENTORY_CLARIFICATION,
     }:
         _require_inventory_enabled(settings, apply_enabled_probe)
+    if row.operation in {
+        OP_PUBLISH_MISSING_RECEIPT_PROMPT,
+        OP_CREATE_MISSING_RECEIPT_TASK,
+    }:
+        _require_missing_receipt_enabled(settings, missing_receipt_enabled_probe)
     if (
         candidate is not None
         and candidate.source_chat_id == settings.order_fulfillment_pickup_exception_chat_dialog_id
@@ -2285,6 +2589,26 @@ def _dispatch_outbox(
             row=row,
             client=client,
             settings=settings,
+        )
+        return
+    if row.operation == OP_PUBLISH_MISSING_RECEIPT_PROMPT:
+        _publish_missing_receipt_prompt(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            onec_validator=onec_validator,
+            enabled_probe=missing_receipt_enabled_probe,
+        )
+        return
+    if row.operation == OP_CREATE_MISSING_RECEIPT_TASK:
+        _create_missing_receipt_task(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            onec_validator=onec_validator,
+            enabled_probe=missing_receipt_enabled_probe,
         )
         return
     if row.operation == OP_PUBLISH_INVENTORY_CLARIFICATION:
@@ -2402,6 +2726,148 @@ def _dispatch_outbox(
         _finalize_case_event(session, row=row, now=now)
         return
     raise RuntimeError(f"unsupported_outbox_operation:{row.operation}")
+
+
+def _publish_missing_receipt_prompt(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    onec_validator: Callable[[str], OneCPickupValidation],
+    enabled_probe: Callable[[], bool] | None,
+) -> None:
+    raw_ids = list((row.payload or {}).get("movement_event_ids") or [])
+    movement_ids = list(
+        dict.fromkeys(
+            value
+            for item in raw_ids[:STRICT_ARRIVAL_ORDER_LIMIT]
+            if (value := fulfillment._int_or_none(item)) is not None and value > 0
+        )
+    )
+    if not movement_ids:
+        raise RuntimeError("missing_receipt_prompt_payload_invalid")
+    snapshots: list[MissingReceiptSnapshot] = []
+    suppressed: dict[str, str] = {}
+    for movement_id in movement_ids:
+        snapshot, reason = _missing_receipt_snapshot(
+            session,
+            movement_id=movement_id,
+            client=client,
+            settings=settings,
+            onec_validator=onec_validator,
+        )
+        if snapshot is None:
+            suppressed[str(movement_id)] = reason
+        else:
+            snapshots.append(snapshot)
+    if not snapshots:
+        _suppress_missing_receipt_row(
+            row,
+            reason="all_movements_closed_before_prompt",
+        )
+        row.payload = {**(row.payload or {}), "suppressed_movements": suppressed}
+        return
+    warehouse_ids = {snapshot.warehouse.id for snapshot in snapshots}
+    if len(warehouse_ids) != 1:
+        _suppress_missing_receipt_row(row, reason="prompt_warehouse_conflict")
+        return
+    bot_id = settings.order_fulfillment_bot_id
+    if bot_id is None:
+        raise RetryableBeforeExternalEffect("bot_id_not_configured")
+    warehouse = snapshots[0].warehouse
+    order_numbers = list(dict.fromkeys(snapshot.case.site_order_number for snapshot in snapshots))
+    orders_text = " ".join(order_numbers)
+    message = (
+        f"Контроль самовывоза — {warehouse.name}\n"
+        "Склад сообщил об отправке более "
+        f"{settings.order_fulfillment_pickup_receipt_question_after_hours} часов назад, "
+        "но получение точкой не подтверждено:\n"
+        f"{orders_text}\n"
+        "Если заказы уже получены, ответьте отдельным сообщением:\n"
+        f"{warehouse.name}: {orders_text} получили"
+    )
+    _require_missing_receipt_enabled(settings, enabled_probe)
+    message_id = client.add_bot_message(
+        dialog_id=settings.order_fulfillment_pickup_ready_chat_dialog_id,
+        bot_id=bot_id,
+        message=message,
+        keyboard=[],
+    )
+    row.payload = {
+        **(row.payload or {}),
+        "bot_message_id": message_id,
+        "site_order_numbers": order_numbers,
+        "warehouse_id": warehouse.id,
+        "suppressed_movements": suppressed,
+    }
+
+
+def _create_missing_receipt_task(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    onec_validator: Callable[[str], OneCPickupValidation],
+    enabled_probe: Callable[[], bool] | None,
+) -> None:
+    movement_id = fulfillment._int_or_none((row.payload or {}).get("movement_event_id"))
+    if movement_id is None or movement_id <= 0:
+        raise RuntimeError("missing_receipt_task_payload_invalid")
+    snapshot, reason = _missing_receipt_snapshot(
+        session,
+        movement_id=movement_id,
+        client=client,
+        settings=settings,
+        onec_validator=onec_validator,
+    )
+    if snapshot is None:
+        _suppress_missing_receipt_row(row, reason=reason)
+        return
+    responsible_id, accomplice_ids = _resolve_task_route(
+        session,
+        case=snapshot.case,
+        task_kind="missing_receipt",
+        settings=settings,
+    )
+    try:
+        users = [client.get_user_by_id(user_id) for user_id in [responsible_id, *accomplice_ids]]
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    for user_id, user in zip([responsible_id, *accomplice_ids], users, strict=True):
+        if user is None or str(user.get("ACTIVE") or "").upper() not in {
+            "Y",
+            "TRUE",
+            "1",
+        }:
+            raise RuntimeError(f"task_route_user_inactive:{user_id}")
+    order_number = snapshot.case.site_order_number
+    _require_missing_receipt_enabled(settings, enabled_probe)
+    task_result = client.add_task(
+        {
+            "TITLE": f"Проверить получение самовывоза №{order_number}",
+            "RESPONSIBLE_ID": responsible_id,
+            "DESCRIPTION": (
+                f"Склад сообщил об отправке заказа №{order_number} на точку "
+                f"«{snapshot.warehouse.name}», но получение не подтверждено более "
+                f"{settings.order_fulfillment_pickup_receipt_task_after_hours} часов. "
+                "Проверьте фактическое наличие и подтвердите получение в рабочем чате."
+            ),
+            "UF_CRM_TASK": [f"D_{snapshot.deal.deal_id}"],
+            **({"ACCOMPLICES": accomplice_ids} if accomplice_ids else {}),
+        }
+    )
+    task_id = _task_result_id(task_result)
+    if task_id is None:
+        raise RuntimeError("task_api_returned_unrecognized_result")
+    row.payload = {
+        **(row.payload or {}),
+        "task_id": task_id,
+        "site_order_number": order_number,
+        "warehouse_id": snapshot.warehouse.id,
+        "deal_id": snapshot.deal.deal_id,
+    }
 
 
 def _publish_card(
@@ -3648,7 +4114,7 @@ def _finalize_action(
             event_at=event_at,
             source=("bitrix_chat" if automatic else "manual"),
             source_ref=(
-                f"pickup_auto_arrival:{candidate.raw_message_id}"
+                f"pickup_evidence:{candidate.raw_message_id}"
                 if automatic
                 else f"pickup_bot_action:{action.id}"
             ),

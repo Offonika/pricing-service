@@ -460,6 +460,7 @@ def test_command_event_reads_real_dynamic_command_payload(monkeypatch) -> None:
 
 def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None:
     _configure(monkeypatch)
+    monkeypatch.setattr(bot, "utcnow", lambda: datetime(2026, 8, 24, 10, 1))
     monkeypatch.setenv(
         "ORDER_FULFILLMENT_BOT_SOURCE_CHAT_IDS",
         "chat8729,chat733,chat8961",

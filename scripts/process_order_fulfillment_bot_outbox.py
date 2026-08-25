@@ -44,6 +44,29 @@ def build_runtime_apply_enabled_probe(
     return enabled
 
 
+def build_runtime_missing_receipt_enabled_probe(
+    *,
+    initial_enabled: bool,
+    env_file: Path = PROJECT_ROOT / ".env",
+) -> Callable[[], bool]:
+    if not initial_enabled:
+        return lambda: False
+    still_enabled = True
+
+    def enabled() -> bool:
+        nonlocal still_enabled
+        if not still_enabled:
+            return False
+        still_enabled = bot.runtime_feature_enabled_from_env(
+            initial_enabled=True,
+            env_key=bot.MISSING_RECEIPT_ENABLED_ENV_KEY,
+            env_file=env_file,
+        )
+        return still_enabled
+
+    return enabled
+
+
 def build_onec_validator() -> Callable[[str], bot.OneCPickupValidation]:
     def validate(order_number: str) -> bot.OneCPickupValidation:
         try:
@@ -102,6 +125,10 @@ def main() -> int:
     apply_enabled_probe = build_runtime_apply_enabled_probe(
         initial_enabled=settings.order_fulfillment_bot_apply_enabled,
     )
+    missing_receipt_enabled_probe = build_runtime_missing_receipt_enabled_probe(
+        initial_enabled=settings.order_fulfillment_pickup_missing_receipt_enabled,
+    )
+    onec_validator = build_onec_validator()
     with session_scope() as session:
         poll_stats: dict[str, object]
         try:
@@ -109,11 +136,22 @@ def main() -> int:
                 session,
                 client=client,
                 settings=settings,
+                onec_validator=onec_validator,
                 external_apply_enabled=apply_enabled_probe(),
             )
         except Exception as exc:  # noqa: BLE001 - outbox must continue after ingest failure.
             session.rollback()
             poll_stats = {"error": type(exc).__name__}
+        try:
+            missing_receipt_stats: dict[str, object] = (
+                pickup_control.enqueue_missing_receipt_followups(
+                    session,
+                    settings=settings,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - outbox must continue.
+            session.rollback()
+            missing_receipt_stats = {"error": type(exc).__name__}
         try:
             field_stats = bot.reconcile_pickup_case_fields(
                 session,
@@ -129,7 +167,7 @@ def main() -> int:
                 session,
                 client=client,
                 settings=settings,
-                onec_validator=build_onec_validator(),
+                onec_validator=onec_validator,
                 limit=50,
             )
         except Exception as exc:  # noqa: BLE001 - outbox must continue.
@@ -149,14 +187,16 @@ def main() -> int:
             session,
             client=client,
             settings=settings,
-            onec_validator=build_onec_validator(),
+            onec_validator=onec_validator,
             apply_enabled_probe=apply_enabled_probe,
+            missing_receipt_enabled_probe=missing_receipt_enabled_probe,
             limit=max(1, min(args.limit, 500)),
         )
     print(
         json.dumps(
             {
                 "poll": poll_stats,
+                "missing_receipt": missing_receipt_stats,
                 "field_sync": field_stats,
                 "inventory": inventory_stats,
                 "sla": sla_result,

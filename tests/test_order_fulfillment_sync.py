@@ -1425,6 +1425,7 @@ def test_daily_digest_includes_pickup_control_metrics(
                 "sla_96_due": 1,
                 "active_holds": 2,
                 "lost_orders": 1,
+                "missing_receipt_due": 3,
                 "task_routing_errors": 1,
                 "task_route_configuration_errors": ["warehouse:mitino:senior_missing"],
                 "outbox": {"pending": 2, "retry": 1, "failed": 1},
@@ -1442,6 +1443,7 @@ def test_daily_digest_includes_pickup_control_metrics(
     assert "без подтверждённой SMS 1" in message
     assert "96 часов 1" in message
     assert "потерянных заказов 1" in message
+    assert "получение точкой не подтверждено: 3" in message
     assert "pickup_inventory=нет данных" in message
 
 

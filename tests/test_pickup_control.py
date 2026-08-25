@@ -1671,3 +1671,504 @@ def test_returned_action_requires_onec_return_without_payment(db_session) -> Non
     assert paid.reason == "return_payment_conflict"
     assert allowed.allowed is True
     assert allowed.target_stage == "LOSE"
+
+
+class MissingReceiptClient:
+    def __init__(self, order_numbers: list[str], *, point_name: str = "Митино") -> None:
+        self.order_numbers = set(order_numbers)
+        self.point_name = point_name
+        self.stage_by_order = {order_number: "FINAL_INVOICE" for order_number in order_numbers}
+        self.bot_messages: list[dict] = []
+        self.tasks: list[dict] = []
+        self.stage_updates: list[str] = []
+
+    def _deal(self, order_number: str) -> fulfillment.BitrixDealSnapshot:
+        return fulfillment.BitrixDealSnapshot(
+            deal_id=int(order_number),
+            stage_id=self.stage_by_order[order_number],
+            delivery="Самовывоз",
+            post_delivery_type=self.point_name,
+            raw={fulfillment.CRM_ORDER_NUMBER_FIELD: order_number},
+        )
+
+    def list_deals_by_site_order(self, order_number: str):
+        return [self._deal(order_number)] if order_number in self.order_numbers else []
+
+    def add_bot_message(self, **payload):
+        self.bot_messages.append(payload)
+        return str(9500 + len(self.bot_messages))
+
+    def get_user_by_id(self, user_id: int):
+        return {"ID": str(user_id), "ACTIVE": "Y"}
+
+    def add_task(self, fields: dict):
+        self.tasks.append(fields)
+        return {"task": {"id": len(self.tasks)}}
+
+
+def _missing_receipt_settings(**overrides) -> Settings:
+    values = {
+        "order_fulfillment_bot_apply_enabled": False,
+        "order_fulfillment_pickup_stage_apply_enabled": False,
+        "order_fulfillment_pickup_evidence_tracking_enabled": True,
+        "order_fulfillment_pickup_missing_receipt_enabled": True,
+        "order_fulfillment_pickup_receipt_question_after_hours": 24,
+        "order_fulfillment_pickup_receipt_task_after_hours": 48,
+        "order_fulfillment_point_task_routes": {"mitino": {"operator": 11, "senior": 12}},
+    }
+    values.update(overrides)
+    return _settings(**values)
+
+
+def _record_movement(
+    db_session,
+    *,
+    order_number: str,
+    warehouse: LogisticsWarehouse,
+    raw_message: BitrixChatMessage,
+    event_at: datetime,
+) -> SiteOrderExecutionEvent:
+    event = fulfillment.upsert_execution_event(
+        db_session,
+        site_order_number=order_number,
+        event_type=fulfillment.EVENT_PICKUP_MOVING,
+        event_at=event_at,
+        source="bitrix_chat",
+        source_ref=f"pickup_evidence:{raw_message.id}",
+        confidence="strong",
+        raw_message_id=raw_message.id,
+        warehouse_id=warehouse.id,
+        payload={"strict": True, "silent": True},
+    )
+    assert event is not None
+    case = db_session.get(SiteOrderExecutionCase, event.case_id)
+    assert case is not None
+    case.bitrix_deal_id = int(order_number)
+    case.delivery_method = "Самовывоз"
+    case.current_crm_stage = "FINAL_INVOICE"
+    case.pickup_point_warehouse_id = warehouse.id
+    db_session.commit()
+    return event
+
+
+def test_strict_dispatch_and_receipt_are_recorded_silently_and_idempotently(
+    db_session,
+) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    _message(
+        db_session,
+        message_id=501,
+        text_value="Митино: заказы 241500 241501 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    _message(
+        db_session,
+        message_id=502,
+        text_value="Митино: 241500 получили",
+        at=datetime(2026, 8, 24, 12),
+        chat_code=fulfillment.CHAT_PICKUP_READY,
+        dialog_id="chat8729",
+    )
+    client = MissingReceiptClient(["241500", "241501"])
+    settings = _missing_receipt_settings()
+
+    first = pickup_control.reconcile_strict_pickup_evidence(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        now=datetime(2026, 8, 24, 13),
+    )
+    candidate_stats = pickup_control.create_missing_pickup_candidates(
+        db_session,
+        settings=settings,
+    )
+    second = pickup_control.reconcile_strict_pickup_evidence(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        now=datetime(2026, 8, 24, 13),
+    )
+
+    events = db_session.scalars(
+        select(SiteOrderExecutionEvent).order_by(SiteOrderExecutionEvent.id)
+    ).all()
+    assert first == {"checked": 2, "recorded": 3, "duplicate": 0, "blocked": 0}
+    assert candidate_stats["created"] == 0
+    assert second == {"checked": 2, "recorded": 0, "duplicate": 3, "blocked": 0}
+    assert [event.event_type for event in events] == [
+        fulfillment.EVENT_PICKUP_MOVING,
+        fulfillment.EVENT_PICKUP_MOVING,
+        fulfillment.EVENT_PICKUP_STORED,
+    ]
+    assert all(event.warehouse_id == warehouse.id for event in events)
+    assert client.bot_messages == []
+    assert client.tasks == []
+    assert client.stage_updates == []
+
+
+def test_strict_receipt_from_bot_itself_is_never_evidence(db_session) -> None:
+    _warehouse(db_session, "mitino", "Митино")
+    message = _message(
+        db_session,
+        message_id=508,
+        text_value="Митино: 241500 получили",
+        at=datetime(2026, 8, 24, 12),
+        chat_code=fulfillment.CHAT_PICKUP_READY,
+        dialog_id="chat8729",
+    )
+    message.author_id = "42"
+    db_session.commit()
+
+    stats = pickup_control.reconcile_strict_pickup_evidence(
+        db_session,
+        client=MissingReceiptClient(["241500"]),
+        settings=_missing_receipt_settings(),
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        now=datetime(2026, 8, 24, 13),
+    )
+
+    assert stats["recorded"] == 0
+    assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
+
+
+def test_strict_evidence_blocks_conflicting_case_and_deal_points(db_session) -> None:
+    mitino = _warehouse(db_session, "mitino", "Митино")
+    other = _warehouse(db_session, "other", "Другая точка")
+    message = _message(
+        db_session,
+        message_id=503,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    db_session.add(
+        SiteOrderExecutionCase(
+            site_order_number="241500",
+            bitrix_deal_id=241500,
+            delivery_method="Самовывоз",
+            current_derived_status="manual_review",
+            current_crm_stage="FINAL_INVOICE",
+            pickup_point_warehouse_id=other.id,
+            payload={},
+        )
+    )
+    db_session.commit()
+    onec_calls: list[str] = []
+
+    stats = pickup_control.reconcile_strict_pickup_evidence(
+        db_session,
+        client=MissingReceiptClient(["241500"]),
+        settings=_missing_receipt_settings(),
+        onec_validator=lambda order_number: (
+            onec_calls.append(order_number)
+            or bot.OneCPickupValidation(available=True, assembled=True)
+        ),
+        now=datetime(2026, 8, 24, 9),
+    )
+
+    assert message.id is not None and mitino.id != other.id
+    assert stats["blocked"] == 1
+    assert onec_calls == []
+    assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
+
+
+def test_missing_receipt_queues_one_grouped_prompt_at_24h_and_tasks_at_48h(
+    db_session,
+) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    source = _message(
+        db_session,
+        message_id=504,
+        text_value="Митино: заказы 241500 241501 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    _record_movement(
+        db_session,
+        order_number="241500",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+    _record_movement(
+        db_session,
+        order_number="241501",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+    settings = _missing_receipt_settings()
+    client = MissingReceiptClient(["241500", "241501"])
+
+    early = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 7, 59),
+    )
+    due = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+    metrics = pickup_control.pickup_operational_metrics(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+    repeated = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8, 1),
+    )
+    prompt_result = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        missing_receipt_enabled_probe=lambda: True,
+        now=datetime(2026, 8, 25, 8, 2),
+    )
+    tasks_due = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 26, 8),
+    )
+    task_result = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        missing_receipt_enabled_probe=lambda: True,
+        now=datetime(2026, 8, 26, 8, 1),
+    )
+
+    assert early["due"] == 0
+    assert due["prompt_queued"] == 1 and due["task_queued"] == 0
+    assert metrics["missing_receipt_due"] == 2
+    assert repeated["prompt_queued"] == 0
+    assert prompt_result["completed"] == 1
+    assert len(client.bot_messages) == 1
+    assert "241500 241501" in client.bot_messages[0]["message"]
+    assert client.bot_messages[0]["dialog_id"] == "chat8729"
+    assert tasks_due["prompt_queued"] == 0 and tasks_due["task_queued"] == 2
+    assert task_result["completed"] == 2
+    assert len(client.tasks) == 2
+    assert {task["RESPONSIBLE_ID"] for task in client.tasks} == {11}
+    assert {tuple(task["ACCOMPLICES"]) for task in client.tasks} == {(12,)}
+    assert client.stage_updates == []
+
+
+def test_late_receipt_before_dispatch_suppresses_prompt_and_task(db_session) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    source = _message(
+        db_session,
+        message_id=505,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    movement = _record_movement(
+        db_session,
+        order_number="241500",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+    settings = _missing_receipt_settings()
+    pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+    receipt = fulfillment.upsert_execution_event(
+        db_session,
+        site_order_number="241500",
+        event_type=fulfillment.EVENT_PICKUP_STORED,
+        event_at=datetime(2026, 8, 25, 8, 1),
+        source="bitrix_chat",
+        source_ref="pickup_evidence:late",
+        confidence="strong",
+        raw_message_id=None,
+        warehouse_id=warehouse.id,
+        payload={},
+    )
+    assert receipt is not None and movement.id is not None
+    db_session.commit()
+    client = MissingReceiptClient(["241500"])
+
+    result = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        missing_receipt_enabled_probe=lambda: True,
+        now=datetime(2026, 8, 25, 8, 2),
+    )
+    later = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 26, 8),
+    )
+    row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
+
+    assert result["completed"] == 1
+    assert row is not None
+    assert (row.payload or {}).get("suppressed_reason") == ("all_movements_closed_before_prompt")
+    assert later["task_queued"] == 0
+    assert client.bot_messages == []
+    assert client.tasks == []
+
+
+def test_missing_receipt_flag_false_records_overdue_without_external_outbox(
+    db_session,
+) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    source = _message(
+        db_session,
+        message_id=506,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    _record_movement(
+        db_session,
+        order_number="241500",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+
+    stats = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=_missing_receipt_settings(order_fulfillment_pickup_missing_receipt_enabled=False),
+        now=datetime(2026, 8, 25, 8),
+    )
+
+    assert stats["due"] == 1 and stats["dry_run"] == 1
+    assert db_session.scalar(select(func.count(SiteOrderFulfillmentOutbox.id))) == 0
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderExecutionEvent.id)).where(
+                SiteOrderExecutionEvent.event_type == fulfillment.EVENT_PICKUP_RECEIPT_OVERDUE
+            )
+        )
+        == 1
+    )
+
+
+def test_missing_receipt_runtime_kill_switch_leaves_queued_prompt_pending(
+    db_session,
+) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    source = _message(
+        db_session,
+        message_id=507,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    _record_movement(
+        db_session,
+        order_number="241500",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+    settings = _missing_receipt_settings()
+    pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+    client = MissingReceiptClient(["241500"])
+
+    result = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        missing_receipt_enabled_probe=lambda: False,
+        now=datetime(2026, 8, 25, 8, 1),
+    )
+    row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
+
+    assert result["selected"] == 0
+    assert row is not None and row.status == bot.OUTBOX_PENDING and row.attempts == 0
+    assert client.bot_messages == []
+
+
+def test_closed_deal_suppresses_queued_missing_receipt_prompt(db_session) -> None:
+    warehouse = _warehouse(db_session, "mitino", "Митино")
+    source = _message(
+        db_session,
+        message_id=509,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    _record_movement(
+        db_session,
+        order_number="241500",
+        warehouse=warehouse,
+        raw_message=source,
+        event_at=datetime(2026, 8, 24, 8),
+    )
+    settings = _missing_receipt_settings()
+    pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+    client = MissingReceiptClient(["241500"])
+    client.stage_by_order["241500"] = "WON"
+
+    result = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(
+            available=True,
+            assembled=True,
+        ),
+        missing_receipt_enabled_probe=lambda: True,
+        now=datetime(2026, 8, 25, 8, 1),
+    )
+    row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
+
+    assert result["completed"] == 1
+    assert row is not None
+    assert (row.payload or {}).get("suppressed_movements") == {
+        str((row.payload or {})["movement_event_ids"][0]): "deal_closed"
+    }
+    assert client.bot_messages == []

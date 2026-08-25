@@ -255,6 +255,8 @@ class Settings(BaseSettings):
     order_fulfillment_bot_apply_enabled: bool = False
     order_fulfillment_pickup_stage_apply_enabled: bool = False
     order_fulfillment_pickup_auto_arrival_enabled: bool = False
+    order_fulfillment_pickup_evidence_tracking_enabled: bool = False
+    order_fulfillment_pickup_missing_receipt_enabled: bool = False
     order_fulfillment_bot_sms_enabled: bool = False
     order_fulfillment_pickup_sla_enabled: bool = False
     order_fulfillment_pickup_inventory_enabled: bool = False
@@ -308,6 +310,8 @@ class Settings(BaseSettings):
     )
     order_fulfillment_bot_call_after_hours: int = Field(default=72, ge=1, le=720)
     order_fulfillment_bot_dismantle_after_hours: int = Field(default=96, ge=1, le=720)
+    order_fulfillment_pickup_receipt_question_after_hours: int = Field(default=24, ge=1, le=720)
+    order_fulfillment_pickup_receipt_task_after_hours: int = Field(default=48, ge=1, le=720)
     order_fulfillment_pickup_ready_chat_dialog_id: str = "chat8729"
     order_fulfillment_pickup_inventory_chat_dialog_id: str = "chat8961"
     order_fulfillment_pickup_movement_chat_dialog_id: str = "chat729"

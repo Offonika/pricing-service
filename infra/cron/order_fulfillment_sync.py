@@ -2518,6 +2518,7 @@ def build_daily_digest(
                 "sla_72_due",
                 "sla_96_due",
                 "lost_orders",
+                "missing_receipt_due",
                 "task_routing_errors",
             )
         )
@@ -2596,6 +2597,8 @@ def _pickup_daily_digest_lines(metrics: dict[str, Any]) -> list[str]:
         "- подтверждающих реакций: "
         f"{int(metrics.get('active_reactions') or 0)}; "
         f"потерянных заказов {int(metrics.get('lost_orders') or 0)};",
+        "- отправлены, но получение точкой не подтверждено: "
+        f"{int(metrics.get('missing_receipt_due') or 0)};",
         "- ошибки маршрутизации задач: "
         f"{int(metrics.get('task_routing_errors') or 0)}, "
         f"ошибок конфигурации {len(route_config_errors)};",

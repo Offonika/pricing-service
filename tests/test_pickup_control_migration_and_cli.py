@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import Column, Integer, MetaData, Table, create_engine, inspect
+from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect
+from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.services import pickup_history
@@ -217,6 +220,84 @@ def test_backfill_defaults_include_all_control_chats() -> None:
         "pickup_exception",
         "courier_spb",
     }
+
+
+def test_backfill_runtime_env_prefers_release_database_over_shared_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shared_env = tmp_path / "shared.env"
+    application_env = tmp_path / "application.env"
+    shared_env.write_text(
+        "DATABASE_URL=postgresql://shared/call_analytics\n"
+        "BITRIX_BOX_WEBHOOK_BASE=https://shared.example/rest/\n",
+        encoding="utf-8",
+    )
+    application_env.write_text(
+        "DATABASE_URL=postgresql://application/pricing\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(backfill, "SHARED_ENV_FILE", shared_env)
+    monkeypatch.setattr(backfill, "APPLICATION_ENV_FILE", application_env)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("BITRIX_BOX_WEBHOOK_BASE", raising=False)
+
+    backfill.configure_runtime_environment(require_database=True)
+
+    assert os.environ["DATABASE_URL"] == "postgresql://application/pricing"
+    assert os.environ["BITRIX_BOX_WEBHOOK_BASE"] == "https://shared.example/rest/"
+
+
+def test_backfill_runtime_env_never_borrows_shared_database(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text(
+        "DATABASE_URL=postgresql://shared/call_analytics\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(backfill, "SHARED_ENV_FILE", shared_env)
+    monkeypatch.setattr(backfill, "APPLICATION_ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(SystemExit, match="Application DATABASE_URL is not configured"):
+        backfill.configure_runtime_environment(require_database=True)
+
+    assert "DATABASE_URL" not in os.environ
+
+
+def test_backfill_schema_preflight_fails_closed_on_wrong_database(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'wrong.db'}")
+    metadata = MetaData()
+    Table("bitrix_chat_message", metadata, Column("id", Integer, primary_key=True))
+    metadata.create_all(engine)
+
+    try:
+        with Session(engine) as session:
+            with pytest.raises(RuntimeError, match="Raw backfill database preflight failed"):
+                backfill.ensure_raw_backfill_schema(session)
+    finally:
+        engine.dispose()
+
+
+def test_backfill_schema_preflight_accepts_complete_schema(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'application.db'}")
+    metadata = MetaData()
+    for table_name, column_names in backfill.RAW_BACKFILL_SCHEMA.items():
+        Table(
+            table_name,
+            metadata,
+            Column("id", Integer, primary_key=True),
+            *[Column(column_name, String) for column_name in sorted(column_names - {"id"})],
+        )
+    metadata.create_all(engine)
+
+    try:
+        with Session(engine) as session:
+            backfill.ensure_raw_backfill_schema(session)
+    finally:
+        engine.dispose()
 
 
 def test_historical_batch_skips_deals_already_in_target_stage() -> None:

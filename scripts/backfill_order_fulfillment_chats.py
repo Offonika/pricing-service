@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -20,12 +21,60 @@ from app.core.config import get_settings  # noqa: E402
 from app.infrastructure.db import session_scope  # noqa: E402
 from app.models.logistics import LogisticsWarehouse  # noqa: E402
 from app.models.site_order_fulfillment import (  # noqa: E402
+    BitrixChatMention,
     BitrixChatMessage,
+    BitrixChatReaction,
+    PickupInventoryItem,
+    PickupInventoryRun,
     PickupInventorySubmission,
+    SiteOrderExecutionCase,
+    SiteOrderExecutionEvent,
 )
 from app.services import pickup_control  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 from infra.cron import order_fulfillment_sync as fulfillment_sync  # noqa: E402
+
+SHARED_ENV_FILE = Path("/etc/mm-management-orchestrator.env")
+APPLICATION_ENV_FILE = PROJECT_ROOT / ".env"
+RAW_BACKFILL_SCHEMA: dict[str, set[str]] = {
+    LogisticsWarehouse.__tablename__: {"id", "external_id", "kind", "is_active"},
+    BitrixChatMessage.__tablename__: {
+        "id",
+        "chat_code",
+        "chat_id",
+        "message_id",
+        "payload",
+    },
+    BitrixChatMention.__tablename__: {"id", "message_id", "site_order_number"},
+    BitrixChatReaction.__tablename__: {
+        "id",
+        "message_id",
+        "actor_id",
+        "is_active",
+    },
+    SiteOrderExecutionCase.__tablename__: {
+        "id",
+        "site_order_number",
+        "notification_confirmed_at",
+        "sla_started_at",
+        "hold_until",
+    },
+    SiteOrderExecutionEvent.__tablename__: {
+        "id",
+        "case_id",
+        "warehouse_id",
+        "actor_ref",
+    },
+    PickupInventoryRun.__tablename__: {"id", "dialog_id", "business_date"},
+    PickupInventorySubmission.__tablename__: {
+        "id",
+        "run_id",
+        "warehouse_id",
+        "source_message_id",
+        "revision",
+    },
+    PickupInventoryItem.__tablename__: {"id", "submission_id", "site_order_number"},
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,6 +125,52 @@ def chat_sources(settings: Any, selected: list[str]) -> list[tuple[str, str]]:
     }
     names = list(mapping) if not selected or "all" in selected else list(dict.fromkeys(selected))
     return [mapping[name] for name in names]
+
+
+def configure_runtime_environment(*, require_database: bool) -> None:
+    """Load release configuration without borrowing another service's database."""
+
+    shared_values = fulfillment_sync.load_env_files((SHARED_ENV_FILE,))
+    application_values = fulfillment_sync.load_env_files((APPLICATION_ENV_FILE,))
+    shared_values.pop("DATABASE_URL", None)
+    fulfillment_sync.apply_env_defaults({**shared_values, **application_values})
+    if require_database and not os.environ.get("DATABASE_URL"):
+        raise SystemExit(
+            "Application DATABASE_URL is not configured in the process environment "
+            f"or {APPLICATION_ENV_FILE}"
+        )
+    get_settings.cache_clear()
+
+
+def ensure_raw_backfill_schema(session) -> None:
+    """Refuse persistence when the selected DB is not the migrated application DB."""
+
+    schema_inspector = inspect(session.get_bind())
+    available_tables = set(schema_inspector.get_table_names())
+    missing_tables = sorted(set(RAW_BACKFILL_SCHEMA) - available_tables)
+    missing_columns: list[str] = []
+    for table_name, required_columns in RAW_BACKFILL_SCHEMA.items():
+        if table_name not in available_tables:
+            continue
+        available_columns = {
+            str(column["name"]) for column in schema_inspector.get_columns(table_name)
+        }
+        missing_columns.extend(
+            f"{table_name}.{column_name}"
+            for column_name in sorted(required_columns - available_columns)
+        )
+    if missing_tables or missing_columns:
+        details: list[str] = []
+        if missing_tables:
+            details.append(f"missing tables: {', '.join(missing_tables)}")
+        if missing_columns:
+            details.append(f"missing columns: {', '.join(missing_columns)}")
+        raise RuntimeError(
+            "Raw backfill database preflight failed; "
+            + "; ".join(details)
+            + ". Run the command from the active pricing-service release or set "
+            "its DATABASE_URL explicitly."
+        )
 
 
 def inspect_pages(
@@ -194,8 +289,7 @@ def build_verification_report(session) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
-    fulfillment_sync.apply_env_defaults(fulfillment_sync.load_env_files())
-    get_settings.cache_clear()
+    configure_runtime_environment(require_database=args.persist_raw)
     settings = get_settings()
     webhook_url = fulfillment_sync.resolve_bitrix_webhook_url()
     if not webhook_url:
@@ -220,6 +314,7 @@ def main() -> int:
             )
     else:
         with session_scope() as session:
+            ensure_raw_backfill_schema(session)
             for chat_code, dialog_id in sources:
                 output["chats"][chat_code] = fulfillment.poll_bitrix_chat_pages(
                     session,

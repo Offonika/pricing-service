@@ -662,7 +662,7 @@ namespace MasterMobile\SiteServiceRequests {
             global $DB, $USER_FIELD_MANAGER;
             self::requireLegacyDatabase($DB);
             $ticketResult = $DB->Query(
-                "SELECT `ID`, `SITE_ID`, `OWNER_USER_ID`, `TITLE`, `CLOSED` "
+                "SELECT `ID`, `SITE_ID`, `OWNER_USER_ID`, `TITLE`, `DATE_CLOSE` "
                 . "FROM `b_ticket` WHERE `ID` = " . (int) $ticketId . " LIMIT 1"
             );
             if (!$ticketResult) {
@@ -720,7 +720,7 @@ namespace MasterMobile\SiteServiceRequests {
                     'requestType' => self::requestType(
                         self::userFieldValue($userFields, self::REQUEST_TYPE_FIELD)
                     ),
-                    'isClosed' => (string) $ticket['CLOSED'] === 'Y',
+                    'isClosed' => self::ticketDateIsClosed($ticket['DATE_CLOSE'] ?? null),
                 ),
                 'history' => $history,
             );
@@ -1454,6 +1454,33 @@ namespace MasterMobile\SiteServiceRequests {
                 throw new BridgeFailure('message_date_invalid');
             }
             return $date->format(DATE_ATOM);
+        }
+
+        private static function ticketDateIsClosed($value)
+        {
+            if ($value === null) {
+                return false;
+            }
+            if (!is_string($value)) {
+                throw new BridgeFailure('ticket_date_close_invalid');
+            }
+            $normalized = trim($value);
+            if ($normalized === '' || $normalized === '0000-00-00 00:00:00') {
+                return false;
+            }
+            $date = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $normalized);
+            $errors = \DateTimeImmutable::getLastErrors();
+            if (
+                $date === false
+                || (
+                    is_array($errors)
+                    && ((int) $errors['warning_count'] > 0 || (int) $errors['error_count'] > 0)
+                )
+                || $date->format('Y-m-d H:i:s') !== $normalized
+            ) {
+                throw new BridgeFailure('ticket_date_close_invalid');
+            }
+            return true;
         }
 
         private static function plainText($value)

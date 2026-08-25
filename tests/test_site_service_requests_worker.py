@@ -70,6 +70,9 @@ class FakeBitrixApi:
         self.items: dict[int, dict] = {}
         self.raise_after_item_add = False
         self.disk_files: dict[str, dict] = {}
+        self.next_crm_file_id = 3000
+        self.crm_files: dict[int, bytes] = {}
+        self.raise_after_crm_file_update = False
         self.timeline_comments: list[dict[str, str]] = []
         self.timeline_page_size: int | None = None
         self.notification_ids_by_tag: dict[str, int] = {}
@@ -146,12 +149,22 @@ class FakeBitrixApi:
             return {"result": {"item": {"id": item_id}}}
         if method == "crm.item.get":
             item_id = int(mapped["id"])
+            rendered_item = dict(self.items[item_id])
+            file_ids = rendered_item.get("ufCrm36Clientfiles")
+            if isinstance(file_ids, list):
+                rendered_item["ufCrm36Clientfiles"] = [
+                    {
+                        "id": str(file_id),
+                        "urlMachine": ("https://fake.bitrix.local/rest/1/token/file/" f"{file_id}"),
+                    }
+                    for file_id in file_ids
+                ]
             return {
                 "result": {
                     "item": {
                         "id": item_id,
                         "ufSiteReplyAction": "",
-                        **self.items[item_id],
+                        **rendered_item,
                     }
                 }
             }
@@ -199,16 +212,48 @@ class FakeBitrixApi:
         raise AssertionError(f"unexpected Bitrix method: {method}")
 
     def call_json(self, method: str, payload: dict, **_kwargs):
-        if method != "disk.folder.uploadfile":
-            raise AssertionError(f"unexpected Bitrix JSON method: {method}")
-        name = str(payload["data"]["NAME"])
-        item = {
-            "ID": str(2000 + len(self.disk_files)),
-            "NAME": name,
-            "DETAIL_URL": "/disk/file",
-        }
-        self.disk_files[name] = item
-        return {"result": item}
+        if method == "disk.folder.uploadfile":
+            name = str(payload["data"]["NAME"])
+            item = {
+                "ID": str(2000 + len(self.disk_files)),
+                "NAME": name,
+                "DETAIL_URL": "/disk/file",
+            }
+            self.disk_files[name] = item
+            return {"result": item}
+        if method == "crm.item.update":
+            item_id = int(payload["id"])
+            fields = payload["fields"]
+            values = fields["ufCrm36Clientfiles"]
+            current_ids = {
+                int(file_id) for file_id in self.items[item_id].get("ufCrm36Clientfiles", [])
+            }
+            next_ids: list[str] = []
+            for value in values:
+                if isinstance(value, dict) and "ID" in value:
+                    file_id = int(value["ID"])
+                    if file_id in current_ids:
+                        next_ids.append(str(file_id))
+                    continue
+                assert isinstance(value, list) and len(value) == 2
+                content = base64.b64decode(value[1])
+                file_id = self.next_crm_file_id
+                self.next_crm_file_id += 1
+                self.crm_files[file_id] = content
+                next_ids.append(str(file_id))
+            self.items[item_id]["ufCrm36Clientfiles"] = next_ids
+            if self.raise_after_crm_file_update:
+                self.raise_after_crm_file_update = False
+                raise RuntimeError("simulated timeout after crm file update")
+            return {"result": {"item": {"id": item_id}}}
+        raise AssertionError(f"unexpected Bitrix JSON method: {method}")
+
+    def download(self, url: str, *, max_bytes: int, **_kwargs) -> bytes:
+        file_id = int(url.rstrip("/").rsplit("/", 1)[-1])
+        content = self.crm_files[file_id]
+        if len(content) > max_bytes:
+            raise RuntimeError("fake file response too large")
+        return content
 
 
 def _fields_from_params(params: list[tuple[str, str]]) -> dict[str, str]:
@@ -573,6 +618,106 @@ def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
     assert fallback.deal_id == 802
 
 
+def test_contact_matching_intersects_phone_and_email_candidates() -> None:
+    api = FakeBitrixApi()
+    api.phone_contacts = [501, 502]
+    api.email_contacts = [502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    matched = reader.find_contact(
+        phone="+79000000000",
+        email="customer@example.invalid",
+    )
+
+    assert matched.status == "matched"
+    assert matched.contact_id == 502
+    assert matched.company_id == 602
+
+
+def test_contact_matching_keeps_conflicting_phone_and_email_fail_closed() -> None:
+    api = FakeBitrixApi()
+    api.phone_contacts = [501]
+    api.email_contacts = [502]
+    api.contacts[502] = {"ID": "502"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous = reader.find_contact(
+        phone="+79000000000",
+        email="customer@example.invalid",
+    )
+
+    assert ambiguous.status == "ambiguous"
+    assert ambiguous.contact_id is None
+    assert ambiguous.candidate_ids == (501, 502)
+
+
+def test_unique_order_safely_disambiguates_duplicate_contacts() -> None:
+    class ContactScopedOrderApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                if contact_id == 502:
+                    return {"result": ([{"ID": "702", "TITLE": "Заказ 000001"}] if exact else [])}
+                return {"result": []}
+            return super().call(method, values, **kwargs)
+
+    api = ContactScopedOrderApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous_contact = reader.find_contact(phone="+79000000000", email=None)
+    contact, order = reader.resolve_contact_and_order(
+        contact=ambiguous_contact,
+        order_number="000001",
+        order_field="UF_CRM_ORDER",
+    )
+
+    assert contact.status == "matched"
+    assert contact.contact_id == 502
+    assert contact.company_id == 602
+    assert order.status == "matched"
+    assert order.deal_id == 702
+
+
+def test_order_disambiguation_remains_fail_closed_when_two_contacts_match() -> None:
+    class TwoMatchingContactsApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                return {
+                    "result": (
+                        [{"ID": str(700 + contact_id), "TITLE": "Заказ 000001"}] if exact else []
+                    )
+                }
+            return super().call(method, values, **kwargs)
+
+    api = TwoMatchingContactsApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous_contact = reader.find_contact(phone="+79000000000", email=None)
+    contact, order = reader.resolve_contact_and_order(
+        contact=ambiguous_contact,
+        order_number="000001",
+        order_field="UF_CRM_ORDER",
+    )
+
+    assert contact.status == "ambiguous"
+    assert contact.contact_id is None
+    assert order.status == "ambiguous"
+    assert order.deal_id is None
+    assert order.candidate_ids == (1201, 1202)
+
+
 def test_order_fallback_deduplicates_same_deal_across_pages() -> None:
     class RepeatedDealApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -924,6 +1069,55 @@ def test_worker_dry_run_builds_safe_plan_without_mutating_event(db_session) -> N
     db_session.refresh(event)
     assert event.status == "pending"
     assert event.payload_encrypted == encrypted_before
+
+
+def test_worker_apply_resolves_duplicate_contact_by_unique_order(db_session) -> None:
+    class ContactScopedOrderApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                if contact_id == 502:
+                    return {"result": ([{"ID": "702", "TITLE": "Заказ 000001"}] if exact else [])}
+                return {"result": []}
+            return super().call(method, values, **kwargs)
+
+    cipher = _persist_event(db_session)
+    api = ContactScopedOrderApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    now = datetime(2026, 8, 22, 7, 0, tzinfo=UTC)
+
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=now,
+    )
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=now + timedelta(minutes=1),
+    )
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert plans[0].contact_status == "matched"
+    assert plans[0].contact_id == 502
+    assert plans[0].deal_id == 702
+    assert results[0].status == "processed"
+    assert case is not None
+    assert case.crm_contact_id == 502
+    assert case.crm_company_id == 602
+    assert case.crm_deal_id == 702
 
 
 def test_worker_apply_creates_one_item_and_recovers_add_timeout_by_readback(
@@ -1282,9 +1476,11 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     db_session.refresh(file)
     assert file.status == "uploaded"
     assert file.bitrix_object_id == "2000"
+    assert file.bitrix_file_id == "3000"
     assert file.temporary_path is None
     assert path.exists() is False
-    assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["2000"]
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["3000"]
+    assert api.crm_files[3000] == content
     assert case.sync_status == "order_not_found"
     assert case.last_error_code == "order_not_found"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
@@ -1466,6 +1662,7 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     db_session.commit()
     api = FakeBitrixApi()
     api.items[1000] = {"ufCrm36Clientfiles": ["1999"]}
+    api.crm_files[1999] = b"x"
 
     results = sync_staged_site_service_request_files(
         db_session,
@@ -1474,7 +1671,43 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     )
 
     assert results[0]["status"] == "uploaded"
-    assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "2000"]
+    assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "3000"]
+    assert staged_file.bitrix_object_id == "2000"
+    assert staged_file.bitrix_file_id == "3000"
+    assert api.crm_files[3000] == content
+
+
+def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    api.raise_after_crm_file_update = True
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+
+    first_file_id, first_item = writer.attach_file_content(
+        entity_type_id=1134,
+        item_id=1000,
+        field_name="UF_CRM_36_CLIENTFILES",
+        deterministic_name="ticket-744-file.bin",
+        content=content,
+        expected_sha256=expected_sha256,
+        max_bytes=1024,
+    )
+    second_file_id, second_item = writer.attach_file_content(
+        entity_type_id=1134,
+        item_id=1000,
+        field_name="UF_CRM_36_CLIENTFILES",
+        deterministic_name="ticket-744-file.bin",
+        content=content,
+        expected_sha256=expected_sha256,
+        max_bytes=1024,
+    )
+
+    assert first_file_id == second_file_id == "3000"
+    assert api.next_crm_file_id == 3001
+    assert worker_module._item_field_contains(first_item, "UF_CRM_36_CLIENTFILES", "3000")
+    assert worker_module._item_field_contains(second_item, "UF_CRM_36_CLIENTFILES", "3000")
 
 
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:

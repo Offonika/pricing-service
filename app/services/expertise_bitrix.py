@@ -534,6 +534,41 @@ class BitrixRestClient:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         return self._request(method, data=data, content_type="application/json", timeout=timeout)
 
+    def download(self, url: str, *, max_bytes: int, timeout: int = 60) -> bytes:
+        if max_bytes <= 0:
+            raise RuntimeError("Bitrix24 file download: invalid byte limit")
+        expected = urllib.parse.urlsplit(f"{self.webhook_url}/")
+        actual = urllib.parse.urlsplit(url)
+        expected_path = expected.path.rstrip("/") + "/"
+        if (
+            actual.scheme != "https"
+            or actual.hostname != expected.hostname
+            or actual.port != expected.port
+            or not actual.path.startswith(expected_path)
+        ):
+            raise RuntimeError("Bitrix24 file download: untrusted URL")
+        request = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                final = urllib.parse.urlsplit(response.geturl())
+                if (
+                    final.scheme != "https"
+                    or final.hostname != expected.hostname
+                    or final.port != expected.port
+                    or not final.path.startswith(expected_path)
+                ):
+                    raise RuntimeError("Bitrix24 file download: untrusted redirect")
+                content = response.read(max_bytes + 1)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Bitrix24 file download: HTTP {error.code}") from error
+        except urllib.error.URLError as error:
+            raise RuntimeError("Bitrix24 file download: network error") from error
+        except TimeoutError as error:
+            raise RuntimeError("Bitrix24 file download: network timeout") from error
+        if len(content) > max_bytes:
+            raise RuntimeError("Bitrix24 file download: response too large")
+        return content
+
     def list_items_by_ref(
         self,
         *,

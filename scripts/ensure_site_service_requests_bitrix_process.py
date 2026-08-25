@@ -57,33 +57,33 @@ WORKING_STAGE_TITLES = {
 
 FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "site_ticket_id", "title": "ID тикета сайта", "type": "string"},
-    {"key": "site_ticket_url", "title": "Открыть тикет сайта", "type": "url"},
-    {"key": "site_history", "title": "История переписки сайта", "type": "string"},
+    {"key": "site_ticket_url", "title": "Открыть обращение на сайте", "type": "url"},
+    {"key": "site_history", "title": "Переписка с клиентом на сайте", "type": "string"},
     {
         "key": "site_sync_status",
-        "title": "Синхронизация с сайтом",
+        "title": "Что требуется по обращению",
         "type": "enumeration",
         "enum": (
-            ("pending", "Ожидает синхронизации"),
-            ("synced", "Синхронизировано"),
-            ("client_match_required", "Требуется связать клиента"),
-            ("order_match_required", "Требуется связать заказ"),
-            ("order_not_found", "Заказ не найден"),
-            ("file_sync_error", "Ошибка файла"),
-            ("assignment_waiting", "Ожидает назначения"),
-            ("error", "Техническая ошибка"),
+            ("pending", "Обращение загружается"),
+            ("synced", "Готово к работе"),
+            ("client_match_required", "Найдено несколько клиентов — выберите нужного"),
+            ("order_match_required", "Найдено несколько заказов — выберите нужный"),
+            ("order_not_found", "Заказ не найден — проверьте номер"),
+            ("file_sync_error", "Не все файлы загружены"),
+            ("assignment_waiting", "Ожидает начала рабочей смены"),
+            ("error", "Техническая ошибка — сообщите руководителю"),
         ),
     },
     {"key": "site_reply_text", "title": "Ответ клиенту", "type": "string"},
     {
         "key": "site_reply_action",
-        "title": "Действие с ответом",
+        "title": "Отправка ответа",
         "type": "enumeration",
-        "enum": (("draft", "Черновик"), ("send", "Отправить клиенту")),
+        "enum": (("draft", "Сохранить как черновик"), ("send", "Отправить клиенту")),
     },
     {
         "key": "site_reply_status",
-        "title": "Статус ответа",
+        "title": "Доставка ответа клиенту",
         "type": "enumeration",
         "enum": (
             ("none", "Нет ответа"),
@@ -92,10 +92,18 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
             ("error", "Ошибка отправки"),
         ),
     },
-    {"key": "site_last_sync_at", "title": "Последняя синхронизация", "type": "datetime"},
-    {"key": "first_response_due_at", "title": "Срок первого ответа", "type": "datetime"},
-    {"key": "first_response_at", "title": "Первый ответ доставлен", "type": "datetime"},
-    {"key": "site_sync_error", "title": "Ошибка синхронизации", "type": "string"},
+    {
+        "key": "site_last_sync_at",
+        "title": "Последнее обновление с сайта",
+        "type": "datetime",
+    },
+    {"key": "first_response_due_at", "title": "Ответить клиенту до", "type": "datetime"},
+    {"key": "first_response_at", "title": "Ответ доставлен клиенту", "type": "datetime"},
+    {
+        "key": "site_sync_error",
+        "title": "Техническая ошибка синхронизации",
+        "type": "string",
+    },
     {
         "key": "return_decision_approved_by_user",
         "title": "Кто согласовал решение",
@@ -188,16 +196,16 @@ FORM_SECTIONS = (
 
 LEGACY_FIELD_TITLE_OVERRIDES = {
     "source": "Источник обращения",
-    "customer_contact": "Телефон и e-mail клиента",
+    "customer_contact": "Телефон и e-mail из обращения",
     "crm_contact": "Карточка клиента в CRM",
     "crm_company": "Компания клиента",
-    "crm_deal": "Заказ / сделка в CRM",
+    "crm_deal": "Карточка заказа в CRM",
     "order_refs": "Номер заказа или перемещения",
     "problem_description": "Сообщение клиента / что произошло",
     "customer_request": "Требование клиента (старое поле)",
     "customer_request_choice": "Тип обращения",
     "priority": "Приоритет (старое поле)",
-    "next_action": "Следующее действие",
+    "next_action": "Что сделать дальше",
     "reaction_deadline": "Старый срок реакции (не используется)",
     "decision_result": "Решение по обращению",
     "client_files": "Файлы клиента",
@@ -232,6 +240,11 @@ TECHNICAL_FORM_FIELD_NAMES = {
     "UF_CRM_36_SITELASTSYNCAT",
     "UF_CRM_36_SITESYNCERROR",
     "UF_CRM_36_RETURNDECISIONAPPROVEDBY",
+}
+
+MULTILINE_STRING_FIELD_ROWS = {
+    "UF_CRM_36_CUSTOMERCONTACT": 2,
+    "UF_CRM_36_NEXTACTION": 3,
 }
 
 REQUIRED_STAGE_CODES = {
@@ -472,6 +485,13 @@ def build_plan(
         for label_key in ("listColumnLabel", "listFilterLabel"):
             if _localized_label(field.get(label_key), language="ru") != desired_title:
                 label_advisories.append(f"field_label:{field_name}:{label_key}")
+        multiline_rows = MULTILINE_STRING_FIELD_ROWS.get(field_name)
+        field_settings = field.get("settings")
+        if multiline_rows is not None and (
+            not isinstance(field_settings, dict)
+            or str(field_settings.get("ROWS") or "") != str(multiline_rows)
+        ):
+            ux_mismatches.append(f"field_settings:{field_name}:rows")
         if field.get("fieldName") == REQUEST_TYPE_FIELD_NAME:
             request_mapping = _request_type_enum_mapping(field)
             enum_by_id = {_strict_enum_row_id(row): row for row in _require_enum_rows(field)}
@@ -481,6 +501,14 @@ def build_plan(
                 actual_label = _strict_optional_enum_string(row, "value", "VALUE") if row else None
                 if actual_label != desired_label:
                     ux_mismatches.append(f"request_type_label:{logical_key}")
+        desired_site_enum = _site_enum_update(field)
+        if desired_site_enum is not None:
+            actual_labels = [
+                _strict_optional_enum_string(row, "value", "VALUE")
+                for row in _require_enum_rows(field)
+            ]
+            if actual_labels != [row["value"] for row in desired_site_enum]:
+                ux_mismatches.append(f"enum_labels:{field_name}")
     for stage in stages:
         stage_id = _strict_stage_id(
             stage,
@@ -598,6 +626,44 @@ def _request_type_enum_update(field: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _site_enum_update(field: dict[str, Any]) -> list[dict[str, Any]] | None:
+    xml_id = str(field.get("xmlId") or field.get("XML_ID") or "").strip()
+    specs = [
+        spec
+        for spec in FIELD_SPECS
+        if spec["type"] == "enumeration" and _xml_id(spec["key"]) == xml_id
+    ]
+    if not specs:
+        return None
+    if len(specs) != 1:
+        raise RuntimeError("site_service_request_field_readback_ambiguous")
+    spec = specs[0]
+    mapping = _enum_mapping(spec, field)
+    prefix = spec["key"].removeprefix("site_")
+    mapping_keys = [f"{prefix}_{key}" for key, _desired_label in spec["enum"]]
+    if any(mapping_key not in mapping for mapping_key in mapping_keys):
+        return None
+    desired_by_id = {
+        str(mapping[f"{prefix}_{key}"]): desired_label for key, desired_label in spec["enum"]
+    }
+    rows: list[dict[str, Any]] = []
+    for index, current in enumerate(_require_enum_rows(field), start=1):
+        enum_id = _strict_enum_row_id(current)
+        rows.append(
+            {
+                "id": enum_id,
+                "value": desired_by_id.get(
+                    enum_id,
+                    _strict_optional_enum_string(current, "value", "VALUE") or "",
+                ),
+                "xmlId": _strict_optional_enum_string(current, "xmlId", "XML_ID") or "",
+                "sort": _strict_enum_sort(current, fallback=index * 100),
+                "def": _strict_enum_default(current),
+            }
+        )
+    return rows
+
+
 def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | None:
     desired_title = _desired_field_title(field)
     if desired_title is None:
@@ -606,6 +672,12 @@ def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | No
     if _localized_label(field.get("editFormLabel"), language="ru") != desired_title:
         update["editFormLabel"] = {"ru": desired_title}
     field_name = str(field.get("fieldName") or "").strip()
+    multiline_rows = MULTILINE_STRING_FIELD_ROWS.get(field_name)
+    if multiline_rows is not None:
+        settings = field.get("settings")
+        current_settings = settings if isinstance(settings, dict) else {}
+        if str(current_settings.get("ROWS") or "") != str(multiline_rows):
+            update["settings"] = {**current_settings, "ROWS": multiline_rows}
     if field_name in TECHNICAL_FORM_FIELD_NAMES:
         for key, desired in (
             ("showFilter", "N"),
@@ -622,6 +694,14 @@ def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | No
         if actual_labels != [row["value"] for row in desired_enum]:
             update["userTypeId"] = "enumeration"
             update["enum"] = desired_enum
+    desired_site_enum = _site_enum_update(field)
+    if desired_site_enum is not None:
+        actual_labels = [
+            _strict_optional_enum_string(row, "value", "VALUE") for row in _require_enum_rows(field)
+        ]
+        if actual_labels != [row["value"] for row in desired_site_enum]:
+            update["userTypeId"] = "enumeration"
+            update["enum"] = desired_site_enum
     return update if len(update) > 1 else None
 
 

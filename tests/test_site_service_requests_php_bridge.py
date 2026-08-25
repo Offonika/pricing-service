@@ -66,6 +66,9 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "!is_int($payload['schemaVersion'])" in source
     assert "!is_int($acknowledged['commandId'])" in source
     assert "throw new BridgeFailure('site_database_unavailable');" in source
+    assert "`DATE_CLOSE`" in source
+    assert "$ticket['CLOSED']" not in source
+    assert "ticketDateIsClosed($ticket['DATE_CLOSE'] ?? null)" in source
 
 
 def test_bridge_hardening_keeps_ambiguous_writes_and_field_repair_idempotent() -> None:
@@ -183,6 +186,16 @@ def test_php_source_lints(path: Path) -> None:
                 "sendEmailToAuthor": "N",
                 "sendEmailToTechsupport": "N",
                 "fieldTicketId": 741,
+            },
+        ),
+        (
+            "ticket_date_close_fixture.php",
+            {
+                "null": False,
+                "empty": False,
+                "zeroDate": False,
+                "closed": True,
+                "malformedError": "ticket_date_close_invalid",
             },
         ),
     ],

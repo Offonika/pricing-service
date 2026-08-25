@@ -96,6 +96,14 @@ class SiteServiceRequestBitrixApi(Protocol):
         **kwargs: Any,
     ) -> dict[str, Any]: ...
 
+    def download(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        **kwargs: Any,
+    ) -> bytes: ...
+
 
 @dataclass(frozen=True)
 class ContactMatch:
@@ -318,42 +326,89 @@ class SiteServiceRequestBitrixReader:
         normalized_phone = normalize_site_service_phone(phone)
         normalized_email = normalize_site_service_email(email)
         phone_ids = self._duplicate_contact_ids("PHONE", normalized_phone)
-        candidate_ids = phone_ids
-        if not candidate_ids and normalized_email:
-            candidate_ids = self._duplicate_contact_ids("EMAIL", normalized_email)
+        email_ids = self._duplicate_contact_ids("EMAIL", normalized_email)
+        if phone_ids and email_ids:
+            common_ids = sorted(set(phone_ids) & set(email_ids))
+            candidate_ids = common_ids or sorted(set(phone_ids) | set(email_ids))
+        else:
+            candidate_ids = phone_ids or email_ids
 
-        active_contacts: list[tuple[int, int | None]] = []
-        for contact_id in candidate_ids:
-            response = self.api.call("crm.contact.get", [("id", str(contact_id))])
-            contact = response.get("result")
-            if not isinstance(contact, dict):
-                raise RuntimeError("bitrix_contact_readback_failed")
-            if (
-                _strict_aliased_positive_int(
-                    contact,
-                    "ID",
-                    "id",
-                    error_code="bitrix_contact_readback_failed",
-                )
-                != contact_id
-            ):
-                raise RuntimeError("bitrix_contact_readback_failed")
-            company_id = _strict_optional_aliased_positive_int(
-                contact,
-                "COMPANY_ID",
-                "companyId",
-                error_code="bitrix_contact_readback_failed",
-            )
-            active_contacts.append((contact_id, company_id))
+        active_contacts = [self._matched_contact(contact_id) for contact_id in candidate_ids]
 
         if not active_contacts:
             return ContactMatch(status="not_found")
         if len(active_contacts) > 1:
             return ContactMatch(
                 status="ambiguous",
-                candidate_ids=tuple(item[0] for item in active_contacts),
+                candidate_ids=tuple(item.contact_id for item in active_contacts if item.contact_id),
             )
-        contact_id, company_id = active_contacts[0]
+        return active_contacts[0]
+
+    def resolve_contact_and_order(
+        self,
+        *,
+        contact: ContactMatch,
+        order_number: str | None,
+        order_field: str | None,
+    ) -> tuple[ContactMatch, OrderMatch]:
+        if contact.status != "ambiguous":
+            return contact, self.find_order(
+                contact_id=contact.contact_id,
+                order_number=order_number,
+                order_field=order_field,
+            )
+
+        normalized_order = (order_number or "").strip()
+        if not normalized_order or not contact.candidate_ids:
+            return contact, OrderMatch(status="not_found")
+
+        candidate_pairs: set[tuple[int, int]] = set()
+        for contact_id in contact.candidate_ids:
+            candidate_order = self.find_order(
+                contact_id=contact_id,
+                order_number=normalized_order,
+                order_field=order_field,
+            )
+            candidate_pairs.update(
+                (contact_id, deal_id) for deal_id in candidate_order.candidate_ids
+            )
+
+        if not candidate_pairs:
+            return contact, OrderMatch(status="not_found")
+        if len(candidate_pairs) > 1:
+            return contact, OrderMatch(
+                status="ambiguous",
+                candidate_ids=tuple(sorted({deal_id for _contact_id, deal_id in candidate_pairs})),
+            )
+
+        contact_id, deal_id = next(iter(candidate_pairs))
+        return self._matched_contact(contact_id), OrderMatch(
+            status="matched",
+            deal_id=deal_id,
+            candidate_ids=(deal_id,),
+        )
+
+    def _matched_contact(self, contact_id: int) -> ContactMatch:
+        response = self.api.call("crm.contact.get", [("id", str(contact_id))])
+        contact = response.get("result")
+        if not isinstance(contact, dict):
+            raise RuntimeError("bitrix_contact_readback_failed")
+        if (
+            _strict_aliased_positive_int(
+                contact,
+                "ID",
+                "id",
+                error_code="bitrix_contact_readback_failed",
+            )
+            != contact_id
+        ):
+            raise RuntimeError("bitrix_contact_readback_failed")
+        company_id = _strict_optional_aliased_positive_int(
+            contact,
+            "COMPANY_ID",
+            "companyId",
+            error_code="bitrix_contact_readback_failed",
+        )
         return ContactMatch(
             status="matched",
             contact_id=contact_id,
@@ -797,6 +852,94 @@ class SiteServiceRequestBitrixWriter:
             raise RuntimeError("bitrix_file_upload_failed")
         return uploaded
 
+    def attach_file_content(
+        self,
+        *,
+        entity_type_id: int,
+        item_id: int,
+        field_name: str,
+        deterministic_name: str,
+        content: bytes,
+        expected_sha256: str,
+        max_bytes: int,
+    ) -> tuple[str, dict[str, Any]]:
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            or len(content) > max_bytes
+            or hashlib.sha256(content).hexdigest() != expected_sha256
+        ):
+            raise RuntimeError("bitrix_file_payload_invalid")
+
+        before = self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
+        before_entries = _item_file_entries(before, field_name)
+        matching_before = self._matching_file_ids(
+            before_entries,
+            expected_sha256=expected_sha256,
+            max_bytes=max_bytes,
+        )
+        if len(matching_before) > 1:
+            raise RuntimeError("bitrix_file_duplicate")
+        if matching_before:
+            return str(matching_before[0]), before
+
+        values: list[Any] = [{"ID": file_id} for file_id, _url in before_entries]
+        values.append(
+            [
+                deterministic_name,
+                base64.b64encode(content).decode("ascii"),
+            ]
+        )
+        write_error: RuntimeError | None = None
+        try:
+            self.api.call_json(
+                "crm.item.update",
+                {
+                    "entityTypeId": entity_type_id,
+                    "id": item_id,
+                    "fields": {_bitrix_item_field_name(field_name): values},
+                },
+            )
+        except RuntimeError as exc:
+            write_error = exc
+
+        try:
+            after = self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
+            after_entries = _item_file_entries(after, field_name)
+            before_ids = {file_id for file_id, _url in before_entries}
+            after_ids = {file_id for file_id, _url in after_entries}
+            if not before_ids.issubset(after_ids):
+                raise RuntimeError("bitrix_file_preservation_failed")
+            matching_after = self._matching_file_ids(
+                after_entries,
+                expected_sha256=expected_sha256,
+                max_bytes=max_bytes,
+            )
+            if len(matching_after) > 1:
+                raise RuntimeError("bitrix_file_duplicate")
+            if len(matching_after) != 1:
+                raise RuntimeError("bitrix_file_readback_failed")
+            if len(after_ids - before_ids) != 1:
+                raise RuntimeError("bitrix_file_readback_failed")
+        except RuntimeError as readback_error:
+            if write_error is not None:
+                raise write_error from readback_error
+            raise
+        return str(matching_after[0]), after
+
+    def _matching_file_ids(
+        self,
+        entries: list[tuple[int, str]],
+        *,
+        expected_sha256: str,
+        max_bytes: int,
+    ) -> list[int]:
+        matches: list[int] = []
+        for file_id, url in entries:
+            content = self.api.download(url, max_bytes=max_bytes)
+            if hashlib.sha256(content).hexdigest() == expected_sha256:
+                matches.append(file_id)
+        return matches
+
     def sync_item(
         self,
         *,
@@ -1181,8 +1324,8 @@ def build_site_service_request_worker_plans(
                     phone=payload.ticket.phone,
                     email=payload.ticket.email,
                 )
-            order = reader.find_order(
-                contact_id=contact.contact_id,
+            contact, order = reader.resolve_contact_and_order(
+                contact=contact,
                 order_number=payload.ticket.order_number,
                 order_field=settings.site_service_requests_crm_order_field,
             )
@@ -1604,12 +1747,15 @@ def sync_staged_site_service_request_files(
                 deterministic_name=deterministic_name,
                 content=content,
             )
-            file_ids = [
-                row.bitrix_object_id
-                for row in case.files
-                if row.bitrix_object_id and row.id != file.id
-            ]
-            file_ids.append(disk_file_id)
+            crm_file_id, item = writer.attach_file_content(
+                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                item_id=int(case.bitrix_item_id),
+                field_name=field_map["files"],
+                deterministic_name=deterministic_name,
+                content=content,
+                expected_sha256=file.sha256,
+                max_bytes=settings.site_service_requests_max_file_bytes,
+            )
             other_failed_files = int(
                 session.scalar(
                     select(func.count(SiteServiceRequestFile.id)).where(
@@ -1628,9 +1774,7 @@ def sync_staged_site_service_request_files(
                 and case.base_sync_status in _BITRIX_SYNC_STATUSES
                 and case.base_sync_status != "file_sync_error"
             )
-            update_fields: dict[str, Any] = {
-                field_map["files"]: sorted(set(file_ids)),
-            }
+            update_fields: dict[str, Any] = {}
             if restore_bitrix_base_status:
                 update_fields.update(
                     {
@@ -1641,16 +1785,13 @@ def sync_staged_site_service_request_files(
                         field_map["site_sync_error"]: case.base_error_code,
                     }
                 )
-            item = writer.update_item_fields(
-                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-                item_id=int(case.bitrix_item_id),
-                fields=update_fields,
-            )
-            expected_file_ids = sorted(set(file_ids))
-            if any(
-                not _item_field_contains(item, field_map["files"], expected_file_id)
-                for expected_file_id in expected_file_ids
-            ):
+            if update_fields:
+                item = writer.update_item_fields(
+                    entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                    item_id=int(case.bitrix_item_id),
+                    fields=update_fields,
+                )
+            if not _item_field_contains(item, field_map["files"], crm_file_id):
                 raise RuntimeError("bitrix_file_readback_failed")
             if restore_bitrix_base_status:
                 expected_sync_status = str(update_fields[field_map["site_sync_status"]])
@@ -1667,7 +1808,7 @@ def sync_staged_site_service_request_files(
                     expected_sync_error
                 ):
                     raise RuntimeError("bitrix_file_error_readback_failed")
-            file.bitrix_file_id = disk_file_id
+            file.bitrix_file_id = crm_file_id
             file.bitrix_object_id = disk_file_id
             file.status = "uploaded"
             file.last_error_code = None
@@ -1689,7 +1830,8 @@ def sync_staged_site_service_request_files(
                 {
                     "fileId": file.source_file_id,
                     "status": "uploaded",
-                    "bitrixFileId": disk_file_id,
+                    "bitrixFileId": crm_file_id,
+                    "bitrixDiskObjectId": disk_file_id,
                     "diskUrlAvailable": bool(disk_url),
                 }
             )
@@ -2953,19 +3095,22 @@ def _apply_site_service_request_worker_plan(
             phone=payload.ticket.phone,
             email=payload.ticket.email,
         )
-    contact_id = contact.contact_id
-    company_id = contact.company_id
-    contact_status = contact.status
-    if contact_status == "not_found":
+    if contact.status == "not_found":
         contact_id = writer.create_contact(payload)
-        company_id = None
-        contact_status = "created"
+        contact = ContactMatch(
+            status="created",
+            contact_id=contact_id,
+            candidate_ids=(contact_id,),
+        )
 
-    order = reader.find_order(
-        contact_id=contact_id,
+    contact, order = reader.resolve_contact_and_order(
+        contact=contact,
         order_number=payload.ticket.order_number,
         order_field=settings.site_service_requests_crm_order_field,
     )
+    contact_id = contact.contact_id
+    company_id = contact.company_id
+    contact_status = contact.status
     case.crm_contact_id = contact_id
     case.crm_company_id = company_id
     case.crm_deal_id = order.deal_id
@@ -3616,6 +3761,30 @@ def _item_field_contains(item: dict[str, Any], field_name: str, expected_id: str
     if parsed_expected_id is None:
         raise RuntimeError("bitrix_file_readback_failed")
     return parsed_expected_id in parsed_values
+
+
+def _item_file_entries(item: dict[str, Any], field_name: str) -> list[tuple[int, str]]:
+    value = _item_field_value(item, field_name)
+    if value in (None, "", []):
+        return []
+    values = value if isinstance(value, list) else [value]
+    entries: list[tuple[int, str]] = []
+    for candidate in values:
+        if not isinstance(candidate, dict):
+            raise RuntimeError("bitrix_file_readback_failed")
+        file_id = _strict_aliased_positive_int(
+            candidate,
+            "id",
+            "ID",
+            error_code="bitrix_file_readback_failed",
+        )
+        url = _strict_aliased_string(candidate, "urlMachine", "URL_MACHINE", "url", "URL")
+        if url is None or not url.startswith("https://"):
+            raise RuntimeError("bitrix_file_readback_failed")
+        entries.append((file_id, url))
+    if len({file_id for file_id, _url in entries}) != len(entries):
+        raise RuntimeError("bitrix_file_readback_failed")
+    return entries
 
 
 def _normalized_field_key(value: str) -> str:

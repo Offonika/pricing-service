@@ -94,6 +94,40 @@ def test_bitrix_add_does_not_retry_http_500(monkeypatch) -> None:
     assert calls == 1
 
 
+def test_bitrix_file_download_is_origin_scoped_and_size_limited(monkeypatch) -> None:
+    class FakeBinaryResponse:
+        def __init__(self, content: bytes, url: str):
+            self.content = content
+            self.url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def geturl(self) -> str:
+            return self.url
+
+        def read(self, limit: int) -> bytes:
+            return self.content[:limit]
+
+    trusted_url = "https://bitrix.example/rest/1/token/crm.controller.item.getFile/"
+
+    def fake_urlopen(request, timeout=60):
+        assert request.full_url == trusted_url
+        return FakeBinaryResponse(b"content", trusted_url)
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    client = expertise_bitrix.BitrixRestClient("https://bitrix.example/rest/1/token")
+
+    assert client.download(trusted_url, max_bytes=7) == b"content"
+    with pytest.raises(RuntimeError, match="response too large"):
+        client.download(trusted_url, max_bytes=6)
+    with pytest.raises(RuntimeError, match="untrusted URL"):
+        client.download("https://attacker.example/file", max_bytes=7)
+
+
 def _configure_bitrix_env(
     monkeypatch: pytest.MonkeyPatch, *, include_store_map: bool = True
 ) -> None:

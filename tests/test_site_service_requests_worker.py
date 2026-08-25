@@ -1710,6 +1710,35 @@ def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
     assert worker_module._item_field_contains(second_item, "UF_CRM_36_CLIENTFILES", "3000")
 
 
+def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> None:
+    class DualUrlBitrixApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            response = super().call(method, params, **kwargs)
+            if method == "crm.item.get":
+                files = response["result"]["item"].get("ufCrm36Clientfiles") or []
+                for file in files:
+                    file["url"] = "https://fake.bitrix.local/bitrix/services/main/ajax.php"
+            return response
+
+    api = DualUrlBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+
+    file_id, item = writer.attach_file_content(
+        entity_type_id=1134,
+        item_id=1000,
+        field_name="UF_CRM_36_CLIENTFILES",
+        deterministic_name="ticket-file.bin",
+        content=content,
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        max_bytes=1024,
+    )
+
+    assert file_id == "3000"
+    assert item["ufCrm36Clientfiles"][0]["urlMachine"].endswith("/3000")
+
+
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:
     case = _case(
         bitrix_item_id=1000,

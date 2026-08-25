@@ -3778,13 +3778,30 @@ def _item_file_entries(item: dict[str, Any], field_name: str) -> list[tuple[int,
             "ID",
             error_code="bitrix_file_readback_failed",
         )
-        url = _strict_aliased_string(candidate, "urlMachine", "URL_MACHINE", "url", "URL")
-        if url is None or not url.startswith("https://"):
-            raise RuntimeError("bitrix_file_readback_failed")
+        url = _strict_preferred_file_url(candidate)
         entries.append((file_id, url))
     if len({file_id for file_id, _url in entries}) != len(entries):
         raise RuntimeError("bitrix_file_readback_failed")
     return entries
+
+
+def _strict_preferred_file_url(item: dict[str, Any]) -> str:
+    # Bitrix returns both an authenticated machine URL and a browser UI URL.
+    # They intentionally differ, so validate aliases within each variant and
+    # prefer the machine URL instead of treating both variants as aliases.
+    for field_names in (("urlMachine", "URL_MACHINE"), ("url", "URL")):
+        values = [item[field_name] for field_name in field_names if field_name in item]
+        if not values:
+            continue
+        if any(not isinstance(value, str) for value in values):
+            raise RuntimeError("bitrix_file_readback_failed")
+        first_value = values[0]
+        if any(value != first_value for value in values[1:]) or not first_value.startswith(
+            "https://"
+        ):
+            raise RuntimeError("bitrix_file_readback_failed")
+        return first_value
+    raise RuntimeError("bitrix_file_readback_failed")
 
 
 def _normalized_field_key(value: str) -> str:

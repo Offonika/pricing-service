@@ -153,13 +153,17 @@ class FakeEmailBitrixApi:
         self.next_item_id = 4321
         self.notifications: list[tuple[int, str]] = []
         self.calls: list[str] = []
+        self.activity_get_views: dict[int, dict[str, Any]] = {}
 
     def call(self, method: str, params=None, **_kwargs):
         values = list(params or [])
         mapped = dict(values)
         self.calls.append(method)
         if method == "crm.activity.get":
-            return {"result": deepcopy(self.activities[int(mapped["id"])])}
+            activity_id = int(mapped["id"])
+            activity = deepcopy(self.activities[activity_id])
+            activity.update(deepcopy(self.activity_get_views.get(activity_id, {})))
+            return {"result": deepcopy(activity)}
         if method == "crm.activity.list":
             return {"result": [deepcopy(activity) for activity in self.activities.values()]}
         if method == "crm.deal.get":
@@ -268,6 +272,54 @@ def test_standalone_first_email_uses_activity_id_as_thread_key(db_session) -> No
     assert "crm.contact.add" not in api.calls
     assert "crm.lead.add" not in api.calls
     assert api.notifications == [(7777, f"mm-service-email-manager:{case.id}")]
+    assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001]["BINDINGS"]
+
+
+def test_box_activity_uses_primary_deal_and_contact_communication(db_session) -> None:
+    _persist(db_session, _payload(thread_id=99001))
+    api = FakeEmailBitrixApi()
+    api.activities[99001] = {
+        "ID": "99001",
+        "PROVIDER_ID": "CRM_EMAIL",
+        "DIRECTION": "1",
+        "THREAD_ID": None,
+        "OWNER_TYPE_ID": "2",
+        "OWNER_ID": "601",
+        "COMPLETED": "N",
+        "BINDINGS": None,
+        "COMMUNICATIONS": [
+            {
+                "ENTITY_TYPE_ID": "3",
+                "ENTITY_ID": "501",
+                "VALUE": "buyer@example.test",
+            }
+        ],
+    }
+    api.activity_get_views[99001] = {
+        "ID": "99001",
+        "PROVIDER_ID": "CRM_EMAIL",
+        "DIRECTION": "1",
+        "THREAD_ID": None,
+        "OWNER_TYPE_ID": "2",
+        "OWNER_ID": "601",
+        "COMPLETED": "N",
+        "BINDINGS": None,
+        "COMMUNICATIONS": [],
+    }
+
+    results = process_site_service_email_events(
+        db_session,
+        settings=_settings(),
+        api=api,
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 25, 9, 5, tzinfo=UTC),
+    )
+
+    assert len(results) == 1 and results[0].status == "processed"
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert case is not None and case.bitrix_item_id == 4321
+    assert "crm.activity.list" in api.calls
+    assert {"OWNER_TYPE_ID": 2, "OWNER_ID": 601} in api.activities[99001]["BINDINGS"]
     assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001]["BINDINGS"]
 
 

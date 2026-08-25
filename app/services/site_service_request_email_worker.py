@@ -456,8 +456,6 @@ def _verify_email_event(
     bindings = _activity_bindings(activity)
     if (_DEAL_OWNER_TYPE_ID, payload.crm_deal_id) not in bindings:
         raise SiteServiceRequestPermanentError("email_activity_deal_binding_mismatch")
-    if (_CONTACT_OWNER_TYPE_ID, payload.crm_contact_id) not in bindings:
-        raise SiteServiceRequestPermanentError("email_activity_contact_binding_mismatch")
     if payload.existing_service_item_id is not None:
         service_binding = (
             settings.site_service_requests_bitrix_entity_type_id,
@@ -497,6 +495,11 @@ def _verify_email_event(
         activity,
         contact_id=payload.crm_contact_id,
     )
+    if (
+        _CONTACT_OWNER_TYPE_ID,
+        payload.crm_contact_id,
+    ) not in bindings and not communication_emails:
+        raise SiteServiceRequestPermanentError("email_activity_contact_binding_mismatch")
     if len(communication_emails) != 1 or communication_emails[0] not in contact_emails:
         raise SiteServiceRequestPermanentError("email_sender_contact_mismatch")
 
@@ -680,7 +683,61 @@ def _activity_get(api: SiteServiceRequestBitrixApi, activity_id: int) -> dict[st
     result = response.get("result")
     if not isinstance(result, dict):
         raise RuntimeError("email_activity_readback_failed")
-    return result
+    if _activity_details_complete(result):
+        return result
+
+    params = [
+        ("filter[ID]", str(activity_id)),
+        ("select[]", "ID"),
+        ("select[]", "OWNER_TYPE_ID"),
+        ("select[]", "OWNER_ID"),
+        ("select[]", "THREAD_ID"),
+        ("select[]", "BINDINGS"),
+        ("select[]", "COMMUNICATIONS"),
+    ]
+    list_response = api.call("crm.activity.list", params)
+    raw_rows = list_response.get("result")
+    if isinstance(raw_rows, dict):
+        rows = raw_rows.get("items") or raw_rows.get("activities")
+    else:
+        rows = raw_rows
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise RuntimeError("email_activity_readback_failed")
+    matching = [row for row in rows if _positive_int(row.get("ID") or row.get("id")) == activity_id]
+    if len(matching) != 1:
+        raise RuntimeError("email_activity_readback_failed")
+
+    enriched = dict(result)
+    detailed = matching[0]
+    for upper_key, lower_key in (
+        ("OWNER_TYPE_ID", "ownerTypeId"),
+        ("OWNER_ID", "ownerId"),
+        ("THREAD_ID", "threadId"),
+        ("BINDINGS", "bindings"),
+        ("COMMUNICATIONS", "communications"),
+    ):
+        current = enriched.get(upper_key)
+        if current is None:
+            current = enriched.get(lower_key)
+        if current not in (None, [], ""):
+            continue
+        replacement = detailed.get(upper_key)
+        if replacement is None:
+            replacement = detailed.get(lower_key)
+        if replacement is not None:
+            enriched[upper_key] = replacement
+    return enriched
+
+
+def _activity_details_complete(activity: dict[str, Any]) -> bool:
+    bindings = activity.get("BINDINGS") or activity.get("bindings")
+    communications = activity.get("COMMUNICATIONS") or activity.get("communications")
+    return (
+        isinstance(bindings, list)
+        and bool(bindings)
+        and isinstance(communications, list)
+        and bool(communications)
+    )
 
 
 def _activity_update(
@@ -701,6 +758,12 @@ def _activity_bindings(activity: dict[str, Any]) -> tuple[tuple[int, int], ...]:
     if not isinstance(raw, list):
         raise RuntimeError("email_activity_bindings_invalid")
     bindings: list[tuple[int, int]] = []
+    primary_owner_type_id = _positive_int(
+        activity.get("OWNER_TYPE_ID") or activity.get("ownerTypeId")
+    )
+    primary_owner_id = _positive_int(activity.get("OWNER_ID") or activity.get("ownerId"))
+    if primary_owner_type_id is not None and primary_owner_id is not None:
+        bindings.append((primary_owner_type_id, primary_owner_id))
     for item in raw:
         if not isinstance(item, dict):
             raise RuntimeError("email_activity_bindings_invalid")

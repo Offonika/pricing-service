@@ -14,6 +14,7 @@ from app.api.dependencies import (
 )
 from app.core.config import Settings
 from app.schemas.site_service_requests import (
+    SiteServiceEmailEventPayload,
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestCommandAckResponse,
     SiteServiceRequestCommandPayload,
@@ -29,6 +30,7 @@ from app.services.site_service_requests import (
     SiteServiceRequestNotFoundError,
     SiteServiceRequestPayloadError,
     SiteServiceRequestStorageError,
+    accept_site_service_email_event,
     accept_site_service_request_event,
     acknowledge_site_service_request_command,
     build_site_service_request_cipher,
@@ -41,6 +43,55 @@ from app.services.site_service_requests import (
 from app.services.site_service_requests_auth import VerifiedSiteRequest
 
 router = APIRouter()
+
+
+@router.post(
+    "/email-events",
+    response_model=SiteServiceRequestEventAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        401: {"description": "Invalid or missing dispatcher HMAC authentication"},
+        409: {"description": "Nonce replay or idempotency conflict"},
+        413: {"description": "Request body exceeds the configured limit"},
+        503: {"description": "Email ingest, encryption, or storage is unavailable"},
+    },
+)
+def accept_email_event(
+    payload: SiteServiceEmailEventPayload,
+    verified: VerifiedSiteRequest = Depends(require_site_service_request_signature),
+    settings: Settings = Depends(get_site_service_request_settings),
+    db: Session = Depends(get_db),
+) -> SiteServiceRequestEventAcceptedResponse:
+    if not settings.site_service_requests_email_ingest_enabled:
+        raise HTTPException(status_code=503, detail="email_ingest_disabled")
+    try:
+        result = accept_site_service_email_event(
+            db,
+            payload=payload,
+            raw_body=verified.body,
+            payload_sha256=verified.content_sha256,
+            cipher=build_site_service_request_cipher(settings),
+        )
+        db.commit()
+    except SiteServiceRequestConflictError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SiteServiceRequestConfigurationError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="event_encryption_not_configured",
+        ) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="event_storage_unavailable") from exc
+
+    return SiteServiceRequestEventAcceptedResponse(
+        event_id=result.event_id,
+        status="accepted",
+        duplicate=result.duplicate,
+        missing_file_ids=[],
+    )
 
 
 @router.post(

@@ -6029,6 +6029,62 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/email-events:
+    post:
+      summary: Accept Email Event
+      operationId: accept_email_event_api_internal_site_service_requests_email_events_post
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceEmailEventPayload'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestEventAcceptedResponse'
+        '401':
+          description: Invalid or missing dispatcher HMAC authentication
+        '409':
+          description: Nonce replay or idempotency conflict
+        '413':
+          description: Request body exceeds the configured limit
+        '503':
+          description: Email ingest, encryption, or storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/internal/site-service-requests/events:
     post:
       summary: Accept Event
@@ -28186,6 +28242,89 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SiteServiceEmailEventPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        eventId:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Eventid
+        eventType:
+          type: string
+          enum:
+          - email.received
+          - email.replied
+          title: Eventtype
+        occurredAt:
+          type: string
+          format: date-time
+          title: Occurredat
+        mailbox:
+          type: string
+          enum:
+          - shop
+          - info
+          title: Mailbox
+        messageId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Messageid
+        activityId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Activityid
+        threadId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Threadid
+        requestType:
+          type: string
+          enum:
+          - warranty
+          - refund_money
+          - replacement
+          - delivery_return
+          - consultation
+          - other
+          title: Requesttype
+        orderNumber:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Ordernumber
+        crmContactId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Crmcontactid
+        crmDealId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Crmdealid
+        existingServiceItemId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Existingserviceitemid
+      type: object
+      required:
+      - schemaVersion
+      - eventId
+      - eventType
+      - occurredAt
+      - mailbox
+      - messageId
+      - activityId
+      - threadId
+      - requestType
+      - orderNumber
+      - crmContactId
+      - crmDealId
+      title: SiteServiceEmailEventPayload
     SiteServiceRequestCommandAckPayload:
       properties:
         schemaVersion:
@@ -28501,6 +28640,9 @@ components:
         ingestEnabled:
           type: boolean
           title: Ingestenabled
+        emailIngestEnabled:
+          type: boolean
+          title: Emailingestenabled
         bitrixWritesEnabled:
           type: boolean
           title: Bitrixwritesenabled
@@ -28521,6 +28663,7 @@ components:
       - pendingEscalationDeliveries
       - lastSuccessfulExchangeAt
       - ingestEnabled
+      - emailIngestEnabled
       - bitrixWritesEnabled
       - outboundRepliesEnabled
       title: SiteServiceRequestHealthResponse

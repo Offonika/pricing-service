@@ -152,6 +152,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteServiceRequestEvent,
         SiteServiceRequestFile,
         SiteServiceRequestNonce,
+        SiteServiceRequestSource,
     )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
@@ -290,6 +291,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "SiteServiceRequestFile",
         "SiteServiceRequestCommand",
         "SiteServiceRequestNonce",
+        "SiteServiceRequestSource",
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",

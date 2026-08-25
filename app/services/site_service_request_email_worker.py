@@ -574,13 +574,15 @@ def _update_inbound_activity(
     dynamic_binding = (entity_type_id, item_id)
     if dynamic_binding not in bindings:
         bindings.append(dynamic_binding)
+    bindings_writable = _activity_bindings_writable(api)
     fields: dict[str, Any] = {
         "COMPLETED": "N",
-        "BINDINGS": [
+    }
+    if bindings_writable:
+        fields["BINDINGS"] = [
             {"OWNER_TYPE_ID": owner_type_id, "OWNER_ID": owner_id}
             for owner_type_id, owner_id in bindings
-        ],
-    }
+        ]
     if assignee_id is not None:
         fields["RESPONSIBLE_ID"] = assignee_id
     if deadline is not None:
@@ -589,7 +591,7 @@ def _update_inbound_activity(
     readback = _activity_get(api, payload.activity_id)
     if str(readback.get("COMPLETED") or readback.get("completed") or "N") != "N":
         raise RuntimeError("email_activity_open_readback_failed")
-    if dynamic_binding not in _activity_bindings(readback):
+    if bindings_writable and dynamic_binding not in _activity_bindings(readback):
         raise RuntimeError("email_activity_service_binding_readback_failed")
     if (
         assignee_id is not None
@@ -751,6 +753,20 @@ def _activity_update(
     )
     if response.get("result") not in (True, 1, "1"):
         raise RuntimeError("email_activity_write_failed")
+
+
+def _activity_bindings_writable(api: SiteServiceRequestBitrixApi) -> bool:
+    response = api.call("crm.activity.fields")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError("email_activity_fields_readback_failed")
+    metadata = result.get("BINDINGS") or result.get("bindings")
+    if not isinstance(metadata, dict):
+        raise RuntimeError("email_activity_fields_readback_failed")
+    read_only = metadata.get("isReadOnly")
+    if not isinstance(read_only, bool):
+        raise RuntimeError("email_activity_fields_readback_failed")
+    return not read_only
 
 
 def _activity_bindings(activity: dict[str, Any]) -> tuple[tuple[int, int], ...]:

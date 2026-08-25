@@ -154,6 +154,7 @@ class FakeEmailBitrixApi:
         self.notifications: list[tuple[int, str]] = []
         self.calls: list[str] = []
         self.activity_get_views: dict[int, dict[str, Any]] = {}
+        self.activity_bindings_read_only = False
 
     def call(self, method: str, params=None, **_kwargs):
         values = list(params or [])
@@ -166,6 +167,8 @@ class FakeEmailBitrixApi:
             return {"result": deepcopy(activity)}
         if method == "crm.activity.list":
             return {"result": [deepcopy(activity) for activity in self.activities.values()]}
+        if method == "crm.activity.fields":
+            return {"result": {"BINDINGS": {"isReadOnly": self.activity_bindings_read_only}}}
         if method == "crm.deal.get":
             return {"result": deepcopy(self.deal)}
         if method == "crm.contact.get":
@@ -306,6 +309,7 @@ def test_box_activity_uses_primary_deal_and_contact_communication(db_session) ->
         "BINDINGS": None,
         "COMMUNICATIONS": [],
     }
+    api.activity_bindings_read_only = True
 
     results = process_site_service_email_events(
         db_session,
@@ -319,8 +323,9 @@ def test_box_activity_uses_primary_deal_and_contact_communication(db_session) ->
     case = db_session.scalar(select(SiteServiceRequestCase))
     assert case is not None and case.bitrix_item_id == 4321
     assert "crm.activity.list" in api.calls
-    assert {"OWNER_TYPE_ID": 2, "OWNER_ID": 601} in api.activities[99001]["BINDINGS"]
-    assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001]["BINDINGS"]
+    assert api.activities[99001]["BINDINGS"] is None
+    assert api.items[4321]["ufTestMailActivityId"] == "99001"
+    assert api.items[4321]["ufTestMailThreadKey"] == "bitrix-mail:shop:99001"
 
 
 def test_outgoing_reply_stops_sla_and_closes_email_not_card(db_session) -> None:

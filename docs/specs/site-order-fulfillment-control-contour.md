@@ -1108,6 +1108,17 @@ Smoke:
 
 # Rollout
 
+## Production-решение 2026-08-25
+
+- Разрешён production-выпуск интерактивного UX `/pickup` и
+  `/pickup_arrival` из release
+  `pickup-control-3072-structured-arrival-20260825-8fb19e1`.
+- На первом cutover сохранены выключенными изменения CRM-стадий, SMS, SLA,
+  inventory/WON и lost-orders; `ORDER_FULFILLMENT_PICKUP_AUTO_ARRIVAL_ENABLED`
+  остаётся включённым для ранее утверждённого строгого сигнала `chat8729`.
+- Выпуск ведётся в существующем контуре задачи Bitrix 3072; новую задачу Bitrix
+  для этой переработки не создавать.
+
 ## Wave 0. Документ и настройки
 
 - Утвердить новые CRM-стадии: `Ожидает самовывоза`,
@@ -1159,6 +1170,10 @@ Smoke:
 
 # Changelog
 
+- 2026-08-25 — пользователь разрешил production-cutover компактного UX
+  `/pickup` и `/pickup_arrival`; опубликован release
+  `pickup-control-3072-structured-arrival-20260825-8fb19e1` с мутационными
+  feature flags в состоянии `false`, без создания новой задачи Bitrix.
 - 2026-08-25 — утверждён компактный UX помощника: видимый read-only поиск
   `/pickup`, отдельная структурированная фиксация поступления
   `/pickup_arrival`, скрытый подписанный `pickup_action`, прогрессивные кнопки

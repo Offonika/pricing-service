@@ -30,7 +30,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
+from app.infrastructure.db import session_scope  # noqa: E402
 from app.infrastructure.db.engines import build_engine  # noqa: E402
+from app.services import pickup_control  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
@@ -1115,6 +1117,7 @@ def run_daily_sync(
     stage_summary = fetch_stage_summary(client)
     stage_path = output_dir / f"stage-summary-{stamp}.csv"
     write_dict_csv(stage_path, stage_summary)
+    pickup_metrics = load_pickup_daily_metrics(settings)
     return {
         "mode": "daily",
         "unknown_delivery": str(unknown_path),
@@ -1124,7 +1127,19 @@ def run_daily_sync(
         "stage_summary_error_count": sum(
             1 for row in stage_summary if clean_csv_value(row.get("error"))
         ),
+        "pickup_metrics": pickup_metrics,
     }
+
+
+def load_pickup_daily_metrics(settings: Any) -> dict[str, Any]:
+    try:
+        with session_scope() as session:
+            return pickup_control.pickup_operational_metrics(
+                session,
+                settings=settings,
+            )
+    except Exception as exc:  # daily digest must survive a temporary service DB failure.
+        return {"error": type(exc).__name__}
 
 
 def apply_outbox_by_target(
@@ -2485,7 +2500,32 @@ def build_daily_digest(
     operational_keys = set(latest_quick.get("operational_alert_keys") or [])
     overdue_orders = daily_overdue_payment_orders(operational_keys)
     technical_errors = daily_current_technical_errors(latest_quick)
-    action_count = len(overdue_orders) + len(technical_errors)
+    pickup_metrics = next(
+        (
+            item.get("pickup_metrics")
+            for item in current_summary.get("items") or []
+            if item.get("mode") == "daily" and isinstance(item.get("pickup_metrics"), dict)
+        ),
+        {},
+    )
+    pickup_metrics_available = bool(pickup_metrics) and not pickup_metrics.get("error")
+    pickup_action_count = (
+        sum(
+            int(pickup_metrics.get(key) or 0)
+            for key in (
+                "inventory_manual_review",
+                "pickup_without_notification",
+                "sla_72_due",
+                "sla_96_due",
+                "lost_orders",
+                "task_routing_errors",
+            )
+        )
+        + len(pickup_metrics.get("task_route_configuration_errors") or [])
+        if pickup_metrics_available
+        else 0
+    )
+    action_count = len(overdue_orders) + len(technical_errors) + pickup_action_count
     stage_summary_error_count = sum(
         int(item.get("stage_summary_error_count") or 0)
         for item in current_summary.get("items") or []
@@ -2519,12 +2559,54 @@ def build_daily_digest(
         lines.extend(action_lines[:5])
         if len(action_lines) > 5:
             lines.append(f"- ещё {len(action_lines) - 5}")
+    if pickup_metrics_available:
+        lines.extend(_pickup_daily_digest_lines(pickup_metrics))
+    elif pickup_metrics.get("error"):
+        lines.append(
+            "Техническое примечание: метрики самовывоза временно недоступны; "
+            "остальная сводка сформирована."
+        )
     if stage_summary_error_count:
         lines.append(
             "Техническое примечание: Bitrix временно не отдал статистику по части стадий; "
             "операционная сводка сформирована по сохранённым результатам проверок."
         )
     return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+
+def _pickup_daily_digest_lines(metrics: dict[str, Any]) -> list[str]:
+    outbox = metrics.get("outbox") if isinstance(metrics.get("outbox"), dict) else {}
+    freshness = (
+        metrics.get("chat_freshness") if isinstance(metrics.get("chat_freshness"), dict) else {}
+    )
+    freshness_text = "; ".join(
+        f"{chat_code}={value or 'нет данных'}" for chat_code, value in sorted(freshness.items())
+    )
+    route_config_errors = metrics.get("task_route_configuration_errors") or []
+    lines = [
+        "Контроль самовывоза:",
+        "- инвентаризации: "
+        f"подтверждено {int(metrics.get('inventory_confirmed') or 0)}, "
+        f"нужно уточнить {int(metrics.get('inventory_manual_review') or 0)};",
+        "- уведомления и SLA: "
+        f"без подтверждённой SMS {int(metrics.get('pickup_without_notification') or 0)}, "
+        f"72 часа {int(metrics.get('sla_72_due') or 0)}, "
+        f"96 часов {int(metrics.get('sla_96_due') or 0)}, "
+        f"активных продлений {int(metrics.get('active_holds') or 0)};",
+        "- подтверждающих реакций: "
+        f"{int(metrics.get('active_reactions') or 0)}; "
+        f"потерянных заказов {int(metrics.get('lost_orders') or 0)};",
+        "- ошибки маршрутизации задач: "
+        f"{int(metrics.get('task_routing_errors') or 0)}, "
+        f"ошибок конфигурации {len(route_config_errors)};",
+        "- outbox: "
+        f"pending {int(outbox.get('pending') or 0)}, "
+        f"retry {int(outbox.get('retry') or 0)}, "
+        f"failed {int(outbox.get('failed') or 0)}.",
+    ]
+    if freshness_text:
+        lines.append(f"- свежесть чатов: {freshness_text}.")
+    return lines
 
 
 def load_onec_assembly_crm_activity(

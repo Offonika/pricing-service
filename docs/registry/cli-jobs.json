@@ -179,6 +179,46 @@
       "spec": "docs/specs/pricing-service-architecture-hardening.md",
       "remove_after": "2026-10-31"
     },
+    "backfill_order_fulfillment_chats.py": {
+      "owner": "pricing-platform",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_chat_message_and_inventory_unique_keys",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": "2026-12-31"
+    },
+    "reprocess_pickup_inventory.py": {
+      "owner": "pricing-platform",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_append_only_revision_and_superseded_status",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": "2026-12-31"
+    },
+    "ensure_pickup_deal_fields.py": {
+      "owner": "pricing-platform",
+      "kind": "maintenance",
+      "dry_run": "supported",
+      "idempotency": "verified_by_field_name_and_type_readback",
+      "side_effect_level": "external_write",
+      "db_access": "none",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": null
+    },
+    "reconcile_historical_pickup_orders.py": {
+      "owner": "pricing-platform",
+      "kind": "maintenance",
+      "dry_run": "supported",
+      "idempotency": "verified_by_approved_batch_hash_and_outbox_keys",
+      "side_effect_level": "external_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": null
+    },
     "site_service_requests_worker.py": {
       "owner": "site-service-requests",
       "kind": "permanent_cli",

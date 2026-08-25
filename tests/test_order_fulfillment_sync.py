@@ -1403,6 +1403,48 @@ def test_daily_digest_marks_partial_bitrix_stage_statistics(
     assert "операционная сводка сформирована" in digest["message"]
 
 
+def test_daily_digest_includes_pickup_control_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ONEC_ASSEMBLY_CRM_STATE_PATH", str(tmp_path / "missing.sqlite3"))
+    daily_summary = _summary(
+        mode="daily",
+        stamp="20260824-110000",
+        item={
+            "mode": "daily",
+            "pickup_metrics": {
+                "chat_freshness": {
+                    "pickup_ready": "2026-08-24T10:59:00",
+                    "pickup_inventory": None,
+                },
+                "active_reactions": 3,
+                "inventory_confirmed": 11,
+                "inventory_manual_review": 2,
+                "pickup_without_notification": 1,
+                "sla_72_due": 4,
+                "sla_96_due": 1,
+                "active_holds": 2,
+                "lost_orders": 1,
+                "task_routing_errors": 1,
+                "task_route_configuration_errors": ["warehouse:mitino:senior_missing"],
+                "outbox": {"pending": 2, "retry": 1, "failed": 1},
+            },
+        },
+    )
+    daily_path = tmp_path / "order-fulfillment-sync-summary-20260824-110000.json"
+    daily_path.write_text(json.dumps(daily_summary), encoding="utf-8")
+
+    digest = sync.build_daily_digest(tmp_path, daily_summary, daily_path, {})
+
+    message = digest["message"]
+    assert "Контроль самовывоза" in message
+    assert "подтверждено 11, нужно уточнить 2" in message
+    assert "без подтверждённой SMS 1" in message
+    assert "96 часов 1" in message
+    assert "потерянных заказов 1" in message
+    assert "pickup_inventory=нет данных" in message
+
+
 def test_daily_digest_reports_onec_activity_and_current_technical_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -28,6 +28,9 @@ def _settings(**overrides) -> Settings:
         "_env_file": None,
         "order_fulfillment_bot_enabled": True,
         "order_fulfillment_bot_apply_enabled": True,
+        "order_fulfillment_pickup_stage_apply_enabled": True,
+        "order_fulfillment_pickup_sla_enabled": True,
+        "order_fulfillment_pickup_inventory_enabled": True,
         "order_fulfillment_bot_sms_enabled": False,
         "order_fulfillment_bot_source_chat_ids": ["chat8729", "chat733"],
         "order_fulfillment_bot_callback_secret": "test-secret",
@@ -38,7 +41,9 @@ def _settings(**overrides) -> Settings:
         "order_fulfillment_bot_client_id": "pickup-bot",
         "order_fulfillment_bot_command_id": 103,
         "order_fulfillment_bot_dry_run_card_limit": 0,
-        "order_fulfillment_bot_task_responsible_id": 115204,
+        "order_fulfillment_internet_shop_task_responsible_id": 115204,
+        "order_fulfillment_site_return_task_responsible_id": 115204,
+        "order_fulfillment_point_task_routes": {"mitino": {"operator": 115204, "senior": 115204}},
     }
     values.update(overrides)
     return Settings(**values)
@@ -99,6 +104,13 @@ class FakeBitrixClient:
         self.stage = target_stage
         return True
 
+    def update_deal_fields(self, deal_id: int, fields: dict):
+        assert deal_id == 500
+        if "STAGE_ID" in fields:
+            self.stage = str(fields["STAGE_ID"])
+        self.raw.update(fields)
+        return True
+
     def start_business_process(self, **payload):
         self.workflows.append(payload)
         return "workflow-1"
@@ -106,6 +118,9 @@ class FakeBitrixClient:
     def add_task(self, fields):
         self.tasks.append(fields)
         return {"task": {"id": 1}}
+
+    def get_user_by_id(self, user_id: int):
+        return {"ID": str(user_id), "ACTIVE": "Y"}
 
 
 def _warehouse(db_session) -> LogisticsWarehouse:
@@ -198,6 +213,251 @@ def test_free_text_creates_candidate_but_no_execution_event(db_session) -> None:
     outbox = db_session.scalar(select(SiteOrderFulfillmentOutbox))
     assert outbox is not None
     assert outbox.operation == bot.OP_PUBLISH_CARD
+
+
+def test_strict_pickup_arrival_is_queued_automatically_without_card(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    warehouse = _warehouse(db_session)
+
+    candidates = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22001",
+        author_id="7",
+        text_value="Добрый день, Митино — заказ 241500 поступил",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+        now=datetime(2026, 8, 23, 12, 1),
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.status == bot.CANDIDATE_QUEUED
+    assert candidate.pickup_point_warehouse_id == warehouse.id
+    assert candidate.payload["automatic_arrival"] is True
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_PUBLISH_CARD
+            )
+        )
+        == 0
+    )
+    action = db_session.scalar(select(BitrixChatAction))
+    assert action is not None
+    assert action.action == bot.ACTION_ARRIVED
+    assert action.actor_id == "7"
+    assert action.payload == {"automatic": True, "source": "chat8729"}
+
+    client = FakeBitrixClient()
+    for minute in range(1, 8):
+        bot.process_outbox(
+            db_session,
+            client=client,
+            settings=settings,
+            onec_validator=lambda _: bot.OneCPickupValidation(
+                available=True,
+                assembled=True,
+            ),
+            now=datetime(2026, 8, 23, 12, minute),
+        )
+
+    db_session.refresh(candidate)
+    assert candidate.status == bot.CANDIDATE_APPLIED
+    assert client.bot_messages == []
+    assert client.bot_updates == []
+    assert client.stage_updates == [fulfillment.CRM_STAGE_PICKUP_WAITING]
+    case = db_session.scalar(
+        select(SiteOrderExecutionCase).where(SiteOrderExecutionCase.site_order_number == "241500")
+    )
+    assert case is not None
+    assert case.storage_started_at == datetime(2026, 8, 23, 12, 0)
+    event = db_session.scalar(
+        select(SiteOrderExecutionEvent).where(
+            SiteOrderExecutionEvent.event_type == fulfillment.EVENT_PICKUP_STORED
+        )
+    )
+    assert event is not None
+    assert event.source == "bitrix_chat"
+    assert event.actor_ref == "7"
+
+
+def test_ambiguous_or_discursive_arrival_remains_manual_candidate(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    _warehouse(db_session)
+
+    unresolved = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22002",
+        author_id="7",
+        text_value="Заказ 241500 поступил",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+    )[0]
+    discussion = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22003",
+        author_id="7",
+        text_value="Что сейчас с заказом 241501 в Митино?",
+        message_at=datetime(2026, 8, 23, 12, 1),
+        settings=settings,
+    )[0]
+
+    assert unresolved.status == bot.CANDIDATE_OPEN
+    assert unresolved.pickup_point_warehouse_id is None
+    assert discussion.status == bot.CANDIDATE_OPEN
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_PUBLISH_CARD
+            )
+        )
+        == 2
+    )
+
+
+def test_auto_arrival_replay_is_idempotent_and_late_edit_blocks_apply(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    _warehouse(db_session)
+    kwargs = {
+        "dialog_id": "chat8729",
+        "message_id": "22004",
+        "author_id": "7",
+        "text_value": "Заказ 241500 прибыл в Митино",
+        "message_at": datetime(2026, 8, 23, 12, 0),
+        "settings": settings,
+        "now": datetime(2026, 8, 23, 12, 1),
+    }
+
+    first = bot.create_candidates_from_message(db_session, **kwargs)[0]
+    repeated = bot.create_candidates_from_message(db_session, **kwargs)[0]
+    assert repeated.id == first.id
+    assert db_session.scalar(select(func.count(BitrixChatAction.id))) == 1
+    assert db_session.scalar(select(func.count(SiteOrderFulfillmentOutbox.id))) == 1
+
+    first.raw_message.parse_status = "edited_manual_review"
+    db_session.commit()
+    client = FakeBitrixClient()
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        now=datetime(2026, 8, 23, 12, 2),
+    )
+
+    db_session.refresh(first)
+    assert first.status == bot.CANDIDATE_REVIEW
+    assert client.stage_updates == []
+
+
+def test_auto_arrival_late_edit_before_finalize_blocks_internal_event(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    _warehouse(db_session)
+    candidate = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22014",
+        author_id="7",
+        text_value="Заказ 241500 прибыл в Митино",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+        now=datetime(2026, 8, 23, 12, 1),
+    )[0]
+    client = FakeBitrixClient(stage=fulfillment.CRM_STAGE_PICKUP_WAITING)
+
+    first_stats = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        limit=1,
+        now=datetime(2026, 8, 23, 12, 2),
+    )
+    assert first_stats["completed"] == 1
+    assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
+
+    candidate.raw_message.parse_status = "edited_manual_review"
+    db_session.commit()
+    second_stats = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        now=datetime(2026, 8, 23, 12, 3),
+    )
+
+    db_session.refresh(candidate)
+    assert second_stats["failed"] >= 1
+    assert candidate.status == bot.CANDIDATE_REVIEW
+    assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
+
+
+def test_historical_arrival_never_queues_automatic_action(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 12, 0),
+    )
+    _warehouse(db_session)
+
+    candidate = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22005",
+        author_id="7",
+        text_value="Митино 241500",
+        message_at=datetime(2026, 8, 23, 11, 59),
+        settings=settings,
+    )[0]
+
+    assert candidate.status == bot.CANDIDATE_OPEN
+    assert db_session.scalar(select(func.count(BitrixChatAction.id))) == 0
+    row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
+    assert row is not None and row.operation == bot.OP_PUBLISH_CARD
+
+
+def test_strict_arrival_keeps_every_order_beyond_manual_card_limit(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    _warehouse(db_session)
+    order_numbers = [str(241500 + index) for index in range(12)]
+
+    candidates = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22006",
+        author_id="7",
+        text_value=f"Митино: {', '.join(order_numbers)}",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+    )
+
+    assert [candidate.site_order_number for candidate in candidates] == order_numbers
+    assert db_session.scalar(select(func.count(BitrixChatAction.id))) == 12
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_PROCESS_ACTION
+            )
+        )
+        == 12
+    )
 
 
 def test_missing_source_date_can_never_become_sms_eligible(db_session) -> None:
@@ -991,8 +1251,10 @@ def test_arrival_apply_moves_stage_only_after_button(db_session) -> None:
     case = db_session.scalar(select(SiteOrderExecutionCase))
     assert client.stage_updates == ["PICKUP_WAITING"]
     assert case is not None
-    assert case.storage_started_at == datetime(2026, 8, 23, 12, 3)
-    assert case.storage_deadline_at == datetime(2026, 8, 27, 12, 3)
+    assert case.storage_started_at == datetime(2026, 8, 23, 12, 0)
+    assert case.notification_confirmed_at is None
+    assert case.sla_started_at is None
+    assert case.storage_deadline_at is None
     assert case.current_derived_status == fulfillment.EVENT_PICKUP_STORED
 
 
@@ -1045,6 +1307,8 @@ def test_issued_requires_second_confirmation_and_payment(db_session) -> None:
         current_crm_stage="PICKUP_WAITING",
         pickup_point_warehouse_id=warehouse.id,
         storage_started_at=datetime(2026, 8, 20, 12, 0),
+        notification_confirmed_at=datetime(2026, 8, 20, 12, 30),
+        sla_started_at=datetime(2026, 8, 20, 12, 30),
         payload={},
     )
     db_session.add(case)
@@ -1110,6 +1374,8 @@ def test_dismantle_is_blocked_before_96_hours(db_session) -> None:
         current_crm_stage="PICKUP_WAITING",
         pickup_point_warehouse_id=warehouse.id,
         storage_started_at=datetime(2026, 8, 20, 12, 0),
+        notification_confirmed_at=datetime(2026, 8, 20, 12, 30),
+        sla_started_at=datetime(2026, 8, 20, 12, 30),
         payload={},
     )
     candidate = BitrixChatActionCandidate(
@@ -1272,7 +1538,7 @@ def test_historical_sms_is_blocked_and_track_marker_is_not_reused(db_session) ->
         settings=settings,
         now=datetime(2026, 8, 23, 12, 3),
     )
-    for minute in (4, 5):
+    for minute in range(4, 10):
         bot.process_outbox(
             db_session,
             client=client,
@@ -1332,8 +1598,7 @@ def test_first_arrival_reserves_sms_when_stage_is_already_pickup_waiting(db_sess
     assert bot.OP_VERIFY_SMS_WORKFLOW in operations
 
 
-def test_sms_pilot_reserves_only_ten_slots(db_session) -> None:
-    settings = _settings(order_fulfillment_bot_sms_pilot_limit=10)
+def test_sms_outbox_has_no_quantitative_pilot_limit(db_session) -> None:
     for index in range(10):
         bot.enqueue_outbox(
             db_session,
@@ -1342,9 +1607,24 @@ def test_sms_pilot_reserves_only_ten_slots(db_session) -> None:
             payload={},
             now=datetime(2026, 8, 23, 12, 0),
         )
+    eleventh = bot.enqueue_outbox(
+        db_session,
+        operation=bot.OP_START_SMS_WORKFLOW,
+        idempotency_key="sms:10",
+        payload={},
+        now=datetime(2026, 8, 23, 12, 0),
+    )
     db_session.commit()
 
-    assert bot._sms_pilot_has_capacity(db_session, settings=settings) is False  # noqa: SLF001
+    assert eleventh.id is not None
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_START_SMS_WORKFLOW
+            )
+        )
+        == 11
+    )
 
 
 def test_two_candidates_for_one_deal_reserve_only_one_pickup_sms(db_session) -> None:
@@ -1413,8 +1693,7 @@ def test_two_candidates_for_one_deal_reserve_only_one_pickup_sms(db_session) -> 
     assert sms_rows[0].idempotency_key == "deal:500:pickup-ready-sms"
 
 
-def test_failed_or_ambiguous_sms_attempts_still_consume_pilot_slots(db_session) -> None:
-    settings = _settings(order_fulfillment_bot_sms_pilot_limit=10)
+def test_failed_sms_attempts_do_not_block_unrelated_new_sms(db_session) -> None:
     for index in range(10):
         row = bot.enqueue_outbox(
             db_session,
@@ -1424,9 +1703,16 @@ def test_failed_or_ambiguous_sms_attempts_still_consume_pilot_slots(db_session) 
             now=datetime(2026, 8, 23, 12, 0),
         )
         row.status = bot.OUTBOX_FAILED
+    next_row = bot.enqueue_outbox(
+        db_session,
+        operation=bot.OP_START_SMS_WORKFLOW,
+        idempotency_key="ambiguous-sms:next-deal",
+        payload={},
+        now=datetime(2026, 8, 23, 12, 1),
+    )
     db_session.commit()
 
-    assert bot._sms_pilot_has_capacity(db_session, settings=settings) is False  # noqa: SLF001
+    assert next_row.status == bot.OUTBOX_PENDING
 
 
 @pytest.mark.parametrize(
@@ -1523,6 +1809,18 @@ def test_started_sms_is_completed_only_after_marker_confirmation(
         db_session,
         settings=settings,
         message_at=datetime(2026, 8, 23, 12, 0),
+    )
+    db_session.add(
+        SiteOrderExecutionCase(
+            site_order_number=candidate.site_order_number,
+            bitrix_deal_id=500,
+            delivery_method="Самовывоз",
+            current_derived_status=fulfillment.EVENT_PICKUP_STORED,
+            current_crm_stage=fulfillment.CRM_STAGE_PICKUP_WAITING,
+            pickup_point_warehouse_id=candidate.pickup_point_warehouse_id,
+            storage_started_at=datetime(2026, 8, 23, 12, 0),
+            payload={},
+        )
     )
     _mark_card_ready(db_session, candidate)
     start_row = bot.enqueue_outbox(
@@ -1762,6 +2060,7 @@ def test_task_is_blocked_if_live_deal_stage_changed(db_session) -> None:
 
     with pytest.raises(RuntimeError, match="deal_stage_changed_before_task"):
         bot._create_task(  # noqa: SLF001
+            session=db_session,
             row=row,
             client=client,
             settings=settings,

@@ -1444,6 +1444,37 @@ def card_text(
     return "\n".join(lines)
 
 
+def pickup_menu_text() -> str:
+    return (
+        "Самовывоз Master Mobile\n"
+        "\n"
+        "Выберите действие. После нажатия допишите только номер заказа "
+        "или несколько номеров через пробел и отправьте сообщение.\n"
+        "\n"
+        "Поиск ничего не меняет в CRM. Поступление применяется только после "
+        "проверки точки и отдельного подтверждения."
+    )
+
+
+def pickup_menu_keyboard() -> list[dict[str, Any]]:
+    return [
+        {
+            "TEXT": "Найти заказ",
+            "ACTION": "PUT",
+            "ACTION_VALUE": "Найти заказ ",
+            "BG_COLOR": "#2FC6F6",
+            "BLOCK": "Y",
+        },
+        {
+            "TEXT": "Зафиксировать поступление",
+            "ACTION": "PUT",
+            "ACTION_VALUE": "Зафиксировать поступление ",
+            "BG_COLOR": "#9DCF00",
+            "BLOCK": "Y",
+        },
+    ]
+
+
 def card_keyboard(
     candidate: BitrixChatActionCandidate,
     *,

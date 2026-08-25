@@ -2471,3 +2471,18 @@ def test_execution_event_times_are_normalized_before_ordering(db_session) -> Non
 
     assert case is not None
     assert case.current_derived_status == fulfillment.EVENT_PICKUP_RECEIVED
+
+
+def test_pickup_menu_uses_russian_put_actions_without_slash_commands() -> None:
+    keyboard = bot.pickup_menu_keyboard()
+
+    assert [button["TEXT"] for button in keyboard] == [
+        "Найти заказ",
+        "Зафиксировать поступление",
+    ]
+    assert [button["ACTION"] for button in keyboard] == ["PUT", "PUT"]
+    assert [button["ACTION_VALUE"] for button in keyboard] == [
+        "Найти заказ ",
+        "Зафиксировать поступление ",
+    ]
+    assert all("/pickup" not in button["ACTION_VALUE"] for button in keyboard)

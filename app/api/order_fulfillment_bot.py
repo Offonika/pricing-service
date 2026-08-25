@@ -86,6 +86,34 @@ async def bitrix_bot_event(
         )
         if not message_id:
             raise HTTPException(status_code=400, detail="message id is missing")
+        menu_interaction = _russian_menu_interaction(text_value)
+        if menu_interaction is not None:
+            command_kind, raw_orders = menu_interaction
+            try:
+                orders = _public_command_orders(
+                    raw_orders,
+                    allow_many=command_kind == "structured_arrival",
+                )
+                candidates = bot.create_interactive_candidates(
+                    db,
+                    dialog_id=dialog_id,
+                    source_message_id=message_id,
+                    actor_id=author_id or None,
+                    order_numbers=orders,
+                    interaction=command_kind,
+                    settings=settings,
+                    apply_enabled_probe=lambda: bot.runtime_apply_enabled_from_env(
+                        initial_enabled=settings.order_fulfillment_bot_apply_enabled,
+                    ),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "accepted": True,
+                "interaction": command_kind,
+                "orders": len(candidates),
+                "candidate_id": candidates[0].id,
+            }
         try:
             candidates = bot.create_candidates_from_message(
                 db,
@@ -270,6 +298,18 @@ def _public_command_orders(value: str, *, allow_many: bool) -> list[str]:
     if re.sub(r"[\s,;№#]", "", remaining):
         raise ValueError("order_number_invalid")
     return unique
+
+
+def _russian_menu_interaction(value: str) -> tuple[str, str] | None:
+    normalized = value.strip()
+    patterns = (
+        ("search", r"(?i)^найти\s+заказ(?:\s+самовывоза)?\s+(.+)$"),
+        ("structured_arrival", r"(?i)^зафиксировать\s+поступление\s+(.+)$"),
+    )
+    for interaction, pattern in patterns:
+        if match := re.fullmatch(pattern, normalized):
+            return interaction, match.group(1)
+    return None
 
 
 @internal_router.get("/health")

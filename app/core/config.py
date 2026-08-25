@@ -290,6 +290,7 @@ class Settings(BaseSettings):
     order_fulfillment_bot_search_command: str = "pickup"
     order_fulfillment_bot_arrival_command_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_arrival_command: str = "pickup_arrival"
+    order_fulfillment_bot_menu_message_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_portal_base_url: str | None = None
     order_fulfillment_bot_callback_url: str | None = None
     order_fulfillment_bot_sms_workflow_template_id: int | None = Field(default=None, ge=1)

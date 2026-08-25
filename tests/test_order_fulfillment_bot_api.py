@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api import order_fulfillment_bot as bot_api
 from app.api.dependencies import get_db
 from app.core.config import get_settings
 from app.main import app
@@ -126,6 +127,61 @@ def test_public_pickup_search_is_read_only_and_queues_one_card(monkeypatch) -> N
     assert candidate is not None
     assert candidate.payload["interaction"] == "search"
     assert [row.operation for row in rows] == [bot.OP_PUBLISH_CARD]
+
+
+def test_russian_menu_search_message_uses_read_only_interaction(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    form = _message_form()
+    form["data[PARAMS][MESSAGE]"] = "Найти заказ 241500"
+    try:
+        response = client.post("/api/order-fulfillment/bitrix-bot/events", data=form)
+        with Session(engine) as session:
+            candidate = session.scalar(select(BitrixChatActionCandidate))
+            rows = session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["interaction"] == "search"
+    assert candidate is not None
+    assert candidate.payload["interaction"] == "search"
+    assert [row.operation for row in rows] == [bot.OP_PUBLISH_CARD]
+
+
+def test_russian_menu_arrival_accepts_multiple_orders(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    form = _message_form()
+    form["data[PARAMS][MESSAGE]"] = "Зафиксировать поступление 241500 241501"
+    try:
+        response = client.post("/api/order-fulfillment/bitrix-bot/events", data=form)
+        with Session(engine) as session:
+            candidate = session.scalar(select(BitrixChatActionCandidate))
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["interaction"] == "structured_arrival"
+    assert candidate is not None
+    assert candidate.payload["order_numbers"] == ["241500", "241501"]
+
+
+def test_russian_menu_prefix_is_strict() -> None:
+    assert bot_api._russian_menu_interaction("Найти заказ 241500") == (
+        "search",
+        "241500",
+    )
+    assert bot_api._russian_menu_interaction("найдите, пожалуйста, заказ 241500") is None
+    assert bot_api._russian_menu_interaction("Зафиксировать поступление") is None
 
 
 def test_public_structured_arrival_groups_multiple_orders_in_one_card(monkeypatch) -> None:

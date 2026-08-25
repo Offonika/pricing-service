@@ -296,6 +296,10 @@ def test_dry_run_reports_ux_mismatches_without_writes() -> None:
     fields[0]["listFilterLabel"] = None
     request_type = fields[-1]
     request_type["enum"][0]["value"] = "Разобраться"
+    sync_status = next(
+        field for field in fields if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
+    )
+    sync_status["enum"][0]["value"] = "Ожидает синхронизации"
     stages = _stages()
     stages[1]["NAME"] = "Разобраться"
     existing_form = [
@@ -323,6 +327,7 @@ def test_dry_run_reports_ux_mismatches_without_writes() -> None:
     assert "working_category_title" in plan.ux_mismatches
     assert "stage_title:PREPARATION" in plan.ux_mismatches
     assert "request_type_label:consultation" in plan.ux_mismatches
+    assert "enum_labels:UF_CRM_36_SITESYNCSTATUS" in plan.ux_mismatches
     assert "field_label:UF_CRM_36_SITETICKETID:listColumnLabel" in plan.label_advisories
     assert "working_form" in plan.ux_mismatches
     assert _write_methods(api) == []
@@ -340,6 +345,12 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     ticket_url["editFormLabel"] = {"ru": "SITE URL"}
     ticket_url["listColumnLabel"] = None
     ticket_url["listFilterLabel"] = None
+    sync_status = next(
+        field for field in fields if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
+    )
+    old_sync_status_ids = [row["id"] for row in sync_status["enum"]]
+    old_sync_status_xml_ids = [row["xmlId"] for row in sync_status["enum"]]
+    sync_status["enum"][0]["value"] = "Ожидает синхронизации"
     request_type = fields[-1]
     old_request_ids = [row["id"] for row in request_type["enum"]]
     old_request_xml_ids = [row["xmlId"] for row in request_type["enum"]]
@@ -423,10 +434,23 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
         for field in api.fields
         if field.get("xmlId") == bitrix_setup._xml_id("site_ticket_url")
     )
-    expected_title = "Открыть тикет сайта"
+    expected_title = "Открыть обращение на сайте"
     assert updated_ticket_url["editFormLabel"] == {"ru": expected_title}
     assert updated_ticket_url["listColumnLabel"] is None
     assert updated_ticket_url["listFilterLabel"] is None
+    updated_sync_status = next(
+        field
+        for field in api.fields
+        if field.get("xmlId") == bitrix_setup._xml_id("site_sync_status")
+    )
+    assert [row["id"] for row in updated_sync_status["enum"]] == old_sync_status_ids
+    assert [row["xmlId"] for row in updated_sync_status["enum"]] == old_sync_status_xml_ids
+    sync_status_spec = next(
+        spec for spec in bitrix_setup.FIELD_SPECS if spec["key"] == "site_sync_status"
+    )
+    assert [row["value"] for row in updated_sync_status["enum"]] == [
+        title for _key, title in sync_status_spec["enum"]
+    ]
     approver = next(
         field
         for field in api.fields
@@ -438,6 +462,25 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     }
     assert "UF_CRM_36_CONCURRENT" in form_names
     assert not (form_names & bitrix_setup.TECHNICAL_FORM_FIELD_NAMES)
+
+
+def test_legacy_contact_and_next_action_fields_are_rendered_as_multiline() -> None:
+    legacy_by_key = {spec["logical_key"]: spec for spec in bitrix_setup.LEGACY_FIELD_SPECS}
+    for logical_key, field_name, expected_rows in (
+        ("customer_contact", "UF_CRM_36_CUSTOMERCONTACT", 2),
+        ("next_action", "UF_CRM_36_NEXTACTION", 3),
+    ):
+        field = {
+            "fieldName": field_name,
+            "xmlId": bitrix_setup.legacy_field_xml_id(legacy_by_key[logical_key]),
+            "editFormLabel": {"ru": bitrix_setup.LEGACY_FIELD_TITLE_OVERRIDES[logical_key]},
+            "settings": {"ROWS": 1},
+        }
+
+        update = bitrix_setup._field_metadata_update_payload(field)
+
+        assert update is not None
+        assert update["settings"]["ROWS"] == expected_rows
 
 
 def test_plan_payload_exposes_ux_plan() -> None:

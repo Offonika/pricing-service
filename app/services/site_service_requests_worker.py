@@ -326,42 +326,89 @@ class SiteServiceRequestBitrixReader:
         normalized_phone = normalize_site_service_phone(phone)
         normalized_email = normalize_site_service_email(email)
         phone_ids = self._duplicate_contact_ids("PHONE", normalized_phone)
-        candidate_ids = phone_ids
-        if not candidate_ids and normalized_email:
-            candidate_ids = self._duplicate_contact_ids("EMAIL", normalized_email)
+        email_ids = self._duplicate_contact_ids("EMAIL", normalized_email)
+        if phone_ids and email_ids:
+            common_ids = sorted(set(phone_ids) & set(email_ids))
+            candidate_ids = common_ids or sorted(set(phone_ids) | set(email_ids))
+        else:
+            candidate_ids = phone_ids or email_ids
 
-        active_contacts: list[tuple[int, int | None]] = []
-        for contact_id in candidate_ids:
-            response = self.api.call("crm.contact.get", [("id", str(contact_id))])
-            contact = response.get("result")
-            if not isinstance(contact, dict):
-                raise RuntimeError("bitrix_contact_readback_failed")
-            if (
-                _strict_aliased_positive_int(
-                    contact,
-                    "ID",
-                    "id",
-                    error_code="bitrix_contact_readback_failed",
-                )
-                != contact_id
-            ):
-                raise RuntimeError("bitrix_contact_readback_failed")
-            company_id = _strict_optional_aliased_positive_int(
-                contact,
-                "COMPANY_ID",
-                "companyId",
-                error_code="bitrix_contact_readback_failed",
-            )
-            active_contacts.append((contact_id, company_id))
+        active_contacts = [self._matched_contact(contact_id) for contact_id in candidate_ids]
 
         if not active_contacts:
             return ContactMatch(status="not_found")
         if len(active_contacts) > 1:
             return ContactMatch(
                 status="ambiguous",
-                candidate_ids=tuple(item[0] for item in active_contacts),
+                candidate_ids=tuple(item.contact_id for item in active_contacts if item.contact_id),
             )
-        contact_id, company_id = active_contacts[0]
+        return active_contacts[0]
+
+    def resolve_contact_and_order(
+        self,
+        *,
+        contact: ContactMatch,
+        order_number: str | None,
+        order_field: str | None,
+    ) -> tuple[ContactMatch, OrderMatch]:
+        if contact.status != "ambiguous":
+            return contact, self.find_order(
+                contact_id=contact.contact_id,
+                order_number=order_number,
+                order_field=order_field,
+            )
+
+        normalized_order = (order_number or "").strip()
+        if not normalized_order or not contact.candidate_ids:
+            return contact, OrderMatch(status="not_found")
+
+        candidate_pairs: set[tuple[int, int]] = set()
+        for contact_id in contact.candidate_ids:
+            candidate_order = self.find_order(
+                contact_id=contact_id,
+                order_number=normalized_order,
+                order_field=order_field,
+            )
+            candidate_pairs.update(
+                (contact_id, deal_id) for deal_id in candidate_order.candidate_ids
+            )
+
+        if not candidate_pairs:
+            return contact, OrderMatch(status="not_found")
+        if len(candidate_pairs) > 1:
+            return contact, OrderMatch(
+                status="ambiguous",
+                candidate_ids=tuple(sorted({deal_id for _contact_id, deal_id in candidate_pairs})),
+            )
+
+        contact_id, deal_id = next(iter(candidate_pairs))
+        return self._matched_contact(contact_id), OrderMatch(
+            status="matched",
+            deal_id=deal_id,
+            candidate_ids=(deal_id,),
+        )
+
+    def _matched_contact(self, contact_id: int) -> ContactMatch:
+        response = self.api.call("crm.contact.get", [("id", str(contact_id))])
+        contact = response.get("result")
+        if not isinstance(contact, dict):
+            raise RuntimeError("bitrix_contact_readback_failed")
+        if (
+            _strict_aliased_positive_int(
+                contact,
+                "ID",
+                "id",
+                error_code="bitrix_contact_readback_failed",
+            )
+            != contact_id
+        ):
+            raise RuntimeError("bitrix_contact_readback_failed")
+        company_id = _strict_optional_aliased_positive_int(
+            contact,
+            "COMPANY_ID",
+            "companyId",
+            error_code="bitrix_contact_readback_failed",
+        )
         return ContactMatch(
             status="matched",
             contact_id=contact_id,
@@ -1277,8 +1324,8 @@ def build_site_service_request_worker_plans(
                     phone=payload.ticket.phone,
                     email=payload.ticket.email,
                 )
-            order = reader.find_order(
-                contact_id=contact.contact_id,
+            contact, order = reader.resolve_contact_and_order(
+                contact=contact,
                 order_number=payload.ticket.order_number,
                 order_field=settings.site_service_requests_crm_order_field,
             )
@@ -3048,19 +3095,22 @@ def _apply_site_service_request_worker_plan(
             phone=payload.ticket.phone,
             email=payload.ticket.email,
         )
-    contact_id = contact.contact_id
-    company_id = contact.company_id
-    contact_status = contact.status
-    if contact_status == "not_found":
+    if contact.status == "not_found":
         contact_id = writer.create_contact(payload)
-        company_id = None
-        contact_status = "created"
+        contact = ContactMatch(
+            status="created",
+            contact_id=contact_id,
+            candidate_ids=(contact_id,),
+        )
 
-    order = reader.find_order(
-        contact_id=contact_id,
+    contact, order = reader.resolve_contact_and_order(
+        contact=contact,
         order_number=payload.ticket.order_number,
         order_field=settings.site_service_requests_crm_order_field,
     )
+    contact_id = contact.contact_id
+    company_id = contact.company_id
+    contact_status = contact.status
     case.crm_contact_id = contact_id
     case.crm_company_id = company_id
     case.crm_deal_id = order.deal_id

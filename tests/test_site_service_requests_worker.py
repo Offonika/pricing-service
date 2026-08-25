@@ -618,6 +618,106 @@ def test_contact_and_order_matching_never_choose_ambiguous_candidate() -> None:
     assert fallback.deal_id == 802
 
 
+def test_contact_matching_intersects_phone_and_email_candidates() -> None:
+    api = FakeBitrixApi()
+    api.phone_contacts = [501, 502]
+    api.email_contacts = [502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    matched = reader.find_contact(
+        phone="+79000000000",
+        email="customer@example.invalid",
+    )
+
+    assert matched.status == "matched"
+    assert matched.contact_id == 502
+    assert matched.company_id == 602
+
+
+def test_contact_matching_keeps_conflicting_phone_and_email_fail_closed() -> None:
+    api = FakeBitrixApi()
+    api.phone_contacts = [501]
+    api.email_contacts = [502]
+    api.contacts[502] = {"ID": "502"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous = reader.find_contact(
+        phone="+79000000000",
+        email="customer@example.invalid",
+    )
+
+    assert ambiguous.status == "ambiguous"
+    assert ambiguous.contact_id is None
+    assert ambiguous.candidate_ids == (501, 502)
+
+
+def test_unique_order_safely_disambiguates_duplicate_contacts() -> None:
+    class ContactScopedOrderApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                if contact_id == 502:
+                    return {"result": ([{"ID": "702", "TITLE": "Заказ 000001"}] if exact else [])}
+                return {"result": []}
+            return super().call(method, values, **kwargs)
+
+    api = ContactScopedOrderApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous_contact = reader.find_contact(phone="+79000000000", email=None)
+    contact, order = reader.resolve_contact_and_order(
+        contact=ambiguous_contact,
+        order_number="000001",
+        order_field="UF_CRM_ORDER",
+    )
+
+    assert contact.status == "matched"
+    assert contact.contact_id == 502
+    assert contact.company_id == 602
+    assert order.status == "matched"
+    assert order.deal_id == 702
+
+
+def test_order_disambiguation_remains_fail_closed_when_two_contacts_match() -> None:
+    class TwoMatchingContactsApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                return {
+                    "result": (
+                        [{"ID": str(700 + contact_id), "TITLE": "Заказ 000001"}] if exact else []
+                    )
+                }
+            return super().call(method, values, **kwargs)
+
+    api = TwoMatchingContactsApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502"}
+    reader = SiteServiceRequestBitrixReader(api)
+
+    ambiguous_contact = reader.find_contact(phone="+79000000000", email=None)
+    contact, order = reader.resolve_contact_and_order(
+        contact=ambiguous_contact,
+        order_number="000001",
+        order_field="UF_CRM_ORDER",
+    )
+
+    assert contact.status == "ambiguous"
+    assert contact.contact_id is None
+    assert order.status == "ambiguous"
+    assert order.deal_id is None
+    assert order.candidate_ids == (1201, 1202)
+
+
 def test_order_fallback_deduplicates_same_deal_across_pages() -> None:
     class RepeatedDealApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -969,6 +1069,55 @@ def test_worker_dry_run_builds_safe_plan_without_mutating_event(db_session) -> N
     db_session.refresh(event)
     assert event.status == "pending"
     assert event.payload_encrypted == encrypted_before
+
+
+def test_worker_apply_resolves_duplicate_contact_by_unique_order(db_session) -> None:
+    class ContactScopedOrderApi(FakeBitrixApi):
+        def call(self, method: str, params=None, **kwargs):
+            values = list(params or [])
+            if method == "crm.deal.list":
+                mapped = dict(values)
+                contact_id = int(mapped["filter[CONTACT_ID]"])
+                exact = any(key.startswith("filter[=") for key, _value in values)
+                if contact_id == 502:
+                    return {"result": ([{"ID": "702", "TITLE": "Заказ 000001"}] if exact else [])}
+                return {"result": []}
+            return super().call(method, values, **kwargs)
+
+    cipher = _persist_event(db_session)
+    api = ContactScopedOrderApi()
+    api.phone_contacts = [501, 502]
+    api.contacts[502] = {"ID": "502", "COMPANY_ID": "602"}
+    reader = SiteServiceRequestBitrixReader(api)
+    settings = _worker_settings()
+    now = datetime(2026, 8, 22, 7, 0, tzinfo=UTC)
+
+    plans = build_site_service_request_worker_plans(
+        db_session,
+        settings=settings,
+        reader=reader,
+        cipher=cipher,
+        now=now,
+    )
+    results = apply_site_service_request_worker_plans(
+        db_session,
+        plans=plans,
+        settings=settings,
+        reader=reader,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=cipher,
+        now=now + timedelta(minutes=1),
+    )
+
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    assert plans[0].contact_status == "matched"
+    assert plans[0].contact_id == 502
+    assert plans[0].deal_id == 702
+    assert results[0].status == "processed"
+    assert case is not None
+    assert case.crm_contact_id == 502
+    assert case.crm_company_id == 602
+    assert case.crm_deal_id == 702
 
 
 def test_worker_apply_creates_one_item_and_recovers_add_timeout_by_readback(

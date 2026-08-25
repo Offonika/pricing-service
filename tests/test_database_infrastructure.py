@@ -77,6 +77,24 @@ def test_read_only_session_scope_rolls_back_accidental_write(monkeypatch) -> Non
         assert connection.execute(text("SELECT COUNT(*) FROM event")).scalar_one() == 0
 
 
+def test_read_only_session_scope_database_url_override_rolls_back(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'override.db'}"
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE event (id INTEGER PRIMARY KEY, value TEXT)"))
+    engine.dispose()
+
+    with session_scope(database_url=database_url, read_only=True) as session:
+        session.execute(text("INSERT INTO event (id, value) VALUES (1, 'must rollback')"))
+
+    verification_engine = create_engine(database_url)
+    try:
+        with verification_engine.connect() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM event")).scalar_one() == 0
+    finally:
+        verification_engine.dispose()
+
+
 def test_write_session_scope_commits_complete_command(monkeypatch) -> None:
     engine, factory = _factory()
     monkeypatch.setattr(

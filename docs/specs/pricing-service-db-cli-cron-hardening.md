@@ -24,7 +24,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-21"
+updated_at: "2026-08-25"
 ---
 
 # Назначение
@@ -104,6 +104,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести read-only команды nightly matching на central read-only session scope.
 - [x] Добавить `db_access` policy и проверку для мигрированных CLI.
 - [x] Покрыть read-only rollback тестом DB infrastructure.
+- [x] Перевести manual matching report и Bitrix task adapter на central read-only
+  scope с сохранением application DB override для тестов и one-off запусков.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -129,9 +131,20 @@ JSON/CSV/XLSX артефактов сохраняются.
 2. Перед переключением сравнить counters/artifacts с текущим production.
 3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
 4. Rollback выполняется переключением release symlink; миграций схемы в этом релизе нет.
+5. Для manual matching slice разрешены push ветки и создание PR для полного GitHub CI.
+   ОТМЕНЕНО (2026-08-25): требование отдельного подтверждения merge выполнено для
+   PR №57; разрешён merge в `main`. Production release по-прежнему требует
+   отдельного подтверждения.
 
 # Changelog
 
+- 2026-08-25 — после зелёного GitHub CI разрешён merge PR №57 в `main`;
+  production release оставлен за отдельным подтверждением.
+- 2026-08-25 — разрешены push manual matching slice и создание PR для полного
+  GitHub CI; merge и production release оставлены за отдельным подтверждением.
+- 2026-08-24 — `manual_matching_control.py` и `manual_matching_bitrix_tasks.py`
+  переведены на central read-only session scope; их DB access и side effects
+  зафиксированы в CLI registry.
 - 2026-08-21 — `report_exclusive_auto_detect_candidates.py` переведён на центральный
   read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-21 — `report_product_classification_diff.py` переведён на центральный

@@ -78,6 +78,7 @@ def _payload(
     activity_id: int = 99001,
     event_type: str = "email.received",
     existing_item_id: int | None = None,
+    thread_id: int = 777,
 ) -> SiteServiceEmailEventPayload:
     values: dict[str, Any] = {
         "schemaVersion": 1,
@@ -87,7 +88,7 @@ def _payload(
         "mailbox": "shop",
         "messageId": message_id,
         "activityId": activity_id,
-        "threadId": 777,
+        "threadId": thread_id,
         "requestType": "warranty",
         "orderNumber": "241887",
         "crmContactId": 501,
@@ -238,6 +239,31 @@ def test_received_email_creates_one_card_without_creating_contact_or_lead(
     assert case is not None and case.bitrix_item_id == 4321
     assert case.assigned_user_id == 1001
     assert case.deal_manager_notified_at is not None
+    assert event is not None and event.payload_encrypted is None
+    assert "crm.contact.add" not in api.calls
+    assert "crm.lead.add" not in api.calls
+    assert api.notifications == [(7777, f"mm-service-email-manager:{case.id}")]
+    assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001]["BINDINGS"]
+
+
+def test_standalone_first_email_uses_activity_id_as_thread_key(db_session) -> None:
+    _persist(db_session, _payload(thread_id=99001))
+    api = FakeEmailBitrixApi()
+    api.activities[99001]["THREAD_ID"] = "0"
+
+    results = process_site_service_email_events(
+        db_session,
+        settings=_settings(),
+        api=api,
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 25, 9, 5, tzinfo=UTC),
+    )
+
+    assert len(results) == 1 and results[0].status == "processed"
+    case = db_session.scalar(select(SiteServiceRequestCase))
+    event = db_session.scalar(select(SiteServiceRequestEvent))
+    assert case is not None and case.source_thread_id == 99001
+    assert case.bitrix_item_id == 4321
     assert event is not None and event.payload_encrypted is None
     assert "crm.contact.add" not in api.calls
     assert "crm.lead.add" not in api.calls

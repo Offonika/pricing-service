@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
@@ -17,6 +17,7 @@ from app.main import app
 from app.models import Base
 from app.models.logistics import LogisticsWarehouse
 from app.models.site_order_fulfillment import (
+    BitrixBotInputSession,
     BitrixChatActionCandidate,
     BitrixChatMessage,
     SiteOrderFulfillmentOutbox,
@@ -182,6 +183,190 @@ def test_russian_menu_prefix_is_strict() -> None:
     )
     assert bot_api._russian_menu_interaction("найдите, пожалуйста, заказ 241500") is None
     assert bot_api._russian_menu_interaction("Зафиксировать поступление") is None
+
+
+def test_russian_menu_button_starts_actor_scoped_input_session(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    form = _message_form()
+    form["data[PARAMS][MESSAGE]"] = "Зафиксировать поступление"
+    try:
+        response = client.post("/api/order-fulfillment/bitrix-bot/events", data=form)
+        with Session(engine) as session:
+            input_session = session.scalar(select(BitrixBotInputSession))
+            candidates = session.scalars(select(BitrixChatActionCandidate)).all()
+            rows = session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["awaiting_input"] is True
+    assert input_session is not None
+    assert input_session.actor_id == "7"
+    assert input_session.interaction == "structured_arrival"
+    assert input_session.status == "pending"
+    assert candidates == []
+    assert [row.operation for row in rows] == [bot.OP_PUBLISH_MENU_INPUT_PROMPT]
+
+
+def test_russian_menu_consumes_only_same_actor_next_message(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    start = _message_form()
+    start["data[PARAMS][MESSAGE]"] = "Зафиксировать поступление"
+    other = _message_form()
+    other["data[PARAMS][MESSAGE_ID]"] = "1002"
+    other["data[PARAMS][FROM_USER_ID]"] = "8"
+    other["data[PARAMS][MESSAGE]"] = "241599"
+    answer = _message_form()
+    answer["data[PARAMS][MESSAGE_ID]"] = "1003"
+    answer["data[PARAMS][MESSAGE]"] = "241500 241501"
+    try:
+        assert (
+            client.post("/api/order-fulfillment/bitrix-bot/events", data=start).status_code == 200
+        )
+        other_response = client.post("/api/order-fulfillment/bitrix-bot/events", data=other)
+        answer_response = client.post("/api/order-fulfillment/bitrix-bot/events", data=answer)
+        with Session(engine) as session:
+            input_session = session.scalar(select(BitrixBotInputSession))
+            candidates = session.scalars(
+                select(BitrixChatActionCandidate).order_by(BitrixChatActionCandidate.id)
+            ).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert other_response.status_code == 200
+    assert other_response.json()["ignored"] is True
+    assert answer_response.status_code == 200
+    assert answer_response.json()["orders"] == 2
+    assert input_session is not None
+    assert input_session.status == "consumed"
+    assert input_session.consumed_message_id == "1003"
+    assert [candidate.site_order_number for candidate in candidates] == ["241500", "241501"]
+
+
+def test_russian_menu_invalid_input_keeps_session_and_queues_hint(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    start = _message_form()
+    start["data[PARAMS][MESSAGE]"] = "Найти заказ"
+    invalid = _message_form()
+    invalid["data[PARAMS][MESSAGE_ID]"] = "1002"
+    invalid["data[PARAMS][MESSAGE]"] = "посмотрите заказ выше"
+    try:
+        client.post("/api/order-fulfillment/bitrix-bot/events", data=start)
+        response = client.post("/api/order-fulfillment/bitrix-bot/events", data=invalid)
+        with Session(engine) as session:
+            input_session = session.scalar(select(BitrixBotInputSession))
+            rows = session.scalars(
+                select(SiteOrderFulfillmentOutbox).order_by(SiteOrderFulfillmentOutbox.id)
+            ).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["invalid_input"] is True
+    assert input_session is not None and input_session.status == "pending"
+    assert [row.payload["prompt_kind"] for row in rows] == ["start", "invalid"]
+
+
+def test_russian_menu_repeat_start_supersedes_previous_session(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    first = _message_form()
+    first["data[PARAMS][MESSAGE]"] = "Найти заказ"
+    second = _message_form()
+    second["data[PARAMS][MESSAGE_ID]"] = "1002"
+    second["data[PARAMS][MESSAGE]"] = "Зафиксировать поступление"
+    try:
+        client.post("/api/order-fulfillment/bitrix-bot/events", data=first)
+        client.post("/api/order-fulfillment/bitrix-bot/events", data=second)
+        with Session(engine) as session:
+            sessions = session.scalars(
+                select(BitrixBotInputSession).order_by(BitrixBotInputSession.id)
+            ).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert [item.status for item in sessions] == ["superseded", "pending"]
+    assert sessions[1].interaction == "structured_arrival"
+
+
+def test_russian_menu_expired_session_does_not_capture_message(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    start = _message_form()
+    start["data[PARAMS][MESSAGE]"] = "Найти заказ"
+    answer = _message_form()
+    answer["data[PARAMS][MESSAGE_ID]"] = "1002"
+    answer["data[PARAMS][MESSAGE]"] = "241500"
+    try:
+        client.post("/api/order-fulfillment/bitrix-bot/events", data=start)
+        with Session(engine) as session:
+            input_session = session.scalar(select(BitrixBotInputSession))
+            assert input_session is not None
+            input_session.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1)
+            session.commit()
+        response = client.post("/api/order-fulfillment/bitrix-bot/events", data=answer)
+        with Session(engine) as session:
+            input_session = session.scalar(select(BitrixBotInputSession))
+            candidates = session.scalars(select(BitrixChatActionCandidate)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["ignored"] is True
+    assert input_session is not None and input_session.status == "expired"
+    assert candidates == []
+
+
+def test_russian_menu_consumed_message_replay_is_idempotent(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    start = _message_form()
+    start["data[PARAMS][MESSAGE]"] = "Найти заказ"
+    answer = _message_form()
+    answer["data[PARAMS][MESSAGE_ID]"] = "1002"
+    answer["data[PARAMS][MESSAGE]"] = "241500"
+    try:
+        client.post("/api/order-fulfillment/bitrix-bot/events", data=start)
+        first = client.post("/api/order-fulfillment/bitrix-bot/events", data=answer)
+        replay = client.post("/api/order-fulfillment/bitrix-bot/events", data=answer)
+        with Session(engine) as session:
+            candidates = session.scalars(select(BitrixChatActionCandidate)).all()
+            rows = session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json()["duplicate"] is True
+    assert len(candidates) == 1
+    assert len(rows) == 2
 
 
 def test_public_structured_arrival_groups_multiple_orders_in_one_card(monkeypatch) -> None:
@@ -468,6 +653,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
     engine = _engine()
     app.dependency_overrides = {get_db: _override_db(engine)}
     client = TestClient(app)
+    prompt_now = datetime.now(UTC).replace(tzinfo=None)
     try:
         with Session(engine) as session:
             message = BitrixChatMessage(
@@ -494,7 +680,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
                 session,
                 submission=submission,
                 settings=get_settings(),
-                now=datetime(2026, 8, 24, 10),
+                now=prompt_now,
             )
             state = dict((submission.payload or {})["clarification"])
             state["bot_message_id"] = "9100"
@@ -539,7 +725,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
         engine.dispose()
         get_settings.cache_clear()
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     assert response.json()["inventory_clarification"] is True
     assert operation is not None
 

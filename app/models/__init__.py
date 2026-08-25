@@ -134,6 +134,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteDefectArchiveMessage,
     )
     from app.models.site_order_fulfillment import (
+        BitrixBotInputSession,
         BitrixChatAction,
         BitrixChatActionCandidate,
         BitrixChatMention,
@@ -282,6 +283,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "PickupInventorySubmission",
         "PickupInventoryItem",
         "BitrixChatActionCandidate",
+        "BitrixBotInputSession",
         "BitrixChatAction",
         "SiteOrderExecutionEvent",
         "SiteOrderFulfillmentOutbox",

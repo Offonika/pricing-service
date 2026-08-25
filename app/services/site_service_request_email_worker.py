@@ -449,7 +449,7 @@ def _verify_email_event(
     activity_id = _positive_int(activity.get("ID") or activity.get("id"))
     if activity_id != payload.activity_id:
         raise RuntimeError("email_activity_readback_failed")
-    thread_id = _positive_int(activity.get("THREAD_ID") or activity.get("threadId"))
+    thread_id = _activity_thread_id(activity)
     if thread_id != payload.thread_id:
         raise SiteServiceRequestPermanentError("email_activity_thread_mismatch")
 
@@ -607,7 +607,7 @@ def _complete_inbound_activity(
         raise SiteServiceRequestPermanentError("email_primary_activity_provider_mismatch")
     if _positive_int(before.get("DIRECTION") or before.get("direction")) != _INCOMING_DIRECTION:
         raise SiteServiceRequestPermanentError("email_primary_activity_direction_mismatch")
-    if _positive_int(before.get("THREAD_ID") or before.get("threadId")) != expected_thread_id:
+    if _activity_thread_id(before) != expected_thread_id:
         raise SiteServiceRequestPermanentError("email_primary_activity_thread_mismatch")
     if str(before.get("COMPLETED") or before.get("completed") or "N") != "Y":
         _activity_update(api, activity_id, {"COMPLETED": "Y"})
@@ -797,6 +797,19 @@ def _thread_has_service_binding(
         if start <= current:
             raise RuntimeError("email_thread_activity_pagination_invalid")
     raise RuntimeError("email_thread_activity_pagination_limit")
+
+
+def _activity_thread_id(activity: dict[str, Any]) -> int | None:
+    """Return Bitrix's thread id, falling back for a standalone first email.
+
+    Self-hosted Bitrix may expose ``THREAD_ID=0`` for the first incoming CRM
+    email in a new conversation. In that case the activity id is the stable
+    thread key also used by the mail dispatcher and by later CRM replies.
+    """
+
+    return _positive_int(activity.get("THREAD_ID") or activity.get("threadId")) or _positive_int(
+        activity.get("ID") or activity.get("id")
+    )
 
 
 def _portal_base_url(settings: Settings) -> str:

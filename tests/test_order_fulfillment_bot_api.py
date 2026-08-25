@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
@@ -468,6 +468,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
     engine = _engine()
     app.dependency_overrides = {get_db: _override_db(engine)}
     client = TestClient(app)
+    now = datetime.now(UTC).replace(tzinfo=None)
     try:
         with Session(engine) as session:
             message = BitrixChatMessage(
@@ -475,7 +476,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
                 dialog_id="chat8961",
                 chat_id=8961,
                 message_id=2001,
-                message_at=datetime(2026, 8, 24, 10),
+                message_at=now,
                 author_id="7",
                 raw_text_hash=fulfillment._text_hash("Полный список 241500"),  # noqa: SLF001
                 raw_text_redacted="Полный список <order>",
@@ -494,7 +495,7 @@ def test_command_event_routes_inventory_clarification_token(monkeypatch) -> None
                 session,
                 submission=submission,
                 settings=get_settings(),
-                now=datetime(2026, 8, 24, 10),
+                now=now,
             )
             state = dict((submission.payload or {})["clarification"])
             state["bot_message_id"] = "9100"

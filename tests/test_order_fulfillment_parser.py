@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import create_engine, select
@@ -206,6 +206,44 @@ def test_ingest_is_idempotent_and_delivery_without_payment_is_not_won() -> None:
     assert case.current_derived_status == service.EVENT_COURIER_DELIVERED_PENDING
     assert recommendations[0]["recommended_stage"] == "IN_DELIVERY"
     assert recommendations[0]["recommended_stage"] != "WON"
+
+
+def test_duplicate_ingest_backfills_missing_message_date() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    for table in SITE_ORDER_TABLES:
+        table.create(engine)
+
+    with Session(engine) as session:
+        first = service.ingest_bitrix_message(
+            session,
+            chat_code=service.CHAT_PICKUP_READY,
+            dialog_id="chat8729",
+            chat_id=8729,
+            message_id=273088,
+            message_at=None,
+            author_id="7",
+            text_value="Митино: 241500, 241501",
+        )
+        second = service.ingest_bitrix_message(
+            session,
+            chat_code=service.CHAT_PICKUP_READY,
+            dialog_id="chat8729",
+            chat_id=8729,
+            message_id=273088,
+            message_at=datetime(2026, 8, 25, 17, 31, 33, tzinfo=timezone(timedelta(hours=3))),
+            author_id="7",
+            text_value="Митино: 241500, 241501",
+            payload={"date": "2026-08-25T17:31:33+03:00"},
+        )
+        stored = session.scalar(
+            select(BitrixChatMessage).where(BitrixChatMessage.message_id == 273088)
+        )
+
+    assert first.message_at_backfilled is False
+    assert second.duplicate_message is True
+    assert second.message_at_backfilled is True
+    assert stored is not None
+    assert stored.message_at == datetime(2026, 8, 25, 14, 31, 33)
 
 
 def test_review_enrichment_merges_case_bitrix_and_onec() -> None:

@@ -237,7 +237,12 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "apply_enabled": runtime_apply_enabled,
         "apply_configured_at_startup": settings.order_fulfillment_bot_apply_enabled,
         "sms_enabled": settings.order_fulfillment_bot_sms_enabled,
+        "sms_workflow_configured": (
+            settings.order_fulfillment_bot_sms_workflow_template_id is not None
+        ),
+        "sms_workflow_template_id": settings.order_fulfillment_bot_sms_workflow_template_id,
         "stage_apply_enabled": settings.order_fulfillment_pickup_stage_apply_enabled,
+        "auto_arrival_enabled": settings.order_fulfillment_pickup_auto_arrival_enabled,
         "sla_enabled": settings.order_fulfillment_pickup_sla_enabled,
         "inventory_enabled": settings.order_fulfillment_pickup_inventory_enabled,
         "inventory_won_enabled": settings.order_fulfillment_inventory_won_enabled,

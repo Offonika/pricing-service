@@ -254,6 +254,7 @@ class Settings(BaseSettings):
     order_fulfillment_bot_enabled: bool = False
     order_fulfillment_bot_apply_enabled: bool = False
     order_fulfillment_pickup_stage_apply_enabled: bool = False
+    order_fulfillment_pickup_auto_arrival_enabled: bool = False
     order_fulfillment_bot_sms_enabled: bool = False
     order_fulfillment_pickup_sla_enabled: bool = False
     order_fulfillment_pickup_inventory_enabled: bool = False

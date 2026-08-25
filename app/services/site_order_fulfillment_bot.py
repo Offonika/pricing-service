@@ -27,7 +27,6 @@ from app.models.site_order_fulfillment import (
 )
 from app.services import pickup_inventory
 from app.services import site_order_fulfillment as fulfillment
-from app.services.logistics_onec import resolve_target_warehouse
 
 CHAT_PICKUP_READY = "pickup_ready"
 PARSER_VERSION = "pickup-bot-v1"
@@ -190,6 +189,46 @@ ALLOWED_ARRIVAL_STAGES = {
 TERMINAL_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
 
 ORDER_LIMIT_PER_MESSAGE = 10
+STRICT_ARRIVAL_ORDER_LIMIT = 100
+
+STRICT_ARRIVAL_ALLOWED_WORDS = frozenset(
+    {
+        "в",
+        "всем",
+        "готов",
+        "готова",
+        "готовы",
+        "выдаче",
+        "день",
+        "добрый",
+        "заказ",
+        "заказа",
+        "заказы",
+        "здравствуйте",
+        "к",
+        "магазин",
+        "магазине",
+        "на",
+        "прибыл",
+        "прибыла",
+        "прибыли",
+        "прибыло",
+        "привезли",
+        "приехал",
+        "приехала",
+        "приехали",
+        "принят",
+        "принята",
+        "приняли",
+        "приняты",
+        "поступил",
+        "поступила",
+        "поступили",
+        "поступило",
+        "точке",
+        "точку",
+    }
+)
 
 INVENTORY_CALLBACK_KIND = "inventory"
 INVENTORY_ACTION_SELECT_POINT = "inventory_select_point"
@@ -310,6 +349,7 @@ def parse_pickup_candidate_text(
     text_value: str,
     *,
     dialog_id: str,
+    order_limit: int = ORDER_LIMIT_PER_MESSAGE,
 ) -> list[PickupCandidateMention]:
     if not text_value or fulfillment._contains_non_authoritative_chat_marker(text_value):
         return []
@@ -318,7 +358,7 @@ def parse_pickup_candidate_text(
         return []
     if "распознано:" in normalized and "точка:" in normalized:
         return []
-    order_numbers = fulfillment.extract_order_numbers(text_value)[:ORDER_LIMIT_PER_MESSAGE]
+    order_numbers = fulfillment.extract_order_numbers(text_value)[: max(1, order_limit)]
     if not order_numbers:
         return []
     action = _classify_pickup_action(normalized)
@@ -365,6 +405,60 @@ def _classify_pickup_action(normalized: str) -> str | None:
     return None
 
 
+def _strict_pickup_arrival_message(
+    text_value: str,
+    *,
+    mentions: list[PickupCandidateMention],
+    resolution: Any,
+) -> bool:
+    """Accept only the compact, established chat8729 arrival format.
+
+    Point resolution and the later CRM/1C preflight remain mandatory.  This
+    grammar deliberately rejects questions, explanations and notification text
+    even when they happen to mention a valid order and point.
+    """
+
+    if not mentions or resolution.warehouse is None:
+        return False
+    if any(mention.detected_action != ACTION_ARRIVED for mention in mentions):
+        return False
+    all_orders = fulfillment.extract_order_numbers(text_value)
+    if not all_orders or len(all_orders) > STRICT_ARRIVAL_ORDER_LIMIT:
+        return False
+    normalized = pickup_inventory._normalize_alias_text(  # noqa: SLF001
+        fulfillment._strict_chat_text(text_value)  # noqa: SLF001
+    )
+    normalized = re.sub(r"[^0-9a-zа-я]+", " ", normalized.replace("ё", "е"))
+    for match in resolution.matches:
+        alias = pickup_inventory._normalize_alias_text(
+            str(match.get("alias") or "")
+        )  # noqa: SLF001
+        alias = re.sub(r"[^0-9a-zа-я]+", " ", alias.replace("ё", "е")).strip()
+        if not alias:
+            continue
+        normalized = re.sub(
+            rf"\b{re.escape(alias)}[а-я]{{0,5}}\b",
+            " ",
+            normalized,
+        )
+    normalized = re.sub(r"\b2\d{5}\b", " ", normalized)
+    words = [word for word in normalized.split() if word]
+    return all(word in STRICT_ARRIVAL_ALLOWED_WORDS for word in words)
+
+
+def _source_is_after_cutover(
+    source_event_at: datetime | None,
+    *,
+    settings: Settings,
+) -> bool:
+    cutover = settings.order_fulfillment_bot_cutover_at
+    return bool(
+        source_event_at is not None
+        and cutover is not None
+        and _aware_utc(source_event_at) >= _aware_utc(cutover)
+    )
+
+
 def create_candidates_from_message(
     session: Session,
     *,
@@ -403,7 +497,11 @@ def create_candidates_from_message(
         excluded_authors.add(f"bot{settings.order_fulfillment_bot_id}")
     if str(author_id or "").strip().casefold() in excluded_authors:
         return []
-    mentions = parse_pickup_candidate_text(text_value, dialog_id=dialog_id)
+    mentions = parse_pickup_candidate_text(
+        text_value,
+        dialog_id=dialog_id,
+        order_limit=STRICT_ARRIVAL_ORDER_LIMIT,
+    )
     if not mentions:
         return []
 
@@ -457,7 +555,24 @@ def create_candidates_from_message(
 
     candidate_count = int(session.scalar(select(func.count(BitrixChatActionCandidate.id))) or 0)
     runtime_apply_enabled = _runtime_apply_enabled(settings, apply_enabled_probe)
-    resolution = resolve_target_warehouse(session, [text_value])
+    resolution = pickup_inventory.resolve_pickup_inventory_warehouse(
+        session,
+        text_value,
+        pickup_aliases=settings.order_fulfillment_pickup_warehouse_aliases,
+    )
+    strict_auto_arrival = bool(
+        settings.order_fulfillment_pickup_auto_arrival_enabled
+        and dialog_id == settings.order_fulfillment_pickup_ready_chat_dialog_id
+        and _source_is_after_cutover(source_event_at, settings=settings)
+        and _strict_pickup_arrival_message(
+            text_value,
+            mentions=mentions,
+            resolution=resolution,
+        )
+        and fulfillment._clean_string(author_id)
+    )
+    if not strict_auto_arrival:
+        mentions = mentions[:ORDER_LIMIT_PER_MESSAGE]
     created: list[BitrixChatActionCandidate] = []
     for mention in mentions:
         existing = session.scalar(
@@ -481,7 +596,7 @@ def create_candidates_from_message(
             detected_action=mention.detected_action,
             pickup_point_warehouse_id=(resolution.warehouse.id if resolution.warehouse else None),
             pickup_point_name=(resolution.warehouse.name if resolution.warehouse else None),
-            status=CANDIDATE_OPEN,
+            status=(CANDIDATE_QUEUED if strict_auto_arrival else CANDIDATE_OPEN),
             expires_at=now + timedelta(hours=settings.order_fulfillment_bot_card_ttl_hours),
             nonce=secrets.token_hex(16),
             dry_run=bool(force_dry_run or not runtime_apply_enabled),
@@ -489,19 +604,46 @@ def create_candidates_from_message(
                 "evidence": mention.evidence_text,
                 "pickup_resolution_reason": resolution.reason,
                 "pickup_matches": resolution.matches,
+                "automatic_arrival": strict_auto_arrival,
             },
         )
         session.add(candidate)
         session.flush()
         candidate_count += 1
-        enqueue_outbox(
-            session,
-            candidate=candidate,
-            operation=OP_PUBLISH_CARD,
-            idempotency_key=f"candidate:{candidate.id}:publish",
-            payload={},
-            now=now,
-        )
+        if strict_auto_arrival:
+            actor_id = fulfillment._clean_string(author_id)
+            action = BitrixChatAction(
+                candidate_id=candidate.id,
+                action=ACTION_ARRIVED,
+                actor_id=actor_id,
+                status="queued",
+                confirmation_step=1,
+                idempotency_key=f"candidate:{candidate.id}:auto-arrival",
+                payload={"automatic": True, "source": "chat8729"},
+            )
+            session.add(action)
+            session.flush()
+            candidate.active_action = ACTION_ARRIVED
+            candidate.active_actor_id = actor_id
+            candidate.action_claimed_at = now
+            enqueue_outbox(
+                session,
+                candidate=candidate,
+                action=action,
+                operation=OP_PROCESS_ACTION,
+                idempotency_key=f"action:{action.id}:process",
+                payload={"automatic": True},
+                now=now,
+            )
+        else:
+            enqueue_outbox(
+                session,
+                candidate=candidate,
+                operation=OP_PUBLISH_CARD,
+                idempotency_key=f"candidate:{candidate.id}:publish",
+                payload={},
+                now=now,
+            )
         created.append(candidate)
     session.commit()
     return created
@@ -1521,7 +1663,13 @@ def _dispatch_outbox(
         and candidate.raw_message is not None
         and candidate.raw_message.parse_status == "edited_manual_review"
         and row.operation
-        in {OP_UPDATE_CRM_STAGE, OP_UPDATE_CRM_FIELDS, OP_START_SMS_WORKFLOW, OP_CREATE_TASK}
+        in {
+            OP_UPDATE_CRM_STAGE,
+            OP_FINALIZE_ACTION,
+            OP_UPDATE_CRM_FIELDS,
+            OP_START_SMS_WORKFLOW,
+            OP_CREATE_TASK,
+        }
     ):
         raise SourceMessageEditedBeforeApply("source_message_edited_before_apply")
     if row.operation in {
@@ -2375,6 +2523,7 @@ def _process_action(
     candidate.status = CANDIDATE_QUEUED
     candidate.updated_at = now
 
+    event_at = candidate.source_event_at or now
     dependency: SiteOrderFulfillmentOutbox | None = None
     if decision.target_stage and decision.target_stage != fulfillment._clean_string(deal.stage_id):
         dependency = enqueue_outbox(
@@ -2401,7 +2550,7 @@ def _process_action(
         idempotency_key=f"action:{action.id}:finalize",
         payload={
             "event_type": decision.event_type,
-            "event_at": now.isoformat(),
+            "event_at": event_at.isoformat(),
             "current_crm_stage": decision.target_stage or deal.stage_id,
             "warehouse_id": _decision_warehouse_id(
                 candidate=candidate,
@@ -2417,7 +2566,7 @@ def _process_action(
         CRM_PICKUP_LAST_EVIDENCE_FIELD: decision.reason,
     }
     if action.action == ACTION_ARRIVED:
-        crm_fields[CRM_PICKUP_STORAGE_STARTED_FIELD] = crm_datetime_iso(now)
+        crm_fields[CRM_PICKUP_STORAGE_STARTED_FIELD] = crm_datetime_iso(event_at)
     dependency = enqueue_outbox(
         session,
         candidate=candidate,
@@ -2584,6 +2733,11 @@ def _update_card(
     settings: Settings,
     payload: dict[str, Any],
 ) -> None:
+    if not candidate.bot_message_id and (candidate.payload or {}).get("automatic_arrival"):
+        if candidate.status == CANDIDATE_QUEUED:
+            candidate.status = CANDIDATE_APPLIED
+            candidate.updated_at = utcnow()
+        return
     if not candidate.bot_message_id or settings.order_fulfillment_bot_id is None:
         raise RuntimeError("bot_message_not_configured")
     client.update_bot_message(
@@ -2607,14 +2761,19 @@ def _finalize_action(
 ) -> None:
     event_at = _parse_naive_datetime(payload.get("event_at")) or now
     event_type = fulfillment._clean_string(payload.get("event_type"))
+    automatic = bool((action.payload or {}).get("automatic"))
     if event_type:
         fulfillment.upsert_execution_event(
             session,
             site_order_number=candidate.site_order_number,
             event_type=event_type,
             event_at=event_at,
-            source="manual",
-            source_ref=f"pickup_bot_action:{action.id}",
+            source=("bitrix_chat" if automatic else "manual"),
+            source_ref=(
+                f"pickup_auto_arrival:{candidate.raw_message_id}"
+                if automatic
+                else f"pickup_bot_action:{action.id}"
+            ),
             confidence="strong",
             raw_message_id=candidate.raw_message_id,
             warehouse_id=fulfillment._int_or_none(payload.get("warehouse_id")),
@@ -2622,6 +2781,7 @@ def _finalize_action(
             payload={
                 "candidate_id": candidate.id,
                 "actor_id": action.actor_id,
+                "automatic": automatic,
                 "previous_warehouse_id": (candidate.payload or {}).get(
                     "previous_pickup_point_warehouse_id"
                 ),
@@ -3631,6 +3791,8 @@ def _queue_card_update(
     *,
     depends_on: SiteOrderFulfillmentOutbox | None = None,
 ) -> None:
+    if not candidate.bot_message_id and not (candidate.payload or {}).get("automatic_arrival"):
+        return
     enqueue_outbox(
         session,
         candidate=candidate,

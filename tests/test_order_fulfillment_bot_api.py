@@ -564,6 +564,9 @@ def test_bot_health_reports_runtime_apply_switch(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["apply_configured_at_startup"] is True
     assert response.json()["apply_enabled"] is False
+    assert response.json()["auto_arrival_enabled"] is False
+    assert response.json()["sms_workflow_configured"] is False
+    assert response.json()["sms_workflow_template_id"] is None
     assert response.json()["outbox_pending"] == 1
     assert response.json()["outbox_processing"] == 1
     assert response.json()["outbox_blocked_by_apply"] == 2

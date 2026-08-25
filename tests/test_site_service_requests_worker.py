@@ -70,6 +70,9 @@ class FakeBitrixApi:
         self.items: dict[int, dict] = {}
         self.raise_after_item_add = False
         self.disk_files: dict[str, dict] = {}
+        self.next_crm_file_id = 3000
+        self.crm_files: dict[int, bytes] = {}
+        self.raise_after_crm_file_update = False
         self.timeline_comments: list[dict[str, str]] = []
         self.timeline_page_size: int | None = None
         self.notification_ids_by_tag: dict[str, int] = {}
@@ -146,12 +149,22 @@ class FakeBitrixApi:
             return {"result": {"item": {"id": item_id}}}
         if method == "crm.item.get":
             item_id = int(mapped["id"])
+            rendered_item = dict(self.items[item_id])
+            file_ids = rendered_item.get("ufCrm36Clientfiles")
+            if isinstance(file_ids, list):
+                rendered_item["ufCrm36Clientfiles"] = [
+                    {
+                        "id": str(file_id),
+                        "urlMachine": ("https://fake.bitrix.local/rest/1/token/file/" f"{file_id}"),
+                    }
+                    for file_id in file_ids
+                ]
             return {
                 "result": {
                     "item": {
                         "id": item_id,
                         "ufSiteReplyAction": "",
-                        **self.items[item_id],
+                        **rendered_item,
                     }
                 }
             }
@@ -199,16 +212,48 @@ class FakeBitrixApi:
         raise AssertionError(f"unexpected Bitrix method: {method}")
 
     def call_json(self, method: str, payload: dict, **_kwargs):
-        if method != "disk.folder.uploadfile":
-            raise AssertionError(f"unexpected Bitrix JSON method: {method}")
-        name = str(payload["data"]["NAME"])
-        item = {
-            "ID": str(2000 + len(self.disk_files)),
-            "NAME": name,
-            "DETAIL_URL": "/disk/file",
-        }
-        self.disk_files[name] = item
-        return {"result": item}
+        if method == "disk.folder.uploadfile":
+            name = str(payload["data"]["NAME"])
+            item = {
+                "ID": str(2000 + len(self.disk_files)),
+                "NAME": name,
+                "DETAIL_URL": "/disk/file",
+            }
+            self.disk_files[name] = item
+            return {"result": item}
+        if method == "crm.item.update":
+            item_id = int(payload["id"])
+            fields = payload["fields"]
+            values = fields["ufCrm36Clientfiles"]
+            current_ids = {
+                int(file_id) for file_id in self.items[item_id].get("ufCrm36Clientfiles", [])
+            }
+            next_ids: list[str] = []
+            for value in values:
+                if isinstance(value, dict) and "ID" in value:
+                    file_id = int(value["ID"])
+                    if file_id in current_ids:
+                        next_ids.append(str(file_id))
+                    continue
+                assert isinstance(value, list) and len(value) == 2
+                content = base64.b64decode(value[1])
+                file_id = self.next_crm_file_id
+                self.next_crm_file_id += 1
+                self.crm_files[file_id] = content
+                next_ids.append(str(file_id))
+            self.items[item_id]["ufCrm36Clientfiles"] = next_ids
+            if self.raise_after_crm_file_update:
+                self.raise_after_crm_file_update = False
+                raise RuntimeError("simulated timeout after crm file update")
+            return {"result": {"item": {"id": item_id}}}
+        raise AssertionError(f"unexpected Bitrix JSON method: {method}")
+
+    def download(self, url: str, *, max_bytes: int, **_kwargs) -> bytes:
+        file_id = int(url.rstrip("/").rsplit("/", 1)[-1])
+        content = self.crm_files[file_id]
+        if len(content) > max_bytes:
+            raise RuntimeError("fake file response too large")
+        return content
 
 
 def _fields_from_params(params: list[tuple[str, str]]) -> dict[str, str]:
@@ -1282,9 +1327,11 @@ def test_staged_file_upload_requires_item_readback_before_local_cleanup(
     db_session.refresh(file)
     assert file.status == "uploaded"
     assert file.bitrix_object_id == "2000"
+    assert file.bitrix_file_id == "3000"
     assert file.temporary_path is None
     assert path.exists() is False
-    assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["2000"]
+    assert api.items[int(case.bitrix_item_id)]["ufCrm36Clientfiles"] == ["3000"]
+    assert api.crm_files[3000] == content
     assert case.sync_status == "order_not_found"
     assert case.last_error_code == "order_not_found"
     assert api.items[int(case.bitrix_item_id)]["ufSiteSyncStatus"] == "ORDER_NOT_FOUND"
@@ -1466,6 +1513,7 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     db_session.commit()
     api = FakeBitrixApi()
     api.items[1000] = {"ufCrm36Clientfiles": ["1999"]}
+    api.crm_files[1999] = b"x"
 
     results = sync_staged_site_service_request_files(
         db_session,
@@ -1474,7 +1522,43 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     )
 
     assert results[0]["status"] == "uploaded"
-    assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "2000"]
+    assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "3000"]
+    assert staged_file.bitrix_object_id == "2000"
+    assert staged_file.bitrix_file_id == "3000"
+    assert api.crm_files[3000] == content
+
+
+def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    api.raise_after_crm_file_update = True
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+    expected_sha256 = hashlib.sha256(content).hexdigest()
+
+    first_file_id, first_item = writer.attach_file_content(
+        entity_type_id=1134,
+        item_id=1000,
+        field_name="UF_CRM_36_CLIENTFILES",
+        deterministic_name="ticket-744-file.bin",
+        content=content,
+        expected_sha256=expected_sha256,
+        max_bytes=1024,
+    )
+    second_file_id, second_item = writer.attach_file_content(
+        entity_type_id=1134,
+        item_id=1000,
+        field_name="UF_CRM_36_CLIENTFILES",
+        deterministic_name="ticket-744-file.bin",
+        content=content,
+        expected_sha256=expected_sha256,
+        max_bytes=1024,
+    )
+
+    assert first_file_id == second_file_id == "3000"
+    assert api.next_crm_file_id == 3001
+    assert worker_module._item_field_contains(first_item, "UF_CRM_36_CLIENTFILES", "3000")
+    assert worker_module._item_field_contains(second_item, "UF_CRM_36_CLIENTFILES", "3000")
 
 
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:

@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _EVENT_ID = re.compile(r"^site-support:(\d+):(\d+)$")
+_EMAIL_EVENT_ID = re.compile(r"^bitrix-mail:(shop|info):(\d+)$")
 SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH = 200_000
 
 
@@ -132,6 +133,56 @@ class SiteServiceRequestEventAcceptedResponse(BaseModel):
     missing_file_ids: list[int] = Field(alias="missingFileIds")
 
 
+class SiteServiceEmailEventPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_version: Literal[1] = Field(alias="schemaVersion")
+    event_id: str = Field(alias="eventId", min_length=1, max_length=255)
+    event_type: Literal["email.received", "email.replied"] = Field(alias="eventType")
+    occurred_at: datetime = Field(alias="occurredAt")
+    mailbox: Literal["shop", "info"]
+    message_id: int = Field(alias="messageId", gt=0)
+    activity_id: int = Field(alias="activityId", gt=0)
+    thread_id: int = Field(alias="threadId", gt=0)
+    request_type: Literal[
+        "warranty",
+        "refund_money",
+        "replacement",
+        "delivery_return",
+        "consultation",
+        "other",
+    ] = Field(alias="requestType")
+    order_number: str = Field(alias="orderNumber", min_length=1, max_length=64)
+    crm_contact_id: int = Field(alias="crmContactId", gt=0)
+    crm_deal_id: int = Field(alias="crmDealId", gt=0)
+    existing_service_item_id: int | None = Field(
+        default=None,
+        alias="existingServiceItemId",
+        gt=0,
+    )
+
+    @field_validator("occurred_at")
+    @classmethod
+    def require_email_event_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timezone is required")
+        return value
+
+    @model_validator(mode="after")
+    def validate_email_event_identity(self) -> SiteServiceEmailEventPayload:
+        match = _EMAIL_EVENT_ID.fullmatch(self.event_id)
+        if match is None:
+            raise ValueError("eventId has invalid format")
+        mailbox, message_id = match.groups()
+        if mailbox != self.mailbox or int(message_id) != self.message_id:
+            raise ValueError("eventId does not match email source")
+        return self
+
+    @property
+    def source_key(self) -> str:
+        return f"bitrix-mail:{self.mailbox}:{self.thread_id}"
+
+
 class SiteServiceRequestFileStagedResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -243,5 +294,6 @@ class SiteServiceRequestHealthResponse(BaseModel):
         alias="lastSuccessfulExchangeAt",
     )
     ingest_enabled: bool = Field(alias="ingestEnabled")
+    email_ingest_enabled: bool = Field(alias="emailIngestEnabled")
     bitrix_writes_enabled: bool = Field(alias="bitrixWritesEnabled")
     outbound_replies_enabled: bool = Field(alias="outboundRepliesEnabled")

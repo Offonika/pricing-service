@@ -11,6 +11,10 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.infrastructure.db.session import session_scope
 from app.services.expertise_bitrix import BitrixRestClient
+from app.services.site_service_request_email_worker import (
+    process_site_service_email_events,
+    resolved_site_service_email_field_map,
+)
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     build_site_service_request_cipher,
@@ -97,7 +101,7 @@ def main(
             failure_writer=(SiteServiceRequestBitrixWriter(resolved_api) if args.apply else None),
         )
         if args.apply:
-            results = [
+            site_results = [
                 *planning_failures,
                 *apply_site_service_request_worker_plans(
                     session,
@@ -108,6 +112,14 @@ def main(
                     cipher=cipher,
                 ),
             ]
+            email_results = process_site_service_email_events(
+                session,
+                settings=settings,
+                api=resolved_api,
+                cipher=cipher,
+                limit=args.limit,
+            )
+            results = [*site_results, *email_results]
             assignments = reconcile_site_service_request_assignments(
                 session,
                 settings=settings,
@@ -147,6 +159,7 @@ def main(
                     }
                     for item in results
                 ],
+                "emailCount": len(email_results),
                 "assignments": assignments,
                 "files": files,
                 "commands": commands,
@@ -209,6 +222,11 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
         except RuntimeError:
             errors.append("bitrix_field_map_incomplete")
             field_map = {}
+        if settings.site_service_requests_email_ingest_enabled:
+            try:
+                resolved_site_service_email_field_map(settings)
+            except RuntimeError:
+                errors.append("bitrix_email_field_map_incomplete")
         try:
             validate_site_service_request_enum_map(settings)
         except RuntimeError:

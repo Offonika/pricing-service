@@ -66,9 +66,24 @@ class SiteServiceRequestCase(Base):
             "outbound_checked_at",
             "id",
         ),
+        Index(
+            "ix_site_service_request_case_source",
+            "source_kind",
+            "source_key",
+        ),
     )
 
     source_ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="site_ticket",
+        server_default="site_ticket",
+    )
+    source_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_mailbox: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    primary_activity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bitrix_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_open_stage_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     crm_contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -107,6 +122,10 @@ class SiteServiceRequestCase(Base):
         DateTime(timezone=True), nullable=True
     )
     escalation_notification_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deal_manager_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    deal_manager_notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -156,6 +175,10 @@ class SiteServiceRequestCase(Base):
         back_populates="case",
         cascade="all, delete-orphan",
     )
+    sources: Mapped[list[SiteServiceRequestSource]] = relationship(
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
     files: Mapped[list[SiteServiceRequestFile]] = relationship(
         back_populates="case",
         cascade="all, delete-orphan",
@@ -164,6 +187,46 @@ class SiteServiceRequestCase(Base):
         back_populates="case",
         cascade="all, delete-orphan",
     )
+
+
+class SiteServiceRequestSource(Base):
+    __tablename__ = "site_service_request_source"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_kind",
+            "source_key",
+            name="uq_site_service_request_source_identity",
+        ),
+        Index(
+            "ix_site_service_request_source_case",
+            "case_id",
+            "source_kind",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("site_service_request_case.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_mailbox: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    primary_activity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    case: Mapped[SiteServiceRequestCase] = relationship(back_populates="sources")
 
 
 class SiteServiceRequestEvent(Base):
@@ -196,6 +259,7 @@ class SiteServiceRequestEvent(Base):
         nullable=False,
     )
     source_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_activity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     payload_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)

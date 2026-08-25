@@ -62,6 +62,9 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "first_response_due_at", "title": "Срок первого ответа", "type": "datetime"},
     {"key": "first_response_at", "title": "Первый ответ доставлен", "type": "datetime"},
     {"key": "site_sync_error", "title": "Техническая ошибка", "type": "string"},
+    {"key": "mail_activity_id", "title": "ID email-активности", "type": "string"},
+    {"key": "mail_activity_url", "title": "Открыть письмо в CRM", "type": "url"},
+    {"key": "mail_thread_key", "title": "Технический ключ email-цепочки", "type": "string"},
 )
 
 FORM_SECTIONS = (
@@ -72,6 +75,8 @@ FORM_SECTIONS = (
             "TITLE",
             "site_ticket_id",
             "site_ticket_url",
+            "mail_activity_id",
+            "mail_activity_url",
             "site_sync_status",
             "first_response_due_at",
             "first_response_at",
@@ -103,6 +108,7 @@ FORM_SECTIONS = (
         (
             "UF_CRM_36_BACKENDCASEID",
             "UF_CRM_36_IDEMPOTENCYKEY",
+            "mail_thread_key",
             "site_sync_error",
         ),
     ),

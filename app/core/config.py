@@ -165,6 +165,7 @@ class Settings(BaseSettings):
     site_defect_workflow_logistics_user_ids: list[int] = Field(default_factory=list)
     site_defect_workflow_leader_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_ingest_enabled: bool = False
+    site_service_requests_email_ingest_enabled: bool = False
     site_service_requests_bitrix_writes_enabled: bool = False
     site_service_requests_outbound_replies_enabled: bool = False
     site_service_requests_hmac_secret: str | None = None

@@ -309,18 +309,18 @@ def test_ambiguous_or_discursive_arrival_remains_manual_candidate(db_session) ->
         text_value="Что сейчас с заказом 241501 в Митино?",
         message_at=datetime(2026, 8, 23, 12, 1),
         settings=settings,
-    )[0]
+    )
 
     assert unresolved.status == bot.CANDIDATE_OPEN
     assert unresolved.pickup_point_warehouse_id is None
-    assert discussion.status == bot.CANDIDATE_OPEN
+    assert discussion == []
     assert (
         db_session.scalar(
             select(func.count(SiteOrderFulfillmentOutbox.id)).where(
                 SiteOrderFulfillmentOutbox.operation == bot.OP_PUBLISH_CARD
             )
         )
-        == 2
+        == 1
     )
 
 
@@ -407,14 +407,14 @@ def test_auto_arrival_late_edit_before_finalize_blocks_internal_event(db_session
     assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
 
 
-def test_historical_arrival_never_queues_automatic_action(db_session) -> None:
+def test_historical_arrival_does_not_create_new_card_or_automatic_action(db_session) -> None:
     settings = _settings(
         order_fulfillment_pickup_auto_arrival_enabled=True,
         order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 12, 0),
     )
     _warehouse(db_session)
 
-    candidate = bot.create_candidates_from_message(
+    candidates = bot.create_candidates_from_message(
         db_session,
         dialog_id="chat8729",
         message_id="22005",
@@ -422,12 +422,11 @@ def test_historical_arrival_never_queues_automatic_action(db_session) -> None:
         text_value="Митино 241500",
         message_at=datetime(2026, 8, 23, 11, 59),
         settings=settings,
-    )[0]
+    )
 
-    assert candidate.status == bot.CANDIDATE_OPEN
+    assert candidates == []
     assert db_session.scalar(select(func.count(BitrixChatAction.id))) == 0
-    row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
-    assert row is not None and row.operation == bot.OP_PUBLISH_CARD
+    assert db_session.scalar(select(SiteOrderFulfillmentOutbox)) is None
 
 
 def test_strict_arrival_keeps_every_order_beyond_manual_card_limit(db_session) -> None:
@@ -504,7 +503,7 @@ def test_runtime_apply_switch_marks_new_candidate_as_dry_run(db_session) -> None
     assert bot.card_text(candidate).startswith("Тест — без изменений")
 
 
-def test_closed_deal_card_is_published_without_action_buttons(db_session) -> None:
+def test_closed_deal_from_chat_is_ignored_without_card(db_session) -> None:
     settings = _settings()
     candidate = _create_candidate(db_session, settings=settings)
     client = FakeBitrixClient(stage="WON")
@@ -518,9 +517,168 @@ def test_closed_deal_card_is_published_without_action_buttons(db_session) -> Non
     )
 
     db_session.refresh(candidate)
+    assert candidate.status == bot.CANDIDATE_DISMISSED
+    assert client.bot_messages == []
+
+
+def test_strict_arrival_for_closed_deal_stays_silent_and_fail_closed(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    _warehouse(db_session)
+    candidate = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22020",
+        author_id="7",
+        text_value="Заказ 241500 прибыл в Митино",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+        now=datetime(2026, 8, 23, 12, 0),
+    )[0]
+    client = FakeBitrixClient(stage="WON")
+
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        now=datetime(2026, 8, 23, 12, 1),
+    )
+
+    db_session.refresh(candidate)
     assert candidate.status == bot.CANDIDATE_REVIEW
-    assert client.bot_messages[0]["keyboard"] == []
-    assert "сделка уже закрыта" in client.bot_messages[0]["message"]
+    assert client.bot_messages == []
+    assert client.bot_updates == []
+    assert client.stage_updates == []
+
+
+def test_pickup_search_card_is_read_only_and_uses_progressive_actions(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_bot_source_chat_ids=["chat739"],
+        order_fulfillment_pickup_exception_chat_dialog_id="chat739",
+        order_fulfillment_bot_portal_base_url="https://crm.example",
+        order_fulfillment_lost_orders_enabled=True,
+    )
+    warehouse = _warehouse(db_session)
+    db_session.add(
+        SiteOrderExecutionCase(
+            site_order_number="241500",
+            bitrix_deal_id=500,
+            delivery_method="Самовывоз",
+            current_derived_status="pickup_stored_at_point",
+            current_crm_stage=fulfillment.CRM_STAGE_PICKUP_WAITING,
+            pickup_point_warehouse_id=warehouse.id,
+        )
+    )
+    db_session.commit()
+    candidate = bot.create_interactive_candidates(
+        db_session,
+        dialog_id="chat739",
+        source_message_id="5001",
+        actor_id="7",
+        order_numbers=["241500"],
+        interaction="search",
+        settings=settings,
+        now=datetime(2026, 8, 25, 12, 0),
+    )[0]
+    client = FakeBitrixClient(stage=fulfillment.CRM_STAGE_PICKUP_WAITING)
+
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        now=datetime(2026, 8, 25, 12, 1),
+    )
+
+    assert client.stage_updates == []
+    assert len(client.bot_messages) == 1
+    assert "CRM: PICKUP_WAITING" in client.bot_messages[0]["message"]
+    assert "Ожидаемая точка: Митино магазин" in client.bot_messages[0]["message"]
+    assert [button["TEXT"] for button in client.bot_messages[0]["keyboard"]] == [
+        "Обновить",
+        "Открыть сделку",
+        "Начать поиск",
+    ]
+    assert candidate.status == bot.CANDIDATE_OPEN
+
+    start_token = next(
+        button["COMMAND_PARAMS"]
+        for button in client.bot_messages[0]["keyboard"]
+        if button["TEXT"] == "Начать поиск"
+    )
+    bot.queue_interactive_callback(
+        db_session,
+        token=start_token,
+        actor_id="7",
+        dialog_id="chat739",
+        settings=settings,
+        now=datetime(2026, 8, 25, 12, 2),
+    )
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda _: bot.OneCPickupValidation(available=True, assembled=True),
+        now=datetime(2026, 8, 25, 12, 3),
+    )
+
+    assert [button["TEXT"] for button in client.bot_updates[-1]["keyboard"]] == [
+        "Найден на своей точке",
+        "На другой точке",
+        "Не найден",
+        "Другой итог",
+        "Отмена",
+    ]
+
+
+def test_structured_arrival_confirmation_queues_one_action_per_order(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_warehouse_external_ids=["mitino"],
+    )
+    warehouse = _warehouse(db_session)
+    candidates = bot.create_interactive_candidates(
+        db_session,
+        dialog_id="chat8729",
+        source_message_id="5002",
+        actor_id="7",
+        order_numbers=["241500", "241501"],
+        interaction="structured_arrival",
+        settings=settings,
+        now=datetime(2026, 8, 25, 12, 0),
+    )
+    leader = candidates[0]
+    _mark_card_ready(db_session, leader)
+    token = bot.sign_callback_token(
+        leader,
+        action=bot.ACTION_CONFIRM_ARRIVAL,
+        step=1,
+        secret="test-secret",
+        target_warehouse_id=warehouse.id,
+    )
+
+    first_action, duplicate = bot.queue_structured_arrival(
+        db_session,
+        token=token,
+        actor_id="7",
+        dialog_id="chat8729",
+        settings=settings,
+        now=datetime(2026, 8, 25, 12, 1),
+    )
+
+    actions = db_session.scalars(select(BitrixChatAction).order_by(BitrixChatAction.id)).all()
+    process_rows = db_session.scalars(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == bot.OP_PROCESS_ACTION
+        )
+    ).all()
+    assert duplicate is False and first_action == actions[0]
+    assert len(actions) == 2 and len(process_rows) == 2
+    assert {action.candidate.site_order_number for action in actions} == {"241500", "241501"}
+    assert all(action.action == bot.ACTION_ARRIVED for action in actions)
+    assert all(candidate.pickup_point_warehouse_id == warehouse.id for candidate in candidates)
 
 
 def test_stale_non_retryable_outbox_is_sent_to_manual_review(db_session) -> None:

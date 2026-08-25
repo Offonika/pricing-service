@@ -44,8 +44,40 @@ def build_plan() -> dict[str, object]:
             "EVENT_COMMAND_ADD": settings.order_fulfillment_bot_callback_url,
             "LANG": [{"LANGUAGE_ID": "ru", "TITLE": "Действие самовывоза", "PARAMS": ""}],
         },
+        "search_command": {
+            "COMMAND": settings.order_fulfillment_bot_search_command,
+            "CLIENT_ID": settings.order_fulfillment_bot_client_id,
+            "COMMON": "N",
+            "HIDDEN": "N",
+            "EXTRANET_SUPPORT": "N",
+            "EVENT_COMMAND_ADD": settings.order_fulfillment_bot_callback_url,
+            "LANG": [
+                {
+                    "LANGUAGE_ID": "ru",
+                    "TITLE": "Найти заказ самовывоза",
+                    "PARAMS": "номер заказа",
+                }
+            ],
+        },
+        "arrival_command": {
+            "COMMAND": settings.order_fulfillment_bot_arrival_command,
+            "CLIENT_ID": settings.order_fulfillment_bot_client_id,
+            "COMMON": "N",
+            "HIDDEN": "N",
+            "EXTRANET_SUPPORT": "N",
+            "EVENT_COMMAND_ADD": settings.order_fulfillment_bot_callback_url,
+            "LANG": [
+                {
+                    "LANGUAGE_ID": "ru",
+                    "TITLE": "Зафиксировать поступление",
+                    "PARAMS": "номера заказов",
+                }
+            ],
+        },
         "existing_bot_id": settings.order_fulfillment_bot_id,
         "existing_command_id": settings.order_fulfillment_bot_command_id,
+        "existing_search_command_id": settings.order_fulfillment_bot_search_command_id,
+        "existing_arrival_command_id": settings.order_fulfillment_bot_arrival_command_id,
         "deal_user_field": {
             "FIELD_NAME": settings.order_fulfillment_bot_pickup_sms_field,
             "USER_TYPE_ID": "datetime",
@@ -66,6 +98,7 @@ def apply_plan(
     plan: dict[str, object],
     *,
     recover_missing_command: bool = False,
+    recover_missing_public_commands: bool = False,
 ) -> dict[str, object]:
     field = dict(plan["deal_user_field"])
     existing_fields = client.list_deal_user_fields(str(field["FIELD_NAME"]))
@@ -96,6 +129,8 @@ def apply_plan(
     bot_id = _item_id(existing_bot) if existing_bot is not None else None
     configured_bot_id = _item_id({"ID": plan.get("existing_bot_id")})
     command_id = _item_id({"ID": plan.get("existing_command_id")})
+    search_command_id = _item_id({"ID": plan.get("existing_search_command_id")})
+    arrival_command_id = _item_id({"ID": plan.get("existing_arrival_command_id")})
     if existing_bot is not None:
         if bot_id is None:
             raise RuntimeError("existing bot returned without a valid positive id")
@@ -122,6 +157,20 @@ def apply_plan(
             "because imbot.command.list is unavailable on this portal; after verifying "
             "in Bitrix that the command is absent, rerun with --recover-missing-command"
         )
+    public_commands = (
+        ("search_command", "ORDER_FULFILLMENT_BOT_SEARCH_COMMAND_ID", search_command_id),
+        ("arrival_command", "ORDER_FULFILLMENT_BOT_ARRIVAL_COMMAND_ID", arrival_command_id),
+    )
+    missing_public = [
+        env_name
+        for key, env_name, configured_id in public_commands
+        if key in plan and configured_id is None
+    ]
+    if bot_id is not None and missing_public and not recover_missing_public_commands:
+        raise RuntimeError(
+            "existing bot found; public command ids are required because "
+            "imbot.command.list is unavailable on this portal: " + ", ".join(missing_public)
+        )
 
     field_result = existing_field_id or _result_id(client.add_deal_user_field(field))
     if field_result is None:
@@ -144,7 +193,22 @@ def apply_plan(
         assert command_id is not None
         if not client.update_bot_command(command_id, command):
             raise RuntimeError("imbot.command.update returned an empty result")
-    return {"bot_id": bot_id, "command_id": command_id, "deal_user_field_id": field_result}
+    result = {"bot_id": bot_id, "command_id": command_id, "deal_user_field_id": field_result}
+    for key, _env_name, configured_id in public_commands:
+        if key not in plan:
+            continue
+        public_command = dict(plan[key])
+        public_id = configured_id
+        if is_new_bot or public_id is None:
+            public_id = _result_id(
+                client.register_bot_command({**public_command, "BOT_ID": bot_id})
+            )
+            if public_id is None:
+                raise RuntimeError(f"imbot.command.register returned an empty id for {key}")
+        elif not client.update_bot_command(public_id, public_command):
+            raise RuntimeError(f"imbot.command.update returned an empty result for {key}")
+        result[f"{key}_id"] = public_id
+    return result
 
 
 def _item_id(item: dict[str, object] | None) -> int | str | None:
@@ -173,6 +237,14 @@ def parse_args() -> argparse.Namespace:
             "Register a command for an existing bot only after its absence was verified " "manually"
         ),
     )
+    parser.add_argument(
+        "--recover-missing-public-commands",
+        action="store_true",
+        help=(
+            "Register visible pickup commands for an existing bot only after their "
+            "absence was verified manually"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -198,6 +270,7 @@ def main() -> int:
             ),
             plan,
             recover_missing_command=args.recover_missing_command,
+            recover_missing_public_commands=args.recover_missing_public_commands,
         )
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0

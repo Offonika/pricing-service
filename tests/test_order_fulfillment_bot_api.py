@@ -41,6 +41,8 @@ def _configure(monkeypatch) -> None:
     monkeypatch.setenv("ORDER_FULFILLMENT_BOT_ALLOWED_DOMAINS", "crm.example")
     monkeypatch.setenv("ORDER_FULFILLMENT_BOT_ALLOWED_MEMBER_IDS", "member-1")
     monkeypatch.setenv("ORDER_FULFILLMENT_BOT_SOURCE_CHAT_IDS", "chat8729,chat733")
+    monkeypatch.setenv("ORDER_FULFILLMENT_BOT_SEARCH_COMMAND_ID", "201")
+    monkeypatch.setenv("ORDER_FULFILLMENT_BOT_ARRIVAL_COMMAND_ID", "202")
     monkeypatch.setenv("ORDER_FULFILLMENT_INTERNAL_API_TOKEN", "internal-token")
     get_settings.cache_clear()
 
@@ -78,6 +80,106 @@ def _message_form(*, token: str = "app-token") -> dict[str, str]:
         "data[PARAMS][MESSAGE]": "Заказ 241500 прибыл в Митино",
         "data[PARAMS][DATE_CREATE]": "2026-08-23T12:00:00+03:00",
     }
+
+
+def _public_command_form(
+    *,
+    command: str,
+    command_id: str,
+    params: str,
+    message_id: str = "1100",
+) -> dict[str, str]:
+    prefix = f"data[COMMAND][{command_id}]"
+    return {
+        "event": "ONIMCOMMANDADD",
+        "auth[application_token]": "app-token",
+        "auth[domain]": "crm.example",
+        "auth[member_id]": "member-1",
+        f"{prefix}[COMMAND]": command,
+        f"{prefix}[DIALOG_ID]": "chat8729",
+        f"{prefix}[MESSAGE_ID]": message_id,
+        f"{prefix}[USER_ID]": "7",
+        f"{prefix}[COMMAND_PARAMS]": params,
+    }
+
+
+def test_public_pickup_search_is_read_only_and_queues_one_card(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/order-fulfillment/bitrix-bot/events",
+            data=_public_command_form(command="pickup", command_id="201", params="241500"),
+        )
+        with Session(engine) as session:
+            candidate = session.scalar(select(BitrixChatActionCandidate))
+            rows = session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["interaction"] == "search"
+    assert candidate is not None
+    assert candidate.payload["interaction"] == "search"
+    assert [row.operation for row in rows] == [bot.OP_PUBLISH_CARD]
+
+
+def test_public_structured_arrival_groups_multiple_orders_in_one_card(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/order-fulfillment/bitrix-bot/events",
+            data=_public_command_form(
+                command="pickup_arrival",
+                command_id="202",
+                params="241500, 241501",
+            ),
+        )
+        with Session(engine) as session:
+            candidates = session.scalars(
+                select(BitrixChatActionCandidate).order_by(BitrixChatActionCandidate.id)
+            ).all()
+            rows = session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["orders"] == 2
+    assert len(candidates) == 2
+    assert candidates[0].payload["order_numbers"] == ["241500", "241501"]
+    assert len(rows) == 1 and rows[0].candidate_id == candidates[0].id
+
+
+def test_public_command_rejects_discursive_or_phone_like_input(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/order-fulfillment/bitrix-bot/events",
+            data=_public_command_form(
+                command="pickup",
+                command_id="201",
+                params="проверь 241500 телефон 9991234567",
+            ),
+        )
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+        get_settings.cache_clear()
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "order_number_invalid"
 
 
 def _mark_card_ready(session: Session, candidate: BitrixChatActionCandidate) -> None:

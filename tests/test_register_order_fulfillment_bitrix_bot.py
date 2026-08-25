@@ -86,6 +86,40 @@ def test_first_registration_creates_bot_and_command() -> None:
     assert all(name != "update_bot_command" for name, _ in client.calls)
 
 
+def test_new_bot_registers_hidden_callback_and_two_visible_commands() -> None:
+    client = FakeRegistrationClient(existing_field=False)
+    plan = _plan()
+    plan.update(
+        {
+            "search_command": {
+                "COMMAND": "pickup",
+                "CLIENT_ID": "pickup-bot",
+                "HIDDEN": "N",
+                "LANG": [{"LANGUAGE_ID": "ru", "TITLE": "Найти заказ самовывоза"}],
+            },
+            "arrival_command": {
+                "COMMAND": "pickup_arrival",
+                "CLIENT_ID": "pickup-bot",
+                "HIDDEN": "N",
+                "LANG": [{"LANGUAGE_ID": "ru", "TITLE": "Зафиксировать поступление"}],
+            },
+        }
+    )
+
+    result = register.apply_plan(client, plan)  # type: ignore[arg-type]
+
+    commands = [value for name, value in client.calls if name == "register_bot_command"]
+    assert [command["COMMAND"] for command in commands] == [
+        "pickup_action",
+        "pickup",
+        "pickup_arrival",
+    ]
+    assert commands[0].get("HIDDEN") is None
+    assert commands[1]["HIDDEN"] == commands[2]["HIDDEN"] == "N"
+    assert result["search_command_id"] == 103
+    assert result["arrival_command_id"] == 103
+
+
 def test_existing_registration_uses_explicit_command_id_and_update_methods() -> None:
     client = FakeRegistrationClient(existing_bot=True)
 

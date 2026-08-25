@@ -286,6 +286,11 @@ class Settings(BaseSettings):
     order_fulfillment_bot_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_command_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_command: str = "pickup_action"
+    order_fulfillment_bot_search_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_search_command: str = "pickup"
+    order_fulfillment_bot_arrival_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_arrival_command: str = "pickup_arrival"
+    order_fulfillment_bot_portal_base_url: str | None = None
     order_fulfillment_bot_callback_url: str | None = None
     order_fulfillment_bot_sms_workflow_template_id: int | None = Field(default=None, ge=1)
     order_fulfillment_bot_pickup_sms_field: str = "UF_CRM_MM_PICKUP_READY_SMS_AT"

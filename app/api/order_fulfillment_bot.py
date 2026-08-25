@@ -114,14 +114,31 @@ async def bitrix_bot_event(
         command = _command_value(form, "COMMAND", fallback_keys=("data[COMMAND]", "command"))
         if not command:
             raise HTTPException(status_code=400, detail="command is missing")
-        if command.casefold() != settings.order_fulfillment_bot_command.casefold():
+        command_key = command.casefold()
+        supported_commands = {
+            settings.order_fulfillment_bot_command.casefold(): (
+                "callback",
+                settings.order_fulfillment_bot_command_id,
+            ),
+            settings.order_fulfillment_bot_search_command.casefold(): (
+                "search",
+                settings.order_fulfillment_bot_search_command_id,
+            ),
+            settings.order_fulfillment_bot_arrival_command.casefold(): (
+                "structured_arrival",
+                settings.order_fulfillment_bot_arrival_command_id,
+            ),
+        }
+        command_config = supported_commands.get(command_key)
+        if command_config is None:
             raise HTTPException(status_code=400, detail="unsupported command")
+        command_kind, expected_command_id = command_config
         command_id = _command_entry_id(form)
-        if settings.order_fulfillment_bot_command_id is not None and command_id != str(
-            settings.order_fulfillment_bot_command_id
-        ):
+        if command_kind != "callback" and expected_command_id is None:
+            raise HTTPException(status_code=503, detail="public command is not configured")
+        if expected_command_id is not None and command_id != str(expected_command_id):
             raise HTTPException(status_code=400, detail="unexpected command id")
-        token = _command_value(
+        params = _command_value(
             form,
             "COMMAND_PARAMS",
             fallback_keys=(
@@ -130,8 +147,8 @@ async def bitrix_bot_event(
                 "command_params",
             ),
         )
-        if not token:
-            token = _command_value(form, "PARAMS")
+        if not params:
+            params = _command_value(form, "PARAMS")
         actor_id = _value(
             form,
             "data[PARAMS][FROM_USER_ID]",
@@ -140,6 +157,43 @@ async def bitrix_bot_event(
             "data[USER_ID]",
             "user_id",
         ) or _command_value(form, "USER_ID")
+        if command_kind in {"search", "structured_arrival"}:
+            source_message_id = _command_value(
+                form,
+                "MESSAGE_ID",
+                fallback_keys=(
+                    "data[PARAMS][MESSAGE_ID]",
+                    "data[MESSAGE_ID]",
+                    "message_id",
+                ),
+            )
+            if not source_message_id or not source_message_id.isdigit():
+                raise HTTPException(status_code=400, detail="command message id is missing")
+            try:
+                orders = _public_command_orders(
+                    params, allow_many=command_kind == "structured_arrival"
+                )
+                candidates = bot.create_interactive_candidates(
+                    db,
+                    dialog_id=dialog_id,
+                    source_message_id=source_message_id,
+                    actor_id=actor_id,
+                    order_numbers=orders,
+                    interaction=command_kind,
+                    settings=settings,
+                    apply_enabled_probe=lambda: bot.runtime_apply_enabled_from_env(
+                        initial_enabled=settings.order_fulfillment_bot_apply_enabled,
+                    ),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {
+                "accepted": True,
+                "interaction": command_kind,
+                "orders": len(candidates),
+                "candidate_id": candidates[0].id,
+            }
+        token = params
         try:
             if bot.callback_token_kind(token) == bot.INVENTORY_CALLBACK_KIND:
                 operation, duplicate = bot.queue_inventory_clarification_action(
@@ -155,6 +209,39 @@ async def bitrix_bot_event(
                     "operation_id": operation.id,
                     "duplicate": duplicate,
                 }
+            action_hint = bot.callback_token_action(token)
+            interaction_hint = bot.callback_token_interaction(token)
+            if action_hint in bot.UI_ACTIONS or (
+                action_hint == bot.ACTION_CANCEL
+                and interaction_hint in {"search", "structured_arrival"}
+            ):
+                operation, duplicate = bot.queue_interactive_callback(
+                    db,
+                    token=token,
+                    actor_id=actor_id,
+                    dialog_id=dialog_id,
+                    settings=settings,
+                )
+                return {
+                    "accepted": True,
+                    "interactive": True,
+                    "operation_id": operation.id,
+                    "duplicate": duplicate,
+                }
+            if action_hint == bot.ACTION_CONFIRM_ARRIVAL:
+                action, duplicate = bot.queue_structured_arrival(
+                    db,
+                    token=token,
+                    actor_id=actor_id,
+                    dialog_id=dialog_id,
+                    settings=settings,
+                )
+                return {
+                    "accepted": True,
+                    "structured_arrival": True,
+                    "action_id": action.id,
+                    "duplicate": duplicate,
+                }
             action, duplicate = bot.queue_callback_action(
                 db,
                 token=token,
@@ -167,6 +254,22 @@ async def bitrix_bot_event(
         return {"accepted": True, "action_id": action.id, "duplicate": duplicate}
 
     raise HTTPException(status_code=400, detail="unsupported bot event")
+
+
+def _public_command_orders(value: str, *, allow_many: bool) -> list[str]:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("order_number_required")
+    if not re.fullmatch(r"[\d\s,;№#]+", normalized):
+        raise ValueError("order_number_invalid")
+    orders = re.findall(r"(?<!\d)\d{6}(?!\d)", normalized)
+    unique = list(dict.fromkeys(orders))
+    if not unique or (not allow_many and len(unique) != 1) or len(unique) > 20:
+        raise ValueError("order_count_invalid")
+    remaining = re.sub(r"(?<!\d)\d{6}(?!\d)", "", normalized)
+    if re.sub(r"[\s,;№#]", "", remaining):
+        raise ValueError("order_number_invalid")
+    return unique
 
 
 @internal_router.get("/health")

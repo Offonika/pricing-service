@@ -815,6 +815,13 @@ ID существует, активен и соответствует ожида
 - [x] Добавить метрики, безопасные error codes и alert на lag/dead-letter.
 - [x] Обновить OpenAPI после реализации API.
 - [x] Добавить unit, API, worker, contract и static PHP tests.
+- [x] Добавить универсальные source identity, email endpoint, повторный CRM-gate,
+  email worker, activity binding/readback и отдельный feature flag.
+- [x] Добавить поля email-активности в ensure и регрессионные тесты, не включая
+  их в общий обязательный mapping при выключенном email-intake.
+- [ ] Применить email-source migration и поля 1134, зафиксировать baselines
+  `shop`/`info`, выполнить два controlled email smoke и только затем включить
+  email-intake.
 - [ ] Провести dry-run и только после отдельного разрешения — controlled live smoke.
 
 # Review Notes / Risks

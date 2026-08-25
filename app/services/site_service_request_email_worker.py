@@ -299,6 +299,13 @@ def _process_site_service_email_event(
         # A technically linked site card keeps its original site idempotency key.
         update_fields = dict(fields)
         update_fields.pop(field_map["idempotency_key"], None)
+        if case.source_kind == "site_ticket":
+            update_fields.pop("title", None)
+            update_fields.pop(field_map["source"], None)
+            update_fields.pop(field_map["problem_description"], None)
+            update_fields.pop(field_map["site_sync_status"], None)
+            update_fields.pop(field_map["site_sync_error"], None)
+            update_fields.pop(field_map["site_last_sync_at"], None)
         writer.update_item_fields(
             entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
             item_id=case.bitrix_item_id,
@@ -323,14 +330,13 @@ def _process_site_service_email_event(
         field_map=field_map,
     )
     case.bitrix_item_id = item_id
-    case.base_sync_status = (
-        "assignment_waiting" if case.assignment_state == "waiting" else "synced"
-    )
-    case.base_error_code = (
-        "assignment_waiting" if case.assignment_state == "waiting" else None
-    )
-    case.sync_status = case.base_sync_status
-    case.last_error_code = case.base_error_code
+    if case.source_kind != "site_ticket":
+        case.base_sync_status = (
+            "assignment_waiting" if case.assignment_state == "waiting" else "synced"
+        )
+        case.base_error_code = "assignment_waiting" if case.assignment_state == "waiting" else None
+        case.sync_status = case.base_sync_status
+        case.last_error_code = case.base_error_code
     case.version += 1
     case.updated_at = now
     _notify_deal_manager_once(
@@ -374,14 +380,16 @@ def _apply_email_reply(
         case.latest_outbound_message_id or 0,
         payload.message_id,
     )
+    reply_fields = {
+        field_map["first_response_at"]: case.first_response_at,
+        field_map["mail_thread_key"]: payload.source_key,
+    }
+    if case.source_kind != "site_ticket":
+        reply_fields[field_map["site_last_sync_at"]] = now
     writer.update_item_fields(
         entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
         item_id=case.bitrix_item_id,
-        fields={
-            field_map["first_response_at"]: case.first_response_at,
-            field_map["site_last_sync_at"]: now,
-            field_map["mail_thread_key"]: payload.source_key,
-        },
+        fields=reply_fields,
     )
     inbound_activity_ids = set(
         session.scalars(
@@ -411,8 +419,9 @@ def _apply_email_reply(
         raise RuntimeError("bitrix_first_response_readback_failed")
     case.version += 1
     case.updated_at = now
-    case.sync_status = "synced"
-    case.last_error_code = None
+    if case.source_kind != "site_ticket":
+        case.sync_status = "synced"
+        case.last_error_code = None
     _mark_email_event_processed(event, now=now)
     session.flush()
     return SiteServiceRequestWorkerResult(
@@ -449,11 +458,17 @@ def _verify_email_event(
         raise SiteServiceRequestPermanentError("email_activity_deal_binding_mismatch")
     if (_CONTACT_OWNER_TYPE_ID, payload.crm_contact_id) not in bindings:
         raise SiteServiceRequestPermanentError("email_activity_contact_binding_mismatch")
-    if payload.existing_service_item_id is not None and (
-        settings.site_service_requests_bitrix_entity_type_id,
-        payload.existing_service_item_id,
-    ) not in bindings:
-        raise SiteServiceRequestPermanentError("email_service_binding_mismatch")
+    if payload.existing_service_item_id is not None:
+        service_binding = (
+            settings.site_service_requests_bitrix_entity_type_id,
+            payload.existing_service_item_id,
+        )
+        if service_binding not in bindings and not _thread_has_service_binding(
+            api=api,
+            thread_id=payload.thread_id,
+            service_binding=service_binding,
+        ):
+            raise SiteServiceRequestPermanentError("email_service_binding_mismatch")
 
     deal_response = api.call("crm.deal.get", [("id", str(payload.crm_deal_id))])
     deal = deal_response.get("result")
@@ -489,9 +504,7 @@ def _verify_email_event(
         activity=activity,
         deal=deal,
         contact=contact,
-        deal_manager_user_id=_positive_int(
-            deal.get("ASSIGNED_BY_ID") or deal.get("assignedById")
-        ),
+        deal_manager_user_id=_positive_int(deal.get("ASSIGNED_BY_ID") or deal.get("assignedById")),
         bindings=bindings,
     )
 
@@ -575,9 +588,11 @@ def _update_inbound_activity(
         raise RuntimeError("email_activity_open_readback_failed")
     if dynamic_binding not in _activity_bindings(readback):
         raise RuntimeError("email_activity_service_binding_readback_failed")
-    if assignee_id is not None and _positive_int(
-        readback.get("RESPONSIBLE_ID") or readback.get("responsibleId")
-    ) != assignee_id:
+    if (
+        assignee_id is not None
+        and _positive_int(readback.get("RESPONSIBLE_ID") or readback.get("responsibleId"))
+        != assignee_id
+    ):
         raise RuntimeError("email_activity_assignment_readback_failed")
 
 
@@ -689,9 +704,7 @@ def _activity_bindings(activity: dict[str, Any]) -> tuple[tuple[int, int], ...]:
     for item in raw:
         if not isinstance(item, dict):
             raise RuntimeError("email_activity_bindings_invalid")
-        owner_type_id = _positive_int(
-            item.get("OWNER_TYPE_ID") or item.get("ownerTypeId")
-        )
+        owner_type_id = _positive_int(item.get("OWNER_TYPE_ID") or item.get("ownerTypeId"))
         owner_id = _positive_int(item.get("OWNER_ID") or item.get("ownerId"))
         if owner_type_id is None or owner_id is None:
             raise RuntimeError("email_activity_bindings_invalid")
@@ -729,15 +742,61 @@ def _activity_communication_emails(
         if not isinstance(item, dict):
             raise RuntimeError("email_activity_communications_invalid")
         entity_id = _positive_int(item.get("ENTITY_ID") or item.get("entityId"))
-        entity_type_id = _positive_int(
-            item.get("ENTITY_TYPE_ID") or item.get("entityTypeId")
-        )
+        entity_type_id = _positive_int(item.get("ENTITY_TYPE_ID") or item.get("entityTypeId"))
         if entity_id != contact_id or entity_type_id != _CONTACT_OWNER_TYPE_ID:
             continue
         value = str(item.get("VALUE") or item.get("value") or "").strip().casefold()
         if value:
             values.add(value)
     return tuple(sorted(values))
+
+
+def _thread_has_service_binding(
+    *,
+    api: SiteServiceRequestBitrixApi,
+    thread_id: int,
+    service_binding: tuple[int, int],
+) -> bool:
+    start: int | None = None
+    visited: set[int] = set()
+    for _page in range(100):
+        current = start or 0
+        if current in visited:
+            raise RuntimeError("email_thread_activity_pagination_cycle")
+        visited.add(current)
+        params = [
+            ("filter[THREAD_ID]", str(thread_id)),
+            ("filter[PROVIDER_ID]", _CRM_EMAIL_PROVIDER),
+            ("select[]", "ID"),
+            ("select[]", "BINDINGS"),
+        ]
+        if start is not None:
+            params.append(("start", str(start)))
+        response = api.call("crm.activity.list", params)
+        result = response.get("result")
+        nested_next = None
+        if isinstance(result, dict):
+            nested_next = result.get("next")
+            rows = result.get("items") or result.get("activities")
+        else:
+            rows = result
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise RuntimeError("email_thread_activity_readback_failed")
+        if any(service_binding in _activity_bindings(row) for row in rows):
+            return True
+        raw_next = response.get("next")
+        if raw_next is not None and nested_next is not None and raw_next != nested_next:
+            raise RuntimeError("email_thread_activity_pagination_invalid")
+        candidate = nested_next if nested_next is not None else raw_next
+        if candidate is None:
+            return False
+        try:
+            start = int(candidate)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("email_thread_activity_pagination_invalid") from exc
+        if start <= current:
+            raise RuntimeError("email_thread_activity_pagination_invalid")
+    raise RuntimeError("email_thread_activity_pagination_limit")
 
 
 def _portal_base_url(settings: Settings) -> str:

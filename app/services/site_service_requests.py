@@ -171,14 +171,43 @@ def accept_site_service_request_event(
                 .with_for_update()
             )
             if case is None:
+                source_key = f"site-support-ticket:{payload.ticket.id}"
                 case = SiteServiceRequestCase(
                     source_ticket_id=payload.ticket.id,
+                    source_kind="site_ticket",
+                    source_key=source_key,
                     first_seen_at=_as_utc(payload.occurred_at),
                 )
                 session.add(case)
                 session.flush()
             elif _as_utc(payload.occurred_at) < _as_utc(case.first_seen_at):
                 case.first_seen_at = _as_utc(payload.occurred_at)
+
+            source_key = f"site-support-ticket:{payload.ticket.id}"
+            if case.source_key is None:
+                case.source_key = source_key
+            elif case.source_kind != "site_ticket" or case.source_key != source_key:
+                raise SiteServiceRequestConflictError("site_source_identity_conflict")
+            source = session.scalar(
+                select(SiteServiceRequestSource)
+                .where(
+                    SiteServiceRequestSource.source_kind == "site_ticket",
+                    SiteServiceRequestSource.source_key == source_key,
+                )
+                .with_for_update()
+            )
+            if source is None:
+                session.add(
+                    SiteServiceRequestSource(
+                        case_id=case.id,
+                        source_kind="site_ticket",
+                        source_key=source_key,
+                        created_at=current_time,
+                        updated_at=current_time,
+                    )
+                )
+            elif source.case_id != case.id:
+                raise SiteServiceRequestConflictError("site_source_identity_conflict")
 
             latest_customer_message = max(
                 (
@@ -257,9 +286,7 @@ def accept_site_service_email_event(
     """Persist a PII-free email event and bind its thread to one service case."""
 
     existing_event = session.scalar(
-        select(SiteServiceRequestEvent).where(
-            SiteServiceRequestEvent.event_id == payload.event_id
-        )
+        select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == payload.event_id)
     )
     if existing_event is not None:
         if existing_event.payload_sha256 != payload_sha256:
@@ -289,8 +316,7 @@ def accept_site_service_email_event(
                 preferred_case = session.scalar(
                     select(SiteServiceRequestCase)
                     .where(
-                        SiteServiceRequestCase.bitrix_item_id
-                        == payload.existing_service_item_id
+                        SiteServiceRequestCase.bitrix_item_id == payload.existing_service_item_id
                     )
                     .with_for_update()
                 )
@@ -299,13 +325,9 @@ def accept_site_service_email_event(
                     and case.bitrix_item_id is not None
                     and case.bitrix_item_id != payload.existing_service_item_id
                 ):
-                    raise SiteServiceRequestConflictError(
-                        "email_source_item_conflict"
-                    )
+                    raise SiteServiceRequestConflictError("email_source_item_conflict")
                 if case is not None and preferred_case is not None and case.id != preferred_case.id:
-                    raise SiteServiceRequestConflictError(
-                        "email_source_item_conflict"
-                    )
+                    raise SiteServiceRequestConflictError("email_source_item_conflict")
                 if case is None:
                     case = preferred_case
 
@@ -362,8 +384,9 @@ def accept_site_service_email_event(
                     payload.message_id,
                 )
 
-            case.sync_status = "pending"
-            case.last_error_code = None
+            if case.source_kind == source_kind:
+                case.sync_status = "pending"
+                case.last_error_code = None
             case.updated_at = current_time
             source.updated_at = current_time
             session.add(
@@ -373,9 +396,7 @@ def accept_site_service_email_event(
                     source_message_id=payload.message_id,
                     source_activity_id=payload.activity_id,
                     event_type=payload.event_type,
-                    direction=(
-                        "inbound" if payload.event_type == "email.received" else "outbound"
-                    ),
+                    direction=("inbound" if payload.event_type == "email.received" else "outbound"),
                     payload_encrypted=cipher.encrypt(raw_body, event_id=payload.event_id),
                     payload_sha256=payload_sha256,
                     source_message_sha256=payload_sha256,

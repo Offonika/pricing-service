@@ -140,9 +140,7 @@ def _site_service_request_body_limit_for_path(
 ) -> int:
     if method.upper() == "PUT" and "/files/" in path:
         return settings.site_service_requests_max_file_bytes
-    if method.upper() == "POST" and (
-        path.endswith("/events") or path.endswith("/email-events")
-    ):
+    if method.upper() == "POST" and (path.endswith("/events") or path.endswith("/email-events")):
         return settings.site_service_requests_max_event_body_bytes
     if method.upper() == "POST" and path.endswith("/ack"):
         return settings.site_service_requests_max_ack_body_bytes

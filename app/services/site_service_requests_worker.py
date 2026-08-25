@@ -2481,7 +2481,8 @@ def collect_site_service_request_outbound_commands(
         try:
             _lock_site_service_request_outbound_sequence(session)
             query = select(SiteServiceRequestCase).where(
-                SiteServiceRequestCase.bitrix_item_id.is_not(None)
+                SiteServiceRequestCase.bitrix_item_id.is_not(None),
+                SiteServiceRequestCase.source_kind == "site_ticket",
             )
             if processed_case_ids:
                 query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
@@ -2597,8 +2598,12 @@ def _deliver_site_service_request_escalation(
         writer.notify_user(
             user_id=settings.site_service_requests_escalation_user_id,
             message=(
-                "Просрочен SLA первого ответа по сервисному обращению "
-                f"сайта #{case.source_ticket_id}."
+                "Просрочен SLA первого ответа по "
+                + (
+                    "сервисному email-обращению."
+                    if case.source_kind == "bitrix_mail"
+                    else f"сервисному обращению сайта #{case.source_ticket_id}."
+                )
             ),
             tag=(
                 f"mm-site-service-escalation:{case.id}:"
@@ -2924,9 +2929,11 @@ def _sync_site_service_email_activity_assignment(
         raise RuntimeError("email_activity_assignment_readback_failed")
     if str(readback.get("COMPLETED") or readback.get("completed") or "N") != "N":
         raise RuntimeError("email_activity_assignment_readback_failed")
-    if assigned_user_id is not None and _positive_int(
-        readback.get("RESPONSIBLE_ID") or readback.get("responsibleId")
-    ) != assigned_user_id:
+    if (
+        assigned_user_id is not None
+        and _positive_int(readback.get("RESPONSIBLE_ID") or readback.get("responsibleId"))
+        != assigned_user_id
+    ):
         raise RuntimeError("email_activity_assignment_readback_failed")
 
 

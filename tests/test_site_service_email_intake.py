@@ -208,6 +208,8 @@ def test_technical_existing_item_link_reuses_site_case_without_changing_source(
         source_kind="site_ticket",
         source_key="site-support-ticket:741",
         bitrix_item_id=4321,
+        base_sync_status="synced",
+        sync_status="synced",
     )
     db_session.add(site_case)
     db_session.commit()
@@ -219,6 +221,8 @@ def test_technical_existing_item_link_reuses_site_case_without_changing_source(
     db_session.refresh(site_case)
     assert site_case.source_kind == "site_ticket"
     assert site_case.source_key == "site-support-ticket:741"
+    assert site_case.base_sync_status == "synced"
+    assert site_case.sync_status == "synced"
     source = db_session.scalar(select(SiteServiceRequestSource))
     assert source is not None and source.case_id == site_case.id
     assert source.source_key == "bitrix-mail:shop:77001"

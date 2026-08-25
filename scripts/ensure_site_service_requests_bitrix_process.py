@@ -70,7 +70,7 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
 FORM_SECTIONS = (
     (
         "site_request",
-        "Обращение сайта",
+        "Источник обращения",
         (
             "TITLE",
             "site_ticket_id",

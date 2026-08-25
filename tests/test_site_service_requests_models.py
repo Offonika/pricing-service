@@ -534,9 +534,7 @@ def test_email_sources_migration_backfills_site_identity_and_is_reversible(
             )
         ).one()
         source_row = connection.execute(
-            text(
-                "SELECT source_kind, source_key FROM site_service_request_source"
-            )
+            text("SELECT source_kind, source_key FROM site_service_request_source")
         ).one()
         assert case_row == ("site_ticket", "site-support-ticket:741")
         assert source_row == case_row

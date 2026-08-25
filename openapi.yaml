@@ -28369,6 +28369,9 @@ components:
         ingestEnabled:
           type: boolean
           title: Ingestenabled
+        emailIngestEnabled:
+          type: boolean
+          title: Emailingestenabled
         bitrixWritesEnabled:
           type: boolean
           title: Bitrixwritesenabled
@@ -28389,6 +28392,7 @@ components:
       - pendingEscalationDeliveries
       - lastSuccessfulExchangeAt
       - ingestEnabled
+      - emailIngestEnabled
       - bitrixWritesEnabled
       - outboundRepliesEnabled
       title: SiteServiceRequestHealthResponse

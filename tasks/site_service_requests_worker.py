@@ -257,6 +257,7 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
         "ready": not errors,
         "errors": errors,
         "bitrixWritesEnabled": settings.site_service_requests_bitrix_writes_enabled,
+        "emailIngestEnabled": settings.site_service_requests_email_ingest_enabled,
         "outboundRepliesEnabled": settings.site_service_requests_outbound_replies_enabled,
     }
 

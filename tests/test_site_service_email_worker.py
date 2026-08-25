@@ -16,6 +16,7 @@ from app.models.site_service_requests import (
 )
 from app.schemas.site_service_requests import SiteServiceEmailEventPayload
 from app.services.site_service_request_email_worker import (
+    _verify_email_event,
     process_site_service_email_events,
 )
 from app.services.site_service_requests import (
@@ -58,9 +59,7 @@ def _settings(**overrides) -> Settings:
         "site_service_requests_email_ingest_enabled": True,
         "site_service_requests_bitrix_writes_enabled": True,
         "site_service_requests_event_encryption_key": _ENCRYPTION_KEY,
-        "site_service_requests_bitrix_webhook_url": (
-            "https://crm.master-mobile.ru/rest/1/token"
-        ),
+        "site_service_requests_bitrix_webhook_url": ("https://crm.master-mobile.ru/rest/1/token"),
         "site_service_requests_bitrix_field_map": field_map,
         "site_service_requests_bitrix_stage_map": {"new": "DT1134_55:NEW"},
         "site_service_requests_bitrix_enum_map": enum_map,
@@ -160,6 +159,8 @@ class FakeEmailBitrixApi:
         self.calls.append(method)
         if method == "crm.activity.get":
             return {"result": deepcopy(self.activities[int(mapped["id"])])}
+        if method == "crm.activity.list":
+            return {"result": [deepcopy(activity) for activity in self.activities.values()]}
         if method == "crm.deal.get":
             return {"result": deepcopy(self.deal)}
         if method == "crm.contact.get":
@@ -241,9 +242,7 @@ def test_received_email_creates_one_card_without_creating_contact_or_lead(
     assert "crm.contact.add" not in api.calls
     assert "crm.lead.add" not in api.calls
     assert api.notifications == [(7777, f"mm-service-email-manager:{case.id}")]
-    assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001][
-        "BINDINGS"
-    ]
+    assert {"OWNER_TYPE_ID": 1134, "OWNER_ID": 4321} in api.activities[99001]["BINDINGS"]
 
 
 def test_outgoing_reply_stops_sla_and_closes_email_not_card(db_session) -> None:
@@ -296,3 +295,65 @@ def test_outgoing_reply_stops_sla_and_closes_email_not_card(db_session) -> None:
     assert api.items[4321]["stageId"] == "DT1134_55:NEW"
     assert db_session.scalar(select(func.count(SiteServiceRequestCase.id))) == 1
     assert len(api.notifications) == 1
+
+
+def test_existing_card_may_be_confirmed_by_inherited_thread_binding() -> None:
+    api = FakeEmailBitrixApi()
+    api.activities[99000] = {
+        "ID": "99000",
+        "PROVIDER_ID": "CRM_EMAIL",
+        "DIRECTION": "2",
+        "THREAD_ID": "777",
+        "COMPLETED": "Y",
+        "BINDINGS": [
+            {"OWNER_TYPE_ID": "2", "OWNER_ID": "601"},
+            {"OWNER_TYPE_ID": "3", "OWNER_ID": "501"},
+            {"OWNER_TYPE_ID": "1134", "OWNER_ID": "4321"},
+        ],
+        "COMMUNICATIONS": [],
+    }
+
+    result = _verify_email_event(
+        payload=_payload(existing_item_id=4321),
+        api=api,
+        settings=_settings(),
+    )
+
+    assert result.deal_manager_user_id == 7777
+
+
+def test_existing_site_card_keeps_original_idempotency_key(db_session) -> None:
+    site_case = SiteServiceRequestCase(
+        source_ticket_id=741,
+        source_kind="site_ticket",
+        source_key="site-support-ticket:741",
+        bitrix_item_id=4321,
+    )
+    db_session.add(site_case)
+    db_session.commit()
+    _persist(db_session, _payload(existing_item_id=4321))
+    api = FakeEmailBitrixApi()
+    api.activities[99001]["BINDINGS"].append({"OWNER_TYPE_ID": "1134", "OWNER_ID": "4321"})
+    api.items[4321] = {
+        "stageId": "DT1134_55:NEW",
+        "ufCrm36Idempotencykey": "site-support-ticket:741",
+        "ufCrm36Source": "site-support-ticket",
+        "ufCrm36Problemdescription": "Исходное описание сайта",
+        "title": "Исходный тикет сайта",
+    }
+    api.next_item_id = 5000
+
+    results = process_site_service_email_events(
+        db_session,
+        settings=_settings(),
+        api=api,
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+        now=datetime(2026, 8, 25, 9, 5, tzinfo=UTC),
+    )
+
+    assert len(results) == 1 and results[0].bitrix_item_id == 4321
+    assert api.items[4321]["ufCrm36Idempotencykey"] == "site-support-ticket:741"
+    assert api.items[4321]["ufCrm36Source"] == "site-support-ticket"
+    assert api.items[4321]["ufCrm36Problemdescription"] == "Исходное описание сайта"
+    assert api.items[4321]["title"] == "Исходный тикет сайта"
+    assert db_session.scalar(select(func.count(SiteServiceRequestCase.id))) == 1

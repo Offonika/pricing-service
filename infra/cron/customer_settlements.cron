@@ -1,0 +1,5 @@
+CRON_TZ=Europe/Moscow
+5 * * * * /opt/MM/pricing-service/infra/cron/customer_settlement_mapping_sync.sh >> /var/log/pricing/customer_settlement_mapping_sync.log 2>&1
+17 * * * * /opt/MM/pricing-service/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing/customer_settlement_financial_sync.log 2>&1
+35 * * * * /opt/MM/pricing-service/infra/cron/customer_settlement_health.sh >> /var/log/pricing/customer_settlement_health.log 2>&1
+25 3 * * * /opt/MM/pricing-service/infra/cron/customer_settlement_cleanup.sh >> /var/log/pricing/customer_settlement_cleanup.log 2>&1

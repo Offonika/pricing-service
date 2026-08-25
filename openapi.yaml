@@ -5490,6 +5490,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer/settlements/summary:
+    get:
+      summary: Customer Settlement Summary
+      operationId: customer_settlement_summary_api_customer_settlements_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerSettlementSummaryResponse'
+      security:
+      - HTTPBearer: []
   /api/expertise/sync/cases:
     post:
       summary: Sync Cases
@@ -14873,6 +14886,59 @@ components:
       - ruleset_version
       - source_status
       title: CustomerPriceTypeWorklistsResponse
+    CustomerSettlementSummaryResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - available
+          - stale
+          - temporarily_unavailable
+          - not_linked
+          - ambiguous_link
+          - pilot_disabled
+          title: Status
+        state:
+          anyOf:
+          - type: string
+            enum:
+            - debt
+            - advance
+            - zero
+          - type: 'null'
+          title: State
+        amount:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Amount
+        currency:
+          anyOf:
+          - type: string
+            const: RUB
+          - type: 'null'
+          title: Currency
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Synced At
+        is_stale:
+          type: boolean
+          title: Is Stale
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - is_stale
+      title: CustomerSettlementSummaryResponse
     DecisionHistoryItem:
       properties:
         id:

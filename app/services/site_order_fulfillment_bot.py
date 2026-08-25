@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session, aliased
 from app.core.config import Settings
 from app.models.logistics import LogisticsWarehouse
 from app.models.site_order_fulfillment import (
-    BitrixBotInputSession,
     BitrixChatAction,
     BitrixChatActionCandidate,
     BitrixChatMessage,
@@ -166,7 +165,6 @@ OP_PROCESS_INVENTORY_CLARIFICATION = "process_inventory_clarification"
 OP_UPDATE_INVENTORY_CLARIFICATION = "update_inventory_clarification"
 OP_REFRESH_INTERACTIVE_CARD = "refresh_interactive_card"
 OP_FINALIZE_STRUCTURED_ARRIVAL = "finalize_structured_arrival"
-OP_PUBLISH_MENU_INPUT_PROMPT = "publish_menu_input_prompt"
 
 APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
     {
@@ -186,13 +184,11 @@ NON_RETRYABLE_EXTERNAL_OPERATIONS = {
     OP_UPDATE_INVENTORY_CLARIFICATION,
     OP_REFRESH_INTERACTIVE_CARD,
     OP_FINALIZE_STRUCTURED_ARRIVAL,
-    OP_PUBLISH_MENU_INPUT_PROMPT,
     OP_START_SMS_WORKFLOW,
     OP_CREATE_TASK,
 }
 CANDIDATE_CREATE_ADVISORY_LOCK_KEY = 5_584_927_483_672
 SLA_TASK_ADVISORY_LOCK_KEY = 5_584_927_483_673
-MENU_INPUT_ADVISORY_LOCK_KEY = 5_584_927_483_674
 APPLY_ENABLED_ENV_KEY = "ORDER_FULFILLMENT_BOT_APPLY_ENABLED"
 TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 DEFAULT_RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -723,7 +719,6 @@ def create_interactive_candidates(
     settings: Settings,
     apply_enabled_probe: Callable[[], bool] | None = None,
     now: datetime | None = None,
-    commit: bool = True,
 ) -> list[BitrixChatActionCandidate]:
     """Persist a public command without treating it as chat evidence."""
 
@@ -792,200 +787,8 @@ def create_interactive_candidates(
         payload={"interaction": interaction},
         now=now,
     )
-    if commit:
-        session.commit()
+    session.commit()
     return created
-
-
-def start_menu_input_session(
-    session: Session,
-    *,
-    dialog_id: str,
-    actor_id: str,
-    source_message_id: str,
-    interaction: str,
-    settings: Settings,
-    now: datetime | None = None,
-) -> tuple[BitrixBotInputSession, bool]:
-    """Start an actor-scoped, short-lived follow-up input session."""
-
-    if interaction not in {"search", "structured_arrival"}:
-        raise ValueError("unsupported_interaction")
-    if dialog_id not in set(settings.order_fulfillment_bot_source_chat_ids):
-        raise ValueError("source_chat_not_allowed")
-    clean_actor = fulfillment._clean_string(actor_id)
-    clean_message_id = fulfillment._clean_string(source_message_id)
-    if not clean_actor or not clean_actor.isdigit():
-        raise ValueError("actor_invalid")
-    if not clean_message_id or not clean_message_id.isdigit():
-        raise ValueError("message_id_invalid")
-
-    now = _naive_utc(now or utcnow())
-    _acquire_advisory_xact_lock(session, MENU_INPUT_ADVISORY_LOCK_KEY)
-    existing = session.scalar(
-        select(BitrixBotInputSession).where(
-            BitrixBotInputSession.dialog_id == dialog_id,
-            BitrixBotInputSession.actor_id == clean_actor,
-            BitrixBotInputSession.source_message_id == clean_message_id,
-        )
-    )
-    if existing is not None:
-        return existing, True
-
-    previous = session.scalars(
-        select(BitrixBotInputSession)
-        .where(
-            BitrixBotInputSession.dialog_id == dialog_id,
-            BitrixBotInputSession.actor_id == clean_actor,
-            BitrixBotInputSession.status == "pending",
-        )
-        .with_for_update()
-    ).all()
-    for item in previous:
-        item.status = "expired" if item.expires_at <= now else "superseded"
-        item.updated_at = now
-
-    input_session = BitrixBotInputSession(
-        dialog_id=dialog_id,
-        actor_id=clean_actor,
-        interaction=interaction,
-        source_message_id=clean_message_id,
-        status="pending",
-        expires_at=now + timedelta(minutes=10),
-        payload={},
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(input_session)
-    session.flush()
-    enqueue_outbox(
-        session,
-        operation=OP_PUBLISH_MENU_INPUT_PROMPT,
-        idempotency_key=f"menu-input:{input_session.id}:start",
-        target_type="bot_input_session",
-        target_id=str(input_session.id),
-        payload={"prompt_kind": "start"},
-        now=now,
-    )
-    session.commit()
-    return input_session, False
-
-
-def active_menu_input_session(
-    session: Session,
-    *,
-    dialog_id: str,
-    actor_id: str,
-    now: datetime | None = None,
-) -> BitrixBotInputSession | None:
-    clean_actor = fulfillment._clean_string(actor_id)
-    if not clean_actor:
-        return None
-    now = _naive_utc(now or utcnow())
-    rows = session.scalars(
-        select(BitrixBotInputSession)
-        .where(
-            BitrixBotInputSession.dialog_id == dialog_id,
-            BitrixBotInputSession.actor_id == clean_actor,
-            BitrixBotInputSession.status == "pending",
-        )
-        .order_by(BitrixBotInputSession.id.desc())
-        .with_for_update()
-    ).all()
-    active: BitrixBotInputSession | None = None
-    changed = False
-    for item in rows:
-        if item.expires_at <= now:
-            item.status = "expired"
-            item.updated_at = now
-            changed = True
-        elif active is None:
-            active = item
-    if changed:
-        session.commit()
-    return active
-
-
-def consume_menu_input_session(
-    session: Session,
-    *,
-    input_session_id: int,
-    source_message_id: str,
-    order_numbers: list[str],
-    settings: Settings,
-    apply_enabled_probe: Callable[[], bool] | None = None,
-    now: datetime | None = None,
-) -> tuple[BitrixBotInputSession, list[BitrixChatActionCandidate]] | None:
-    now = _naive_utc(now or utcnow())
-    clean_message_id = fulfillment._clean_string(source_message_id)
-    if not clean_message_id or not clean_message_id.isdigit():
-        raise ValueError("message_id_invalid")
-    _acquire_advisory_xact_lock(session, MENU_INPUT_ADVISORY_LOCK_KEY)
-    input_session = session.scalar(
-        select(BitrixBotInputSession)
-        .where(
-            BitrixBotInputSession.id == input_session_id,
-            BitrixBotInputSession.status == "pending",
-            BitrixBotInputSession.expires_at > now,
-        )
-        .with_for_update()
-    )
-    if input_session is None:
-        return None
-    candidates = create_interactive_candidates(
-        session,
-        dialog_id=input_session.dialog_id,
-        source_message_id=clean_message_id,
-        actor_id=input_session.actor_id,
-        order_numbers=order_numbers,
-        interaction=input_session.interaction,
-        settings=settings,
-        apply_enabled_probe=apply_enabled_probe,
-        now=now,
-        commit=False,
-    )
-    input_session.status = "consumed"
-    input_session.consumed_message_id = clean_message_id
-    input_session.payload = {
-        **(input_session.payload or {}),
-        "candidate_ids": [candidate.id for candidate in candidates],
-    }
-    input_session.updated_at = now
-    session.commit()
-    return input_session, candidates
-
-
-def queue_invalid_menu_input_prompt(
-    session: Session,
-    *,
-    input_session_id: int,
-    source_message_id: str,
-    now: datetime | None = None,
-) -> SiteOrderFulfillmentOutbox | None:
-    now = _naive_utc(now or utcnow())
-    clean_message_id = fulfillment._clean_string(source_message_id)
-    input_session = session.scalar(
-        select(BitrixBotInputSession)
-        .where(
-            BitrixBotInputSession.id == input_session_id,
-            BitrixBotInputSession.status == "pending",
-            BitrixBotInputSession.expires_at > now,
-        )
-        .with_for_update()
-    )
-    if input_session is None:
-        return None
-    row = enqueue_outbox(
-        session,
-        operation=OP_PUBLISH_MENU_INPUT_PROMPT,
-        idempotency_key=f"menu-input:{input_session.id}:invalid:{clean_message_id}",
-        target_type="bot_input_session",
-        target_id=str(input_session.id),
-        payload={"prompt_kind": "invalid", "source_message_id": clean_message_id},
-        now=now,
-    )
-    session.commit()
-    return row
 
 
 def sign_callback_token(
@@ -1645,8 +1448,8 @@ def pickup_menu_text() -> str:
     return (
         "Самовывоз Master Mobile\n"
         "\n"
-        "Нажмите нужную кнопку. Бот следующим сообщением попросит номера "
-        "и будет ждать ваш ответ 10 минут.\n"
+        "Выберите действие. После нажатия допишите только номер заказа "
+        "или несколько номеров через пробел и отправьте сообщение.\n"
         "\n"
         "Поиск ничего не меняет в CRM. Поступление применяется только после "
         "проверки точки и отдельного подтверждения."
@@ -1657,15 +1460,15 @@ def pickup_menu_keyboard() -> list[dict[str, Any]]:
     return [
         {
             "TEXT": "Найти заказ",
-            "ACTION": "SEND",
-            "ACTION_VALUE": "Найти заказ",
+            "ACTION": "PUT",
+            "ACTION_VALUE": "Найти заказ ",
             "BG_COLOR": "#2FC6F6",
             "BLOCK": "Y",
         },
         {
             "TEXT": "Зафиксировать поступление",
-            "ACTION": "SEND",
-            "ACTION_VALUE": "Зафиксировать поступление",
+            "ACTION": "PUT",
+            "ACTION_VALUE": "Зафиксировать поступление ",
             "BG_COLOR": "#9DCF00",
             "BLOCK": "Y",
         },
@@ -2456,15 +2259,6 @@ def _dispatch_outbox(
             _require_lost_orders_enabled(settings, apply_enabled_probe)
         else:
             _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
-    if row.operation == OP_PUBLISH_MENU_INPUT_PROMPT:
-        _publish_menu_input_prompt(
-            session,
-            row=row,
-            client=client,
-            settings=settings,
-            now=now,
-        )
-        return
     if row.operation == OP_PUBLISH_CARD:
         _publish_card(
             session,
@@ -2608,68 +2402,6 @@ def _dispatch_outbox(
         _finalize_case_event(session, row=row, now=now)
         return
     raise RuntimeError(f"unsupported_outbox_operation:{row.operation}")
-
-
-def _publish_menu_input_prompt(
-    session: Session,
-    *,
-    row: SiteOrderFulfillmentOutbox,
-    client: fulfillment.BitrixChatClient,
-    settings: Settings,
-    now: datetime,
-) -> None:
-    if row.target_type != "bot_input_session" or not str(row.target_id or "").isdigit():
-        raise RuntimeError("bot_input_session_target_invalid")
-    input_session = session.get(BitrixBotInputSession, int(row.target_id))
-    if input_session is None:
-        raise RuntimeError("bot_input_session_missing")
-    if settings.order_fulfillment_bot_id is None:
-        raise RetryableBeforeExternalEffect("bot_id_not_configured")
-    if not fulfillment._clean_string(settings.order_fulfillment_bot_client_id):
-        raise RetryableBeforeExternalEffect("bot_client_id_not_configured")
-    try:
-        participants = client.list_dialog_user_ids(input_session.dialog_id)
-    except Exception as exc:
-        raise RetryableBeforeExternalEffect(str(exc)) from exc
-    excluded = {str(item) for item in settings.order_fulfillment_bot_excluded_user_ids}
-    if input_session.actor_id not in participants or input_session.actor_id in excluded:
-        input_session.status = "rejected"
-        input_session.updated_at = now
-        return
-
-    prompt_kind = fulfillment._clean_string((row.payload or {}).get("prompt_kind"))
-    if prompt_kind not in {"start", "invalid"}:
-        raise RuntimeError("bot_input_prompt_kind_invalid")
-    if input_session.interaction == "search":
-        instruction = "Пришлите следующим сообщением один шестизначный номер заказа."
-    elif input_session.interaction == "structured_arrival":
-        instruction = (
-            "Пришлите следующим сообщением номера заказов через пробел. "
-            "Можно указать до 20 номеров."
-        )
-    else:
-        raise RuntimeError("bot_input_interaction_invalid")
-    if prompt_kind == "invalid":
-        message = f"Не удалось распознать номера. {instruction} Ожидаю ваш ответ 10 минут."
-    else:
-        title = (
-            "Найти заказ" if input_session.interaction == "search" else "Зафиксировать поступление"
-        )
-        message = f"{title}\n{instruction} Ожидаю ваш ответ 10 минут."
-    message_id = client.add_bot_message(
-        dialog_id=input_session.dialog_id,
-        bot_id=settings.order_fulfillment_bot_id,
-        message=message,
-        keyboard=[],
-    )
-    if prompt_kind == "start":
-        input_session.prompt_message_id = message_id
-    else:
-        input_session.payload = {
-            **(input_session.payload or {}),
-            "last_invalid_prompt_message_id": message_id,
-        }
-    input_session.updated_at = now
 
 
 def _publish_card(

@@ -404,44 +404,6 @@ class BitrixChatActionCandidate(Base):
     )
 
 
-class BitrixBotInputSession(Base):
-    __tablename__ = "bitrix_bot_input_session"
-    __table_args__ = (
-        UniqueConstraint(
-            "dialog_id",
-            "actor_id",
-            "source_message_id",
-            name="uq_bitrix_bot_input_session_source",
-        ),
-        Index(
-            "ix_bitrix_bot_input_session_actor_status_expires",
-            "dialog_id",
-            "actor_id",
-            "status",
-            "expires_at",
-        ),
-    )
-
-    dialog_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    interaction: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    consumed_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    prompt_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 class BitrixChatAction(Base):
     __tablename__ = "bitrix_chat_action"
     __table_args__ = (

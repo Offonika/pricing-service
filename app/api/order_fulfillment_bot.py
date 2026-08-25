@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
 from app.core.config import Settings, get_settings
 from app.models.site_order_fulfillment import (
-    BitrixBotInputSession,
     BitrixChatActionCandidate,
     SiteOrderFulfillmentOutbox,
 )
@@ -87,26 +86,6 @@ async def bitrix_bot_event(
         )
         if not message_id:
             raise HTTPException(status_code=400, detail="message id is missing")
-        menu_start = _russian_menu_start(text_value)
-        if menu_start is not None:
-            try:
-                input_session, duplicate = bot.start_menu_input_session(
-                    db,
-                    dialog_id=dialog_id,
-                    actor_id=author_id,
-                    source_message_id=message_id,
-                    interaction=menu_start,
-                    settings=settings,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            return {
-                "accepted": True,
-                "interaction": menu_start,
-                "awaiting_input": True,
-                "input_session_id": input_session.id,
-                "duplicate": duplicate,
-            }
         menu_interaction = _russian_menu_interaction(text_value)
         if menu_interaction is not None:
             command_kind, raw_orders = menu_interaction
@@ -135,68 +114,6 @@ async def bitrix_bot_event(
                 "orders": len(candidates),
                 "candidate_id": candidates[0].id,
             }
-        clean_author_id = author_id.strip()
-        if clean_author_id:
-            consumed_session = db.scalar(
-                select(BitrixBotInputSession).where(
-                    BitrixBotInputSession.dialog_id == dialog_id,
-                    BitrixBotInputSession.actor_id == clean_author_id,
-                    BitrixBotInputSession.consumed_message_id == message_id,
-                    BitrixBotInputSession.status == "consumed",
-                )
-            )
-            if consumed_session is not None:
-                candidate_ids = list((consumed_session.payload or {}).get("candidate_ids") or [])
-                return {
-                    "accepted": True,
-                    "interaction": consumed_session.interaction,
-                    "orders": len(candidate_ids),
-                    "candidate_id": candidate_ids[0] if candidate_ids else None,
-                    "duplicate": True,
-                }
-            input_session = bot.active_menu_input_session(
-                db,
-                dialog_id=dialog_id,
-                actor_id=clean_author_id,
-            )
-            if input_session is not None:
-                try:
-                    orders = _public_command_orders(
-                        text_value,
-                        allow_many=input_session.interaction == "structured_arrival",
-                    )
-                except ValueError:
-                    bot.queue_invalid_menu_input_prompt(
-                        db,
-                        input_session_id=input_session.id,
-                        source_message_id=message_id,
-                    )
-                    return {
-                        "accepted": True,
-                        "interaction": input_session.interaction,
-                        "awaiting_input": True,
-                        "invalid_input": True,
-                    }
-                consumed = bot.consume_menu_input_session(
-                    db,
-                    input_session_id=input_session.id,
-                    source_message_id=message_id,
-                    order_numbers=orders,
-                    settings=settings,
-                    apply_enabled_probe=lambda: bot.runtime_apply_enabled_from_env(
-                        initial_enabled=settings.order_fulfillment_bot_apply_enabled,
-                    ),
-                )
-                if consumed is not None:
-                    consumed_session, candidates = consumed
-                    return {
-                        "accepted": True,
-                        "interaction": consumed_session.interaction,
-                        "orders": len(candidates),
-                        "candidate_id": candidates[0].id,
-                    }
-        if _is_order_number_only_input(text_value):
-            return {"accepted": True, "ignored": True, "reason": "no_active_input_session"}
         try:
             candidates = bot.create_candidates_from_message(
                 db,
@@ -393,23 +310,6 @@ def _russian_menu_interaction(value: str) -> tuple[str, str] | None:
         if match := re.fullmatch(pattern, normalized):
             return interaction, match.group(1)
     return None
-
-
-def _russian_menu_start(value: str) -> str | None:
-    normalized = " ".join(value.strip().split()).casefold()
-    if normalized == "найти заказ":
-        return "search"
-    if normalized == "зафиксировать поступление":
-        return "structured_arrival"
-    return None
-
-
-def _is_order_number_only_input(value: str) -> bool:
-    try:
-        _public_command_orders(value, allow_many=True)
-    except ValueError:
-        return False
-    return True
 
 
 @internal_router.get("/health")

@@ -2473,73 +2473,16 @@ def test_execution_event_times_are_normalized_before_ordering(db_session) -> Non
     assert case.current_derived_status == fulfillment.EVENT_PICKUP_RECEIVED
 
 
-def test_pickup_menu_uses_russian_send_actions_without_slash_commands() -> None:
+def test_pickup_menu_uses_russian_put_actions_without_slash_commands() -> None:
     keyboard = bot.pickup_menu_keyboard()
 
     assert [button["TEXT"] for button in keyboard] == [
         "Найти заказ",
         "Зафиксировать поступление",
     ]
-    assert [button["ACTION"] for button in keyboard] == ["SEND", "SEND"]
+    assert [button["ACTION"] for button in keyboard] == ["PUT", "PUT"]
     assert [button["ACTION_VALUE"] for button in keyboard] == [
-        "Найти заказ",
-        "Зафиксировать поступление",
+        "Найти заказ ",
+        "Зафиксировать поступление ",
     ]
     assert all("/pickup" not in button["ACTION_VALUE"] for button in keyboard)
-
-
-def test_menu_input_prompt_is_published_for_active_participant(db_session) -> None:
-    settings = _settings()
-    input_session, duplicate = bot.start_menu_input_session(
-        db_session,
-        dialog_id="chat8729",
-        actor_id="7",
-        source_message_id="272573",
-        interaction="structured_arrival",
-        settings=settings,
-        now=datetime(2026, 8, 25, 12, 0),
-    )
-    client = FakeBitrixClient(participants={"7", "8"})
-
-    stats = bot.process_outbox(
-        db_session,
-        client=client,
-        settings=settings,
-        onec_validator=lambda _: bot.OneCPickupValidation(available=True),
-        now=datetime(2026, 8, 25, 12, 1),
-    )
-    db_session.refresh(input_session)
-
-    assert duplicate is False
-    assert stats["completed"] == 1
-    assert input_session.prompt_message_id == "9001"
-    assert len(client.bot_messages) == 1
-    assert "Пришлите следующим сообщением номера заказов" in client.bot_messages[0]["message"]
-    assert "10 минут" in client.bot_messages[0]["message"]
-
-
-def test_menu_input_prompt_rejects_non_participant_without_message(db_session) -> None:
-    settings = _settings()
-    input_session, _ = bot.start_menu_input_session(
-        db_session,
-        dialog_id="chat8729",
-        actor_id="7",
-        source_message_id="272573",
-        interaction="search",
-        settings=settings,
-        now=datetime(2026, 8, 25, 12, 0),
-    )
-    client = FakeBitrixClient(participants={"8"})
-
-    stats = bot.process_outbox(
-        db_session,
-        client=client,
-        settings=settings,
-        onec_validator=lambda _: bot.OneCPickupValidation(available=True),
-        now=datetime(2026, 8, 25, 12, 1),
-    )
-    db_session.refresh(input_session)
-
-    assert stats["completed"] == 1
-    assert input_session.status == "rejected"
-    assert client.bot_messages == []

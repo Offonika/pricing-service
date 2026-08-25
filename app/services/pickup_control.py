@@ -68,7 +68,10 @@ def poll_pickup_control_chats(
             run_ocr=False,
             settings=settings,
         )
-    if settings.order_fulfillment_pickup_evidence_tracking_enabled:
+    if (
+        settings.order_fulfillment_pickup_evidence_tracking_enabled
+        and settings.order_fulfillment_pickup_evidence_cutover_at is not None
+    ):
         if onec_validator is None:
             raise RuntimeError("pickup_evidence_onec_validator_required")
         stats["evidence"] = reconcile_strict_pickup_evidence(
@@ -137,7 +140,7 @@ def reconcile_strict_pickup_evidence(
     """Persist strict dispatch/receipt evidence without changing CRM or sending messages."""
 
     stats = {"checked": 0, "recorded": 0, "duplicate": 0, "blocked": 0}
-    cutover = settings.order_fulfillment_bot_cutover_at
+    cutover = settings.order_fulfillment_pickup_evidence_cutover_at
     if not settings.order_fulfillment_pickup_evidence_tracking_enabled or cutover is None:
         return stats
     now = bot._naive_utc(now or bot.utcnow())  # noqa: SLF001
@@ -296,7 +299,7 @@ def enqueue_missing_receipt_followups(
         "task_queued": 0,
         "dry_run": 0,
     }
-    cutover = settings.order_fulfillment_bot_cutover_at
+    cutover = settings.order_fulfillment_pickup_evidence_cutover_at
     if not settings.order_fulfillment_pickup_evidence_tracking_enabled or cutover is None:
         return stats
     now = bot._naive_utc(now or bot.utcnow())  # noqa: SLF001
@@ -416,7 +419,10 @@ def create_missing_pickup_candidates(
         BitrixChatMessage.parse_status != "edited_manual_review",
         ~exists().where(BitrixChatActionCandidate.raw_message_id == BitrixChatMessage.id),
     ]
-    if settings.order_fulfillment_pickup_evidence_tracking_enabled:
+    if (
+        settings.order_fulfillment_pickup_evidence_tracking_enabled
+        and settings.order_fulfillment_pickup_evidence_cutover_at is not None
+    ):
         message_filters.append(
             ~exists().where(SiteOrderExecutionEvent.raw_message_id == BitrixChatMessage.id)
         )
@@ -686,7 +692,11 @@ def pickup_operational_metrics(
         chat_code: stored_freshness.get(chat_code) for chat_code in expected_chat_codes
     }
     cutover = settings.order_fulfillment_bot_cutover_at
+    evidence_cutover = settings.order_fulfillment_pickup_evidence_cutover_at
     cutover_naive = bot._naive_utc(cutover) if cutover is not None else None  # noqa: SLF001
+    evidence_cutover_naive = (
+        bot._naive_utc(evidence_cutover) if evidence_cutover is not None else None  # noqa: SLF001
+    )
     current_case_filters = [
         SiteOrderExecutionCase.current_crm_stage == fulfillment.CRM_STAGE_PICKUP_WAITING,
     ]
@@ -774,7 +784,7 @@ def pickup_operational_metrics(
         or 0
     )
     missing_receipt_due = 0
-    if cutover_naive is not None:
+    if evidence_cutover_naive is not None:
         due_movements = session.scalars(
             select(SiteOrderExecutionEvent).where(
                 SiteOrderExecutionEvent.event_type.in_(
@@ -783,7 +793,7 @@ def pickup_operational_metrics(
                         fulfillment.EVENT_PICKUP_REDIRECTED,
                     ]
                 ),
-                SiteOrderExecutionEvent.event_at >= cutover_naive,
+                SiteOrderExecutionEvent.event_at >= evidence_cutover_naive,
                 SiteOrderExecutionEvent.event_at
                 <= now
                 - timedelta(hours=settings.order_fulfillment_pickup_receipt_question_after_hours),

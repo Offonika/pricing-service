@@ -488,6 +488,10 @@ UX остаётся только в `chat739`, inventory clarification — то�
 non-retry правилом после неоднозначного результата внешнего API. Флаги
 `ORDER_FULFILLMENT_PICKUP_EVIDENCE_TRACKING_ENABLED` и
 `ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED` по умолчанию выключены.
+Первый флаг дополнительно требует отдельную явную границу
+`ORDER_FULFILLMENT_PICKUP_EVIDENCE_CUTOVER_AT`; общая старая дата запуска бота
+для нового контура не используется, поэтому накопленные сообщения не создают
+неявный backfill и шквал просроченных вопросов.
 Второй флаг перечитывается непосредственно перед каждым внешним действием и не
 требует включения общего CRM-флага `ORDER_FULFILLMENT_BOT_APPLY_ENABLED`.
 
@@ -969,6 +973,7 @@ SMS запускается отдельным бизнес-процессом Bi
   строгого поступления `chat8729`; сама по себе не обходит master/stage flags;
 - `ORDER_FULFILLMENT_PICKUP_EVIDENCE_TRACKING_ENABLED=false` — молчаливая
   append-only фиксация строгих отправки/получения только в application DB;
+  требует явно заданный `ORDER_FULFILLMENT_PICKUP_EVIDENCE_CUTOVER_AT`;
 - `ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED=false` — групповые вопросы
   через 24 часа и адресные задачи через 48 часов; это отдельный внешний контур,
   который не включает изменения CRM/SMS;
@@ -1095,6 +1100,8 @@ Smoke:
   нужны; основной UX заменён фоновым контролем `отправили -> получили`.
 - Реализация фона разрешена в clean worktree: молчаливые строгие evidence,
   вопрос через `24` часа и задача через `48` часов.
+- Для первого включения обязательна отдельная свежая evidence-cutover дата;
+  сообщения до неё не пересчитываются автоматически.
 - Production-выпуск этого изменения не разрешён до отдельного smoke/cutover-
   плана и явного подтверждения пользователя. Новую задачу Bitrix не создавать.
 - CRM, SMS, прежний SLA, inventory/WON и lost-orders этим решением не

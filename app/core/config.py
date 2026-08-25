@@ -268,6 +268,7 @@ class Settings(BaseSettings):
     order_fulfillment_bot_card_ttl_hours: int = Field(default=24, ge=1, le=168)
     order_fulfillment_bot_dry_run_card_limit: int = Field(default=20, ge=0)
     order_fulfillment_bot_cutover_at: datetime | None = None
+    order_fulfillment_pickup_evidence_cutover_at: datetime | None = None
     order_fulfillment_bot_application_token: str | None = None
     order_fulfillment_bot_client_id: str | None = None
     order_fulfillment_bot_callback_secret: str | None = None

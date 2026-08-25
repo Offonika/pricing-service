@@ -1711,6 +1711,7 @@ def _missing_receipt_settings(**overrides) -> Settings:
         "order_fulfillment_bot_apply_enabled": False,
         "order_fulfillment_pickup_stage_apply_enabled": False,
         "order_fulfillment_pickup_evidence_tracking_enabled": True,
+        "order_fulfillment_pickup_evidence_cutover_at": datetime(2026, 8, 20, tzinfo=UTC),
         "order_fulfillment_pickup_missing_receipt_enabled": True,
         "order_fulfillment_pickup_receipt_question_after_hours": 24,
         "order_fulfillment_pickup_receipt_task_after_hours": 48,
@@ -1841,6 +1842,41 @@ def test_strict_receipt_from_bot_itself_is_never_evidence(db_session) -> None:
     )
 
     assert stats["recorded"] == 0
+    assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
+
+
+def test_evidence_tracking_requires_a_dedicated_cutover(db_session) -> None:
+    _warehouse(db_session, "mitino", "Митино")
+    _message(
+        db_session,
+        message_id=510,
+        text_value="Митино: заказ 241500 отправили",
+        at=datetime(2026, 8, 24, 8),
+        chat_code=fulfillment.CHAT_SITE_MASTER_MOBILE,
+        dialog_id="chat733",
+    )
+    onec_calls: list[str] = []
+    settings = _missing_receipt_settings(order_fulfillment_pickup_evidence_cutover_at=None)
+
+    evidence = pickup_control.reconcile_strict_pickup_evidence(
+        db_session,
+        client=MissingReceiptClient(["241500"]),
+        settings=settings,
+        onec_validator=lambda order_number: (
+            onec_calls.append(order_number)
+            or bot.OneCPickupValidation(available=True, assembled=True)
+        ),
+        now=datetime(2026, 8, 25, 8),
+    )
+    followups = pickup_control.enqueue_missing_receipt_followups(
+        db_session,
+        settings=settings,
+        now=datetime(2026, 8, 25, 8),
+    )
+
+    assert evidence == {"checked": 0, "recorded": 0, "duplicate": 0, "blocked": 0}
+    assert followups["checked"] == 0
+    assert onec_calls == []
     assert db_session.scalar(select(func.count(SiteOrderExecutionEvent.id))) == 0
 
 

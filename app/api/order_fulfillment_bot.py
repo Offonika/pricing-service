@@ -389,6 +389,11 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "pickup_evidence_tracking_enabled": (
             settings.order_fulfillment_pickup_evidence_tracking_enabled
         ),
+        "pickup_evidence_cutover_at": (
+            settings.order_fulfillment_pickup_evidence_cutover_at.isoformat()
+            if settings.order_fulfillment_pickup_evidence_cutover_at is not None
+            else None
+        ),
         "pickup_missing_receipt_enabled": (
             settings.order_fulfillment_pickup_missing_receipt_enabled
         ),

@@ -238,7 +238,7 @@ def inspect_pages(
     return stats
 
 
-def build_verification_report(session) -> dict[str, Any]:
+def build_verification_report(session, *, settings: Any | None = None) -> dict[str, Any]:
     messages = session.scalars(select(BitrixChatMessage)).all()
     orders_by_chat: dict[str, set[str]] = {}
     for message in messages:
@@ -247,13 +247,22 @@ def build_verification_report(session) -> dict[str, Any]:
         )
     site_orders = orders_by_chat.get(fulfillment.CHAT_SITE_MASTER_MOBILE, set())
     pickup_orders = orders_by_chat.get(fulfillment.CHAT_PICKUP_READY, set())
+    warehouse_filters = [
+        LogisticsWarehouse.is_active.is_(True),
+        LogisticsWarehouse.kind.in_(["store", "retail"]),
+    ]
+    if settings is not None and settings.order_fulfillment_pickup_warehouse_external_ids:
+        warehouse_filters.append(
+            LogisticsWarehouse.external_id.in_(
+                settings.order_fulfillment_pickup_warehouse_external_ids
+            )
+        )
     return {
         "message_count": len(messages),
         "active_pickup_warehouse_count": int(
             session.scalar(
                 select(func.count(LogisticsWarehouse.id)).where(
-                    LogisticsWarehouse.is_active.is_(True),
-                    LogisticsWarehouse.kind.in_(["store", "retail"]),
+                    *warehouse_filters,
                 )
             )
             or 0
@@ -331,8 +340,12 @@ def main() -> int:
                 session,
                 limit=5000,
                 order_exists=pickup_control.build_crm_order_exists_probe(client),
+                settings=settings,
             )
-            output["verification"] = build_verification_report(session)
+            output["verification"] = build_verification_report(
+                session,
+                settings=settings,
+            )
             session.commit()
     print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
     return 0

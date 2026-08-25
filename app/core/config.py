@@ -292,6 +292,10 @@ class Settings(BaseSettings):
     order_fulfillment_internet_shop_task_responsible_id: int | None = Field(default=None, ge=1)
     order_fulfillment_site_return_task_responsible_id: int | None = Field(default=None, ge=1)
     order_fulfillment_point_task_routes: dict[str, dict[str, int]] = Field(default_factory=dict)
+    order_fulfillment_pickup_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_pickup_warehouse_aliases: dict[str, list[str]] = Field(default_factory=dict)
     order_fulfillment_inventory_won_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list
     )
@@ -687,6 +691,7 @@ class Settings(BaseSettings):
         "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
         "order_fulfillment_bot_source_chat_ids",
+        "order_fulfillment_pickup_warehouse_external_ids",
         "order_fulfillment_inventory_won_warehouse_external_ids",
         "order_fulfillment_bot_allowed_domains",
         "order_fulfillment_bot_allowed_member_ids",
@@ -784,6 +789,30 @@ class Settings(BaseSettings):
             normalized = {
                 role: int(user_id) for role, user_id in route.items() if user_id not in (None, "")
             }
+            if normalized:
+                result[str(warehouse_ref)] = normalized
+        return result
+
+    @field_validator("order_fulfillment_pickup_warehouse_aliases", mode="before")
+    @classmethod
+    def _parse_order_fulfillment_pickup_warehouse_aliases(
+        cls,
+        value: Any,
+    ) -> dict[str, list[str]]:
+        if value in (None, ""):
+            return {}
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        result: dict[str, list[str]] = {}
+        for warehouse_ref, aliases in parsed.items():
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            if not isinstance(aliases, list):
+                raise ValueError("pickup warehouse aliases must be a string or array")
+            normalized = list(
+                dict.fromkeys(str(alias).strip() for alias in aliases if str(alias).strip())
+            )
             if normalized:
                 result[str(warehouse_ref)] = normalized
         return result

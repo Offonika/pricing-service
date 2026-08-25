@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app.models.logistics import LogisticsWarehouse
 from app.models.site_order_fulfillment import (
     BitrixChatMessage,
     PickupInventoryItem,
@@ -17,9 +18,9 @@ from app.models.site_order_fulfillment import (
     SiteOrderExecutionEvent,
 )
 from app.services import site_order_fulfillment as fulfillment
-from app.services.logistics_onec import resolve_target_warehouse
+from app.services.logistics_onec import WarehouseResolution, resolve_target_warehouse
 
-PARSER_VERSION = "pickup-inventory-v1"
+PARSER_VERSION = "pickup-inventory-v2"
 MODE_FULL = "full"
 MODE_CARRY = "carry"
 MODE_ZERO = "zero"
@@ -27,15 +28,37 @@ MODE_CORRECTION = "correction"
 STATUS_CONFIRMED = "confirmed"
 STATUS_MANUAL_REVIEW = "manual_review"
 
-CARRY_MARKERS = ("всё актуально", "все актуально", "без изменений")
+CARRY_MARKERS = (
+    "всё актуально",
+    "все актуально",
+    "все заказы актуальны",
+    "заказы актуальны",
+    "все актульно",
+    "без изменений",
+)
 ZERO_MARKERS = (
     "нет невыданных",
     "невыданных нет",
     "остатков нет",
     "нулевой остаток",
     "заказов нет",
+    "все заказы выданы",
+    "всё выдано",
+    "все выдано",
 )
 CORRECTION_MARKERS = ("исправление", "коррекция", "уточнение", "актуальный список")
+NON_STATE_MARKERS = (
+    "расформир",
+    "клиент отказ",
+    "клиент забрал",
+    "заказ выдан",
+    "заказы выданы",
+    "продлить",
+    "продлен",
+    "продлён",
+    "удерживать",
+    "оставьте",
+)
 GLUED_ORDER_RE = re.compile(r"(?<!\d)(2\d{5})(2\d{5})(?!\d)")
 BLOCKING_EVENT_TYPES = {
     fulfillment.EVENT_PICKUP_MOVING,
@@ -75,6 +98,8 @@ def parse_inventory_text(
         return InventoryParseResult(MODE_CARRY, (), (), True)
     if any(marker in normalized for marker in ZERO_MARKERS):
         return InventoryParseResult(MODE_ZERO, (), (), True)
+    if "заказы выданы" in normalized and not fulfillment.extract_order_numbers(text_value):
+        return InventoryParseResult(MODE_ZERO, (), (), True)
     mode = (
         MODE_CORRECTION if any(marker in normalized for marker in CORRECTION_MARKERS) else MODE_FULL
     )
@@ -86,11 +111,12 @@ def parse_inventory_text(
             order_numbers.extend((left, right))
         else:
             ambiguous.append(match.group(0))
+    non_state_message = any(marker in normalized for marker in NON_STATE_MARKERS)
     return InventoryParseResult(
         mode,
         tuple(dict.fromkeys(order_numbers)),
         tuple(dict.fromkeys(ambiguous)),
-        bool(order_numbers) and not ambiguous,
+        bool(order_numbers) and not ambiguous and not non_state_message,
     )
 
 
@@ -99,6 +125,7 @@ def persist_inventory_message(
     *,
     message: BitrixChatMessage,
     order_exists: Callable[[str], bool] | None = None,
+    pickup_aliases: dict[str, list[str]] | None = None,
 ) -> PickupInventorySubmission | None:
     existing = session.scalar(
         select(PickupInventorySubmission).where(
@@ -109,7 +136,11 @@ def persist_inventory_message(
         return existing
     text_value = fulfillment.bitrix_message_text_for_parsing(message)
     parsed = parse_inventory_text(text_value, order_exists=order_exists)
-    resolution = resolve_target_warehouse(session, [text_value])
+    resolution = resolve_pickup_inventory_warehouse(
+        session,
+        text_value,
+        pickup_aliases=pickup_aliases,
+    )
     submitted_at = message.message_at or datetime.now(UTC).replace(tzinfo=None)
     business_date = _moscow_date(submitted_at)
     run = session.scalar(
@@ -198,6 +229,179 @@ def persist_inventory_message(
     run.updated_at = datetime.now(UTC).replace(tzinfo=None)
     session.flush()
     return submission
+
+
+def resolve_pickup_inventory_warehouse(
+    session: Session,
+    text_value: str,
+    *,
+    pickup_aliases: dict[str, list[str]] | None = None,
+) -> WarehouseResolution:
+    """Resolve chat-only aliases without changing shared RTU/address matching."""
+
+    resolution = resolve_target_warehouse(session, [text_value])
+    if resolution.warehouse is not None:
+        if pickup_aliases and resolution.warehouse.external_id not in pickup_aliases:
+            return WarehouseResolution(
+                None,
+                "matched warehouse is outside pickup contour",
+                resolution.matches,
+            )
+        return resolution
+    if not pickup_aliases:
+        return resolution
+    normalized_text = _normalize_alias_text(text_value)
+    if not normalized_text:
+        return resolution
+    external_ids = list(pickup_aliases)
+    warehouses = {
+        warehouse.external_id: warehouse
+        for warehouse in session.scalars(
+            select(LogisticsWarehouse)
+            .where(
+                LogisticsWarehouse.external_id.in_(external_ids),
+                LogisticsWarehouse.is_active.is_(True),
+                LogisticsWarehouse.kind.in_(["store", "retail"]),
+            )
+            .order_by(LogisticsWarehouse.id.asc())
+        ).all()
+    }
+    matches: dict[int, dict[str, object]] = {}
+    for external_id, aliases in pickup_aliases.items():
+        warehouse = warehouses.get(external_id)
+        if warehouse is None:
+            continue
+        for alias in aliases:
+            normalized_alias = _normalize_alias_text(alias)
+            if len(normalized_alias) >= 4 and normalized_alias in normalized_text:
+                matches[warehouse.id] = {
+                    "warehouse_id": warehouse.id,
+                    "warehouse_external_id": warehouse.external_id,
+                    "warehouse_name": warehouse.name,
+                    "alias": alias,
+                    "match_type": "pickup_chat_alias",
+                }
+                break
+    if len(matches) == 1:
+        warehouse_id = next(iter(matches))
+        return WarehouseResolution(
+            session.get(LogisticsWarehouse, warehouse_id),
+            None,
+            list(matches.values()),
+        )
+    if len(matches) > 1:
+        return WarehouseResolution(
+            None,
+            "pickup chat text matched multiple warehouses",
+            list(matches.values()),
+        )
+    return resolution
+
+
+def reprocess_manual_inventory_submissions(
+    session: Session,
+    *,
+    pickup_aliases: dict[str, list[str]],
+    limit: int = 1000,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Append confirmed revisions when a newer parser resolves a manual row."""
+
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    rows = session.scalars(
+        select(PickupInventorySubmission)
+        .where(PickupInventorySubmission.status == STATUS_MANUAL_REVIEW)
+        .order_by(
+            PickupInventorySubmission.submitted_at.asc(),
+            PickupInventorySubmission.id.asc(),
+        )
+        .limit(max(1, min(limit, 5000)))
+    ).all()
+    by_warehouse: dict[str, int] = {}
+    stats: dict[str, object] = {
+        "checked": 0,
+        "confirmed": 0,
+        "unresolved": 0,
+        "carry_without_previous": 0,
+        "by_warehouse": by_warehouse,
+    }
+    for submission in rows:
+        stats["checked"] = int(stats["checked"]) + 1
+        message = submission.source_message
+        if message is None:
+            stats["unresolved"] = int(stats["unresolved"]) + 1
+            continue
+        text_value = fulfillment.bitrix_message_text_for_parsing(message)
+        parsed = parse_inventory_text(text_value)
+        resolution = resolve_pickup_inventory_warehouse(
+            session,
+            text_value,
+            pickup_aliases=pickup_aliases,
+        )
+        warehouse = resolution.warehouse
+        if not parsed.explicit or warehouse is None:
+            stats["unresolved"] = int(stats["unresolved"]) + 1
+            continue
+        latest = latest_confirmed_submission(
+            session,
+            warehouse_id=warehouse.id,
+            before_at=submission.submitted_at,
+        )
+        if parsed.mode == MODE_CARRY:
+            if latest is None:
+                stats["carry_without_previous"] = int(stats["carry_without_previous"]) + 1
+                continue
+            order_numbers = [item.site_order_number for item in latest.items]
+        else:
+            order_numbers = list(parsed.order_numbers)
+        revision = (
+            int(
+                session.scalar(
+                    select(func.max(PickupInventorySubmission.revision)).where(
+                        PickupInventorySubmission.run_id == submission.run_id,
+                        PickupInventorySubmission.warehouse_id == warehouse.id,
+                    )
+                )
+                or 0
+            )
+            + 1
+        )
+        reparsed = PickupInventorySubmission(
+            run_id=submission.run_id,
+            warehouse_id=warehouse.id,
+            source_message_id=submission.source_message_id,
+            supersedes_submission_id=(latest.id if latest is not None else submission.id),
+            author_id=submission.author_id,
+            mode=parsed.mode,
+            status=STATUS_CONFIRMED,
+            revision=revision,
+            submitted_at=submission.submitted_at,
+            confirmed_at=submission.submitted_at,
+            parser_version=PARSER_VERSION,
+            payload={
+                "automatically_reparsed_from_submission_id": submission.id,
+                "automatically_reparsed_at": now.isoformat(),
+                "pickup_resolution_reason": resolution.reason,
+                "pickup_matches": resolution.matches,
+            },
+        )
+        session.add(reparsed)
+        session.flush()
+        _add_inventory_items(session, submission=reparsed, order_numbers=order_numbers)
+        submission.status = "superseded"
+        submission.payload = {
+            **(submission.payload or {}),
+            "automatically_reparsed_submission_id": reparsed.id,
+            "automatically_reparsed_at": now.isoformat(),
+        }
+        stats["confirmed"] = int(stats["confirmed"]) + 1
+        by_warehouse[warehouse.external_id] = by_warehouse.get(warehouse.external_id, 0) + 1
+    session.flush()
+    return stats
+
+
+def _normalize_alias_text(value: str) -> str:
+    return " ".join(fulfillment._clean_text(value).replace("ё", "е").split())  # noqa: SLF001
 
 
 def create_clarified_submission(

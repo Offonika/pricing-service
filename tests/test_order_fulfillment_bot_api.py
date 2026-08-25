@@ -508,6 +508,17 @@ def test_bot_health_requires_internal_bearer(monkeypatch) -> None:
 def test_bot_health_reports_runtime_apply_switch(monkeypatch) -> None:
     _configure(monkeypatch)
     monkeypatch.setenv("ORDER_FULFILLMENT_BOT_APPLY_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FULFILLMENT_PICKUP_WAREHOUSE_EXTERNAL_IDS", "mitino")
+    monkeypatch.setenv(
+        "ORDER_FULFILLMENT_PICKUP_WAREHOUSE_ALIASES",
+        '{"mitino":["Митино"]}',
+    )
+    monkeypatch.setenv(
+        "ORDER_FULFILLMENT_POINT_TASK_ROUTES",
+        '{"mitino":{"operator":200,"senior":201}}',
+    )
+    monkeypatch.setenv("ORDER_FULFILLMENT_INTERNET_SHOP_TASK_RESPONSIBLE_ID", "100")
+    monkeypatch.setenv("ORDER_FULFILLMENT_SITE_RETURN_TASK_RESPONSIBLE_ID", "101")
     get_settings.cache_clear()
     monkeypatch.setattr(
         bot,
@@ -557,3 +568,7 @@ def test_bot_health_reports_runtime_apply_switch(monkeypatch) -> None:
     assert response.json()["outbox_processing"] == 1
     assert response.json()["outbox_blocked_by_apply"] == 2
     assert response.json()["oldest_active_outbox_age_seconds"] == 7200
+    assert response.json()["pickup_warehouse_allowlist"] == ["mitino"]
+    assert response.json()["pickup_warehouse_alias_count"] == 1
+    assert response.json()["task_route_count"] == 1
+    assert response.json()["task_route_configuration_errors"] == []

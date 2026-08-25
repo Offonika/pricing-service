@@ -249,6 +249,9 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "outbox_blocked_by_apply": blocked_by_apply,
         "oldest_active_outbox_age_seconds": oldest_active_age_seconds,
         **pickup_metrics,
+        "pickup_warehouse_allowlist": (settings.order_fulfillment_pickup_warehouse_external_ids),
+        "pickup_warehouse_alias_count": len(settings.order_fulfillment_pickup_warehouse_aliases),
+        "task_route_count": len(settings.order_fulfillment_point_task_routes),
         "inventory_won_warehouse_allowlist": (
             settings.order_fulfillment_inventory_won_warehouse_external_ids
         ),

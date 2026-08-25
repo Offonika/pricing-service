@@ -177,6 +177,11 @@ def persist_pending_inventory_messages(
             session,
             message=message,
             order_exists=order_exists,
+            pickup_aliases=(
+                settings.order_fulfillment_pickup_warehouse_aliases
+                if settings is not None
+                else None
+            ),
         )
         if submission is None:
             message.parse_status = "inventory_manual_review"

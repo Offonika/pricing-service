@@ -189,6 +189,16 @@
       "spec": "docs/specs/site-order-fulfillment-control-contour.md",
       "remove_after": "2026-12-31"
     },
+    "reprocess_pickup_inventory.py": {
+      "owner": "pricing-platform",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_append_only_revision_and_superseded_status",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": "2026-12-31"
+    },
     "ensure_pickup_deal_fields.py": {
       "owner": "pricing-platform",
       "kind": "maintenance",

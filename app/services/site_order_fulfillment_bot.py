@@ -2001,12 +2001,19 @@ def _inventory_clarification_keyboard(
         return []
     buttons: list[dict[str, Any]] = []
     if submission.warehouse_id is None:
+        warehouse_filters = [
+            LogisticsWarehouse.is_active.is_(True),
+            LogisticsWarehouse.kind.in_(["store", "retail"]),
+        ]
+        if settings.order_fulfillment_pickup_warehouse_external_ids:
+            warehouse_filters.append(
+                LogisticsWarehouse.external_id.in_(
+                    settings.order_fulfillment_pickup_warehouse_external_ids
+                )
+            )
         warehouses = session.scalars(
             select(LogisticsWarehouse)
-            .where(
-                LogisticsWarehouse.is_active.is_(True),
-                LogisticsWarehouse.kind.in_(["store", "retail"]),
-            )
+            .where(*warehouse_filters)
             .order_by(LogisticsWarehouse.name.asc(), LogisticsWarehouse.id.asc())
         ).all()
         buttons.extend(
@@ -2944,6 +2951,12 @@ def _resolve_task_route(
     warehouse = session.get(LogisticsWarehouse, case.pickup_point_warehouse_id)
     if warehouse is None:
         raise RuntimeError("task_route_missing:warehouse")
+    if (
+        settings.order_fulfillment_pickup_warehouse_external_ids
+        and warehouse.external_id
+        not in set(settings.order_fulfillment_pickup_warehouse_external_ids)
+    ):
+        raise RuntimeError(f"task_route_out_of_scope:{warehouse.external_id}")
     route = settings.order_fulfillment_point_task_routes.get(warehouse.external_id) or {}
     if task_kind in {"dismantle_review", "lost_search"}:
         senior = route.get("senior")
@@ -3357,16 +3370,30 @@ def task_route_configuration_errors(
         errors.append("task_route_missing:internet_shop")
     if settings.order_fulfillment_site_return_task_responsible_id is None:
         errors.append("task_route_missing:site_return")
+    warehouse_filters = [
+        LogisticsWarehouse.is_active.is_(True),
+        LogisticsWarehouse.kind.in_(["store", "retail"]),
+    ]
+    if settings.order_fulfillment_pickup_warehouse_external_ids:
+        warehouse_filters.append(
+            LogisticsWarehouse.external_id.in_(
+                settings.order_fulfillment_pickup_warehouse_external_ids
+            )
+        )
     warehouses = session.scalars(
         select(LogisticsWarehouse)
-        .where(
-            LogisticsWarehouse.is_active.is_(True),
-            LogisticsWarehouse.kind.in_(["store", "retail"]),
-        )
+        .where(*warehouse_filters)
         .order_by(LogisticsWarehouse.external_id.asc())
     ).all()
     if not warehouses:
         errors.append("task_route_missing:pickup_warehouse_catalog")
+    configured_warehouse_ids = set(settings.order_fulfillment_pickup_warehouse_external_ids)
+    if configured_warehouse_ids:
+        found_warehouse_ids = {warehouse.external_id for warehouse in warehouses}
+        errors.extend(
+            f"task_route_missing:pickup_warehouse:{external_id}"
+            for external_id in sorted(configured_warehouse_ids - found_warehouse_ids)
+        )
     for warehouse in warehouses:
         route = settings.order_fulfillment_point_task_routes.get(warehouse.external_id) or {}
         for role in ("operator", "senior"):

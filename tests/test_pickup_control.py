@@ -428,6 +428,117 @@ def test_glued_order_is_split_only_when_both_orders_exist() -> None:
     assert resolved.order_numbers == ("241500", "241501")
 
 
+def test_inventory_language_recognizes_carry_zero_and_non_state_message() -> None:
+    carry = pickup_inventory.parse_inventory_text("Савок, все заказы актуальны")
+    zero = pickup_inventory.parse_inventory_text("Савок, все заказы выданы")
+    instruction = pickup_inventory.parse_inventory_text("Расформируйте заказ 241500 на Садовую")
+
+    assert carry.mode == pickup_inventory.MODE_CARRY and carry.explicit is True
+    assert zero.mode == pickup_inventory.MODE_ZERO and zero.explicit is True
+    assert instruction.order_numbers == ("241500",)
+    assert instruction.explicit is False
+
+
+def test_pickup_chat_alias_is_scoped_and_manual_inventory_is_reparsed_append_only(
+    db_session,
+) -> None:
+    warehouse = _warehouse(
+        db_session,
+        "savely",
+        "Савеловский Мобильный пав. Т-103 | Т-105",
+    )
+    original = pickup_inventory.persist_inventory_message(
+        db_session,
+        message=_message(
+            db_session,
+            message_id=15,
+            text_value="Савок не забрали: 241500, 241501",
+            at=datetime(2026, 8, 24, 10),
+        ),
+    )
+    assert original is not None
+    assert original.status == pickup_inventory.STATUS_MANUAL_REVIEW
+    assert original.warehouse_id is None
+
+    stats = pickup_inventory.reprocess_manual_inventory_submissions(
+        db_session,
+        pickup_aliases={"savely": ["Савок"]},
+        now=datetime(2026, 8, 25, 10),
+    )
+
+    db_session.refresh(original)
+    confirmed = db_session.scalar(
+        select(PickupInventorySubmission).where(
+            PickupInventorySubmission.status == pickup_inventory.STATUS_CONFIRMED
+        )
+    )
+    assert stats["confirmed"] == 1
+    assert stats["by_warehouse"] == {"savely": 1}
+    assert original.status == "superseded"
+    assert confirmed is not None and confirmed.warehouse_id == warehouse.id
+    assert confirmed.supersedes_submission_id == original.id
+    assert {item.site_order_number for item in confirmed.items} == {"241500", "241501"}
+    assert (
+        pickup_inventory.reprocess_manual_inventory_submissions(
+            db_session,
+            pickup_aliases={"savely": ["Савок"]},
+        )["confirmed"]
+        == 0
+    )
+
+
+def test_pickup_alias_contour_rejects_standard_match_outside_scope(db_session) -> None:
+    _warehouse(db_session, "real", "Рабочая точка")
+    _warehouse(db_session, "store-1", "Магазин 1")
+
+    resolution = pickup_inventory.resolve_pickup_inventory_warehouse(
+        db_session,
+        "Магазин 1 полный список: 241500",
+        pickup_aliases={"real": ["Рабочая"]},
+    )
+
+    assert resolution.warehouse is None
+    assert resolution.reason == "matched warehouse is outside pickup contour"
+
+
+def test_pickup_warehouse_settings_parse_json_and_list() -> None:
+    settings = Settings(
+        _env_file=None,
+        order_fulfillment_pickup_warehouse_external_ids="one,two",
+        order_fulfillment_pickup_warehouse_aliases='{"one":["Савок","Савок"],"two":"Пресня"}',
+    )
+
+    assert settings.order_fulfillment_pickup_warehouse_external_ids == ["one", "two"]
+    assert settings.order_fulfillment_pickup_warehouse_aliases == {
+        "one": ["Савок"],
+        "two": ["Пресня"],
+    }
+
+
+def test_task_route_preflight_uses_explicit_pickup_contour(db_session) -> None:
+    _warehouse(db_session, "real", "Рабочая точка")
+    _warehouse(db_session, "store-1", "Магазин 1")
+    settings = _settings(
+        order_fulfillment_pickup_warehouse_external_ids=["real"],
+        order_fulfillment_point_task_routes={
+            "real": {"operator": 200, "senior": 201},
+        },
+    )
+
+    assert bot.task_route_configuration_errors(db_session, settings=settings) == []
+
+    missing = _settings(
+        order_fulfillment_pickup_warehouse_external_ids=["real", "missing"],
+        order_fulfillment_point_task_routes={
+            "real": {"operator": 200, "senior": 201},
+            "missing": {"operator": 202, "senior": 203},
+        },
+    )
+    assert bot.task_route_configuration_errors(db_session, settings=missing) == [
+        "task_route_missing:pickup_warehouse:missing"
+    ]
+
+
 def test_crm_order_exists_probe_is_cached_and_fails_closed() -> None:
     class Client:
         def __init__(self) -> None:

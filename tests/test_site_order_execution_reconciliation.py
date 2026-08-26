@@ -76,6 +76,32 @@ def test_print_and_scan_closes_only_internal_pickup() -> None:
     assert carrier.reason == "issued_rtu_not_pickup_handoff"
 
 
+def test_partial_multi_rtu_assembly_or_issue_never_advances_whole_order() -> None:
+    partial_assembly = reconciliation.decide_execution_stage(
+        _snapshot(rtu_count=5, assembled_rtu_count=4)
+    )
+    partial_issue = reconciliation.decide_execution_stage(
+        _snapshot(rtu_count=5, assembled_rtu_count=4, issued_rtu_count=4)
+    )
+    all_issued = reconciliation.decide_execution_stage(
+        _snapshot(rtu_count=5, assembled_rtu_count=5, issued_rtu_count=5)
+    )
+
+    assert partial_assembly.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert partial_assembly.reason == "partial_rtu_assembly"
+    assert partial_issue.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert partial_issue.reason == "partial_rtu_issue"
+    assert all_issued.action == reconciliation.ACTION_UPDATE_STAGE
+    assert all_issued.target_stage == "WON"
+
+
+def test_impossible_rtu_evidence_counts_are_blocked() -> None:
+    decision = reconciliation.decide_execution_stage(_snapshot(rtu_count=1, assembled_rtu_count=2))
+
+    assert decision.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert decision.reason == "rtu_evidence_count_mismatch"
+
+
 def test_return_rules_fail_closed_for_payment_partial_or_issue_conflicts() -> None:
     full_unpaid = reconciliation.decide_execution_stage(
         _snapshot(

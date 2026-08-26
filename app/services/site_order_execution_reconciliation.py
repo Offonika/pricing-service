@@ -67,6 +67,14 @@ class ExecutionEvidenceSnapshot:
         return self.crm_assembled or self.assembled_rtu_count > 0
 
     @property
+    def partial_rtu_assembly(self) -> bool:
+        return self.rtu_count > 0 and 0 < self.assembled_rtu_count < self.rtu_count
+
+    @property
+    def partial_rtu_issue(self) -> bool:
+        return self.rtu_count > 0 and 0 < self.issued_rtu_count < self.rtu_count
+
+    @property
     def has_return(self) -> bool:
         return self.returned_rtu_count > 0 or bool(
             self.returned_amount is not None and self.returned_amount > MONEY_TOLERANCE
@@ -126,6 +134,15 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         return _manual("delivery_method_unknown", "execution_delivery_conflict")
     if not snapshot.onec_evidence_available:
         return _manual("onec_evidence_unavailable", "execution_onec_unavailable", "weak")
+    if any(
+        count < 0 or count > snapshot.rtu_count
+        for count in (
+            snapshot.assembled_rtu_count,
+            snapshot.issued_rtu_count,
+            snapshot.returned_rtu_count,
+        )
+    ):
+        return _manual("rtu_evidence_count_mismatch", "execution_rtu_count_conflict")
 
     if snapshot.has_return:
         if snapshot.issued_rtu_count > 0:
@@ -142,6 +159,8 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         return _manual("canceled_without_confirmed_return", "execution_canceled_unresolved")
 
     if snapshot.issued_rtu_count > 0:
+        if snapshot.partial_rtu_issue:
+            return _manual("partial_rtu_issue", "execution_partial_issue")
         if delivery_class != fulfillment.DELIVERY_CLASS_PICKUP:
             return _manual(
                 "issued_rtu_not_pickup_handoff",
@@ -150,6 +169,8 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         return _update("WON", "pickup_printed_and_scanned", "execution_pickup_issued")
 
     if snapshot.assembled:
+        if snapshot.partial_rtu_assembly:
+            return _manual("partial_rtu_assembly", "execution_partial_assembly")
         if delivery_class == fulfillment.DELIVERY_CLASS_CARRIER and not snapshot.payment_confirmed:
             return _update(
                 "PREPAYMENT_INVOICE",

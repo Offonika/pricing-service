@@ -142,9 +142,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 6. Для `export_manual_status_overrides.py` после зелёного CI разрешён и выполнен
    merge PR №63 коммитом `0496ad30cf7a366e4bb68baa9f34af6d756b4e81`.
    Production migration, deploy и cutover в это решение не входят и не выполнялись.
+7. Для `export_management_marks.py` после зелёного CI разрешён merge PR №65.
+   Production migration, deploy и cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-26 — разрешён merge PR №65; production release оставлен отдельным
+  решением.
 - 2026-08-26 — `export_management_marks.py` переведён на central read-only session
   scope; registry фиксирует optional external write и новый `message_id` на запуск.
 - 2026-08-26 — разрешён и выполнен merge PR №63; production release оставлен

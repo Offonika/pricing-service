@@ -298,6 +298,23 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    действия; `status`, `check`, разработка и CI остаются доступными. Перед switch
    controller повторно проверяет freeze, active source и принадлежность candidate
    к `origin/main`.
+
+   После merge и отдельно подтверждённой установки controller v3 оператор
+   открывает и закрывает convergence-окно только штатными командами:
+
+   ```bash
+   git -C /opt/MM/pricing-service fetch --prune origin main
+   sudo /usr/local/sbin/mm-pricing-service-release freeze \
+     --reason "pricing-service convergence" \
+     --minutes <1-180>
+   sudo /usr/local/sbin/mm-pricing-service-release status
+   sudo /usr/local/sbin/mm-pricing-service-release unfreeze \
+     --freeze-id <freeze_id-from-freeze-or-status>
+   ```
+
+   `freeze_id` из ответа `freeze` либо `status` сохраняется до конца окна;
+   снять freeze другим ID нельзя. Установка controller, активация freeze,
+   merge release PR и production cutover являются отдельными действиями.
 1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
    `main` с проверенной цепочкой активного production source в отдельной
    интеграционной ветке и провести её через PR. До merge и отдельного cutover

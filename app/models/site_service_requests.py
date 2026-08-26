@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -343,6 +345,10 @@ class SiteServiceRequestFile(Base):
     )
     bitrix_attach_attempted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    bitrix_attach_baseline_file_ids: Mapped[list[int] | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
     )
     temporary_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)

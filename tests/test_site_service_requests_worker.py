@@ -34,6 +34,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixReader,
     SiteServiceRequestBitrixWriter,
     SiteServiceRequestFileCleanup,
+    SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
@@ -1674,6 +1675,7 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "3000"]
     assert staged_file.bitrix_object_id == "2000"
     assert staged_file.bitrix_file_id == "3000"
+    assert staged_file.bitrix_attach_baseline_file_ids == [1999]
     assert api.crm_files[3000] == content
 
 
@@ -1685,6 +1687,7 @@ def test_file_attach_marker_is_committed_before_crm_write(db_session, tmp_path) 
                     durable_file = observer.scalar(select(SiteServiceRequestFile))
                     assert durable_file is not None
                     assert durable_file.bitrix_attach_attempted_at is not None
+                    assert durable_file.bitrix_attach_baseline_file_ids == []
             return super().call_json(method, payload, **kwargs)
 
     content = b"commit-before-attach"
@@ -1738,6 +1741,8 @@ def test_ambiguous_attach_retry_is_readback_only_and_does_not_duplicate(
             result = super().call_json(method, payload, **kwargs)
             if method == "crm.item.update":
                 self.crm_write_calls += 1
+                new_file_id = self.next_crm_file_id - 1
+                self.crm_files[new_file_id] += b"-transformed-by-bitrix"
                 self.fail_next_readback = True
                 raise RuntimeError("simulated timeout after crm write")
             return result
@@ -1781,6 +1786,7 @@ def test_ambiguous_attach_retry_is_readback_only_and_does_not_duplicate(
     assert file.status == "uploaded"
     assert api.crm_write_calls == 1
     assert api.next_crm_file_id == 3001
+    assert api.crm_files[3000] != content
 
 
 def test_guarded_file_without_readback_match_never_writes_again(db_session, tmp_path) -> None:
@@ -1810,6 +1816,7 @@ def test_guarded_file_without_readback_match_never_writes_again(db_session, tmp_
         status="failed",
         temporary_path=str(path),
         bitrix_attach_attempted_at=marker,
+        bitrix_attach_baseline_file_ids=[],
         last_error_code="file_duplicate_guard",
     )
     db_session.add_all([case, file])
@@ -1835,6 +1842,66 @@ def test_guarded_file_without_readback_match_never_writes_again(db_session, tmp_
     assert api.crm_write_calls == 0
     assert file.temporary_path == str(path)
     assert path.exists() is True
+
+
+def test_transformed_crm_file_is_confirmed_by_persisted_id_delta(
+    db_session,
+    tmp_path,
+) -> None:
+    class TransformingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            result = super().call_json(method, payload, **kwargs)
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+                new_file_id = self.next_crm_file_id - 1
+                self.crm_files[new_file_id] += b"-transformed-by-bitrix"
+            return result
+
+    content = b"jpeg-source-content"
+    path = tmp_path / "transformed.jpg"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = TransformingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert first[0]["status"] == "uploaded"
+    assert second == []
+    assert file.status == "uploaded"
+    assert file.bitrix_file_id == "3000"
+    assert file.bitrix_attach_baseline_file_ids == []
+    assert api.crm_files[3000] != content
+    assert api.crm_write_calls == 1
+    assert api.next_crm_file_id == 3001
 
 
 def test_file_count_guard_fails_before_download_or_crm_write(db_session, tmp_path) -> None:
@@ -1927,6 +1994,58 @@ def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
     assert worker_module._item_field_contains(second_item, "UF_CRM_36_CLIENTFILES", "3000")
 
 
+@pytest.mark.parametrize("baseline", [["1"], [1, 1], {"id": 1}])
+def test_file_content_attach_rejects_malformed_persisted_baseline(baseline) -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+
+    with pytest.raises(
+        SiteServiceRequestFileDuplicateGuardError,
+        match="file_duplicate_guard",
+    ):
+        writer.attach_file_content(
+            entity_type_id=1134,
+            item_id=1000,
+            field_name="UF_CRM_36_CLIENTFILES",
+            deterministic_name="ticket-file.bin",
+            content=content,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            max_bytes=1024,
+            baseline_file_ids=baseline,
+            allow_write=False,
+        )
+
+    assert api.next_crm_file_id == 3000
+
+
+def test_file_content_attach_rejects_multiple_ids_after_persisted_baseline() -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": [3000, 3001]}
+    api.crm_files.update({3000: b"first", 3001: b"second"})
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+
+    with pytest.raises(
+        SiteServiceRequestFileDuplicateGuardError,
+        match="file_duplicate_guard",
+    ):
+        writer.attach_file_content(
+            entity_type_id=1134,
+            item_id=1000,
+            field_name="UF_CRM_36_CLIENTFILES",
+            deterministic_name="ticket-file.bin",
+            content=content,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            max_bytes=1024,
+            baseline_file_ids=[],
+            allow_write=False,
+        )
+
+    assert api.next_crm_file_id == 3000
+
+
 def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> None:
     class DualUrlBitrixApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -1938,7 +2057,8 @@ def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> N
             return response
 
     api = DualUrlBitrixApi()
-    api.items[1000] = {"ufCrm36Clientfiles": []}
+    api.items[1000] = {"ufCrm36Clientfiles": [2999]}
+    api.crm_files[2999] = b"file-content"
     writer = SiteServiceRequestBitrixWriter(api)
     content = b"file-content"
 
@@ -1952,8 +2072,9 @@ def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> N
         max_bytes=1024,
     )
 
-    assert file_id == "3000"
-    assert item["ufCrm36Clientfiles"][0]["urlMachine"].endswith("/3000")
+    assert file_id == "2999"
+    assert item["ufCrm36Clientfiles"][0]["urlMachine"].endswith("/2999")
+    assert api.next_crm_file_id == 3000
 
 
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:

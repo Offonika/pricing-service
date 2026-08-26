@@ -1677,6 +1677,223 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     assert api.crm_files[3000] == content
 
 
+def test_file_attach_marker_is_committed_before_crm_write(db_session, tmp_path) -> None:
+    class CommitCheckingApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "crm.item.update":
+                with Session(db_session.get_bind()) as observer:
+                    durable_file = observer.scalar(select(SiteServiceRequestFile))
+                    assert durable_file is not None
+                    assert durable_file.bitrix_attach_attempted_at is not None
+            return super().call_json(method, payload, **kwargs)
+
+    content = b"commit-before-attach"
+    path = tmp_path / "commit-before-attach.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = CommitCheckingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+
+    result = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert result[0]["status"] == "uploaded"
+    assert file.bitrix_attach_attempted_at is not None
+
+
+def test_ambiguous_attach_retry_is_readback_only_and_does_not_duplicate(
+    db_session,
+    tmp_path,
+) -> None:
+    class AmbiguousAttachApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+            self.fail_next_readback = False
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get" and self.fail_next_readback:
+                self.fail_next_readback = False
+                raise RuntimeError("simulated ambiguous readback")
+            return super().call(method, params, **kwargs)
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            result = super().call_json(method, payload, **kwargs)
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+                self.fail_next_readback = True
+                raise RuntimeError("simulated timeout after crm write")
+            return result
+
+    content = b"ambiguous-attach"
+    path = tmp_path / "ambiguous-attach.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = AmbiguousAttachApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    settings = _worker_settings()
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert first[0]["errorCode"] == "file_duplicate_guard"
+    assert second[0]["status"] == "uploaded"
+    assert file.status == "uploaded"
+    assert api.crm_write_calls == 1
+    assert api.next_crm_file_id == 3001
+
+
+def test_guarded_file_without_readback_match_never_writes_again(db_session, tmp_path) -> None:
+    class CountingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+            return super().call_json(method, payload, **kwargs)
+
+    content = b"guarded-without-match"
+    path = tmp_path / "guarded-without-match.bin"
+    path.write_bytes(content)
+    marker = datetime.now(UTC)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="failed",
+        temporary_path=str(path),
+        bitrix_attach_attempted_at=marker,
+        last_error_code="file_duplicate_guard",
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = CountingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    settings = _worker_settings()
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert first[0]["errorCode"] == "file_duplicate_guard"
+    assert second[0]["errorCode"] == "file_duplicate_guard"
+    assert api.crm_write_calls == 0
+    assert file.temporary_path == str(path)
+    assert path.exists() is True
+
+
+def test_file_count_guard_fails_before_download_or_crm_write(db_session, tmp_path) -> None:
+    class GuardCountingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.download_calls = 0
+            self.crm_write_calls = 0
+            self.disk_upload_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "disk.folder.uploadfile":
+                self.disk_upload_calls += 1
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+            return super().call_json(method, payload, **kwargs)
+
+        def download(self, url: str, *, max_bytes: int, **kwargs) -> bytes:
+            self.download_calls += 1
+            return super().download(url, max_bytes=max_bytes, **kwargs)
+
+    content = b"over-limit"
+    path = tmp_path / "over-limit.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = GuardCountingApi()
+    existing_ids = [str(file_id) for file_id in range(1, 52)]
+    api.items[1000] = {"ufCrm36Clientfiles": existing_ids}
+    api.crm_files.update({file_id: b"existing" for file_id in range(1, 52)})
+
+    result = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(site_service_requests_max_crm_files_per_item=50),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert result[0]["errorCode"] == "file_duplicate_guard"
+    assert file.status == "failed"
+    assert file.bitrix_attach_attempted_at is None
+    assert api.download_calls == 0
+    assert api.disk_upload_calls == 0
+    assert api.crm_write_calls == 0
+    assert path.exists() is True
+
+
 def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
     api = FakeBitrixApi()
     api.items[1000] = {"ufCrm36Clientfiles": []}

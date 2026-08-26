@@ -28595,6 +28595,9 @@ components:
             - assignment_failure
             - outbound_failure
             - escalation_delivery_pending
+            - file_failure
+            - worker_failure
+            - worker_stale
           type: array
           title: Alertcodes
         pendingEvents:
@@ -28631,6 +28634,44 @@ components:
           type: integer
           minimum: 0.0
           title: Pendingescalationdeliveries
+        failedFiles:
+          type: integer
+          minimum: 0.0
+          title: Failedfiles
+        workerFailure:
+          type: boolean
+          title: Workerfailure
+        workerStale:
+          type: boolean
+          title: Workerstale
+        workerLastStartedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlaststartedat
+        workerLastSuccessAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlastsuccessat
+        workerLastFailureAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlastfailureat
+        workerLastErrorCode:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Workerlasterrorcode
+        workerConsecutiveFailures:
+          type: integer
+          minimum: 0.0
+          title: Workerconsecutivefailures
         lastSuccessfulExchangeAt:
           anyOf:
           - type: string
@@ -28661,6 +28702,14 @@ components:
       - assignmentFailures
       - outboundFailures
       - pendingEscalationDeliveries
+      - failedFiles
+      - workerFailure
+      - workerStale
+      - workerLastStartedAt
+      - workerLastSuccessAt
+      - workerLastFailureAt
+      - workerLastErrorCode
+      - workerConsecutiveFailures
       - lastSuccessfulExchangeAt
       - ingestEnabled
       - emailIngestEnabled

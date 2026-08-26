@@ -11,6 +11,7 @@ LOG_DIR="${LOG_DIR:-/var/log/pricing}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/site_service_requests_worker.log}"
 LOCK_FILE="${LOCK_FILE:-/run/lock/site_service_requests_worker.lock}"
 TIMEOUT_SECONDS="${SITE_SERVICE_REQUESTS_WORKER_TIMEOUT_SECONDS:-600}"
+START_DELAY_SECONDS="${SITE_SERVICE_REQUESTS_WORKER_START_DELAY_SECONDS:-20}"
 
 mkdir -p "${LOG_DIR}" "$(dirname "${LOCK_FILE}")"
 cd "${REPO_DIR}"
@@ -25,6 +26,15 @@ exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
   echo "[$(date -Iseconds)] site_service_requests_worker skipped: lock busy" >> "${LOG_FILE}"
   exit 0
+fi
+
+if ! [[ "${START_DELAY_SECONDS}" =~ ^([0-9]|[1-4][0-9]|5[0-5])$ ]]; then
+  echo "[$(date -Iseconds)] site_service_requests_worker invalid start delay" >> "${LOG_FILE}"
+  exit 2
+fi
+if [[ "${START_DELAY_SECONDS}" != "0" ]]; then
+  echo "[$(date -Iseconds)] site_service_requests_worker delaying ${START_DELAY_SECONDS}s" >> "${LOG_FILE}"
+  sleep "${START_DELAY_SECONDS}"
 fi
 
 cmd=("${PYTHON_BIN}" -m tasks.site_service_requests_worker --compact)

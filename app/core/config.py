@@ -195,6 +195,8 @@ class Settings(BaseSettings):
     site_service_requests_command_lease_seconds: int = Field(default=300, ge=30, le=3600)
     site_service_requests_file_spool_dir: str = ".local/site-service-requests/files"
     site_service_requests_worker_batch_size: int = Field(default=20, ge=1, le=100)
+    site_service_requests_worker_stale_seconds: int = Field(default=180, ge=60, le=3600)
+    site_service_requests_max_crm_files_per_item: int = Field(default=50, ge=1, le=1000)
     site_service_requests_site_base_url: str = "https://master-mobile.ru"
     site_service_requests_health_lag_alert_seconds: int = Field(
         default=300,

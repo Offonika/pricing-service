@@ -25,7 +25,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-25"
+updated_at: "2026-08-26"
 ---
 
 # Назначение
@@ -545,6 +545,17 @@ ID объекта служебного Bitrix Disk и ID файла CRM — ра
 сверяет SHA-256; повтор после timeout/crash находит уже записанный hash и не
 создаёт дубликат.
 
+Перед первой попыткой добавить файл в CRM worker записывает в PostgreSQL
+`bitrix_attach_attempted_at` и делает commit. При наличии marker и отсутствии
+подтверждённого `bitrix_file_id` разрешён только readback существующих вложений:
+повторная REST-запись запрещена, пока неоднозначность не снята. Если hash найден
+ровно один раз, строка восстанавливается в `uploaded`; отсутствие hash, несколько
+совпадений, ошибка неопределённого readback или превышение настраиваемого лимита
+`SITE_SERVICE_REQUESTS_MAX_CRM_FILES_PER_ITEM` завершаются fail-closed кодом
+`file_duplicate_guard`. Значение MVP — 50 файлов на карточку. При превышении
+лимита worker не скачивает существующие файлы и не выполняет CRM attach; spool
+сохраняется для ручного восстановления.
+
 ## `GET /commands`
 
 Возвращает не более 20 pending-команд с lease на 5 минут и новым `leaseToken`.
@@ -584,6 +595,21 @@ Checkpoint монотонен по `assignment_checked_at`/`outbound_checked_at`
 Поля API называются `assignmentFailures`, `outboundFailures` и
 `pendingEscalationDeliveries`; ненулевые значения добавляют соответственно
 `assignment_failure`, `outbound_failure`, `escalation_delivery_pending`.
+
+Apply-worker хранит singleton heartbeat в PostgreSQL: `last_started_at` записывается
+до configuration/user preflight, а `last_success_at` — только после полного
+успешного tick. Исключение записывает безопасные `last_failure_at`,
+`last_error_code`, `consecutive_failures`; тексты REST-ответов и клиентские данные
+не сохраняются. Первая ошибка добавляет `worker_failure`, а отсутствие успешного
+tick более `SITE_SERVICE_REQUESTS_WORKER_STALE_SECONDS` (MVP — 180 секунд) —
+`worker_stale`; следующий полный успех сбрасывает failure. Failed file rows
+возвращаются только агрегатом `failedFiles` и добавляют `file_failure`.
+
+После захвата `flock` cron-wrapper ждёт
+`SITE_SERVICE_REQUESTS_WORKER_START_DELAY_SECONDS` (MVP — 20 секунд, допустимо
+0–55), чтобы не попадать в минутный Bitrix/WAF burst. Неструктурированный HTML
+`HTTP 403 Access denied` повторяется после 2, 5 и 10 секунд. Структурированная
+JSON-ошибка прав не повторяется и завершается fail-closed.
 
 # Маппинг карточки 1134
 
@@ -969,6 +995,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-26 — стабилизирован worker №3223: после lock принят сдвиг 20 секунд,
+  HTML 403 получает retries 2/5/10, JSON access error остаётся fail-closed;
+  добавлены durable heartbeat со stale-порогом 180 секунд, health-alerts worker/file
+  и commit-before-attach guard с лимитом 50 CRM-файлов.
 - 2026-08-25 — принят следующий этап почтового диспетчера: сервисные
   email-обращения `shop` и `info` подключаются к процессу 1134 с точным CRM-gate,
   отдельным feature flag и ответом в исходной email-цепочке.

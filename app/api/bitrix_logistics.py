@@ -28,6 +28,7 @@ from app.schemas.bitrix_logistics import (
     BitrixLogisticsDraftScanRequest,
     BitrixLogisticsFallbackLinkResponse,
     BitrixLogisticsFallbackSessionRequest,
+    BitrixLogisticsManualReviewPage,
     BitrixLogisticsSessionRequest,
     BitrixLogisticsSessionResponse,
 )
@@ -36,7 +37,6 @@ from app.schemas.logistics import (
     LogisticsDraftResponse,
     LogisticsExpectedDeliveryResponse,
     LogisticsHistoryEventResponse,
-    LogisticsManualReviewResponse,
     LogisticsMonitorResponse,
 )
 from app.services import logistics as logistics_service
@@ -370,13 +370,25 @@ def history(
     return logistics_service.get_transfer_history(db, transfer_id=transfer_id)
 
 
-@router.get("/errors", response_model=list[LogisticsManualReviewResponse])
+@router.get(
+    "/errors",
+    response_model=BitrixLogisticsManualReviewPage,
+    response_model_exclude_none=True,
+)
 def errors(
+    review_type: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=30, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
     _require_role(actor, {"logist", "admin"})
-    return logistics_service.list_manual_reviews(db, status="open")
+    return logistics_service.list_bitrix_manual_reviews(
+        db,
+        review_type=review_type,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post("/fallback-link", response_model=BitrixLogisticsFallbackLinkResponse)

@@ -3121,18 +3121,48 @@ paths:
     get:
       summary: Errors
       operationId: errors_api_bitrix_logistics_errors_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: review_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Review Type
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 30
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                items:
-                  $ref: '#/components/schemas/LogisticsManualReviewResponse'
-                type: array
-                title: Response Errors Api Bitrix Logistics Errors Get
-      security:
-      - HTTPBearer: []
+                $ref: '#/components/schemas/BitrixLogisticsManualReviewPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/fallback-link:
     post:
       summary: Create Fallback Link
@@ -11557,6 +11587,93 @@ components:
       required:
       - token
       title: BitrixLogisticsFallbackSessionRequest
+    BitrixLogisticsManualReviewItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        review_type:
+          type: string
+          title: Review Type
+        source_document_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Document Type
+        transfer_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Transfer Id
+        document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Number
+        rtu_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rtu Number
+        onec_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Number
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        source_warehouse_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Warehouse Name
+        delivery_method:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Delivery Method
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - review_type
+      - created_at
+      title: BitrixLogisticsManualReviewItem
+    BitrixLogisticsManualReviewPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/BitrixLogisticsManualReviewItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      - counts
+      title: BitrixLogisticsManualReviewPage
     BitrixLogisticsSessionRequest:
       properties:
         access_token:

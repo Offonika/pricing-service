@@ -25,6 +25,18 @@ const bootstrap = {
   capabilities: ["handoff", "monitor", "history"],
 };
 
+const logistBootstrap = {
+  ...bootstrap,
+  profile: {
+    id: 2,
+    full_name: "Кештов Арсений Юрьевич",
+    role: "logist",
+    default_warehouse_id: null,
+    default_warehouse_name: null,
+  },
+  capabilities: ["expected", "monitor", "history", "errors"],
+};
+
 describe("LogisticsWorkspace", () => {
   beforeEach(() => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
@@ -86,5 +98,147 @@ describe("LogisticsWorkspace", () => {
     expect(await screen.findByText("Код уже добавлен")).toBeVisible();
     expect(screen.getByText("РТУ-000051")).toBeVisible();
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
+  });
+
+  it("показывает безопасную очередь разбора с фильтром и пагинацией", async () => {
+    const firstItem = {
+      id: 71,
+      review_type: "rtu_target_warehouse_unresolved",
+      document_number: "РБГУ0408001",
+      rtu_number: "РБГУ0408001",
+      onec_order_number: "РБГУ0067001",
+      site_order_number: "220001",
+      source_warehouse_name: "Сайт",
+      delivery_method: "Самовывоз",
+      created_at: "2026-08-26T12:30:00Z",
+    };
+    vi.mocked(api.get).mockImplementation(async (path: string, config?: { params?: Record<string, unknown> }) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: logistBootstrap };
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      if (path === "/bitrix/logistics/errors") {
+        if (config?.params?.review_type) {
+          return {
+            data: {
+              items: [firstItem],
+              total: 1,
+              limit: 30,
+              offset: 0,
+              counts: { rtu_target_warehouse_unresolved: 1 },
+            },
+          };
+        }
+        if (config?.params?.offset === 1) {
+          return {
+            data: {
+              items: [{ ...firstItem, id: 72, document_number: "РБГУ0408002" }],
+              total: 2,
+              limit: 30,
+              offset: 1,
+              counts: { rtu_target_warehouse_unresolved: 2 },
+            },
+          };
+        }
+        return {
+          data: {
+            items: [firstItem],
+            total: 2,
+            limit: 30,
+            offset: 0,
+            counts: { rtu_target_warehouse_unresolved: 2 },
+          },
+        };
+      }
+      if (path === "/bitrix/logistics/expected-deliveries") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Разбор" }));
+
+    expect(await screen.findByText("РБГУ0408001")).toBeVisible();
+    expect(screen.getByText("Не определён магазин")).toBeVisible();
+    expect(screen.getByText("Заказ 1С: РБГУ0067001")).toBeVisible();
+    expect(screen.getByText("Кештов Арсений Юрьевич")).toBeVisible();
+    expect(screen.getByText("Логист")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать ещё (1)" }));
+    expect(await screen.findByText("РБГУ0408002")).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText("Причина"), {
+      target: { value: "rtu_target_warehouse_unresolved" },
+    });
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith("/bitrix/logistics/errors", {
+        params: {
+          limit: 30,
+          offset: 0,
+          review_type: "rtu_target_warehouse_unresolved",
+        },
+      })
+    );
+  });
+
+  it("не возвращает старую очередь после быстрого переключения фильтра", async () => {
+    let resolveStalePage!: (value: { data: Record<string, unknown> }) => void;
+    const stalePage = new Promise<{ data: Record<string, unknown> }>((resolve) => {
+      resolveStalePage = resolve;
+    });
+    const filteredItem = {
+      id: 81,
+      review_type: "rtu_source_invalid",
+      document_number: "РБГУ0408081",
+      created_at: "2026-08-26T12:30:00Z",
+    };
+
+    vi.mocked(api.get).mockImplementation(
+      async (path: string, config?: { params?: Record<string, unknown> }) => {
+        if (path === "/bitrix/logistics/bootstrap") return { data: logistBootstrap };
+        if (path === "/bitrix/logistics/monitor") return { data: [] };
+        if (path === "/bitrix/logistics/errors") {
+          if (config?.params?.review_type === "rtu_source_invalid") {
+            return {
+              data: {
+                items: [filteredItem],
+                total: 1,
+                limit: 30,
+                offset: 0,
+                counts: { rtu_source_invalid: 1 },
+              },
+            };
+          }
+          return stalePage;
+        }
+        throw new Error(`unexpected GET ${path}`);
+      }
+    );
+
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Разбор" }));
+    fireEvent.change(screen.getByLabelText("Причина"), {
+      target: { value: "rtu_source_invalid" },
+    });
+
+    expect(screen.queryByText("УСТАРЕВШАЯ-РТУ")).not.toBeInTheDocument();
+    expect(screen.getByText("Загружаем очередь…")).toBeVisible();
+    expect(await screen.findByText("РБГУ0408081")).toBeVisible();
+    resolveStalePage({
+      data: {
+        items: [
+          {
+            id: 80,
+            review_type: "rtu_target_warehouse_unresolved",
+            document_number: "УСТАРЕВШАЯ-РТУ",
+            created_at: "2026-08-26T12:00:00Z",
+          },
+        ],
+        total: 1,
+        limit: 30,
+        offset: 0,
+        counts: { rtu_target_warehouse_unresolved: 1 },
+      },
+    });
+
+    await waitFor(() => expect(screen.getByText("РБГУ0408081")).toBeVisible());
+    expect(screen.queryByText("УСТАРЕВШАЯ-РТУ")).not.toBeInTheDocument();
   });
 });

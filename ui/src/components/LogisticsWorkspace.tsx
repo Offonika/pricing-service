@@ -69,10 +69,21 @@ type HistoryEvent = {
 type ManualReview = {
   id: number;
   review_type: string;
-  reason: string;
   document_number?: string | null;
-  source_external_id?: string | null;
+  rtu_number?: string | null;
+  onec_order_number?: string | null;
+  site_order_number?: string | null;
+  source_warehouse_name?: string | null;
+  delivery_method?: string | null;
   created_at: string;
+};
+
+type ManualReviewPage = {
+  items: ManualReview[];
+  total: number;
+  limit: number;
+  offset: number;
+  counts: Record<string, number>;
 };
 
 type Bootstrap = {
@@ -101,6 +112,114 @@ const STATUS_LABELS: Record<string, string> = {
   returned: "Возвращено",
 };
 
+const ROLE_LABELS: Record<string, string> = {
+  sender: "Отправитель",
+  receiver: "Получатель",
+  logist: "Логист",
+  admin: "Администратор",
+};
+
+const REVIEW_PAGE_SIZE = 30;
+const EMPTY_REVIEW_PAGE: ManualReviewPage = {
+  items: [],
+  total: 0,
+  limit: REVIEW_PAGE_SIZE,
+  offset: 0,
+  counts: {},
+};
+const REVIEW_FILTERS = [
+  { value: "", label: "Все причины" },
+  { value: "rtu_target_warehouse_unresolved", label: "Не определён магазин" },
+  { value: "rtu_external_carrier_unmapped", label: "Внешняя доставка" },
+  { value: "rtu_external_carrier_state_conflict", label: "Конфликт внешней доставки" },
+  { value: "rtu_without_site_order", label: "Нет номера интернет-заказа" },
+  { value: "rtu_lookup_not_unique", label: "Неоднозначный код" },
+  { value: "rtu_source_invalid", label: "Неполные данные РТУ" },
+  { value: "rtu_source_warehouse_unresolved", label: "Не определён склад" },
+  { value: "rtu_readiness_gate_failed", label: "Устаревшее ожидание готовности" },
+  { value: "unknown_qr", label: "Код не найден" },
+  { value: "ambiguous_qr", label: "Неоднозначный QR-код" },
+  { value: "onec_reconciliation_conflict", label: "Расхождение с 1С" },
+  { value: "site_order_stage_conflict", label: "Конфликт стадии сделки" },
+  { value: "manual_ready_override", label: "Ручная отметка готовности" },
+];
+
+const REVIEW_COPY: Record<string, { title: string; description: string; action: string }> = {
+  rtu_target_warehouse_unresolved: {
+    title: "Не определён магазин",
+    description: "Адрес самовывоза не сопоставился с одной торговой точкой.",
+    action: "Нужно проверить адрес и выбрать точку",
+  },
+  rtu_external_carrier_unmapped: {
+    title: "Внешняя доставка",
+    description: "Для РТУ указан внешний перевозчик без подтверждённого маршрута.",
+    action: "Нужно проверить способ доставки",
+  },
+  rtu_external_carrier_state_conflict: {
+    title: "Конфликт внешней доставки",
+    description: "Состояние документа не позволяет подтвердить передачу перевозчику.",
+    action: "Нужно проверить состояние РТУ и перевозчика",
+  },
+  rtu_without_site_order: {
+    title: "Нет номера интернет-заказа",
+    description: "РТУ похожа на интернет-заказ, но номер заказа сайта не заполнен.",
+    action: "Нужно проверить связанный заказ в 1С",
+  },
+  rtu_lookup_not_unique: {
+    title: "Неоднозначный код",
+    description: "Один код сканирования соответствует нескольким документам.",
+    action: "Нужно проверить РТУ и её штрихкод",
+  },
+  rtu_source_warehouse_unresolved: {
+    title: "Не определён склад",
+    description: "Склад РТУ отсутствует в справочнике логистики.",
+    action: "Нужно сопоставить склад 1С",
+  },
+  rtu_source_invalid: {
+    title: "Неполные данные РТУ",
+    description: "В источнике не хватает обязательных реквизитов документа.",
+    action: "Нужно проверить документ в 1С",
+  },
+  rtu_readiness_gate_failed: {
+    title: "Устаревшая запись ожидания",
+    description: "РТУ ещё не была распечатана или собрана и не требует ручного исправления.",
+    action: "Запись будет закрыта технической очисткой",
+  },
+  unknown_qr: {
+    title: "Код не найден",
+    description: "Отсканированный код не найден среди документов логистики.",
+    action: "Нужно проверить документ и качество кода",
+  },
+  ambiguous_qr: {
+    title: "Неоднозначный QR-код",
+    description: "Отсканированный код связан с несколькими документами.",
+    action: "Нужно проверить документы с этим кодом",
+  },
+  onec_reconciliation_conflict: {
+    title: "Расхождение с 1С",
+    description: "Текущее состояние логистики расходится с данными документа 1С.",
+    action: "Нужно сверить документ и события логистики",
+  },
+  site_order_stage_conflict: {
+    title: "Конфликт стадии сделки",
+    description: "Сделку нельзя безопасно перевести на ожидаемую стадию.",
+    action: "Нужно проверить сделку в Bitrix24",
+  },
+  manual_ready_override: {
+    title: "Ручная отметка готовности",
+    description: "Для документа зафиксировано ручное подтверждение готовности.",
+    action: "Нужно проверить основание ручного подтверждения",
+  },
+};
+
+function reviewCopy(reviewType: string) {
+  return REVIEW_COPY[reviewType] || {
+    title: "Требуется проверка",
+    description: "Документ не прошёл автоматическую проверку логистики.",
+    action: "Нужно проверить данные документа",
+  };
+}
+
 function apiError(error: unknown) {
   if (isAxiosError(error)) {
     const detail = error.response?.data?.detail;
@@ -122,6 +241,19 @@ function formatDate(value: string) {
     : new Intl.DateTimeFormat("ru-RU", {
         day: "2-digit",
         month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(parsed);
+}
+
+function formatReviewDate(value: string) {
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf())
+    ? value
+    : new Intl.DateTimeFormat("ru-RU", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       }).format(parsed);
@@ -251,18 +383,56 @@ export function LogisticsWorkspace() {
   const [confirmKey, setConfirmKey] = useState("");
   const [expected, setExpected] = useState<ExpectedItem[]>([]);
   const [transit, setTransit] = useState<MonitorItem[]>([]);
-  const [errors, setErrors] = useState<ManualReview[]>([]);
+  const [reviewPage, setReviewPage] = useState<ManualReviewPage>(EMPTY_REVIEW_PAGE);
+  const [reviewFilter, setReviewFilter] = useState("");
+  const [reviewsLoading, setReviewsLoading] = useState(false);
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [historyTitle, setHistoryTitle] = useState("");
   const [message, setMessage] = useState("Загрузка…");
   const [busy, setBusy] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const reviewRequestId = useRef(0);
 
   const capabilities = useMemo(
     () => new Set(bootstrap?.capabilities || []),
     [bootstrap?.capabilities]
   );
   const warehouseId = bootstrap?.profile.default_warehouse_id ?? null;
+
+  const loadReviews = useCallback(
+    async (offset = 0, append = false) => {
+      if (!capabilities.has("errors")) return;
+      const requestId = ++reviewRequestId.current;
+      setReviewsLoading(true);
+      try {
+        const params: Record<string, string | number> = {
+          limit: REVIEW_PAGE_SIZE,
+          offset,
+        };
+        if (reviewFilter) params.review_type = reviewFilter;
+        const { data } = await api.get<ManualReviewPage>("/bitrix/logistics/errors", {
+          params,
+        });
+        if (requestId !== reviewRequestId.current) return;
+        setReviewPage((current) =>
+          append ? { ...data, items: [...current.items, ...data.items] } : data
+        );
+      } catch (error) {
+        if (requestId !== reviewRequestId.current) return;
+        throw error;
+      } finally {
+        if (requestId === reviewRequestId.current) setReviewsLoading(false);
+      }
+    },
+    [capabilities, reviewFilter]
+  );
+
+  const changeReviewFilter = (value: string) => {
+    reviewRequestId.current += 1;
+    setReviewFilter(value);
+    setReviewPage((current) => ({ ...EMPTY_REVIEW_PAGE, counts: current.counts }));
+    setReviewsLoading(true);
+  };
 
   const loadLists = useCallback(
     async (target: Screen) => {
@@ -276,10 +446,10 @@ export function LogisticsWorkspace() {
         setTransit((await api.get<MonitorItem[]>("/bitrix/logistics/monitor", { params })).data);
       }
       if (target === "errors" && capabilities.has("errors")) {
-        setErrors((await api.get<ManualReview[]>("/bitrix/logistics/errors")).data);
+        await loadReviews();
       }
     },
-    [bootstrap, capabilities, warehouseId]
+    [bootstrap, capabilities, loadReviews, warehouseId]
   );
 
   useEffect(() => {
@@ -393,6 +563,12 @@ export function LogisticsWorkspace() {
       if (!popup) window.location.assign(data.url);
     });
 
+  const loadMoreReviews = () => {
+    void loadReviews(reviewPage.items.length, true).catch((error: unknown) =>
+      setMessage(apiError(error))
+    );
+  };
+
   if (!bootstrap) {
     return (
       <div className="app app--center">
@@ -410,7 +586,7 @@ export function LogisticsWorkspace() {
     { id: "expected", label: "Ожидаются", show: capabilities.has("expected") },
     { id: "transit", label: "В пути", show: capabilities.has("monitor") },
     { id: "history", label: "История", show: capabilities.has("history") },
-    { id: "errors", label: "Ошибки", show: capabilities.has("errors") },
+    { id: "errors", label: "Разбор", show: capabilities.has("errors") },
   ];
 
   return (
@@ -423,7 +599,7 @@ export function LogisticsWorkspace() {
         </div>
         <div className="logistics-header__user">
           <strong>{bootstrap.profile.full_name}</strong>
-          <span>{bootstrap.profile.role}</span>
+          <span>{ROLE_LABELS[bootstrap.profile.role] || bootstrap.profile.role}</span>
         </div>
       </header>
 
@@ -433,6 +609,7 @@ export function LogisticsWorkspace() {
             key={item.id}
             type="button"
             className={screen === item.id ? "logistics-nav__item is-active" : "logistics-nav__item"}
+            aria-current={screen === item.id ? "page" : undefined}
             onClick={() => setScreen(item.id)}
           >
             {item.label}
@@ -586,17 +763,75 @@ export function LogisticsWorkspace() {
 
         {screen === "errors" && (
           <section className="logistics-card">
-            <div className="logistics-card__heading"><h2>Ошибки и ручная проверка</h2></div>
-            {!errors.length && <p className="logistics-empty">Открытых ошибок нет</p>}
-            <div className="logistics-errors">
-              {errors.map((item) => (
-                <article key={item.id}>
-                  <strong>{item.document_number || item.source_external_id || `Ошибка №${item.id}`}</strong>
-                  <p>{item.reason}</p>
-                  <small>{item.review_type} · {formatDate(item.created_at)}</small>
-                </article>
-              ))}
+            <div className="logistics-card__heading">
+              <h2>Требуют разбора</h2>
+              <b aria-label={`Открытых разборов: ${reviewPage.total}`}>{reviewPage.total}</b>
             </div>
+            <div className="logistics-review-controls">
+              <label className="logistics-field">
+                <span>Причина</span>
+                <select
+                  value={reviewFilter}
+                  onChange={(event) => changeReviewFilter(event.target.value)}
+                >
+                  {REVIEW_FILTERS.map((filter) => {
+                    const count = filter.value
+                      ? reviewPage.counts[filter.value] || 0
+                      : Object.values(reviewPage.counts).reduce((sum, value) => sum + value, 0);
+                    return (
+                      <option key={filter.value || "all"} value={filter.value}>
+                        {filter.label} ({count})
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+              <button
+                className="btn btn--ghost"
+                type="button"
+                disabled={reviewsLoading}
+                onClick={() => void loadReviews().catch((error: unknown) => setMessage(apiError(error)))}
+              >
+                Обновить
+              </button>
+            </div>
+            {reviewsLoading && !reviewPage.items.length && (
+              <p className="logistics-empty" role="status">Загружаем очередь…</p>
+            )}
+            {!reviewsLoading && !reviewPage.items.length && (
+              <p className="logistics-empty">Открытых разборов нет</p>
+            )}
+            <div className="logistics-errors">
+              {reviewPage.items.map((item) => {
+                const copy = reviewCopy(item.review_type);
+                return (
+                  <article key={item.id}>
+                    <header>
+                      <strong>{item.document_number || item.rtu_number || `Разбор №${item.id}`}</strong>
+                      <span>{copy.title}</span>
+                    </header>
+                    <p>{copy.description}</p>
+                    <div className="logistics-review-meta">
+                      {item.onec_order_number && <span>Заказ 1С: {item.onec_order_number}</span>}
+                      {item.site_order_number && <span>Заказ сайта: {item.site_order_number}</span>}
+                      {item.source_warehouse_name && <span>Склад: {item.source_warehouse_name}</span>}
+                      {item.delivery_method && <span>Доставка: {item.delivery_method}</span>}
+                    </div>
+                    <small>{copy.action} · {formatReviewDate(item.created_at)}</small>
+                  </article>
+                );
+              })}
+            </div>
+            {reviewPage.items.length < reviewPage.total && (
+              <button
+                className="btn btn--ghost logistics-review-more"
+                type="button"
+                disabled={reviewsLoading}
+                onClick={loadMoreReviews}
+              >
+                {reviewsLoading ? "Загружаем…" : `Показать ещё (${reviewPage.total - reviewPage.items.length})`}
+              </button>
+            )}
           </section>
         )}
 

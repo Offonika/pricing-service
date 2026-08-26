@@ -137,9 +137,14 @@ JSON/CSV/XLSX артефактов сохраняются.
    ОТМЕНЕНО (2026-08-25): требование отдельного подтверждения merge выполнено для
    PR №57; разрешён merge в `main`. Production release по-прежнему требует
    отдельного подтверждения.
+6. Для `export_manual_status_overrides.py` после зелёного CI разрешён и выполнен
+   merge PR №63 коммитом `0496ad30cf7a366e4bb68baa9f34af6d756b4e81`.
+   Production migration, deploy и cutover в это решение не входят и не выполнялись.
 
 # Changelog
 
+- 2026-08-26 — разрешён и выполнен merge PR №63; production release оставлен
+  отдельным решением.
 - 2026-08-26 — `export_manual_status_overrides.py` переведён на central read-only
   session scope; CLI registry фиксирует application DB read-only, dry-run и
   byte-stable artifact merge.

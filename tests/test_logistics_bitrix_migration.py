@@ -63,4 +63,4 @@ def test_logistics_bitrix_migration_upgrade_and_downgrade(tmp_path: Path) -> Non
 
 
 def test_logistics_bitrix_migration_extends_current_head() -> None:
-    assert _load_migration().down_revision == "8c0e2a4b6d57"
+    assert _load_migration().down_revision == "9d1f3a5b7c68"

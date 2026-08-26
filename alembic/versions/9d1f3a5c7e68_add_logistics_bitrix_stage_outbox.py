@@ -1,7 +1,7 @@
 """Add Bitrix logistics identity, fallback tokens, and stage outbox.
 
 Revision ID: 9d1f3a5c7e68
-Revises: 8c0e2a4b6d57
+Revises: 9d1f3a5b7c68
 Create Date: 2026-08-26
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "9d1f3a5c7e68"
-down_revision = "8c0e2a4b6d57"
+down_revision = "9d1f3a5b7c68"
 branch_labels = None
 depends_on = None
 

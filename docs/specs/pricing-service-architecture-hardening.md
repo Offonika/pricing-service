@@ -322,8 +322,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    ОТМЕНЕНО (2026-08-26, только в части merge PR №58): прежнее ограничение
    заменено отдельным разрешением пользователя. PR №58 с HEAD
    `53a3aff2661b5c32d4994ca0f745d274c6b6dce3` слит коммитом
-   `4225b71a81548288a78900509935425236d3e902`. Production cutover не разрешён
-   и остаётся отдельным решением.
+   `4225b71a81548288a78900509935425236d3e902`. В момент merge PR №58
+   production cutover не выполнялся; любые последующие production cutover
+   требуют отдельного решения.
 1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
    `main` с проверенной цепочкой активного production source в отдельной
    интеграционной ветке и провести её через PR. До merge и отдельного cutover
@@ -389,8 +390,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
-- 2026-08-26 — отдельно разрешён и выполнен merge pricing-service PR №58;
-  production cutover не разрешён, active release не изменён.
+- 2026-08-26 — отдельно разрешён и выполнен merge pricing-service PR №58; в рамках
+  этого merge production cutover не выполнялся, active release на момент merge
+  не изменился.
 - 2026-08-26 — для финальной convergence-итерации подтверждены merge controller
   PR №32, установка controller v3 и 30-минутный deploy-freeze; merge PR №58 и
   production cutover оставлены отдельными решениями.

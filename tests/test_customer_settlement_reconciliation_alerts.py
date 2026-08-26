@@ -506,7 +506,19 @@ def test_health_alerts_are_transition_based_and_do_not_contain_financial_data(
         now=now + timedelta(minutes=1),
     )
     assert isinstance(alert, CustomerSettlementAlertOutbox)
-    assert "суммы" in alert.message
+    assert alert.message == (
+        "Взаиморасчёты: требуется проверка\n"
+        "Финансовые данные: требуется проверка.\n"
+        "Связь кабинетов с клиентами 1С: работает.\n"
+        "Загружено клиентов: 10 из 10.\n"
+        "Без долга и аванса: 1.\n"
+        "Суммы и данные клиентов в сообщение не включаются."
+    )
+    assert "mapping" not in alert.message
+    assert "expected" not in alert.message
+    assert "loaded" not in alert.message
+    assert "zero" not in alert.message
+    assert "critical" not in alert.message.lower()
     assert "site_user" not in alert.message
     db_session.flush()
     assert (
@@ -525,7 +537,14 @@ def test_health_alerts_are_transition_based_and_do_not_contain_financial_data(
         now=now + timedelta(hours=2),
     )
     assert recovery is not None
-    assert "восстановлено" in recovery.message
+    assert recovery.message == (
+        "Взаиморасчёты снова работают нормально\n"
+        "Финансовые данные: обновлены.\n"
+        "Связь кабинетов с клиентами 1С: работает.\n"
+        "Загружено клиентов: 10 из 10.\n"
+        "Без долга и аванса: 1.\n"
+        "Суммы и данные клиентов в сообщение не включаются."
+    )
 
 
 def test_same_alert_transition_is_not_lost_inside_repeat_window(db_session: Session) -> None:
@@ -605,7 +624,42 @@ def test_health_alerts_fail_closed_and_sanitize_invalid_metrics(db_session: Sess
     )
     assert alert is not None
     assert "private-client-id" not in alert.message
-    assert "unknown/unknown/unknown" in alert.message
+    assert "не удалось определить" in alert.message
+    assert "Загружено клиентов: не определено из не определено." in alert.message
+    assert "Без долга и аванса: не определено." in alert.message
+
+
+def test_alert_delivery_labels_the_deduplication_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_key = "d" * 64
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_request(*, url: str, payload: dict[str, str], timeout_seconds: float):
+        calls.append((url, payload))
+        assert timeout_seconds == 3.0
+        if url.endswith("/task.commentitem.getlist.json"):
+            return {"result": []}
+        return {"result": "comment-42"}
+
+    monkeypatch.setattr(settlement_alerts, "_request_bitrix_json", fake_request)
+
+    assert (
+        settlement_alerts._post_bitrix_comment(
+            webhook_url="https://example.invalid/rest/1/token",
+            task_id="2883",
+            event_key=event_key,
+            message="Взаиморасчёты: требуется проверка",
+            timeout_seconds=3.0,
+        )
+        == "comment-42"
+    )
+    assert len(calls) == 2
+    assert calls[1][1]["arFields[POST_MESSAGE]"] == (
+        "Взаиморасчёты: требуется проверка\n"
+        "Служебная метка для защиты от повторной отправки: "
+        f"[#mm-settlements:{event_key}]"
+    )
 
 
 def test_alert_delivery_is_restricted_to_approved_task(db_session: Session) -> None:

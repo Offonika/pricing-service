@@ -36,31 +36,42 @@ def _event_key(*parts: object) -> str:
     return hashlib.sha256("|".join(map(str, parts)).encode("utf-8")).hexdigest()
 
 
-def _safe_health_level(value: Any) -> str:
-    return str(value) if value in _HEALTH_LEVELS else "unknown"
-
-
 def _safe_health_count(value: Any) -> str:
     return (
-        str(value)
+        f"{value:,}".replace(",", " ")
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-        else "unknown"
+        else "не определено"
     )
+
+
+def _safe_health_text(value: Any, *, ok_text: str) -> str:
+    if value == "ok":
+        return ok_text
+    if value == "warning":
+        return "обновление задерживается"
+    if value == "critical":
+        return "требуется проверка"
+    return "не удалось определить"
 
 
 def _safe_health_message(level: str, metrics: dict[str, Any], *, recovered: bool) -> str:
-    title = (
-        "Взаиморасчёты: состояние восстановлено" if recovered else f"Взаиморасчёты: {level.upper()}"
-    )
+    if recovered:
+        title = "Взаиморасчёты снова работают нормально"
+    elif level == "warning":
+        title = "Взаиморасчёты: обновление задерживается"
+    else:
+        title = "Взаиморасчёты: требуется проверка"
     return "\n".join(
         (
             title,
-            f"Свежесть финансового среза: {_safe_health_level(metrics.get('freshness_status'))}",
-            f"Свежесть mapping: {_safe_health_level(metrics.get('mapping_status'))}",
-            f"Строк expected/loaded/zero: {_safe_health_count(metrics.get('expected_rows'))}/"
-            f"{_safe_health_count(metrics.get('loaded_rows'))}/"
-            f"{_safe_health_count(metrics.get('zero_rows'))}",
-            "Финансовые суммы и идентификаторы клиентов намеренно не включены.",
+            "Финансовые данные: "
+            f"{_safe_health_text(metrics.get('freshness_status'), ok_text='обновлены')}.",
+            "Связь кабинетов с клиентами 1С: "
+            f"{_safe_health_text(metrics.get('mapping_status'), ok_text='работает')}.",
+            f"Загружено клиентов: {_safe_health_count(metrics.get('loaded_rows'))} из "
+            f"{_safe_health_count(metrics.get('expected_rows'))}.",
+            f"Без долга и аванса: {_safe_health_count(metrics.get('zero_rows'))}.",
+            "Суммы и данные клиентов в сообщение не включаются.",
         )
     )
 
@@ -269,7 +280,9 @@ def _post_bitrix_comment(
         url=f"{base_url}/task.commentitem.add.json",
         payload={
             "taskId": task_id,
-            "arFields[POST_MESSAGE]": f"{message}\n{marker}",
+            "arFields[POST_MESSAGE]": (
+                f"{message}\n" f"Служебная метка для защиты от повторной отправки: {marker}"
+            ),
         },
         timeout_seconds=timeout_seconds,
     )

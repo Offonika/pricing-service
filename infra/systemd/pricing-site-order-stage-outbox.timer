@@ -1,0 +1,12 @@
+[Unit]
+Description=Process site order stage outbox every 15 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=true
+Unit=pricing-site-order-stage-outbox.service
+
+[Install]
+WantedBy=timers.target

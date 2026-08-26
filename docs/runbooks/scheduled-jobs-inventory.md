@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-24"
+updated_at: "2026-08-26"
 ---
 
 # Инвентарь заданий по расписанию
@@ -50,6 +50,12 @@ updated_at: "2026-08-24"
 | `pricing-executive-dashboard-monitor` | каждые 5 минут | релиз |
 
 Логи всех заданий — в `/var/log/pricing/`, имя файла совпадает с именем задания.
+
+## Подготовленные, но не активированные задания
+
+| Задание | Расписание | Состояние |
+|---|---|---|
+| `pricing-site-order-stage-outbox.timer` | каждые 15 секунд | Файлы unit/timer подготовлены, но не установлены и не включены. Даже после установки запись в Bitrix блокируется `LOGISTICS_STAGE_AUTOMATION_ENABLED=false` до пилотного разрешения |
 
 ## Неактивные файлы
 
@@ -104,6 +110,8 @@ downstream lead-time pipeline. Кандидат строится от актив
 
 ## Changelog
 
+- 2026-08-26 — зарегистрирован подготовленный, но не активированный systemd timer
+  DB-outbox логистических стадий; production-таймер и feature flag не включались.
 - 2026-08-24 — Устранение runtime split-brain назначено приоритетом №1; принят
   поэтапный перевод всех активных jobs на единый immutable release source.
 - 2026-08-24 — API monitor, expertise timers, competitor matching, 1С assembly,

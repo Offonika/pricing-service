@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scripts.ensure_site_order_deal_stages import build_plan
+from scripts.ensure_site_order_deal_stages import build_plan, build_user_field_plan
 
 
 def test_build_plan_adds_missing_order_fulfillment_stages() -> None:
@@ -11,8 +11,9 @@ def test_build_plan_adds_missing_order_fulfillment_stages() -> None:
         ]
     )
 
-    assert [item["action"] for item in plan] == ["add", "add", "add"]
+    assert [item["action"] for item in plan] == ["add", "add", "add", "add"]
     assert [item["stage"]["STATUS_ID"] for item in plan] == [
+        "PICKUP_TRANSIT",
         "PICKUP_WAITING",
         "PICKUP_STORAGE",
         "DISMANTLING",
@@ -22,6 +23,11 @@ def test_build_plan_adds_missing_order_fulfillment_stages() -> None:
 def test_build_plan_requires_manual_review_for_existing_stage_mismatch() -> None:
     plan = build_plan(
         [
+            {
+                "STATUS_ID": "PICKUP_TRANSIT",
+                "NAME": "В пути на точку самовывоза",
+                "SORT": "64",
+            },
             {
                 "STATUS_ID": "PICKUP_WAITING",
                 "NAME": "Ожидает клиента",
@@ -49,3 +55,17 @@ def test_build_plan_requires_manual_review_for_existing_stage_mismatch() -> None
             "required": "Ожидает самовывоза",
         }
     }
+
+
+def test_build_user_field_plan_adds_missing_sms_shadow_fields() -> None:
+    plan = build_user_field_plan([])
+
+    assert {item["field"]["FIELD_NAME"] for item in plan} == {
+        "UF_CRM_MM_PICKUP_READY_EVENT_ID",
+        "UF_CRM_MM_PICKUP_READY_SMS_STATUS",
+        "UF_CRM_MM_PICKUP_READY_SMS_SENT_AT",
+        "UF_CRM_MM_PICKUP_STORAGE_DEADLINE",
+        "UF_CRM_MM_PICKUP_POINT_NAME",
+        "UF_CRM_MM_PICKUP_POINT_ADDRESS",
+    }
+    assert all(item["action"] == "add" for item in plan)

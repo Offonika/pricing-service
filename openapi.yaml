@@ -2796,6 +2796,378 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/session:
+    post:
+      summary: Create Bitrix Logistics Session
+      operationId: create_bitrix_logistics_session_api_bitrix_logistics_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/bootstrap:
+    get:
+      summary: Bootstrap
+      operationId: bootstrap_api_bitrix_logistics_bootstrap_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsBootstrapResponse'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/handoffs/draft:
+    post:
+      summary: Create Handoff Draft
+      operationId: create_handoff_draft_api_bitrix_logistics_handoffs_draft_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/scan:
+    post:
+      summary: Scan Handoff Draft
+      operationId: scan_handoff_draft_api_bitrix_logistics_handoffs_draft__draft_id__scan_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/confirm:
+    post:
+      summary: Confirm Handoff Draft
+      operationId: confirm_handoff_draft_api_bitrix_logistics_handoffs_draft__draft_id__confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft:
+    post:
+      summary: Create Receipt Draft
+      operationId: create_receipt_draft_api_bitrix_logistics_receipts_draft_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/receipts/draft/{draft_id}/scan:
+    post:
+      summary: Scan Receipt Draft
+      operationId: scan_receipt_draft_api_bitrix_logistics_receipts_draft__draft_id__scan_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft/{draft_id}/confirm:
+    post:
+      summary: Confirm Receipt Draft
+      operationId: confirm_receipt_draft_api_bitrix_logistics_receipts_draft__draft_id__confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/expected-deliveries:
+    get:
+      summary: Expected Deliveries
+      operationId: expected_deliveries_api_bitrix_logistics_expected_deliveries_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Warehouse Id
+      - name: driver_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsExpectedDeliveryResponse'
+                title: Response Expected Deliveries Api Bitrix Logistics Expected Deliveries Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/monitor:
+    get:
+      summary: Monitor
+      operationId: monitor_api_bitrix_logistics_monitor_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Warehouse Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsMonitorResponse'
+                title: Response Monitor Api Bitrix Logistics Monitor Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/transfers/{transfer_id}/history:
+    get:
+      summary: History
+      operationId: history_api_bitrix_logistics_transfers__transfer_id__history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsHistoryEventResponse'
+                title: Response History Api Bitrix Logistics Transfers  Transfer Id  History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/errors:
+    get:
+      summary: Errors
+      operationId: errors_api_bitrix_logistics_errors_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/LogisticsManualReviewResponse'
+                type: array
+                title: Response Errors Api Bitrix Logistics Errors Get
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/fallback-link:
+    post:
+      summary: Create Fallback Link
+      operationId: create_fallback_link_api_bitrix_logistics_fallback_link_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsFallbackLinkResponse'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/fallback-session:
+    post:
+      summary: Exchange Fallback Token
+      operationId: exchange_fallback_token_api_bitrix_logistics_fallback_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsFallbackSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/receivables/session:
     post:
       summary: Create Bitrix Receivables Session
@@ -10905,6 +11277,163 @@ components:
       required:
       - user_id
       title: BitrixExecutiveDashboardUser
+    BitrixLogisticsBootstrapResponse:
+      properties:
+        profile:
+          $ref: '#/components/schemas/LogisticsUserProfile'
+        warehouses:
+          items:
+            $ref: '#/components/schemas/LogisticsWarehouseResponse'
+          type: array
+          title: Warehouses
+        drivers:
+          items:
+            $ref: '#/components/schemas/LogisticsDriverResponse'
+          type: array
+          title: Drivers
+        capabilities:
+          items:
+            type: string
+          type: array
+          title: Capabilities
+      type: object
+      required:
+      - profile
+      - warehouses
+      - drivers
+      - capabilities
+      title: BitrixLogisticsBootstrapResponse
+    BitrixLogisticsDraftConfirmRequest:
+      properties:
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      title: BitrixLogisticsDraftConfirmRequest
+    BitrixLogisticsDraftCreateRequest:
+      properties:
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
+        default_dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Default Dropoff Warehouse Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+      type: object
+      required:
+      - warehouse_id
+      title: BitrixLogisticsDraftCreateRequest
+    BitrixLogisticsDraftScanRequest:
+      properties:
+        barcode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+      type: object
+      title: BitrixLogisticsDraftScanRequest
+    BitrixLogisticsFallbackLinkResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      type: object
+      required:
+      - url
+      - expires_at
+      title: BitrixLogisticsFallbackLinkResponse
+    BitrixLogisticsFallbackSessionRequest:
+      properties:
+        token:
+          type: string
+          minLength: 20
+          title: Token
+      type: object
+      required:
+      - token
+      title: BitrixLogisticsFallbackSessionRequest
+    BitrixLogisticsSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: BitrixLogisticsSessionRequest
+    BitrixLogisticsSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        profile:
+          $ref: '#/components/schemas/LogisticsUserProfile'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - profile
+      title: BitrixLogisticsSessionResponse
     BitrixMatchingSessionRequest:
       properties:
         access_token:
@@ -21414,6 +21943,11 @@ components:
           - type: integer
           - type: 'null'
           title: Telegram User Id
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
         username:
           anyOf:
           - type: string
@@ -21453,6 +21987,11 @@ components:
           - type: integer
           - type: 'null'
           title: Telegram User Id
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
         username:
           anyOf:
           - type: string

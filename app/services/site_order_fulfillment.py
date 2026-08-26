@@ -27,6 +27,7 @@ from app.models.site_order_fulfillment import (
     BitrixChatMessage,
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
+    SiteOrderStageOutbox,
 )
 
 CHAT_SITE_MASTER_MOBILE = "site_master_mobile"
@@ -40,6 +41,7 @@ SOURCE_BITRIX_CHAT = "bitrix_chat"
 PARSER_VERSION = "bitrix-order-v1"
 
 EVENT_PICKUP_UNCLAIMED = "pickup_unclaimed_reported"
+EVENT_PICKUP_MOVING = "pickup_moving_to_point"
 EVENT_PICKUP_STORED = "pickup_stored_at_point"
 EVENT_PICKUP_RECEIVED = "pickup_client_received"
 EVENT_PICKUP_DISMANTLING = "pickup_dismantling_started"
@@ -50,11 +52,13 @@ EVENT_COURIER_RESCHEDULED = "courier_spb_rescheduled"
 EVENT_COURIER_IN_PROGRESS = "courier_spb_in_progress"
 
 CRM_STAGE_MANUAL_REVIEW = "PREPARATION"
+CRM_STAGE_PICKUP_TRANSIT = "PICKUP_TRANSIT"
 CRM_STAGE_PICKUP_WAITING = "PICKUP_WAITING"
 CRM_STAGE_PICKUP_STORAGE = "PICKUP_STORAGE"
 TERMINAL_CRM_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
 
 DERIVED_TO_CRM_STAGE = {
+    EVENT_PICKUP_MOVING: CRM_STAGE_PICKUP_TRANSIT,
     EVENT_PICKUP_UNCLAIMED: CRM_STAGE_PICKUP_WAITING,
     EVENT_PICKUP_STORED: CRM_STAGE_PICKUP_WAITING,
     EVENT_PICKUP_RECEIVED: "WON",
@@ -64,6 +68,11 @@ DERIVED_TO_CRM_STAGE = {
     EVENT_COURIER_FAILED: CRM_STAGE_MANUAL_REVIEW,
     EVENT_COURIER_RESCHEDULED: "IN_DELIVERY",
     EVENT_COURIER_IN_PROGRESS: "IN_DELIVERY",
+}
+
+AUTOMATED_LOGISTICS_STAGE_EVENTS = {
+    EVENT_PICKUP_MOVING,
+    EVENT_PICKUP_STORED,
 }
 
 KNOWN_RAW_DELIVERY_METHODS = {
@@ -326,6 +335,11 @@ class BitrixChatClient:
         if not isinstance(result, dict):
             return None
         return bitrix_deal_from_payload(result)
+
+    def get_contact_by_id(self, contact_id: int) -> dict[str, Any] | None:
+        response = self.call("crm.contact.get", {"id": contact_id})
+        result = response.get("result")
+        return result if isinstance(result, dict) else None
 
     def update_deal_stage(self, deal_id: int, target_stage: str) -> Any:
         return self.update_deal_fields(deal_id, {"STAGE_ID": target_stage})
@@ -759,6 +773,29 @@ def upsert_execution_event(
     session.add(event)
     session.flush()
     case.last_evidence_event_id = event.id
+    if (
+        source == "logistics"
+        and confidence == "strong"
+        and event_type in AUTOMATED_LOGISTICS_STAGE_EVENTS
+    ):
+        target_stage = DERIVED_TO_CRM_STAGE[event_type]
+        session.add(
+            SiteOrderStageOutbox(
+                case_id=case.id,
+                event_id=event.id,
+                idempotency_key=f"site-order-stage|{event.id}|{target_stage}",
+                site_order_number=site_order_number,
+                bitrix_deal_id=case.bitrix_deal_id,
+                source_event_type=event_type,
+                target_stage=target_stage,
+                payload={
+                    "source_ref": source_ref,
+                    "event_at": event_at.isoformat() if event_at else None,
+                    **(payload or {}),
+                },
+            )
+        )
+        session.flush()
     return event
 
 
@@ -1187,7 +1224,8 @@ def apply_stage_outbox_rows(
     client: Any,
     apply: bool = False,
     limit: int | None = None,
-    target_stage: str = CRM_STAGE_PICKUP_WAITING,
+    target_stage: str | None = None,
+    target_stages: set[str] | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 0.5,
 ) -> list[OrderFulfillmentStageApplyResult]:
@@ -1203,11 +1241,14 @@ def apply_stage_outbox_rows(
                 attempts=safe_attempts,
                 retry_delay_seconds=retry_delay_seconds,
             )
+        allowed_target_stages = target_stages or (
+            {target_stage} if target_stage else {CRM_STAGE_PICKUP_TRANSIT, CRM_STAGE_PICKUP_WAITING}
+        )
         result = evaluate_stage_outbox_row(
             row,
             live_deal=live_deal,
             live_lookup_error=live_lookup_error,
-            target_stage=target_stage,
+            target_stages=allowed_target_stages,
             dry_run=not apply,
         )
         if apply and result.result == "ready":
@@ -1313,7 +1354,8 @@ def evaluate_stage_outbox_row(
     *,
     live_deal: BitrixDealSnapshot | None,
     live_lookup_error: str | None = None,
-    target_stage: str = CRM_STAGE_PICKUP_WAITING,
+    target_stage: str | None = None,
+    target_stages: set[str] | None = None,
     dry_run: bool = True,
 ) -> OrderFulfillmentStageApplyResult:
     if row.state != "ready":
@@ -1334,7 +1376,10 @@ def evaluate_stage_outbox_row(
             dry_run=dry_run,
             applied=False,
         )
-    if row.target_stage != target_stage:
+    allowed_target_stages = target_stages or (
+        {target_stage} if target_stage else {CRM_STAGE_PICKUP_TRANSIT, CRM_STAGE_PICKUP_WAITING}
+    )
+    if row.target_stage not in allowed_target_stages:
         return _stage_apply_result(
             row,
             live_deal=live_deal,

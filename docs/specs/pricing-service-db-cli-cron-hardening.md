@@ -108,6 +108,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   scope с сохранением application DB override для тестов и one-off запусков.
 - [x] Перевести `export_manual_status_overrides.py` на central read-only session
   scope и зафиксировать DB access, dry-run и artifact idempotency в CLI registry.
+- [x] Перевести `export_management_marks.py` на central read-only session scope;
+  зафиксировать optional external write и отсутствие идемпотентности между запусками.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -143,6 +145,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-26 — `export_management_marks.py` переведён на central read-only session
+  scope; registry фиксирует optional external write и новый `message_id` на запуск.
 - 2026-08-26 — разрешён и выполнен merge PR №63; production release оставлен
   отдельным решением.
 - 2026-08-26 — `export_manual_status_overrides.py` переведён на central read-only

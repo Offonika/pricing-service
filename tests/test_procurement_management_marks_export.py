@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from xml.etree import ElementTree as ET
@@ -25,6 +26,7 @@ from app.services.procurement_management_marks_export import (
     collect_management_marks,
 )
 from app.services.procurement_order_formation import create_classification_proposal
+from tasks import export_management_marks as export_management_marks_task
 
 
 def _session(user_id: str = "77") -> ProcurementOrderFormationSession:
@@ -152,3 +154,20 @@ def test_lifecycle_property_export_stays_prohibited() -> None:
                 mode="dry_run",
             )
         )
+
+
+def test_export_management_marks_cli_uses_read_only_scope(db_session, monkeypatch, capsys) -> None:
+    calls: list[bool] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        calls.append(read_only)
+        yield db_session
+
+    monkeypatch.setattr(export_management_marks_task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(export_management_marks_task, "collect_management_marks", lambda db: [])
+    monkeypatch.setattr("sys.argv", ["export_management_marks"])
+
+    assert export_management_marks_task.main() == 0
+    assert calls == [True]
+    assert "нет согласованных решений" in capsys.readouterr().out

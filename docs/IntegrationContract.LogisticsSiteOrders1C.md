@@ -240,11 +240,17 @@ WHERE rtu._Marked = 0x00
 Сервисный слой:
 
 - extractor находится в `app/services/logistics_onec.py`;
+- extractor считает РТУ кандидатом интернет-логистики только при заполненном
+  `site_order_number` или `site_delivery_method`; обычные розничные РТУ без обоих
+  признаков игнорируются и не создают ручной разбор;
+- readiness `проведена + распечатана + собрана` является gate допуска: пока он
+  не пройден, РТУ учитывается как `pending_readiness`, но не как ошибка;
 - запуск из cron/ручной проверки: `tasks/sync_logistics_rtu_from_onec.py`;
 - адресные aliases точек из `1С` подтягиваются командой
   `tasks/sync_logistics_warehouse_aliases_from_onec.py`;
 - без `--apply` команда делает dry-run и возвращает отчет `fetched`,
-  `synced_planned`, `manual_review_planned`, `skipped`;
+  `synced_planned`, `manual_review_planned`, `pending_readiness`,
+  `ignored_non_site`, `skipped`;
 - с `--apply` команда пишет изменения и возвращает `synced_created`,
   `synced_updated`, `manual_review_created`, `manual_review_resolved`,
   `skipped`;
@@ -256,6 +262,10 @@ WHERE rtu._Marked = 0x00
   sync обновляет существующую РТУ, а не создает дубль.
 - открытый ручной разбор, который стал неактуальным после успешного sync той же
   РТУ, закрывается автоматически со статусом `resolved`;
+- одноразовая очистка прежнего шума запускается командой
+  `python -m tasks.cleanup_logistics_rtu_manual_reviews`: по умолчанию это dry-run,
+  а `--apply` закрывает только readiness-записи и подтверждённые розничные записи
+  без обоих интернет-признаков; повреждённый payload автоматически не закрывается;
 - отчет для логистов:
   `tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`.
 - подтвержденные aliases применяются только явным JSON-файлом через
@@ -279,6 +289,10 @@ WHERE rtu._Marked = 0x00
 - `ПВЗ / пункт выдачи` в 1С для MVP не дорабатываем.
 - Source of truth по готовности РТУ: `не помечена на удаление` + `Проведена` +
   событие `Распечатан` + событие `Собран`.
+- Непройденный readiness gate не является ручной ошибкой и не создает
+  `manual_review`.
+- РТУ без номера сайта и без заполненного способа доставки считается обычной
+  розничной РТУ и не входит в этот контур.
 - Адреса, которые не сопоставились с одним подразделением, отправляются в
   `manual_review`; логист выбирает подразделение вручную.
 - Отдельный barcode для РТУ-пакета на старте не создаем, используем печатный

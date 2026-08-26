@@ -16,6 +16,7 @@ related_code:
   - app/services/logistics_onec.py
   - app/services/bitrix_logistics_auth.py
   - tasks/apply_logistics_warehouse_alias_overrides.py
+  - tasks/cleanup_logistics_rtu_manual_reviews.py
   - tasks/report_logistics_rtu_manual_review.py
   - tasks/sync_logistics_warehouse_aliases_from_onec.py
   - tasks/sync_logistics_rtu_from_onec.py
@@ -113,6 +114,11 @@ RTU sync из SQL `1С`:
   РТУ `_Reference80` и readiness-события `_InfoRg9448`;
 - SQL остается read-only и использует `WITH (NOLOCK)`, как в текущем контуре
   `site_order_fulfillment`;
+- в выборку входят только РТУ с положительным признаком интернет-заказа:
+  заполнен `site_order_number` или `site_delivery_method`; одна лишь связь РТУ
+  с обычным заказом покупателя не считается признаком интернет-заказа;
+- РТУ, которая еще не проведена, не распечатана или не собрана, остается в
+  ожидаемом состоянии readiness и не создает `manual_review`;
 - готовая РТУ превращается в `source_document_type = rtu` с lookup
   `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
 - целевой склад выбирается по address aliases из `logistics_warehouse.payload`;
@@ -195,6 +201,10 @@ RTU sync запускается не публичным API, а CLI:
 - `python tasks/sync_logistics_rtu_from_onec.py --date-from YYYY-MM-DD --limit 500`;
 - без `--apply` выполняется dry-run;
 - с `--apply` пишет logistics units и `manual_review`.
+- `python -m tasks.cleanup_logistics_rtu_manual_reviews` показывает dry-run
+  устаревших readiness-записей и розничных РТУ без положительного интернет-признака;
+- только явный `--apply` закрывает безопасно распознанный шум, добавляет audit markers
+  в payload и оставляет повреждённые payload открытыми для ручного разбора;
 - `python tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`
   группирует открытый ручной разбор по причине, способу доставки и адресу.
 - `python tasks/apply_logistics_warehouse_alias_overrides.py aliases.json` делает
@@ -239,11 +249,14 @@ Backend должен идти первым как read-only слой контр�
 Manual review создается для:
 
 - неизвестного или неоднозначного QR;
-- РТУ без `site_order_number`;
+- РТУ без `site_order_number`, только если есть независимый положительный
+  признак интернет-заказа, например заполненный `site_delivery_method`;
 - РТУ с неразрешенным или неоднозначным target warehouse;
 - РТУ для внешней доставки/перевозчика без выбранного внутреннего flow;
 - РТУ с неуникальным generated lookup;
-- РТУ, которая не прошла readiness gate `проведена + распечатана + собрана`;
+- ОТМЕНЕНО (2026-08-26): РТУ, которая не прошла readiness gate
+  `проведена + распечатана + собрана`, больше не создает `manual_review`, потому
+  что это ожидаемое промежуточное состояние, а не ошибка оператора;
 - изменения/удаления документа `1С` при активном logistics state;
 - ручного override готовности.
 
@@ -290,6 +303,8 @@ Manual review создается для:
 
 # Changelog
 
+- 2026-08-26 — исключен розничный шум: для RTU sync обязателен положительный
+  признак интернет-заказа, а readiness gate переведен из ошибок в ожидаемое состояние.
 - 2026-08-26 — добавлен контракт встроенного приложения Bitrix24, BFF-сессий,
   складских ролей и одноразового web fallback; основной UX перенесен в Bitrix24,
   Telegram и web остаются резервом общей state machine.

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -1611,6 +1611,73 @@ def list_manual_reviews(
         }
         for row in rows
     ]
+
+
+def list_bitrix_manual_reviews(
+    session: Session,
+    *,
+    review_type: str | None = None,
+    limit: int = 30,
+    offset: int = 0,
+) -> dict:
+    conditions = [LogisticsManualReview.status == "open"]
+    if review_type is not None:
+        conditions.append(LogisticsManualReview.review_type == review_type)
+
+    total = int(
+        session.scalar(select(func.count()).select_from(LogisticsManualReview).where(*conditions))
+        or 0
+    )
+    count_rows = session.execute(
+        select(LogisticsManualReview.review_type, func.count())
+        .where(LogisticsManualReview.status == "open")
+        .group_by(LogisticsManualReview.review_type)
+        .order_by(LogisticsManualReview.review_type)
+    ).all()
+    rows = session.scalars(
+        select(LogisticsManualReview)
+        .where(*conditions)
+        .options(joinedload(LogisticsManualReview.transfer))
+        .order_by(LogisticsManualReview.created_at.desc(), LogisticsManualReview.id.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+    items = []
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        rtu_number = _optional_string(payload.get("rtu_number"))
+        items.append(
+            {
+                "id": row.id,
+                "review_type": row.review_type,
+                "source_document_type": row.source_document_type,
+                "transfer_id": row.transfer_id,
+                "document_number": (
+                    row.transfer.document_number if row.transfer is not None else rtu_number
+                ),
+                "rtu_number": rtu_number,
+                "onec_order_number": _optional_string(payload.get("onec_order_number")),
+                "site_order_number": _optional_string(payload.get("site_order_number")),
+                "source_warehouse_name": _optional_string(payload.get("source_warehouse_name")),
+                "delivery_method": _optional_string(payload.get("site_delivery_method")),
+                "created_at": row.created_at,
+            }
+        )
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "counts": {str(review): int(count) for review, count in count_rows},
+    }
+
+
+def _optional_string(value) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def handoff_to_external_carrier(

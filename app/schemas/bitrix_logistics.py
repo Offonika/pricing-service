@@ -32,6 +32,28 @@ class BitrixLogisticsBootstrapResponse(BaseModel):
     capabilities: list[str]
 
 
+class BitrixLogisticsManualReviewItem(BaseModel):
+    id: int
+    review_type: str
+    source_document_type: str | None = None
+    transfer_id: int | None = None
+    document_number: str | None = None
+    rtu_number: str | None = None
+    onec_order_number: str | None = None
+    site_order_number: str | None = None
+    source_warehouse_name: str | None = None
+    delivery_method: str | None = None
+    created_at: datetime
+
+
+class BitrixLogisticsManualReviewPage(BaseModel):
+    items: list[BitrixLogisticsManualReviewItem]
+    total: int
+    limit: int
+    offset: int
+    counts: dict[str, int]
+
+
 class BitrixLogisticsDraftCreateRequest(BaseModel):
     warehouse_id: int
     driver_id: int | None = None

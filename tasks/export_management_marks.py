@@ -11,10 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy.orm import Session
-
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.exporters.ut103_exchange import (
     load_ut103_env_file,
     resolve_ut103_exchange_root,
@@ -53,9 +50,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     load_ut103_env_file()
     args = parse_args()
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as db:
+    with session_scope(read_only=True) as db:
         marks = collect_management_marks(db)
     if args.limit is not None:
         marks = marks[: max(args.limit, 0)]

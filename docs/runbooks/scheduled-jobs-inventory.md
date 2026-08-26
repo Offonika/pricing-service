@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-24"
+updated_at: "2026-08-26"
 ---
 
 # Инвентарь заданий по расписанию
@@ -50,6 +50,13 @@ updated_at: "2026-08-24"
 | `pricing-executive-dashboard-monitor` | каждые 5 минут | релиз |
 
 Логи всех заданий — в `/var/log/pricing/`, имя файла совпадает с именем задания.
+
+`onec_assembly_crm_reconciler` поддерживает два транспорта. До отдельного
+production-cutover используется `legacy-php`. Целевой `service-db` сохраняет
+append-only события `1С` в `pricing-service`; переходы стадий затем принимает единая
+state machine и применяет durable outbox. Переключение разрешено только вместе с
+`ORDER_FULFILLMENT_EXECUTION_MASTER_ENABLED=true` и
+`ORDER_FULFILLMENT_EXECUTION_INGEST_ENABLED=true` после dry-run/canary.
 
 ## Неактивные файлы
 

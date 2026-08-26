@@ -265,6 +265,18 @@ class Settings(BaseSettings):
     order_fulfillment_pickup_inventory_enabled: bool = False
     order_fulfillment_inventory_won_enabled: bool = False
     order_fulfillment_lost_orders_enabled: bool = False
+    order_fulfillment_execution_master_enabled: bool = False
+    order_fulfillment_execution_ingest_enabled: bool = False
+    order_fulfillment_execution_reconciliation_enabled: bool = False
+    order_fulfillment_execution_stage_apply_enabled: bool = False
+    order_fulfillment_execution_historical_apply_enabled: bool = False
+    order_fulfillment_execution_cutover_at: datetime | None = None
+    order_fulfillment_execution_recent_limit: int = Field(default=100, ge=1, le=1000)
+    order_fulfillment_execution_history_limit: int = Field(default=250, ge=1, le=1000)
+    order_fulfillment_execution_cursor_path: str = (
+        "/opt/MM/pricing-service/.local/order-fulfillment-pilot/"
+        "executing-reconciliation-cursor.json"
+    )
     order_fulfillment_bot_source_chat_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["chat8729", "chat733", "chat8961", "chat729", "chat739"]
     )

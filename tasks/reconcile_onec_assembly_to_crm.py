@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.core.config import get_settings
+from app.infrastructure.db import session_scope
 from app.infrastructure.db.engines import build_engine
+from app.models import SiteOrderExecutionCase
+from app.services import site_order_fulfillment as fulfillment
 
 DEFAULT_CRM_URL = "https://crm.master-mobile.ru/local/tools/mm_crm_1c_assembly_status.php"
 DEFAULT_STATE_PATH = Path(".local/onec_assembly_crm_reconciler.sqlite3")
@@ -22,6 +25,8 @@ TOKEN_ENV_NAMES = (
     "MM_CRM_1C_ASSEMBLY_TOKEN",
     "CRM_1C_ASSEMBLY_TOKEN",
 )
+TRANSPORT_LEGACY_PHP = "legacy-php"
+TRANSPORT_SERVICE_DB = "service-db"
 
 
 @dataclass(frozen=True)
@@ -79,6 +84,15 @@ def parse_args() -> argparse.Namespace:
         "--include-processed",
         action="store_true",
         help="Do not filter events already recorded in local state.",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=(TRANSPORT_LEGACY_PHP, TRANSPORT_SERVICE_DB),
+        default=os.environ.get("ONEC_ASSEMBLY_CRM_TRANSPORT", TRANSPORT_LEGACY_PHP),
+        help=(
+            "Event transport. legacy-php keeps the current bridge; service-db writes "
+            "append-only evidence for the unified reconciler."
+        ),
     )
     return parser.parse_args()
 
@@ -272,6 +286,50 @@ def send_to_crm(
     return response_json
 
 
+def persist_event_to_service_db(event: AssemblyEvent) -> dict[str, Any]:
+    event_type = (
+        "execution_pickup_issued_raw" if event.crm_status == "issued" else "execution_assembled_raw"
+    )
+    with session_scope() as session:
+        persisted = fulfillment.upsert_execution_event(
+            session,
+            site_order_number=event.site_order_number,
+            event_type=event_type,
+            event_at=event.event_at,
+            source="onec",
+            source_ref=event.event_key,
+            confidence="strong",
+            raw_message_id=None,
+            payload={
+                "pipeline": "execution_reconciliation",
+                "rtu_external_id": event.rtu_external_id,
+                "rtu_number": event.rtu_number,
+                "rtu_date": _format_dt(event.rtu_date),
+                "onec_order_number": event.onec_order_number,
+                "is_posted": event.is_posted,
+                "document_amount": event.document_amount,
+            },
+        )
+        case = session.scalar(
+            select(SiteOrderExecutionCase).where(
+                SiteOrderExecutionCase.site_order_number == event.site_order_number
+            )
+        )
+        if case is None:
+            raise RuntimeError("execution_case_not_created")
+        case.onec_order_external_id = event.onec_order_number or None
+        case.rtu_external_id = event.rtu_external_id or None
+        case.updated_at = datetime.now()
+        event_id = persisted.id if persisted is not None else None
+    return {
+        "ok": True,
+        "transport": TRANSPORT_SERVICE_DB,
+        "event_id": event_id,
+        "duplicate": persisted is None,
+        "message": "execution_event_persisted" if persisted is not None else "duplicate_event",
+    }
+
+
 def print_event_result(
     event: AssemblyEvent,
     *,
@@ -303,10 +361,22 @@ def main() -> int:
     if args.apply and args.no_send:
         raise SystemExit("--apply and --no-send cannot be used together")
 
-    token = "" if args.no_send else _token_from_env()
-    if not args.no_send and not token:
+    token = "" if args.no_send or args.transport == TRANSPORT_SERVICE_DB else _token_from_env()
+    if not args.no_send and args.transport == TRANSPORT_LEGACY_PHP and not token:
         names = " or ".join(TOKEN_ENV_NAMES)
         raise SystemExit(f"CRM token is not configured. Set {names}.")
+    if (
+        args.apply
+        and args.transport == TRANSPORT_SERVICE_DB
+        and not (
+            settings.order_fulfillment_execution_master_enabled
+            and settings.order_fulfillment_execution_ingest_enabled
+        )
+    ):
+        raise SystemExit(
+            "service-db transport requires ORDER_FULFILLMENT_EXECUTION_MASTER_ENABLED=true "
+            "and ORDER_FULFILLMENT_EXECUTION_INGEST_ENABLED=true"
+        )
 
     since = datetime.now() - timedelta(hours=max(1, int(args.since_hours)))
     events = fetch_assembly_events(
@@ -322,6 +392,7 @@ def main() -> int:
 
         summary = {
             "mode": "apply" if args.apply else "no-send" if args.no_send else "dry-run",
+            "transport": args.transport,
             "since": _format_dt(since),
             "found": len(events),
             "pending": len(pending_events),
@@ -335,12 +406,24 @@ def main() -> int:
                 print_event_result(event, status="candidate")
                 continue
 
-            crm_response = send_to_crm(
-                event,
-                crm_url=args.crm_url,
-                token=token,
-                dry_run=not args.apply,
-            )
+            if args.transport == TRANSPORT_SERVICE_DB:
+                crm_response = (
+                    persist_event_to_service_db(event)
+                    if args.apply
+                    else {
+                        "ok": True,
+                        "transport": TRANSPORT_SERVICE_DB,
+                        "dry_run": True,
+                        "message": "execution_event_candidate",
+                    }
+                )
+            else:
+                crm_response = send_to_crm(
+                    event,
+                    crm_url=args.crm_url,
+                    token=token,
+                    dry_run=not args.apply,
+                )
             ok = bool(crm_response.get("ok"))
             print_event_result(
                 event,

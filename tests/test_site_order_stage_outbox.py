@@ -12,6 +12,8 @@ from app.models import (
     SiteOrderExecutionEvent,
     SiteOrderStageOutbox,
 )
+from app.services import site_order_execution_reconciliation as execution_reconciliation
+from app.services import site_order_stage_outbox as stage_outbox_service
 from app.services.site_order_fulfillment import (
     CRM_ORDER_NUMBER_FIELD,
     BitrixDealSnapshot,
@@ -35,6 +37,11 @@ class FakeBitrixClient:
 
     def get_deal_by_id(self, deal_id: int):
         return self.deal if deal_id == self.deal.deal_id else None
+
+    def list_deals_by_site_order(self, order_number: str):
+        if self.deal.raw.get(CRM_ORDER_NUMBER_FIELD) == order_number:
+            return [self.deal]
+        return []
 
     def update_deal_fields(self, deal_id: int, fields: dict):
         if self.fail_updates:
@@ -141,6 +148,30 @@ def _deal(stage: str = "FINAL_INVOICE"):
             "CONTACT_ID": "77",
         },
     )
+
+
+def _seed_execution_outbox(db_session, *, historical: bool = False):
+    snapshot = execution_reconciliation.ExecutionEvidenceSnapshot(
+        site_order_number="216951",
+        bitrix_deal_id=9001,
+        current_stage="EXECUTING",
+        delivery_class="pickup",
+        raw_delivery="Самовывоз",
+        duplicate_deal_ids=(9001,),
+        rtu_count=1,
+        assembled_rtu_count=1,
+        latest_rtu_at=datetime(2026, 8, 26, 9, 0),
+        latest_assembled_at=datetime(2026, 8, 26, 9, 5),
+        historical=historical,
+    )
+    result = execution_reconciliation.persist_execution_decision(
+        db_session,
+        snapshot=snapshot,
+        decision=execution_reconciliation.decide_execution_stage(snapshot),
+    )
+    db_session.commit()
+    assert result.outbox_id is not None
+    return db_session.get(SiteOrderStageOutbox, result.outbox_id)
 
 
 def test_stage_outbox_applies_chain_in_order_and_is_idempotent(db_session) -> None:
@@ -278,3 +309,135 @@ def test_stage_outbox_rejects_live_deal_with_another_order_number(db_session) ->
     assert client.updates == []
     db_session.refresh(rows[0])
     assert rows[0].status == "manual_review"
+
+
+def test_execution_outbox_applies_without_logistics_pilot_gate(db_session) -> None:
+    row = _seed_execution_outbox(db_session)
+    client = FakeBitrixClient(_deal("EXECUTING"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            logistics_stage_automation_enabled=False,
+            logistics_stage_pilot_warehouse_external_ids=[],
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+        ),
+    )
+
+    assert [item.result for item in results] == ["applied"]
+    assert client.deal.stage_id == "FINAL_INVOICE"
+    db_session.refresh(row)
+    assert row.status == "applied"
+
+
+def test_execution_outbox_historical_apply_is_independently_disabled(db_session) -> None:
+    row = _seed_execution_outbox(db_session, historical=True)
+    client = FakeBitrixClient(_deal("EXECUTING"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+            order_fulfillment_execution_historical_apply_enabled=False,
+        ),
+    )
+
+    assert [item.result for item in results] == ["historical_apply_disabled"]
+    assert client.updates == []
+    db_session.refresh(row)
+    assert row.status == "pending"
+
+
+def test_execution_outbox_duplicate_deal_is_manual_without_stage_change(db_session) -> None:
+    row = _seed_execution_outbox(db_session)
+    client = FakeBitrixClient(_deal("EXECUTING"))
+    duplicate = _deal("EXECUTING")
+    duplicate.deal_id = 9002
+    client.list_deals_by_site_order = lambda order_number: [client.deal, duplicate]
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+        ),
+    )
+
+    assert [item.result for item in results] == ["manual_review"]
+    assert results[0].reason == "multiple_bitrix_deals"
+    assert client.deal.stage_id == "EXECUTING"
+    assert client.updates == []
+    db_session.refresh(row)
+    assert row.status == "manual_review"
+
+
+def test_execution_historical_apply_is_capped_at_twenty_per_run(
+    db_session,
+    monkeypatch,
+) -> None:
+    for index in range(25):
+        case = SiteOrderExecutionCase(
+            site_order_number=str(240000 + index),
+            bitrix_deal_id=9100 + index,
+            current_derived_status="execution_historical_assembled",
+        )
+        db_session.add(case)
+        db_session.flush()
+        event = SiteOrderExecutionEvent(
+            case_id=case.id,
+            event_type="execution_historical_assembled",
+            event_at=datetime(2026, 8, 1, 10, 0),
+            source="onec",
+            source_ref=f"historical:{index}",
+            confidence="strong",
+            idempotency_key=f"historical-event:{index}",
+            payload={},
+        )
+        db_session.add(event)
+        db_session.flush()
+        case.last_evidence_event_id = event.id
+        db_session.add(
+            SiteOrderStageOutbox(
+                case_id=case.id,
+                event_id=event.id,
+                idempotency_key=f"historical-outbox:{index}",
+                site_order_number=case.site_order_number,
+                bitrix_deal_id=case.bitrix_deal_id,
+                source_event_type="execution_historical_assembled",
+                target_stage="FINAL_INVOICE",
+                payload={"pipeline": "execution_reconciliation", "historical": True},
+            )
+        )
+    db_session.commit()
+    applied_ids: list[int] = []
+
+    def fake_process_row(session, row, **kwargs):
+        del session, kwargs
+        applied_ids.append(row.id)
+        return stage_outbox_service._result(row, "applied", applied=True)
+
+    monkeypatch.setattr(stage_outbox_service, "_process_row", fake_process_row)
+
+    results = process_stage_outbox(
+        db_session,
+        client=FakeBitrixClient(_deal("EXECUTING")),
+        apply=True,
+        limit=25,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+            order_fulfillment_execution_historical_apply_enabled=True,
+        ),
+    )
+
+    assert len(applied_ids) == 20
+    assert [item.result for item in results].count("applied") == 20
+    assert [item.result for item in results].count("historical_batch_limit") == 5

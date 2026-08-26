@@ -18,6 +18,7 @@ from app.models.site_order_fulfillment import (
     SiteOrderFulfillmentOutbox,
 )
 from app.services import pickup_control
+from app.services import site_order_execution_reconciliation as execution_reconciliation
 from app.services import site_order_fulfillment_bot as bot
 
 router = APIRouter()
@@ -375,6 +376,7 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         db,
         settings=settings,
     )
+    execution_metrics = execution_reconciliation.execution_reconciliation_metrics(db)
     return {
         "enabled": settings.order_fulfillment_bot_enabled,
         "apply_enabled": runtime_apply_enabled,
@@ -401,6 +403,20 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "inventory_enabled": settings.order_fulfillment_pickup_inventory_enabled,
         "inventory_won_enabled": settings.order_fulfillment_inventory_won_enabled,
         "lost_orders_enabled": settings.order_fulfillment_lost_orders_enabled,
+        "execution_master_enabled": settings.order_fulfillment_execution_master_enabled,
+        "execution_ingest_enabled": settings.order_fulfillment_execution_ingest_enabled,
+        "execution_reconciliation_enabled": (
+            settings.order_fulfillment_execution_reconciliation_enabled
+        ),
+        "execution_stage_apply_enabled": (settings.order_fulfillment_execution_stage_apply_enabled),
+        "execution_historical_apply_enabled": (
+            settings.order_fulfillment_execution_historical_apply_enabled
+        ),
+        "execution_cutover_at": (
+            settings.order_fulfillment_execution_cutover_at.isoformat()
+            if settings.order_fulfillment_execution_cutover_at is not None
+            else None
+        ),
         "candidate_count": candidates,
         "outbox_pending": pending,
         "outbox_processing": processing,
@@ -408,6 +424,7 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "outbox_blocked_by_apply": blocked_by_apply,
         "oldest_active_outbox_age_seconds": oldest_active_age_seconds,
         **pickup_metrics,
+        **execution_metrics,
         "pickup_warehouse_allowlist": (settings.order_fulfillment_pickup_warehouse_external_ids),
         "pickup_warehouse_alias_count": len(settings.order_fulfillment_pickup_warehouse_aliases),
         "task_route_count": len(settings.order_fulfillment_point_task_routes),

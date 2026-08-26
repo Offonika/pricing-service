@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 from app.models.procurement_order_formation import (
     ProcurementLifecycleTransitionProposal,
@@ -18,6 +20,7 @@ from app.services.procurement_manual_status_export import (
     export_manual_status_overrides,
 )
 from app.services.procurement_order_formation import create_classification_proposal
+from tasks import export_manual_status_overrides as export_manual_status_overrides_task
 
 
 def _session(user_id: str = "77") -> ProcurementOrderFormationSession:
@@ -230,3 +233,35 @@ def test_lifecycle_manual_pension_and_working_decisions_are_exported(db_session)
     assert decisions["PENSION-1"]["replacement_sku_code"] == "REPLACEMENT-1"
     assert decisions["WORKING-2"]["working_confirmed_by_folder_responsible"] is True
     assert "manual_status" not in decisions["WORKING-2"]
+
+
+def test_export_cli_uses_read_only_scope(db_session, tmp_path, monkeypatch, capsys) -> None:
+    overrides = tmp_path / "display-manual-overrides.json"
+    overrides.write_text(json.dumps({"items": []}), encoding="utf-8")
+    calls: list[bool] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        calls.append(read_only)
+        yield db_session
+
+    monkeypatch.setattr(export_manual_status_overrides_task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        export_manual_status_overrides_task,
+        "get_settings",
+        lambda: SimpleNamespace(procurement_assortment_manual_overrides_path=str(overrides)),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "export_manual_status_overrides",
+            "--overrides-path",
+            str(overrides),
+            "--dry-run",
+            "--json",
+        ],
+    )
+
+    assert export_manual_status_overrides_task.main() == 0
+    assert calls == [True]
+    assert json.loads(capsys.readouterr().out)["dry_run"] is True

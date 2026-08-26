@@ -757,7 +757,7 @@ def test_apply_disabled_still_processes_card_action_as_dry_run(db_session) -> No
     client = FakeBitrixClient()
 
     def validator(_: str) -> bot.OneCPickupValidation:
-        return bot.OneCPickupValidation(available=True, assembled=True)
+        return bot.OneCPickupValidation(available=True, assembled=False)
 
     bot.process_outbox(
         db_session,
@@ -1541,6 +1541,97 @@ def test_issued_requires_second_confirmation_and_payment(db_session) -> None:
     assert first.reason == "second_confirmation_required"
     assert unpaid.reason == "issued_payment_not_confirmed"
     assert unpaid.target_stage is None
+
+
+@pytest.mark.parametrize("stage", ["EXECUTING", "FINAL_INVOICE", "PICKUP_TRANSIT"])
+def test_strict_arrival_is_authoritative_when_onec_assembly_lags(
+    db_session,
+    stage: str,
+) -> None:
+    settings = _settings()
+    warehouse = _warehouse(db_session)
+    candidate = BitrixChatActionCandidate(
+        source_chat_id="chat8729",
+        source_message_id=f"arrival-{stage}",
+        source_event_at=datetime(2026, 8, 26, 9, 0),
+        site_order_number="241500",
+        bitrix_deal_id=500,
+        detected_action=bot.ACTION_ARRIVED,
+        pickup_point_warehouse_id=warehouse.id,
+        pickup_point_name=warehouse.name,
+        status=bot.CANDIDATE_QUEUED,
+        expires_at=datetime(2026, 8, 27, 9, 0),
+        nonce=f"nonce-arrival-{stage}",
+        dry_run=False,
+        payload={"automatic_arrival": True},
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    decision = bot.decide_pickup_action(
+        action=bot.ACTION_ARRIVED,
+        confirmation_step=1,
+        deal=fulfillment.BitrixDealSnapshot(
+            deal_id=500,
+            stage_id=stage,
+            delivery="Самовывоз",
+        ),
+        candidate=candidate,
+        case=None,
+        onec=bot.OneCPickupValidation(available=True, assembled=False),
+        settings=settings,
+        now=datetime(2026, 8, 26, 9, 1),
+    )
+
+    assert decision.allowed is True
+    assert decision.target_stage == fulfillment.CRM_STAGE_PICKUP_WAITING
+    assert decision.event_type == fulfillment.EVENT_PICKUP_STORED
+    assert decision.reason == "pickup_arrival_confirmed"
+
+
+@pytest.mark.parametrize("stage", ["PREPARATION", "IN_DELIVERY"])
+def test_strict_arrival_rejects_unapproved_nonterminal_stages(
+    db_session,
+    stage: str,
+) -> None:
+    settings = _settings()
+    warehouse = _warehouse(db_session)
+    candidate = BitrixChatActionCandidate(
+        source_chat_id="chat8729",
+        source_message_id=f"arrival-blocked-{stage}",
+        source_event_at=datetime(2026, 8, 26, 9, 0),
+        site_order_number="241500",
+        bitrix_deal_id=500,
+        detected_action=bot.ACTION_ARRIVED,
+        pickup_point_warehouse_id=warehouse.id,
+        pickup_point_name=warehouse.name,
+        status=bot.CANDIDATE_QUEUED,
+        expires_at=datetime(2026, 8, 27, 9, 0),
+        nonce=f"nonce-arrival-blocked-{stage}",
+        dry_run=False,
+        payload={"automatic_arrival": True},
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    decision = bot.decide_pickup_action(
+        action=bot.ACTION_ARRIVED,
+        confirmation_step=1,
+        deal=fulfillment.BitrixDealSnapshot(
+            deal_id=500,
+            stage_id=stage,
+            delivery="Самовывоз",
+        ),
+        candidate=candidate,
+        case=None,
+        onec=bot.OneCPickupValidation(available=True, assembled=True),
+        settings=settings,
+        now=datetime(2026, 8, 26, 9, 1),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "arrival_transition_not_allowed"
+    assert decision.target_stage is None
 
 
 def test_dismantle_is_blocked_before_96_hours(db_session) -> None:

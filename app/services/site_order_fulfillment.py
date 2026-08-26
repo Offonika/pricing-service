@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from html import unescape
 from pathlib import Path
@@ -25,15 +25,26 @@ from app.infrastructure.db import build_onec_engine_from_settings
 from app.models.site_order_fulfillment import (
     BitrixChatMention,
     BitrixChatMessage,
+    BitrixChatReaction,
+    PickupInventorySubmission,
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
+    SiteOrderStageOutbox,
 )
 
 CHAT_SITE_MASTER_MOBILE = "site_master_mobile"
 CHAT_COURIER_SPB = "courier_spb"
+CHAT_PICKUP_READY = "pickup_ready"
+CHAT_PICKUP_INVENTORY = "pickup_inventory"
+CHAT_PICKUP_MOVEMENT = "pickup_movement"
+CHAT_PICKUP_EXCEPTION = "pickup_exception"
 DEFAULT_CHAT_DIALOG_IDS = {
     CHAT_SITE_MASTER_MOBILE: "chat733",
     CHAT_COURIER_SPB: "chat727",
+    CHAT_PICKUP_READY: "chat8729",
+    CHAT_PICKUP_INVENTORY: "chat8961",
+    CHAT_PICKUP_MOVEMENT: "chat729",
+    CHAT_PICKUP_EXCEPTION: "chat739",
 }
 
 SOURCE_BITRIX_CHAT = "bitrix_chat"
@@ -50,11 +61,21 @@ NON_AUTHORITATIVE_CHAT_MARKERS = (
     "пересланное сообщение",
     "forwarded message",
 )
+EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?7|8)(?:[\s()\-]*\d){10}(?!\d)")
 
 EVENT_PICKUP_UNCLAIMED = "pickup_unclaimed_reported"
+EVENT_PICKUP_MOVING = "pickup_moving_to_point"
 EVENT_PICKUP_STORED = "pickup_stored_at_point"
 EVENT_PICKUP_RECEIVED = "pickup_client_received"
 EVENT_PICKUP_DISMANTLING = "pickup_dismantling_started"
+EVENT_PICKUP_DISMANTLED = "pickup_dismantled"
+EVENT_PICKUP_RECEIPT_OVERDUE = "pickup_receipt_overdue"
+EVENT_PICKUP_REDIRECTED = "pickup_redirected"
+EVENT_PICKUP_EXCEPTION = "pickup_exception_reported"
+EVENT_PICKUP_NOTIFICATION_CONFIRMED = "pickup_notification_confirmed"
+EVENT_PICKUP_NOTIFICATION_REVOKED = "pickup_notification_revoked"
+EVENT_PICKUP_DISMANTLE_CANDIDATE = "pickup_dismantle_candidate"
 EVENT_COURIER_DELIVERED_PENDING = "courier_spb_delivered_payment_pending"
 EVENT_COURIER_DELIVERED_PAID = "courier_spb_delivered_paid"
 EVENT_COURIER_FAILED = "courier_spb_failed"
@@ -79,15 +100,23 @@ STRICT_SITE_EVENT_PATTERNS = {
 }
 
 CRM_STAGE_MANUAL_REVIEW = "PREPARATION"
+CRM_STAGE_PICKUP_TRANSIT = "PICKUP_TRANSIT"
 CRM_STAGE_PICKUP_WAITING = "PICKUP_WAITING"
 CRM_STAGE_PICKUP_STORAGE = "PICKUP_STORAGE"
 TERMINAL_CRM_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
 
 DERIVED_TO_CRM_STAGE = {
+    EVENT_PICKUP_MOVING: CRM_STAGE_PICKUP_TRANSIT,
     EVENT_PICKUP_UNCLAIMED: CRM_STAGE_PICKUP_WAITING,
     EVENT_PICKUP_STORED: CRM_STAGE_PICKUP_WAITING,
     EVENT_PICKUP_RECEIVED: "WON",
     EVENT_PICKUP_DISMANTLING: "DISMANTLING",
+    EVENT_PICKUP_DISMANTLED: "LOSE",
+    EVENT_PICKUP_REDIRECTED: "FINAL_INVOICE",
+    EVENT_PICKUP_EXCEPTION: CRM_STAGE_MANUAL_REVIEW,
+    EVENT_PICKUP_NOTIFICATION_CONFIRMED: CRM_STAGE_PICKUP_WAITING,
+    EVENT_PICKUP_NOTIFICATION_REVOKED: CRM_STAGE_PICKUP_WAITING,
+    EVENT_PICKUP_DISMANTLE_CANDIDATE: CRM_STAGE_PICKUP_WAITING,
     EVENT_COURIER_DELIVERED_PENDING: "IN_DELIVERY",
     EVENT_COURIER_DELIVERED_PAID: "WON",
     EVENT_COURIER_FAILED: CRM_STAGE_MANUAL_REVIEW,
@@ -110,6 +139,11 @@ CHAT_AUTO_APPLY_CURRENT_STAGES = {
     EVENT_COURIER_DELIVERED_PAID: {"IN_DELIVERY"},
     EVENT_COURIER_RESCHEDULED: {"FINAL_INVOICE", "IN_DELIVERY"},
     EVENT_COURIER_IN_PROGRESS: {"FINAL_INVOICE", "IN_DELIVERY"},
+}
+
+AUTOMATED_LOGISTICS_STAGE_EVENTS = {
+    EVENT_PICKUP_MOVING,
+    EVENT_PICKUP_STORED,
 }
 
 KNOWN_RAW_DELIVERY_METHODS = {
@@ -241,6 +275,10 @@ class IngestResult:
     mentions: list[BitrixChatMention]
     events: list[SiteOrderExecutionEvent]
     duplicate_message: bool
+    edited_message: bool = False
+    message_at_backfilled: bool = False
+    reactions_added: int = 0
+    reactions_removed: int = 0
 
 
 @dataclass(slots=True)
@@ -328,10 +366,18 @@ class OrderFulfillmentStageApplyResult:
 
 
 class BitrixChatClient:
-    def __init__(self, webhook_url: str, *, timeout: float = 30.0, urlopen=None) -> None:
+    def __init__(
+        self,
+        webhook_url: str,
+        *,
+        timeout: float = 30.0,
+        urlopen=None,
+        bot_client_id: str | None = None,
+    ) -> None:
         self.webhook_url = webhook_url.rstrip("/") + "/"
         self.timeout = timeout
         self._urlopen = urlopen or urllib.request.urlopen
+        self.bot_client_id = _clean_string(bot_client_id) or None
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = json.dumps(params or {}, ensure_ascii=False).encode("utf-8")
@@ -352,12 +398,229 @@ class BitrixChatClient:
             raise BitrixChatError(f"{method}: {data.get('error')} {data.get('error_description')}")
         return data
 
-    def get_dialog_messages(self, dialog_id: str, *, limit: int = 50) -> dict[str, Any]:
-        response = self.call("im.dialog.messages.get", {"DIALOG_ID": dialog_id, "LIMIT": limit})
+    def get_dialog_messages(
+        self,
+        dialog_id: str,
+        *,
+        limit: int = 50,
+        last_id: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"DIALOG_ID": dialog_id, "LIMIT": limit}
+        if last_id is not None:
+            params["LAST_ID"] = last_id
+        response = self.call("im.dialog.messages.get", params)
         result = response.get("result")
         if not isinstance(result, dict):
             raise BitrixChatError("im.dialog.messages.get returned invalid result")
         return result
+
+    def list_dialog_user_ids(self, dialog_id: str) -> set[str]:
+        user_ids: set[str] = set()
+        start = 0
+        seen_starts: set[int] = set()
+        for _ in range(200):
+            params: dict[str, Any] = {"DIALOG_ID": dialog_id}
+            if start:
+                params["start"] = start
+            response = self.call("im.dialog.users.list", params)
+            result = response.get("result") or []
+            if isinstance(result, dict):
+                if "users" in result or "USERS" in result:
+                    result = result.get("users") or result.get("USERS") or []
+            if isinstance(result, dict):
+                if "ID" in result or "id" in result:
+                    result = [result]
+                else:
+                    result = [
+                        (
+                            ({**item, "ID": item.get("ID") or item.get("id") or key})
+                            if isinstance(item, dict)
+                            else {"ID": key}
+                        )
+                        for key, item in result.items()
+                    ]
+            if not isinstance(result, list):
+                raise BitrixChatError("im.dialog.users.list returned invalid result")
+            for item in result:
+                value = item.get("id") or item.get("ID") if isinstance(item, dict) else item
+                if clean_value := _clean_string(value):
+                    user_ids.add(clean_value)
+
+            next_value = _clean_string(response.get("next"))
+            if not next_value:
+                return user_ids
+            if not next_value.isdigit():
+                raise BitrixChatError("im.dialog.users.list returned invalid next page")
+            next_start = int(next_value)
+            if next_start <= start or next_start in seen_starts:
+                raise BitrixChatError("im.dialog.users.list returned repeated next page")
+            seen_starts.add(start)
+            start = next_start
+        raise BitrixChatError("im.dialog.users.list exceeded pagination limit")
+
+    def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        response = self.call("user.get", {"FILTER": {"ID": user_id}})
+        result = response.get("result") or []
+        if isinstance(result, dict):
+            result = [result]
+        if not isinstance(result, list) or not result:
+            return None
+        item = result[0]
+        return item if isinstance(item, dict) else None
+
+    def add_bot_message(
+        self,
+        *,
+        dialog_id: str,
+        bot_id: int,
+        message: str,
+        keyboard: list[dict[str, Any]] | None = None,
+    ) -> str:
+        params: dict[str, Any] = {
+            "DIALOG_ID": dialog_id,
+            "BOT_ID": bot_id,
+            "MESSAGE": message,
+        }
+        if keyboard is not None:
+            params["KEYBOARD"] = keyboard
+        response = self.call("imbot.message.add", self._with_bot_client_id(params))
+        result = response.get("result")
+        if isinstance(result, dict):
+            result = result.get("MESSAGE_ID") or result.get("message_id") or result.get("id")
+        message_id = _clean_string(result)
+        if not message_id.isdigit() or int(message_id) <= 0:
+            raise BitrixChatError("imbot.message.add returned invalid message id")
+        return message_id
+
+    def update_bot_message(
+        self,
+        *,
+        message_id: str,
+        bot_id: int,
+        message: str,
+        keyboard: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {
+            "MESSAGE_ID": message_id,
+            "BOT_ID": bot_id,
+            "MESSAGE": message,
+        }
+        if keyboard is not None:
+            params["KEYBOARD"] = keyboard
+        result = self.call("imbot.message.update", self._with_bot_client_id(params)).get("result")
+        if not result:
+            raise BitrixChatError("imbot.message.update returned empty result")
+        return result
+
+    def start_business_process(
+        self,
+        *,
+        template_id: int,
+        deal_id: int,
+        parameters: dict[str, Any] | None = None,
+    ) -> Any:
+        response = self.call(
+            "bizproc.workflow.start",
+            {
+                "TEMPLATE_ID": template_id,
+                "DOCUMENT_ID": ["crm", "CCrmDocumentDeal", f"DEAL_{deal_id}"],
+                "PARAMETERS": parameters or {},
+            },
+        )
+        return response.get("result")
+
+    def add_task(self, fields: dict[str, Any]) -> Any:
+        method = "tasks.task.add"
+        try:
+            response = self.call(method, {"fields": fields})
+        except BitrixChatError as exc:
+            if not _is_bitrix_method_unavailable_error(exc):
+                raise
+            method = "task.item.add"
+            response = self.call(method, {"arNewTaskData": fields})
+        result = response.get("result")
+        if not result:
+            raise BitrixChatError(f"{method} returned empty task result")
+        return result
+
+    def register_bot(self, fields: dict[str, Any]) -> Any:
+        return self.call("imbot.register", self._with_bot_client_id(fields)).get("result")
+
+    def update_bot(self, bot_id: int | str, fields: dict[str, Any]) -> Any:
+        update_fields = {
+            key: value
+            for key, value in fields.items()
+            if key not in {"CLIENT_ID", "TYPE", "OPENLINE"}
+        }
+        params: dict[str, Any] = {"BOT_ID": bot_id, "FIELDS": update_fields}
+        if not self.bot_client_id and fields.get("CLIENT_ID"):
+            params["CLIENT_ID"] = fields["CLIENT_ID"]
+        return self.call(
+            "imbot.update",
+            self._with_bot_client_id(params),
+        ).get("result")
+
+    def register_bot_command(self, fields: dict[str, Any]) -> Any:
+        return self.call(
+            "imbot.command.register",
+            self._with_bot_client_id(fields),
+        ).get("result")
+
+    def update_bot_command(
+        self,
+        command_id: int | str,
+        fields: dict[str, Any],
+    ) -> Any:
+        update_fields = {
+            key: value
+            for key, value in fields.items()
+            if key not in {"CLIENT_ID", "BOT_ID", "COMMON"}
+        }
+        params: dict[str, Any] = {"COMMAND_ID": command_id, "FIELDS": update_fields}
+        if not self.bot_client_id and fields.get("CLIENT_ID"):
+            params["CLIENT_ID"] = fields["CLIENT_ID"]
+        return self.call(
+            "imbot.command.update",
+            self._with_bot_client_id(params),
+        ).get("result")
+
+    def list_bots(self) -> list[dict[str, Any]]:
+        response = self.call("imbot.bot.list", self._with_bot_client_id({}))
+        result = response.get("result") or []
+        if isinstance(result, dict):
+            if "bots" in result or "BOTS" in result:
+                result = result.get("bots") or result.get("BOTS") or []
+            if isinstance(result, dict):
+                if "ID" in result or "BOT_ID" in result or "id" in result:
+                    result = [result]
+                else:
+                    result = [
+                        {**value, "ID": value.get("ID") or key}
+                        for key, value in result.items()
+                        if isinstance(value, dict)
+                    ]
+        if not isinstance(result, list):
+            raise BitrixChatError("imbot.bot.list returned invalid result")
+        return [item for item in result if isinstance(item, dict)]
+
+    def _with_bot_client_id(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = dict(params)
+        if self.bot_client_id:
+            result["CLIENT_ID"] = self.bot_client_id
+        return result
+
+    def list_deal_user_fields(self, field_name: str) -> list[dict[str, Any]]:
+        response = self.call(
+            "crm.deal.userfield.list",
+            {"filter": {"FIELD_NAME": field_name}},
+        )
+        result = response.get("result") or []
+        if not isinstance(result, list):
+            raise BitrixChatError("crm.deal.userfield.list returned invalid result")
+        return [item for item in result if isinstance(item, dict)]
+
+    def add_deal_user_field(self, fields: dict[str, Any]) -> Any:
+        return self.call("crm.deal.userfield.add", {"fields": fields}).get("result")
 
     def list_deals_by_site_order(self, site_order_number: str) -> list[BitrixDealSnapshot]:
         response = self.call(
@@ -372,12 +635,55 @@ class BitrixChatClient:
             raise BitrixChatError("crm.deal.list returned invalid result")
         return [deal for item in result if (deal := bitrix_deal_from_payload(item)) is not None]
 
+    def list_deals_by_stages(
+        self,
+        stage_ids: list[str] | tuple[str, ...] | set[str],
+        *,
+        limit: int = 5000,
+    ) -> list[BitrixDealSnapshot]:
+        """Read a bounded, paginated CRM candidate set for historical reconciliation."""
+
+        normalized_stages = [value for item in stage_ids if (value := _clean_string(item))]
+        if not normalized_stages:
+            return []
+        rows: list[BitrixDealSnapshot] = []
+        start: int | str = 0
+        while len(rows) < max(1, min(limit, 5000)):
+            response = self.call(
+                "crm.deal.list",
+                {
+                    "filter": {
+                        "STAGE_ID": normalized_stages,
+                        f"!{CRM_ORDER_NUMBER_FIELD}": "",
+                    },
+                    "select": list(CRM_REVIEW_SELECT_FIELDS),
+                    "order": {"ID": "ASC"},
+                    "start": start,
+                },
+            )
+            result = response.get("result") or []
+            if not isinstance(result, list):
+                raise BitrixChatError("crm.deal.list returned invalid result")
+            rows.extend(
+                deal for item in result if (deal := bitrix_deal_from_payload(item)) is not None
+            )
+            next_value = response.get("next")
+            if next_value in (None, "") or not result:
+                break
+            start = next_value
+        return rows[: max(1, min(limit, 5000))]
+
     def get_deal_by_id(self, deal_id: int) -> BitrixDealSnapshot | None:
         response = self.call("crm.deal.get", {"id": deal_id})
         result = response.get("result")
         if not isinstance(result, dict):
             return None
         return bitrix_deal_from_payload(result)
+
+    def get_contact_by_id(self, contact_id: int) -> dict[str, Any] | None:
+        response = self.call("crm.contact.get", {"id": contact_id})
+        result = response.get("result")
+        return result if isinstance(result, dict) else None
 
     def update_deal_stage(self, deal_id: int, target_stage: str) -> Any:
         return self.update_deal_fields(deal_id, {"STAGE_ID": target_stage})
@@ -392,7 +698,10 @@ class BitrixChatClient:
             if _is_bitrix_stage_technical_review_error(exc):
                 raise BitrixStageTechnicalReviewError(_safe_error_reason(str(exc))) from exc
             raise
-        return response.get("result")
+        result = response.get("result")
+        if not result:
+            raise BitrixChatError("crm.deal.update returned empty result")
+        return result
 
     def list_deal_stage_ids(self, entity_id: str = "DEAL_STAGE") -> set[str]:
         response = self.call(
@@ -561,8 +870,7 @@ def parse_bitrix_message(
         mentions: list[ParsedOrderMention] = []
         for payload in ocr_payloads or []:
             mentions.extend(parse_courier_ocr_payload(payload))
-        if mentions:
-            return mentions
+        return mentions
     return parse_site_chat_text(text_value or "")
 
 
@@ -618,7 +926,9 @@ def parse_courier_ocr_payload(payload: dict[str, Any]) -> list[ParsedOrderMentio
             or normalized.get("payment_collected") is not None
         )
     )
-    evidence = _clean_string(normalized.get("comment")) or normalized.get("delivery_status")
+    evidence = _redact_text(
+        _clean_string(normalized.get("comment")) or normalized.get("delivery_status") or ""
+    )
     return [
         ParsedOrderMention(
             site_order_number=order_number,
@@ -713,7 +1023,14 @@ def ingest_bitrix_message(
     text_value: str | None = None,
     payload: dict[str, Any] | None = None,
     ocr_payloads: list[dict[str, Any]] | None = None,
+    create_execution_events: bool = False,
 ) -> IngestResult:
+    message_at = _naive_utc_datetime(message_at)
+    stored_payload = dict(payload or {})
+    order_numbers = extract_order_numbers(text_value or "")
+    if order_numbers:
+        stored_payload["_mm_order_numbers"] = order_numbers
+    _acquire_bitrix_message_lock(session, chat_id=chat_id, message_id=message_id)
     existing = session.scalar(
         select(BitrixChatMessage).where(
             BitrixChatMessage.chat_id == chat_id,
@@ -721,13 +1038,56 @@ def ingest_bitrix_message(
         )
     )
     if existing is not None:
+        message_at_backfilled = bool(existing.message_at is None and message_at is not None)
+        if message_at_backfilled:
+            # A bot event may save the message before polling sees Bitrix's
+            # canonical ISO timestamp.  Keep the original row/idempotency
+            # identity, but let the later read complete the missing source
+            # date so cutover and SMS guards can evaluate it safely.
+            existing.message_at = message_at
+        new_hash = _text_hash(text_value)
+        edited = bool(existing.raw_text_hash and new_hash and existing.raw_text_hash != new_hash)
+        if edited:
+            existing.parse_status = "edited_manual_review"
+            existing.raw_text_hash = new_hash
+            existing.raw_text_redacted = _redact_text(text_value or "")
+            edited_at = datetime.now(UTC).replace(tzinfo=None)
+            for submission in session.scalars(
+                select(PickupInventorySubmission).where(
+                    PickupInventorySubmission.source_message_id == existing.id,
+                    PickupInventorySubmission.status == "confirmed",
+                )
+            ).all():
+                submission.status = "manual_review"
+                submission.payload = {
+                    **(submission.payload or {}),
+                    "source_message_edited_at": edited_at.isoformat(),
+                    "source_message_edit_conflict": True,
+                }
+        existing.payload = stored_payload or existing.payload or {}
+        reactions_added, reactions_removed = sync_bitrix_message_reactions(
+            session,
+            message=existing,
+            payload=stored_payload,
+            now=datetime.now(UTC).replace(tzinfo=None),
+        )
         mentions = list(existing.mentions)
         events = session.scalars(
             select(SiteOrderExecutionEvent).where(
                 SiteOrderExecutionEvent.raw_message_id == existing.id
             )
         ).all()
-        return IngestResult(existing, mentions, list(events), True)
+        session.commit()
+        return IngestResult(
+            existing,
+            mentions,
+            list(events),
+            True,
+            edited_message=edited,
+            message_at_backfilled=message_at_backfilled,
+            reactions_added=reactions_added,
+            reactions_removed=reactions_removed,
+        )
 
     parsed_mentions = parse_bitrix_message(
         chat_code=chat_code,
@@ -745,10 +1105,16 @@ def ingest_bitrix_message(
         raw_text_redacted=_redact_text(text_value or ""),
         parser_version=PARSER_VERSION,
         parse_status="parsed" if parsed_mentions else "no_mentions",
-        payload=payload or {},
+        payload=stored_payload,
     )
     session.add(message)
     session.flush()
+    reactions_added, reactions_removed = sync_bitrix_message_reactions(
+        session,
+        message=message,
+        payload=stored_payload,
+        now=datetime.now(UTC).replace(tzinfo=None),
+    )
 
     mentions: list[BitrixChatMention] = []
     events: list[SiteOrderExecutionEvent] = []
@@ -763,21 +1129,117 @@ def ingest_bitrix_message(
         )
         session.add(mention)
         mentions.append(mention)
-        event = upsert_execution_event(
-            session,
-            site_order_number=parsed.site_order_number,
-            event_type=parsed.event_type,
-            event_at=message_at,
-            source=SOURCE_BITRIX_CHAT,
-            source_ref=f"{dialog_id}:{message_id}",
-            confidence=parsed.confidence,
-            raw_message_id=message.id,
-            payload=parsed.payload,
-        )
-        if event is not None:
-            events.append(event)
+        if create_execution_events:
+            event = upsert_execution_event(
+                session,
+                site_order_number=parsed.site_order_number,
+                event_type=parsed.event_type,
+                event_at=message_at,
+                source=SOURCE_BITRIX_CHAT,
+                source_ref=f"{dialog_id}:{message_id}",
+                confidence=parsed.confidence,
+                raw_message_id=message.id,
+                payload=parsed.payload,
+            )
+            if event is not None:
+                events.append(event)
     session.commit()
-    return IngestResult(message, mentions, events, False)
+    return IngestResult(
+        message,
+        mentions,
+        events,
+        False,
+        reactions_added=reactions_added,
+        reactions_removed=reactions_removed,
+    )
+
+
+def sync_bitrix_message_reactions(
+    session: Session,
+    *,
+    message: BitrixChatMessage,
+    payload: dict[str, Any],
+    now: datetime,
+) -> tuple[int, int]:
+    params = payload.get("params") or payload.get("PARAMS") or {}
+    likes_present = isinstance(params, dict) and ("LIKE" in params or "like" in params)
+    if not likes_present:
+        return 0, 0
+    raw_likes = params.get("LIKE", params.get("like"))
+    if raw_likes is None:
+        raw_likes = []
+    if not isinstance(raw_likes, list):
+        raw_likes = [raw_likes]
+    active_actor_ids = {actor_id for value in raw_likes if (actor_id := _clean_string(value))}
+    existing = {
+        (row.actor_id, row.reaction): row
+        for row in session.scalars(
+            select(BitrixChatReaction).where(BitrixChatReaction.message_id == message.id)
+        ).all()
+    }
+    added = 0
+    removed = 0
+    for actor_id in active_actor_ids:
+        row = existing.get((actor_id, "like"))
+        if row is None:
+            session.add(
+                BitrixChatReaction(
+                    message_id=message.id,
+                    actor_id=actor_id,
+                    reaction="like",
+                    is_active=True,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+            added += 1
+            continue
+        if not row.is_active:
+            row.is_active = True
+            row.removed_at = None
+            added += 1
+        row.last_seen_at = now
+    for (actor_id, reaction), row in existing.items():
+        if reaction == "like" and row.is_active and actor_id not in active_actor_ids:
+            row.is_active = False
+            row.removed_at = now
+            row.last_seen_at = now
+            removed += 1
+    return added, removed
+
+
+def bitrix_message_text_for_parsing(message: BitrixChatMessage) -> str:
+    payload = message.payload or {}
+    for key in ("text", "message", "TEXT", "MESSAGE"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    text_value = message.raw_text_redacted or ""
+    for order_number in bitrix_message_order_numbers(message):
+        text_value = text_value.replace("<order>", order_number, 1)
+    return text_value
+
+
+def bitrix_message_order_numbers(message: BitrixChatMessage) -> list[str]:
+    payload = message.payload or {}
+    stored = payload.get("_mm_order_numbers")
+    if isinstance(stored, list):
+        normalized = [
+            value
+            for item in stored
+            if (value := _clean_string(item)) and re.fullmatch(r"2\d{5}", value)
+        ]
+        if normalized:
+            return list(dict.fromkeys(normalized))
+    return extract_order_numbers(bitrix_message_text_for_parsing_payload(payload))
+
+
+def bitrix_message_text_for_parsing_payload(payload: dict[str, Any]) -> str:
+    for key in ("text", "message", "TEXT", "MESSAGE"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
 
 
 def upsert_execution_event(
@@ -791,7 +1253,10 @@ def upsert_execution_event(
     confidence: str,
     raw_message_id: int | None,
     payload: dict[str, Any] | None,
+    warehouse_id: int | None = None,
+    actor_ref: str | None = None,
 ) -> SiteOrderExecutionEvent | None:
+    event_at = _naive_utc_datetime(event_at)
     idempotency_key = f"{source}|{source_ref or '-'}|{site_order_number}|{event_type}"
     existing = session.scalar(
         select(SiteOrderExecutionEvent).where(
@@ -809,18 +1274,13 @@ def upsert_execution_event(
     if case is None:
         case = SiteOrderExecutionCase(
             site_order_number=site_order_number,
-            current_derived_status=event_type,
-            current_crm_stage=DERIVED_TO_CRM_STAGE.get(event_type),
-            confidence=confidence,
+            current_derived_status="manual_review",
+            current_crm_stage=CRM_STAGE_MANUAL_REVIEW,
+            confidence="weak",
             payload={},
         )
         session.add(case)
         session.flush()
-    else:
-        case.current_derived_status = event_type
-        case.current_crm_stage = DERIVED_TO_CRM_STAGE.get(event_type)
-        case.confidence = confidence
-        case.updated_at = datetime.now()
 
     event = SiteOrderExecutionEvent(
         case_id=case.id,
@@ -830,13 +1290,64 @@ def upsert_execution_event(
         source_ref=source_ref,
         confidence=confidence,
         raw_message_id=raw_message_id,
+        warehouse_id=warehouse_id,
+        actor_ref=actor_ref,
         idempotency_key=idempotency_key,
         payload=payload,
     )
     session.add(event)
     session.flush()
-    case.last_evidence_event_id = event.id
+    target_crm_stage = DERIVED_TO_CRM_STAGE.get(event_type)
+    event_is_current = _event_is_not_older_than_current(session, case=case, event=event)
+    if target_crm_stage is not None and event_is_current:
+        case.current_derived_status = event_type
+        case.current_crm_stage = target_crm_stage
+        case.confidence = confidence
+        case.last_evidence_event_id = event.id
+        case.updated_at = datetime.now()
+    if (
+        source == "logistics"
+        and confidence == "strong"
+        and event_type in AUTOMATED_LOGISTICS_STAGE_EVENTS
+        and event_is_current
+    ):
+        target_stage = DERIVED_TO_CRM_STAGE[event_type]
+        session.add(
+            SiteOrderStageOutbox(
+                case_id=case.id,
+                event_id=event.id,
+                idempotency_key=f"site-order-stage|{event.id}|{target_stage}",
+                site_order_number=site_order_number,
+                bitrix_deal_id=case.bitrix_deal_id,
+                source_event_type=event_type,
+                target_stage=target_stage,
+                payload={
+                    "source_ref": source_ref,
+                    "event_at": event_at.isoformat() if event_at else None,
+                    **(payload or {}),
+                },
+            )
+        )
+        session.flush()
     return event
+
+
+def _event_is_not_older_than_current(
+    session: Session,
+    *,
+    case: SiteOrderExecutionCase,
+    event: SiteOrderExecutionEvent,
+) -> bool:
+    if case.last_evidence_event_id is None:
+        return True
+    current = session.get(SiteOrderExecutionEvent, case.last_evidence_event_id)
+    if current is None:
+        return True
+    if event.event_at is None:
+        return current.event_at is None and event.id >= current.id
+    if current.event_at is None:
+        return True
+    return (event.event_at, event.id) >= (current.event_at, current.id)
 
 
 def build_recommendations(
@@ -1365,7 +1876,8 @@ def apply_stage_outbox_rows(
     client: Any,
     apply: bool = False,
     limit: int | None = None,
-    target_stage: str = CRM_STAGE_PICKUP_WAITING,
+    target_stage: str | None = None,
+    target_stages: set[str] | None = None,
     attempts: int = 3,
     retry_delay_seconds: float = 0.5,
 ) -> list[OrderFulfillmentStageApplyResult]:
@@ -1381,11 +1893,14 @@ def apply_stage_outbox_rows(
                 attempts=safe_attempts,
                 retry_delay_seconds=retry_delay_seconds,
             )
+        allowed_target_stages = target_stages or (
+            {target_stage} if target_stage else {CRM_STAGE_PICKUP_TRANSIT, CRM_STAGE_PICKUP_WAITING}
+        )
         result = evaluate_stage_outbox_row(
             row,
             live_deal=live_deal,
             live_lookup_error=live_lookup_error,
-            target_stage=target_stage,
+            target_stages=allowed_target_stages,
             dry_run=not apply,
         )
         if apply and result.result == "ready":
@@ -1491,7 +2006,8 @@ def evaluate_stage_outbox_row(
     *,
     live_deal: BitrixDealSnapshot | None,
     live_lookup_error: str | None = None,
-    target_stage: str = CRM_STAGE_PICKUP_WAITING,
+    target_stage: str | None = None,
+    target_stages: set[str] | None = None,
     dry_run: bool = True,
 ) -> OrderFulfillmentStageApplyResult:
     if row.state != "ready":
@@ -1512,7 +2028,10 @@ def evaluate_stage_outbox_row(
             dry_run=dry_run,
             applied=False,
         )
-    if row.target_stage != target_stage:
+    allowed_target_stages = target_stages or (
+        {target_stage} if target_stage else {CRM_STAGE_PICKUP_TRANSIT, CRM_STAGE_PICKUP_WAITING}
+    )
+    if row.target_stage not in allowed_target_stages:
         return _stage_apply_result(
             row,
             live_deal=live_deal,
@@ -1659,24 +2178,32 @@ def ingest_bitrix_chat(
     run_ocr: bool,
     ocr_client: CourierSpbOcrClient | None = None,
     settings: Settings | None = None,
+    result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    result = client.get_dialog_messages(dialog_id, limit=limit)
+    result = result or client.get_dialog_messages(dialog_id, limit=limit)
     messages = _list_items(result.get("messages") or [])
     files_by_id = _files_by_id(result.get("files") or [])
-    stats = {"messages": 0, "mentions": 0, "events": 0, "duplicates": 0, "ocr_images": 0}
+    stats = {
+        "messages": 0,
+        "mentions": 0,
+        "events": 0,
+        "duplicates": 0,
+        "edited": 0,
+        "message_dates_backfilled": 0,
+        "reactions_added": 0,
+        "reactions_removed": 0,
+        "ocr_images": 0,
+    }
     for message in messages:
         stats["messages"] += 1
         text_value = str(message.get("text") or message.get("message") or "")
-        chat_id = (
-            _int_or_none(
-                message.get("chat_id")
-                or message.get("chatId")
-                or result.get("chat_id")
-                or result.get("chatId")
-            )
-            or 0
-        )
+        chat_id = _int_or_none(
+            message.get("chat_id")
+            or message.get("chatId")
+            or result.get("chat_id")
+            or result.get("chatId")
+        ) or _numeric_dialog_id(dialog_id)
         message_id = int(message.get("id") or message.get("ID"))
         existing_message_id = session.scalar(
             select(BitrixChatMessage.id).where(
@@ -1684,11 +2211,8 @@ def ingest_bitrix_chat(
                 BitrixChatMessage.message_id == message_id,
             )
         )
-        if existing_message_id is not None:
-            stats["duplicates"] += 1
-            continue
         ocr_payloads: list[dict[str, Any]] = []
-        if chat_code == CHAT_COURIER_SPB and run_ocr:
+        if existing_message_id is None and chat_code == CHAT_COURIER_SPB and run_ocr:
             ocr_payloads = _ocr_payloads_for_message(
                 message,
                 files_by_id=files_by_id,
@@ -1708,11 +2232,114 @@ def ingest_bitrix_chat(
             text_value=text_value,
             payload=message,
             ocr_payloads=ocr_payloads,
+            create_execution_events=(
+                chat_code == CHAT_COURIER_SPB
+                or (
+                    chat_code == CHAT_SITE_MASTER_MOBILE
+                    and not settings.order_fulfillment_bot_enabled
+                )
+            ),
         )
         stats["mentions"] += len(ingested.mentions)
         stats["events"] += len(ingested.events)
         stats["duplicates"] += 1 if ingested.duplicate_message else 0
+        stats["edited"] += 1 if ingested.edited_message else 0
+        stats["message_dates_backfilled"] += 1 if ingested.message_at_backfilled else 0
+        stats["reactions_added"] += ingested.reactions_added
+        stats["reactions_removed"] += ingested.reactions_removed
     return stats
+
+
+def poll_bitrix_chat_pages(
+    session: Session,
+    *,
+    client: BitrixChatClient,
+    chat_code: str,
+    dialog_id: str,
+    page_size: int = 50,
+    max_pages: int = 20,
+    lookback_since: datetime | None = None,
+    run_ocr: bool = False,
+    ocr_client: CourierSpbOcrClient | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or get_settings()
+    lookback_since = _naive_utc_datetime(lookback_since)
+    totals: dict[str, Any] = {
+        "pages": 0,
+        "messages": 0,
+        "mentions": 0,
+        "events": 0,
+        "duplicates": 0,
+        "edited": 0,
+        "message_dates_backfilled": 0,
+        "reactions_added": 0,
+        "reactions_removed": 0,
+        "ocr_images": 0,
+        "oldest_message_id": None,
+        "reached_lookback": False,
+        "page_limit_reached": False,
+    }
+    last_id: int | None = None
+    seen_oldest_ids: set[int] = set()
+    for _ in range(max(1, max_pages)):
+        result = client.get_dialog_messages(
+            dialog_id,
+            limit=max(1, min(page_size, 50)),
+            last_id=last_id,
+        )
+        messages = _list_items(result.get("messages") or [])
+        if not messages:
+            break
+        message_ids = [
+            value
+            for item in messages
+            if (value := _int_or_none(item.get("id") or item.get("ID"))) is not None
+        ]
+        if not message_ids:
+            break
+        oldest_id = min(message_ids)
+        if oldest_id in seen_oldest_ids:
+            break
+        seen_oldest_ids.add(oldest_id)
+        page_stats = ingest_bitrix_chat(
+            session,
+            client=client,
+            chat_code=chat_code,
+            dialog_id=dialog_id,
+            limit=page_size,
+            run_ocr=run_ocr,
+            ocr_client=ocr_client,
+            settings=settings,
+            result=result,
+        )
+        totals["pages"] += 1
+        for key in (
+            "messages",
+            "mentions",
+            "events",
+            "duplicates",
+            "edited",
+            "message_dates_backfilled",
+            "reactions_added",
+            "reactions_removed",
+            "ocr_images",
+        ):
+            totals[key] += int(page_stats.get(key) or 0)
+        totals["oldest_message_id"] = oldest_id
+        message_dates = [
+            normalized
+            for item in messages
+            if (parsed := parse_datetime(item.get("date") or item.get("DATE"))) is not None
+            and (normalized := _naive_utc_datetime(parsed)) is not None
+        ]
+        if lookback_since is not None and message_dates and min(message_dates) <= lookback_since:
+            totals["reached_lookback"] = True
+            break
+        last_id = oldest_id
+    else:
+        totals["page_limit_reached"] = True
+    return totals
 
 
 def build_delivery_method_report_from_rows(
@@ -1805,6 +2432,12 @@ def parse_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(text_value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _naive_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _ocr_payloads_for_message(
@@ -1994,6 +2627,40 @@ def _is_bitrix_stage_technical_review_error(exc: Exception) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _is_bitrix_method_unavailable_error(exc: Exception) -> bool:
+    lowered = _clean_text(str(exc))
+    return any(
+        marker in lowered
+        for marker in (
+            "error_method_not_found",
+            "method not found",
+            "метод не найден",
+        )
+    )
+
+
+def _acquire_bitrix_message_lock(
+    session: Session,
+    *,
+    chat_id: int,
+    message_id: int,
+) -> None:
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"bitrix-message:{chat_id}:{message_id}".encode()).digest()
+    lock_key = int.from_bytes(digest[:8], "big", signed=True)
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": lock_key},
+    )
+
+
+def _numeric_dialog_id(dialog_id: str) -> int:
+    match = re.search(r"(\d+)$", _clean_string(dialog_id))
+    return int(match.group(1)) if match else 0
+
+
 def _safe_error_reason(value: str) -> str:
     cleaned = _clean_string(value)
     if not cleaned:
@@ -2108,6 +2775,8 @@ def _contains_non_authoritative_chat_marker(value: str) -> bool:
 def _redact_text(value: str) -> str:
     text_value = USER_TAG_RE.sub("@user", value or "")
     text_value = TAG_RE.sub(" ", text_value)
+    text_value = EMAIL_RE.sub("<email>", text_value)
+    text_value = PHONE_RE.sub("<phone>", text_value)
     text_value = ORDER_RE.sub("<order>", text_value)
     return _clean_string(unescape(text_value))[:1000]
 

@@ -17,6 +17,11 @@ DEFAULT_ENTITY_ID = "DEAL_STAGE"
 DEFAULT_ENV_FILE = Path(".env")
 REQUIRED_STAGES = (
     {
+        "STATUS_ID": "PICKUP_TRANSIT",
+        "NAME": "В пути на точку самовывоза",
+        "SORT": 64,
+    },
+    {
         "STATUS_ID": "PICKUP_WAITING",
         "NAME": "Ожидает самовывоза",
         "SORT": 65,
@@ -30,6 +35,44 @@ REQUIRED_STAGES = (
         "STATUS_ID": "DISMANTLING",
         "NAME": "Расформирование / отмена",
         "SORT": 80,
+    },
+)
+REQUIRED_USER_FIELDS = (
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_EVENT_ID",
+        "EDIT_FORM_LABEL": "Событие приёмки для SMS",
+        "LIST_COLUMN_LABEL": "Событие приёмки для SMS",
+        "USER_TYPE_ID": "string",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_SMS_STATUS",
+        "EDIT_FORM_LABEL": "Статус SMS готовности",
+        "LIST_COLUMN_LABEL": "Статус SMS готовности",
+        "USER_TYPE_ID": "string",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_SMS_SENT_AT",
+        "EDIT_FORM_LABEL": "SMS готовности отправлена",
+        "LIST_COLUMN_LABEL": "SMS готовности отправлена",
+        "USER_TYPE_ID": "datetime",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_STORAGE_DEADLINE",
+        "EDIT_FORM_LABEL": "Хранить заказ до",
+        "LIST_COLUMN_LABEL": "Хранить заказ до",
+        "USER_TYPE_ID": "datetime",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_POINT_NAME",
+        "EDIT_FORM_LABEL": "Магазин самовывоза",
+        "LIST_COLUMN_LABEL": "Магазин самовывоза",
+        "USER_TYPE_ID": "string",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_PICKUP_POINT_ADDRESS",
+        "EDIT_FORM_LABEL": "Адрес самовывоза",
+        "LIST_COLUMN_LABEL": "Адрес самовывоза",
+        "USER_TYPE_ID": "string",
     },
 )
 
@@ -80,6 +123,10 @@ def load_current_stages(client: BitrixClient, entity_id: str) -> list[dict[str, 
     return list(stages or [])
 
 
+def load_current_user_fields(client: BitrixClient) -> list[dict[str, Any]]:
+    return list(client.call("crm.deal.userfield.list", {"order": {"ID": "ASC"}}) or [])
+
+
 def build_plan(
     current_stages: list[dict[str, Any]],
     required_stages: tuple[dict[str, Any], ...] = REQUIRED_STAGES,
@@ -112,6 +159,38 @@ def build_plan(
     return plan
 
 
+def build_user_field_plan(
+    current_fields: list[dict[str, Any]],
+    required_fields: tuple[dict[str, Any], ...] = REQUIRED_USER_FIELDS,
+) -> list[dict[str, Any]]:
+    current_by_name = {str(field.get("FIELD_NAME")): field for field in current_fields}
+    plan: list[dict[str, Any]] = []
+    for required in required_fields:
+        existing = current_by_name.get(required["FIELD_NAME"])
+        if existing is None:
+            plan.append({"action": "add", "field": required})
+            continue
+        if str(existing.get("USER_TYPE_ID")) != required["USER_TYPE_ID"]:
+            plan.append(
+                {
+                    "action": "manual_review",
+                    "field": required,
+                    "existing": {
+                        "ID": existing.get("ID"),
+                        "FIELD_NAME": existing.get("FIELD_NAME"),
+                        "USER_TYPE_ID": existing.get("USER_TYPE_ID"),
+                    },
+                    "mismatches": {
+                        "USER_TYPE_ID": {
+                            "current": existing.get("USER_TYPE_ID"),
+                            "required": required["USER_TYPE_ID"],
+                        }
+                    },
+                }
+            )
+    return plan
+
+
 def apply_plan(
     client: BitrixClient, entity_id: str, plan: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -132,6 +211,17 @@ def apply_plan(
                 }
             },
         )
+        results.append({**item, "applied": True, "result": result})
+    return results
+
+
+def apply_user_field_plan(client: BitrixClient, plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for item in plan:
+        if item["action"] != "add":
+            results.append({**item, "applied": False})
+            continue
+        result = client.call("crm.deal.userfield.add", {"fields": item["field"]})
         results.append({**item, "applied": True, "result": result})
     return results
 
@@ -166,7 +256,9 @@ def main() -> int:
 
     client = BitrixClient(webhook_base)
     current_stages = load_current_stages(client, args.entity_id)
+    current_user_fields = load_current_user_fields(client)
     plan = build_plan(current_stages)
+    user_field_plan = build_user_field_plan(current_user_fields)
     output: dict[str, Any] = {
         "entity_id": args.entity_id,
         "mode": "apply" if args.apply else "dry-run",
@@ -180,9 +272,11 @@ def main() -> int:
             for stage in current_stages
         ],
         "plan": plan,
+        "user_field_plan": user_field_plan,
     }
     if args.apply:
         output["apply_results"] = apply_plan(client, args.entity_id, plan)
+        output["user_field_apply_results"] = apply_user_field_plan(client, user_field_plan)
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 

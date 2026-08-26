@@ -263,6 +263,17 @@ WHERE rtu._Marked = 0x00
   показывает dry-run, с `--apply` пишет `address_aliases` и историю
   подтверждения в `payload.alias_override_history`.
 
+Подтверждения физической логистики не записываются обратно в production `1С`:
+
+- `handed_to_driver` для внутренней РТУ создает сильное событие
+  `pickup_moving_to_point` и DB-outbox стадии `PICKUP_TRANSIT`;
+- `accepted_at_point` на однозначно ожидаемом складе создает сильное событие
+  `pickup_stored_at_point` и DB-outbox стадии `PICKUP_WAITING`;
+- outbox применяется только для pilot allowlist, строго по порядку событий
+  заказа, с повторным чтением и readback сделки Bitrix24;
+- повторный scan/confirm является идемпотентным и не создает второй переход;
+- внешний carrier flow не использует эту внутреннюю цепочку стадий.
+
 ## 9. Решения Пилота И Остаточные Проверки
 
 - `ПВЗ / пункт выдачи` в 1С для MVP не дорабатываем.

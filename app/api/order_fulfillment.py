@@ -28,6 +28,7 @@ def ingest_bitrix_message(
     db: Session = Depends(get_db),
 ) -> BitrixChatMessageIngestResponse:
     chat_code = _normalize_chat_code(payload.chat_code)
+    settings = get_settings()
     if payload.dry_run:
         mentions = fulfillment.parse_bitrix_message(
             chat_code=chat_code,
@@ -61,6 +62,13 @@ def ingest_bitrix_message(
         text_value=payload.text,
         payload=payload.payload,
         ocr_payloads=payload.ocr_payloads,
+        create_execution_events=(
+            chat_code == fulfillment.CHAT_COURIER_SPB
+            or (
+                chat_code == fulfillment.CHAT_SITE_MASTER_MOBILE
+                and not settings.order_fulfillment_bot_enabled
+            )
+        ),
     )
     return BitrixChatMessageIngestResponse(
         message_id=result.message.message_id,

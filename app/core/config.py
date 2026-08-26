@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -164,6 +165,59 @@ class Settings(BaseSettings):
     site_defect_workflow_finance_user_ids: list[int] = Field(default_factory=list)
     site_defect_workflow_logistics_user_ids: list[int] = Field(default_factory=list)
     site_defect_workflow_leader_user_ids: list[int] = Field(default_factory=list)
+    site_service_requests_ingest_enabled: bool = False
+    site_service_requests_email_ingest_enabled: bool = False
+    site_service_requests_bitrix_writes_enabled: bool = False
+    site_service_requests_outbound_replies_enabled: bool = False
+    site_service_requests_hmac_secret: str | None = None
+    site_service_requests_event_encryption_key: str | None = None
+    site_service_requests_bitrix_webhook_url: str | None = None
+    site_service_requests_bitrix_entity_type_id: int = 1134
+    site_service_requests_bitrix_working_category_id: int = 55
+    site_service_requests_bitrix_archive_category_id: int = 56
+    site_service_requests_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_enum_map: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_bitrix_root_folder_id: int | None = Field(default=None, gt=0)
+    site_service_requests_crm_order_field: str | None = None
+    site_service_requests_first_line_user_ids: list[int] = Field(default_factory=list)
+    site_service_requests_escalation_user_id: int | None = None
+    site_service_requests_finance_user_id: int | None = None
+    site_service_requests_expected_user_names: dict[str, str] = Field(default_factory=dict)
+    site_service_requests_timezone: str = "Europe/Moscow"
+    site_service_requests_first_response_hours: int = Field(default=4, ge=1, le=24)
+    site_service_requests_timestamp_tolerance_seconds: int = Field(
+        default=300,
+        ge=1,
+        le=900,
+    )
+    site_service_requests_nonce_ttl_seconds: int = Field(default=600, ge=300, le=3600)
+    site_service_requests_command_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    site_service_requests_file_spool_dir: str = ".local/site-service-requests/files"
+    site_service_requests_worker_batch_size: int = Field(default=20, ge=1, le=100)
+    site_service_requests_worker_stale_seconds: int = Field(default=180, ge=60, le=3600)
+    site_service_requests_max_crm_files_per_item: int = Field(default=50, ge=1, le=1000)
+    site_service_requests_site_base_url: str = "https://master-mobile.ru"
+    site_service_requests_health_lag_alert_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=86400,
+    )
+    site_service_requests_max_event_body_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1024,
+        le=16 * 1024 * 1024,
+    )
+    site_service_requests_max_ack_body_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
+    site_service_requests_max_file_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1,
+        le=10 * 1024 * 1024,
+    )
     card_balance_reconciliation_internal_api_token: str | None = None
     card_balance_bitrix_webhook_url: str | None = None
     card_balance_bitrix_entity_type_id: int | None = None
@@ -200,6 +254,77 @@ class Settings(BaseSettings):
     order_fulfillment_courier_chat_apply_author_ids: Annotated[list[int], NoDecode] = Field(
         default_factory=list
     )
+    order_fulfillment_bot_enabled: bool = False
+    order_fulfillment_bot_apply_enabled: bool = False
+    order_fulfillment_pickup_stage_apply_enabled: bool = False
+    order_fulfillment_pickup_auto_arrival_enabled: bool = False
+    order_fulfillment_pickup_evidence_tracking_enabled: bool = False
+    order_fulfillment_pickup_missing_receipt_enabled: bool = False
+    order_fulfillment_bot_sms_enabled: bool = False
+    order_fulfillment_pickup_sla_enabled: bool = False
+    order_fulfillment_pickup_inventory_enabled: bool = False
+    order_fulfillment_inventory_won_enabled: bool = False
+    order_fulfillment_lost_orders_enabled: bool = False
+    order_fulfillment_bot_source_chat_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["chat8729", "chat733", "chat8961", "chat729", "chat739"]
+    )
+    order_fulfillment_bot_card_ttl_hours: int = Field(default=24, ge=1, le=168)
+    order_fulfillment_bot_dry_run_card_limit: int = Field(default=20, ge=0)
+    order_fulfillment_bot_cutover_at: datetime | None = None
+    order_fulfillment_pickup_evidence_cutover_at: datetime | None = None
+    order_fulfillment_bot_application_token: str | None = None
+    order_fulfillment_bot_client_id: str | None = None
+    order_fulfillment_bot_callback_secret: str | None = None
+    order_fulfillment_bot_callback_max_body_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=1024 * 1024,
+    )
+    order_fulfillment_bot_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_excluded_user_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_command: str = "pickup_action"
+    order_fulfillment_bot_search_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_search_command: str = "pickup"
+    order_fulfillment_bot_arrival_command_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_arrival_command: str = "pickup_arrival"
+    order_fulfillment_bot_menu_message_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_portal_base_url: str | None = None
+    order_fulfillment_bot_callback_url: str | None = None
+    order_fulfillment_bot_sms_workflow_template_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_bot_pickup_sms_field: str = "UF_CRM_MM_PICKUP_READY_SMS_AT"
+    order_fulfillment_bot_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_internet_shop_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_site_return_task_responsible_id: int | None = Field(default=None, ge=1)
+    order_fulfillment_point_task_routes: dict[str, dict[str, int]] = Field(default_factory=dict)
+    order_fulfillment_pickup_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_pickup_warehouse_aliases: dict[str, list[str]] = Field(default_factory=dict)
+    order_fulfillment_inventory_won_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_fulfillment_bot_call_after_hours: int = Field(default=72, ge=1, le=720)
+    order_fulfillment_bot_dismantle_after_hours: int = Field(default=96, ge=1, le=720)
+    order_fulfillment_pickup_receipt_question_after_hours: int = Field(default=24, ge=1, le=720)
+    order_fulfillment_pickup_receipt_task_after_hours: int = Field(default=48, ge=1, le=720)
+    order_fulfillment_pickup_ready_chat_dialog_id: str = "chat8729"
+    order_fulfillment_pickup_inventory_chat_dialog_id: str = "chat8961"
+    order_fulfillment_pickup_movement_chat_dialog_id: str = "chat729"
+    order_fulfillment_pickup_exception_chat_dialog_id: str = "chat739"
+    order_fulfillment_pickup_notification_confirmer_ids: Annotated[list[int], NoDecode] = Field(
+        default_factory=lambda: [131016, 132252]
+    )
+    order_fulfillment_reaction_lookback_hours: int = Field(default=168, ge=1, le=2160)
+    order_fulfillment_chat_poll_page_limit: int = Field(default=20, ge=1, le=200)
     order_fulfillment_ocr_enabled: bool = True
     order_fulfillment_ocr_model: str | None = None
     order_fulfillment_ocr_min_confidence: float = 0.75
@@ -384,6 +509,24 @@ class Settings(BaseSettings):
     logistics_bot_webhook_url: str | None = None
     logistics_web_session_secret: str | None = None
     logistics_web_session_ttl_seconds: int = 8 * 60 * 60
+    logistics_web_fallback_token_ttl_seconds: int = 5 * 60
+    logistics_bitrix_app_enabled: bool = False
+    logistics_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    logistics_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_bitrix_session_secret: str | None = None
+    logistics_bitrix_session_ttl_seconds: int = 3600
+    logistics_bitrix_rest_timeout_seconds: float = 6.0
+    logistics_stage_automation_enabled: bool = False
+    logistics_stage_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_stage_worker_batch_size: int = 50
+    pickup_ready_sms_enabled: bool = False
+    pickup_ready_sms_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     logistics_transfer_assistant_pickup_hold_days: int = 7
 
     # Embeddings / matching pipeline
@@ -580,6 +723,11 @@ class Settings(BaseSettings):
         "card_balance_pilot_cashbox_codes",
         "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
+        "order_fulfillment_bot_source_chat_ids",
+        "order_fulfillment_pickup_warehouse_external_ids",
+        "order_fulfillment_inventory_won_warehouse_external_ids",
+        "order_fulfillment_bot_allowed_domains",
+        "order_fulfillment_bot_allowed_member_ids",
         "receivable_workflow_department_refs",
         "receivable_workflow_department_names",
         "receivable_workplace_bitrix_allowed_domains",
@@ -594,6 +742,10 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "logistics_bitrix_allowed_domains",
+        "logistics_bitrix_allowed_member_ids",
+        "logistics_stage_pilot_warehouse_external_ids",
+        "pickup_ready_sms_pilot_warehouse_external_ids",
         mode="before",
     )
     @classmethod
@@ -655,6 +807,53 @@ class Settings(BaseSettings):
             return {str(key): int(item) for key, item in parsed.items() if item not in (None, "")}
         raise ValueError("unsupported mapping value")
 
+    @field_validator("order_fulfillment_point_task_routes", mode="before")
+    @classmethod
+    def _parse_order_fulfillment_point_task_routes(cls, value: Any) -> dict[str, dict[str, int]]:
+        if value in (None, ""):
+            return {}
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        result: dict[str, dict[str, int]] = {}
+        allowed_roles = {"operator", "senior"}
+        for warehouse_ref, route in parsed.items():
+            if not isinstance(route, dict):
+                raise ValueError("point task route must be an object")
+            unknown = set(route) - allowed_roles
+            if unknown:
+                raise ValueError(f"unsupported point task roles: {sorted(unknown)}")
+            normalized = {
+                role: int(user_id) for role, user_id in route.items() if user_id not in (None, "")
+            }
+            if normalized:
+                result[str(warehouse_ref)] = normalized
+        return result
+
+    @field_validator("order_fulfillment_pickup_warehouse_aliases", mode="before")
+    @classmethod
+    def _parse_order_fulfillment_pickup_warehouse_aliases(
+        cls,
+        value: Any,
+    ) -> dict[str, list[str]]:
+        if value in (None, ""):
+            return {}
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        result: dict[str, list[str]] = {}
+        for warehouse_ref, aliases in parsed.items():
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            if not isinstance(aliases, list):
+                raise ValueError("pickup warehouse aliases must be a string or array")
+            normalized = list(
+                dict.fromkeys(str(alias).strip() for alias in aliases if str(alias).strip())
+            )
+            if normalized:
+                result[str(warehouse_ref)] = normalized
+        return result
+
     @field_validator(
         "expertise_bitrix_notify_auditor_user_ids",
         "expertise_alarm_review_primary_user_ids",
@@ -664,6 +863,9 @@ class Settings(BaseSettings):
         "order_fulfillment_notify_tech_user_ids",
         "order_fulfillment_site_chat_apply_author_ids",
         "order_fulfillment_courier_chat_apply_author_ids",
+        "order_fulfillment_bot_excluded_user_ids",
+        "site_service_requests_first_line_user_ids",
+        "order_fulfillment_pickup_notification_confirmer_ids",
         mode="before",
     )
     @classmethod

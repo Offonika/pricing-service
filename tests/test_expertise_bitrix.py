@@ -49,6 +49,16 @@ def _http_error(code: int) -> urllib.error.HTTPError:
     )
 
 
+def _http_error_with_body(code: int, body: bytes) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://bitrix.example/rest/1/token/user.get.json",
+        code,
+        "temporary failure",
+        {},
+        io.BytesIO(body),
+    )
+
+
 def test_bitrix_update_retries_transient_http_errors(monkeypatch) -> None:
     calls = 0
     sleeps: list[int] = []
@@ -92,6 +102,90 @@ def test_bitrix_add_does_not_retry_http_500(monkeypatch) -> None:
         )
 
     assert calls == 1
+
+
+def test_bitrix_client_retries_transient_html_403_with_fixed_backoff(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[int] = []
+
+    def fake_urlopen(request, timeout=60):
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise _http_error_with_body(403, b"<html><body>Access denied</body></html>")
+        return _FakeHTTPResponse({"result": [{"ID": "1"}]})
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(expertise_bitrix.time_module, "sleep", sleeps.append)
+
+    client = expertise_bitrix.BitrixRestClient(
+        "https://bitrix.example/rest/1/token",
+        retry_transient_html_403=True,
+    )
+    assert client.call("user.get", [("ID", "1")]) == {"result": [{"ID": "1"}]}
+    assert calls == 4
+    assert sleeps == [2, 5, 10]
+
+
+def test_bitrix_client_does_not_retry_json_access_denied(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[int] = []
+
+    def fake_urlopen(request, timeout=60):
+        nonlocal calls
+        calls += 1
+        raise _http_error_with_body(
+            403,
+            b'{"error":"ACCESS_DENIED","error_description":"private detail"}',
+        )
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(expertise_bitrix.time_module, "sleep", sleeps.append)
+
+    client = expertise_bitrix.BitrixRestClient(
+        "https://bitrix.example/rest/1/token",
+        retry_transient_html_403=True,
+    )
+    with pytest.raises(expertise_bitrix.BitrixRestError) as exc_info:
+        client.call("user.get", [("ID", "1")])
+
+    assert exc_info.value.code == "bitrix_access_denied"
+    assert calls == 1
+    assert sleeps == []
+
+
+def test_bitrix_file_download_is_origin_scoped_and_size_limited(monkeypatch) -> None:
+    class FakeBinaryResponse:
+        def __init__(self, content: bytes, url: str):
+            self.content = content
+            self.url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def geturl(self) -> str:
+            return self.url
+
+        def read(self, limit: int) -> bytes:
+            return self.content[:limit]
+
+    trusted_url = "https://bitrix.example/rest/1/token/crm.controller.item.getFile/"
+
+    def fake_urlopen(request, timeout=60):
+        assert request.full_url == trusted_url
+        return FakeBinaryResponse(b"content", trusted_url)
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    client = expertise_bitrix.BitrixRestClient("https://bitrix.example/rest/1/token")
+
+    assert client.download(trusted_url, max_bytes=7) == b"content"
+    with pytest.raises(RuntimeError, match="response too large"):
+        client.download(trusted_url, max_bytes=6)
+    with pytest.raises(RuntimeError, match="untrusted URL"):
+        client.download("https://attacker.example/file", max_bytes=7)
 
 
 def _configure_bitrix_env(

@@ -2796,6 +2796,378 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/session:
+    post:
+      summary: Create Bitrix Logistics Session
+      operationId: create_bitrix_logistics_session_api_bitrix_logistics_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/bootstrap:
+    get:
+      summary: Bootstrap
+      operationId: bootstrap_api_bitrix_logistics_bootstrap_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsBootstrapResponse'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/handoffs/draft:
+    post:
+      summary: Create Handoff Draft
+      operationId: create_handoff_draft_api_bitrix_logistics_handoffs_draft_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/scan:
+    post:
+      summary: Scan Handoff Draft
+      operationId: scan_handoff_draft_api_bitrix_logistics_handoffs_draft__draft_id__scan_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/confirm:
+    post:
+      summary: Confirm Handoff Draft
+      operationId: confirm_handoff_draft_api_bitrix_logistics_handoffs_draft__draft_id__confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft:
+    post:
+      summary: Create Receipt Draft
+      operationId: create_receipt_draft_api_bitrix_logistics_receipts_draft_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/receipts/draft/{draft_id}/scan:
+    post:
+      summary: Scan Receipt Draft
+      operationId: scan_receipt_draft_api_bitrix_logistics_receipts_draft__draft_id__scan_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft/{draft_id}/confirm:
+    post:
+      summary: Confirm Receipt Draft
+      operationId: confirm_receipt_draft_api_bitrix_logistics_receipts_draft__draft_id__confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/expected-deliveries:
+    get:
+      summary: Expected Deliveries
+      operationId: expected_deliveries_api_bitrix_logistics_expected_deliveries_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Warehouse Id
+      - name: driver_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsExpectedDeliveryResponse'
+                title: Response Expected Deliveries Api Bitrix Logistics Expected Deliveries Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/monitor:
+    get:
+      summary: Monitor
+      operationId: monitor_api_bitrix_logistics_monitor_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Warehouse Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsMonitorResponse'
+                title: Response Monitor Api Bitrix Logistics Monitor Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/transfers/{transfer_id}/history:
+    get:
+      summary: History
+      operationId: history_api_bitrix_logistics_transfers__transfer_id__history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsHistoryEventResponse'
+                title: Response History Api Bitrix Logistics Transfers  Transfer Id  History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/errors:
+    get:
+      summary: Errors
+      operationId: errors_api_bitrix_logistics_errors_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/LogisticsManualReviewResponse'
+                type: array
+                title: Response Errors Api Bitrix Logistics Errors Get
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/fallback-link:
+    post:
+      summary: Create Fallback Link
+      operationId: create_fallback_link_api_bitrix_logistics_fallback_link_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsFallbackLinkResponse'
+      security:
+      - HTTPBearer: []
+  /api/bitrix/logistics/fallback-session:
+    post:
+      summary: Exchange Fallback Token
+      operationId: exchange_fallback_token_api_bitrix_logistics_fallback_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsFallbackSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/receivables/session:
     post:
       summary: Create Bitrix Receivables Session
@@ -6029,6 +6401,372 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/email-events:
+    post:
+      summary: Accept Email Event
+      operationId: accept_email_event_api_internal_site_service_requests_email_events_post
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceEmailEventPayload'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestEventAcceptedResponse'
+        '401':
+          description: Invalid or missing dispatcher HMAC authentication
+        '409':
+          description: Nonce replay or idempotency conflict
+        '413':
+          description: Request body exceeds the configured limit
+        '503':
+          description: Email ingest, encryption, or storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/events:
+    post:
+      summary: Accept Event
+      operationId: accept_event_api_internal_site_service_requests_events_post
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestEventPayload'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestEventAcceptedResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay or idempotency conflict
+        '413':
+          description: Request body exceeds the configured limit
+        '503':
+          description: Ingest, encryption, or storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/events/{event_id}/files/{file_id}:
+    put:
+      summary: Upload Event File
+      operationId: upload_event_file_api_internal_site_service_requests_events__event_id__files__file_id__put
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Event Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: File Id
+      - name: Content-Disposition
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content-Disposition
+      - name: Content-Type
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content-Type
+      - name: Content-Length
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 0
+          - type: 'null'
+          title: Content-Length
+      - name: X-MM-Site-File-Error
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - const: file_unavailable
+            type: string
+          - type: 'null'
+          title: X-Mm-Site-File-Error
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestFileStagedResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '404':
+          description: Event or file metadata is not registered
+        '409':
+          description: Nonce replay or file metadata conflict
+        '413':
+          description: File exceeds the configured size limit
+        '422':
+          description: File body or metadata is invalid
+        '503':
+          description: Ingest or file storage is unavailable
+  /api/internal/site-service-requests/commands:
+    get:
+      summary: Get Commands
+      operationId: get_commands_api_internal_site_service_requests_commands_get
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestCommandsResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay
+        '503':
+          description: Command storage or encryption is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/commands/{command_id}/ack:
+    post:
+      summary: Acknowledge Command
+      operationId: acknowledge_command_api_internal_site_service_requests_commands__command_id__ack_post
+      parameters:
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Command Id
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestCommandAckPayload'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestCommandAckResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '404':
+          description: Command is not registered
+        '409':
+          description: Nonce replay or command acknowledgement conflict
+        '413':
+          description: Request body exceeds the configured limit
+        '503':
+          description: Command storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/health:
+    get:
+      summary: Health
+      operationId: health_api_internal_site_service_requests_health_get
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestHealthResponse'
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '409':
+          description: Nonce replay
+        '503':
+          description: Health storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/card-balance-reconciliation/events:
     get:
       summary: List Events
@@ -7886,6 +8624,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/bitrix-bot/events:
+    post:
+      summary: Bitrix Bot Event
+      operationId: bitrix_bot_event_api_order_fulfillment_bitrix_bot_events_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Bitrix Bot Event Api Order Fulfillment Bitrix Bot Events Post
+        '400':
+          description: Malformed or unsupported Bitrix callback
+        '403':
+          description: Callback authentication or authorization failed
+        '404':
+          description: Bot callback is disabled
+        '413':
+          description: Callback body exceeds the configured limit
+  /api/order-fulfillment/bitrix-bot/internal/health:
+    get:
+      summary: Bot Health
+      operationId: bot_health_api_order_fulfillment_bitrix_bot_internal_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Bot Health Api Order Fulfillment Bitrix Bot Internal Health Get
+      security:
+      - HTTPBearer: []
   /api/order-payment-control/check:
     post:
       summary: Check Order Payment
@@ -10671,6 +11445,163 @@ components:
       required:
       - user_id
       title: BitrixExecutiveDashboardUser
+    BitrixLogisticsBootstrapResponse:
+      properties:
+        profile:
+          $ref: '#/components/schemas/LogisticsUserProfile'
+        warehouses:
+          items:
+            $ref: '#/components/schemas/LogisticsWarehouseResponse'
+          type: array
+          title: Warehouses
+        drivers:
+          items:
+            $ref: '#/components/schemas/LogisticsDriverResponse'
+          type: array
+          title: Drivers
+        capabilities:
+          items:
+            type: string
+          type: array
+          title: Capabilities
+      type: object
+      required:
+      - profile
+      - warehouses
+      - drivers
+      - capabilities
+      title: BitrixLogisticsBootstrapResponse
+    BitrixLogisticsDraftConfirmRequest:
+      properties:
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      title: BitrixLogisticsDraftConfirmRequest
+    BitrixLogisticsDraftCreateRequest:
+      properties:
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
+        default_dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Default Dropoff Warehouse Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+      type: object
+      required:
+      - warehouse_id
+      title: BitrixLogisticsDraftCreateRequest
+    BitrixLogisticsDraftScanRequest:
+      properties:
+        barcode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+      type: object
+      title: BitrixLogisticsDraftScanRequest
+    BitrixLogisticsFallbackLinkResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      type: object
+      required:
+      - url
+      - expires_at
+      title: BitrixLogisticsFallbackLinkResponse
+    BitrixLogisticsFallbackSessionRequest:
+      properties:
+        token:
+          type: string
+          minLength: 20
+          title: Token
+      type: object
+      required:
+      - token
+      title: BitrixLogisticsFallbackSessionRequest
+    BitrixLogisticsSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: BitrixLogisticsSessionRequest
+    BitrixLogisticsSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        profile:
+          $ref: '#/components/schemas/LogisticsUserProfile'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - profile
+      title: BitrixLogisticsSessionResponse
     BitrixMatchingSessionRequest:
       properties:
         access_token:
@@ -21105,6 +22036,11 @@ components:
           - type: integer
           - type: 'null'
           title: Telegram User Id
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
         username:
           anyOf:
           - type: string
@@ -21144,6 +22080,11 @@ components:
           - type: integer
           - type: 'null'
           title: Telegram User Id
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
         username:
           anyOf:
           - type: string
@@ -27840,6 +28781,576 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SiteServiceEmailEventPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        eventId:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Eventid
+        eventType:
+          type: string
+          enum:
+          - email.received
+          - email.replied
+          title: Eventtype
+        occurredAt:
+          type: string
+          format: date-time
+          title: Occurredat
+        mailbox:
+          type: string
+          enum:
+          - shop
+          - info
+          title: Mailbox
+        messageId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Messageid
+        activityId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Activityid
+        threadId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Threadid
+        requestType:
+          type: string
+          enum:
+          - warranty
+          - refund_money
+          - replacement
+          - delivery_return
+          - consultation
+          - other
+          title: Requesttype
+        orderNumber:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Ordernumber
+        crmContactId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Crmcontactid
+        crmDealId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Crmdealid
+        existingServiceItemId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Existingserviceitemid
+      type: object
+      required:
+      - schemaVersion
+      - eventId
+      - eventType
+      - occurredAt
+      - mailbox
+      - messageId
+      - activityId
+      - threadId
+      - requestType
+      - orderNumber
+      - crmContactId
+      - crmDealId
+      title: SiteServiceEmailEventPayload
+    SiteServiceRequestCommandAckPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        leaseToken:
+          type: string
+          maxLength: 128
+          minLength: 32
+          title: Leasetoken
+        status:
+          type: string
+          enum:
+          - applied
+          - failed
+          title: Status
+        ticketId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Ticketid
+        messageId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Messageid
+        appliedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Appliedat
+        errorCode:
+          anyOf:
+          - type: string
+            enum:
+            - ticket_not_found
+            - support_user_invalid
+            - message_write_failed
+          - type: 'null'
+          title: Errorcode
+      type: object
+      required:
+      - schemaVersion
+      - leaseToken
+      - status
+      title: SiteServiceRequestCommandAckPayload
+    SiteServiceRequestCommandAckResponse:
+      properties:
+        commandId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Commandid
+        status:
+          type: string
+          enum:
+          - applied
+          - failed
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+      type: object
+      required:
+      - commandId
+      - status
+      - duplicate
+      title: SiteServiceRequestCommandAckResponse
+    SiteServiceRequestCommandPayload:
+      properties:
+        commandId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Commandid
+        commandKey:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Commandkey
+        ticketId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Ticketid
+        replyText:
+          type: string
+          maxLength: 200000
+          minLength: 1
+          title: Replytext
+        leaseUntil:
+          type: string
+          format: date-time
+          title: Leaseuntil
+        leaseToken:
+          type: string
+          maxLength: 128
+          minLength: 32
+          title: Leasetoken
+      type: object
+      required:
+      - commandId
+      - commandKey
+      - ticketId
+      - replyText
+      - leaseUntil
+      - leaseToken
+      title: SiteServiceRequestCommandPayload
+    SiteServiceRequestCommandsResponse:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+          default: 1
+        commands:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestCommandPayload'
+          type: array
+          maxItems: 20
+          title: Commands
+      type: object
+      required:
+      - commands
+      title: SiteServiceRequestCommandsResponse
+    SiteServiceRequestEventAcceptedResponse:
+      properties:
+        eventId:
+          type: string
+          title: Eventid
+        status:
+          type: string
+          const: accepted
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+        missingFileIds:
+          items:
+            type: integer
+          type: array
+          title: Missingfileids
+      type: object
+      required:
+      - eventId
+      - status
+      - duplicate
+      - missingFileIds
+      title: SiteServiceRequestEventAcceptedResponse
+    SiteServiceRequestEventPayload:
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+          title: Schemaversion
+        eventId:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Eventid
+        eventType:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z][a-z0-9_.-]+$
+          title: Eventtype
+        occurredAt:
+          type: string
+          format: date-time
+          title: Occurredat
+        ticket:
+          $ref: '#/components/schemas/SiteServiceRequestTicket'
+        history:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestHistoryMessage'
+          type: array
+          minItems: 1
+          title: History
+      type: object
+      required:
+      - schemaVersion
+      - eventId
+      - eventType
+      - occurredAt
+      - ticket
+      - history
+      title: SiteServiceRequestEventPayload
+    SiteServiceRequestFilePayload:
+      properties:
+        fileId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Fileid
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        mimeType:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Mimetype
+        size:
+          type: integer
+          minimum: 0.0
+          title: Size
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Sha256
+      type: object
+      required:
+      - fileId
+      - name
+      - mimeType
+      - size
+      - sha256
+      title: SiteServiceRequestFilePayload
+    SiteServiceRequestFileStagedResponse:
+      properties:
+        eventId:
+          type: string
+          title: Eventid
+        fileId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Fileid
+        status:
+          type: string
+          enum:
+          - staged
+          - uploaded
+          - failed
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+        errorCode:
+          anyOf:
+          - type: string
+            const: file_unavailable
+          - type: 'null'
+          title: Errorcode
+      type: object
+      required:
+      - eventId
+      - fileId
+      - status
+      - duplicate
+      title: SiteServiceRequestFileStagedResponse
+    SiteServiceRequestHealthResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - healthy
+          - degraded
+          - disabled
+          title: Status
+        alertCodes:
+          items:
+            type: string
+            enum:
+            - event_lag
+            - dead_letter
+            - assignment_failure
+            - outbound_failure
+            - escalation_delivery_pending
+            - file_failure
+            - worker_failure
+            - worker_stale
+          type: array
+          title: Alertcodes
+        pendingEvents:
+          type: integer
+          minimum: 0.0
+          title: Pendingevents
+        failedEvents:
+          type: integer
+          minimum: 0.0
+          title: Failedevents
+        oldestPendingLagSeconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Oldestpendinglagseconds
+        pendingCommands:
+          type: integer
+          minimum: 0.0
+          title: Pendingcommands
+        unlinkedCases:
+          type: integer
+          minimum: 0.0
+          title: Unlinkedcases
+        assignmentFailures:
+          type: integer
+          minimum: 0.0
+          title: Assignmentfailures
+        outboundFailures:
+          type: integer
+          minimum: 0.0
+          title: Outboundfailures
+        pendingEscalationDeliveries:
+          type: integer
+          minimum: 0.0
+          title: Pendingescalationdeliveries
+        failedFiles:
+          type: integer
+          minimum: 0.0
+          title: Failedfiles
+        workerFailure:
+          type: boolean
+          title: Workerfailure
+        workerStale:
+          type: boolean
+          title: Workerstale
+        workerLastStartedAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlaststartedat
+        workerLastSuccessAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlastsuccessat
+        workerLastFailureAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Workerlastfailureat
+        workerLastErrorCode:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Workerlasterrorcode
+        workerConsecutiveFailures:
+          type: integer
+          minimum: 0.0
+          title: Workerconsecutivefailures
+        lastSuccessfulExchangeAt:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Lastsuccessfulexchangeat
+        ingestEnabled:
+          type: boolean
+          title: Ingestenabled
+        emailIngestEnabled:
+          type: boolean
+          title: Emailingestenabled
+        bitrixWritesEnabled:
+          type: boolean
+          title: Bitrixwritesenabled
+        outboundRepliesEnabled:
+          type: boolean
+          title: Outboundrepliesenabled
+      type: object
+      required:
+      - status
+      - alertCodes
+      - pendingEvents
+      - failedEvents
+      - oldestPendingLagSeconds
+      - pendingCommands
+      - unlinkedCases
+      - assignmentFailures
+      - outboundFailures
+      - pendingEscalationDeliveries
+      - failedFiles
+      - workerFailure
+      - workerStale
+      - workerLastStartedAt
+      - workerLastSuccessAt
+      - workerLastFailureAt
+      - workerLastErrorCode
+      - workerConsecutiveFailures
+      - lastSuccessfulExchangeAt
+      - ingestEnabled
+      - emailIngestEnabled
+      - bitrixWritesEnabled
+      - outboundRepliesEnabled
+      title: SiteServiceRequestHealthResponse
+    SiteServiceRequestHistoryMessage:
+      properties:
+        messageId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Messageid
+        authorKind:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Authorkind
+        isVisibleToCustomer:
+          type: boolean
+          title: Isvisibletocustomer
+          default: true
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        text:
+          type: string
+          maxLength: 200000
+          title: Text
+        files:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestFilePayload'
+          type: array
+          title: Files
+      type: object
+      required:
+      - messageId
+      - authorKind
+      - createdAt
+      - text
+      - files
+      title: SiteServiceRequestHistoryMessage
+    SiteServiceRequestTicket:
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Id
+        siteId:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Siteid
+        ownerUserId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Owneruserid
+        title:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Title
+        phone:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Phone
+        email:
+          anyOf:
+          - type: string
+            maxLength: 320
+          - type: 'null'
+          title: Email
+        orderNumber:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Ordernumber
+        requestType:
+          type: string
+          enum:
+          - warranty
+          - refund_money
+          - replacement
+          - delivery_return
+          - consultation
+          - other
+          title: Requesttype
+        isClosed:
+          type: boolean
+          title: Isclosed
+      type: object
+      required:
+      - id
+      - siteId
+      - ownerUserId
+      - title
+      - phone
+      - requestType
+      - isClosed
+      title: SiteServiceRequestTicket
     SmsAttemptCreateRequest:
       properties:
         event_id:

@@ -18,6 +18,8 @@ from app.api.bitrix_executive_dashboard import (
     page_router as bitrix_executive_dashboard_page_router,
 )
 from app.api.bitrix_executive_dashboard import router as bitrix_executive_dashboard_router
+from app.api.bitrix_logistics import page_router as bitrix_logistics_page_router
+from app.api.bitrix_logistics import router as bitrix_logistics_router
 from app.api.bitrix_matching import page_router as bitrix_matching_page_router
 from app.api.bitrix_matching import router as bitrix_matching_router
 from app.api.bitrix_receivables import page_router as bitrix_receivables_page_router
@@ -28,6 +30,7 @@ from app.api.customer_price_types import (
     page_router as customer_price_types_page_router,
 )
 from app.api.customer_price_types import router as customer_price_types_router
+from app.api.dependencies import SiteServiceRequestBodyLimitMiddleware
 from app.api.expertise import router as expertise_router
 from app.api.health import router as health_router
 from app.api.internal_alerts import router as internal_alerts_router
@@ -39,6 +42,8 @@ from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.orchestration import router as orchestration_router
 from app.api.order_fulfillment import router as order_fulfillment_router
+from app.api.order_fulfillment_bot import internal_router as order_fulfillment_bot_internal_router
+from app.api.order_fulfillment_bot import router as order_fulfillment_bot_router
 from app.api.order_payment_control import router as order_payment_control_router
 from app.api.procurement_assortment_decisions import (
     page_router as procurement_assortment_page_router,
@@ -57,6 +62,7 @@ from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
 from app.api.site_defect_archive import page_router as site_defect_archive_page_router
 from app.api.site_defect_archive import router as site_defect_archive_router
+from app.api.site_service_requests import router as site_service_requests_router
 from app.api.sms_journal import router as sms_journal_router
 from app.api.staffing import router as staffing_router
 from app.api.telegram import router as telegram_router
@@ -72,12 +78,29 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.debug,
 )
+app.add_middleware(SiteServiceRequestBodyLimitMiddleware, settings=settings)
 
 
 @app.exception_handler(RequestValidationError)
 async def safe_sms_validation_error(request: Request, exc: RequestValidationError) -> Response:
     if request.url.path.startswith("/api/internal/sms-journal"):
         return JSONResponse(status_code=422, content={"detail": "invalid SMS journal request"})
+    if request.url.path.startswith("/api/internal/site-service-requests"):
+        required_auth_headers = {
+            "x-mm-site-timestamp",
+            "x-mm-site-nonce",
+            "x-mm-site-content-sha256",
+            "x-mm-site-signature",
+        }
+        if any(
+            error.get("loc", ())[-1:] and str(error["loc"][-1]).lower() in required_auth_headers
+            for error in exc.errors()
+        ):
+            return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "invalid site service request"},
+        )
     return await request_validation_exception_handler(request, exc)
 
 
@@ -145,6 +168,7 @@ async def log_requests(request: Request, call_next: Callable[[Request], Response
 app.include_router(health_router)
 app.include_router(bitrix_matching_page_router)
 app.include_router(bitrix_executive_dashboard_page_router)
+app.include_router(bitrix_logistics_page_router)
 app.include_router(bitrix_receivables_page_router)
 app.include_router(logistics_web_page_router)
 app.include_router(site_defect_archive_page_router)
@@ -163,6 +187,7 @@ app.include_router(bank_payments_router, prefix="/api")
 app.include_router(matching_router, prefix="/api")
 app.include_router(bitrix_matching_router, prefix="/api")
 app.include_router(bitrix_executive_dashboard_router, prefix="/api")
+app.include_router(bitrix_logistics_router, prefix="/api")
 app.include_router(bitrix_receivables_router, prefix="/api")
 app.include_router(management_router, prefix="/api/management")
 app.include_router(receivables_router, prefix="/api/receivables")
@@ -173,11 +198,23 @@ app.include_router(counterparty_duplicates_router, prefix="/api/internal/counter
 app.include_router(customer_price_types_router)
 app.include_router(expertise_router, prefix="/api/expertise")
 app.include_router(site_defect_archive_router, prefix="/api/site-defects")
+app.include_router(
+    site_service_requests_router,
+    prefix="/api/internal/site-service-requests",
+)
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")
 app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
 app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
+app.include_router(
+    order_fulfillment_bot_router,
+    prefix="/api/order-fulfillment/bitrix-bot",
+)
+app.include_router(
+    order_fulfillment_bot_internal_router,
+    prefix="/api/order-fulfillment/bitrix-bot/internal",
+)
 app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
 app.include_router(orchestration_router)
 app.include_router(sms_journal_router)

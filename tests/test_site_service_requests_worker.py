@@ -4145,6 +4145,120 @@ def test_assignment_reconcile_clears_stale_assignee_when_every_shift_is_closed(
     assert api.items[1000]["assignedById"] == ""
 
 
+def test_assignment_reconcile_skips_unchanged_bitrix_item_update(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, 0, 654321, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1001",
+        # Bitrix normalizes the timezone and drops microseconds on readback.
+        "ufFirstResponseDueAt": "2026-08-22T13:00:00+03:00",
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results[0].get("errorCode") is None
+    assert case.assignment_checked_at is not None
+    assert [method for method, _params in api.calls].count("crm.item.update") == 0
+
+
+def test_assignment_reconcile_updates_only_changed_bitrix_item_fields(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1002",
+        "ufFirstResponseDueAt": due_at.isoformat(),
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    update_calls = [params for method, params in api.calls if method == "crm.item.update"]
+    assert len(update_calls) == 1
+    assert dict(update_calls[0]) == {
+        "entityTypeId": "1134",
+        "id": "1000",
+        "fields[assignedById]": "1001",
+    }
+
+
+def test_assignment_reconcile_rewrites_malformed_deadline_readback(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1001",
+        "ufFirstResponseDueAt": "2026-08-22T10:00:00",
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    update_call = next(params for method, params in api.calls if method == "crm.item.update")
+    assert dict(update_call) == {
+        "entityTypeId": "1134",
+        "id": "1000",
+        "fields[ufFirstResponseDueAt]": due_at.isoformat(),
+    }
+
+
 def test_assignment_clear_readback_requires_assignee_field_presence(db_session) -> None:
     case = _case(
         bitrix_item_id=1000,

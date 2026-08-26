@@ -3132,15 +3132,25 @@ def reconcile_site_service_request_assignments(
             ticket_id = case.source_ticket_id
             bitrix_item_id = int(case.bitrix_item_id)
 
-            updated_item = writer.update_item_fields(
-                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-                item_id=bitrix_item_id,
-                fields=fields,
-            )
+            changed_fields = _item_fields_requiring_update(item, fields)
+            if changed_fields:
+                updated_item = writer.update_item_fields(
+                    entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                    item_id=bitrix_item_id,
+                    fields=changed_fields,
+                )
+            else:
+                updated_item = item
             if close_reverted and str(_item_field_value(updated_item, "stageId") or "") != str(
                 fields["stageId"]
             ):
                 raise RuntimeError("bitrix_close_gate_readback_failed")
+            if not _item_field_matches(
+                updated_item,
+                field_map["first_response_due_at"],
+                decision.first_response_due_at,
+            ):
+                raise RuntimeError("bitrix_assignment_deadline_readback_failed")
             actual_assignee = _positive_int(_item_field_value(updated_item, "assignedById"))
             if decision.assigned_user_id is None:
                 if not _item_field_is_cleared(updated_item, "assignedById"):
@@ -3958,7 +3968,32 @@ def _item_field_matches(item: dict[str, Any], field_name: str, expected: Any) ->
     if expected is None:
         return _item_field_is_cleared(item, field_name)
     value = _item_field_value(item, field_name, default=_MISSING_ITEM_FIELD)
-    return value is not _MISSING_ITEM_FIELD and str(value) == str(expected)
+    if value is _MISSING_ITEM_FIELD:
+        return False
+    if isinstance(expected, datetime):
+        if not isinstance(value, str) or not value or value.strip() != value:
+            return False
+        try:
+            actual_datetime = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if actual_datetime.tzinfo is None:
+            return False
+        return _as_utc(actual_datetime).replace(microsecond=0) == _as_utc(expected).replace(
+            microsecond=0
+        )
+    return str(value) == str(expected)
+
+
+def _item_fields_requiring_update(
+    item: dict[str, Any],
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        field_name: expected
+        for field_name, expected in fields.items()
+        if not _item_field_matches(item, field_name, expected)
+    }
 
 
 def _item_field_contains(item: dict[str, Any], field_name: str, expected_id: str) -> bool:

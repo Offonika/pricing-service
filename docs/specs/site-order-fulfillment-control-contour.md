@@ -1094,7 +1094,7 @@ Smoke:
 
 # Rollout
 
-## Текущее решение 2026-08-25 — ещё не production
+## Production rollout 2026-08-26 — первый безопасный этап
 
 - Карточка-меню, отдельное приложение и обязательные команды сотрудникам не
   нужны; основной UX заменён фоновым контролем `отправили -> получили`.
@@ -1102,8 +1102,18 @@ Smoke:
   вопрос через `24` часа и задача через `48` часов.
 - Для первого включения обязательна отдельная свежая evidence-cutover дата;
   сообщения до неё не пересчитываются автоматически.
-- Production-выпуск этого изменения не разрешён до отдельного smoke/cutover-
-  плана и явного подтверждения пользователя. Новую задачу Bitrix не создавать.
+- Пользователь явно разрешил первый безопасный production-этап. Выпущен release
+  `pickup-missing-receipt-safe-20260826-f28abd6`, source commit `f28abd6`;
+  новая задача Bitrix не создавалась.
+- На первом этапе `ORDER_FULFILLMENT_PICKUP_EVIDENCE_TRACKING_ENABLED=false`,
+  `ORDER_FULFILLMENT_PICKUP_EVIDENCE_CUTOVER_AT` не задан и
+  `ORDER_FULFILLMENT_PICKUP_MISSING_RECEIPT_ENABLED=false`: бот ещё не фиксирует
+  новые evidence и не отправляет вопросы или задачи.
+- Smoke подтвердил DB head `8c0e2a4b6d57`, `pending=0`, `processing=0` и один
+  существовавший до выпуска `failed` для старой операции `publish_card`; он не
+  относится к новому missing-receipt контуру и этим cutover не изменялся.
+- Включение молчаливой фиксации evidence со свежей cutover-датой требует
+  отдельного явного разрешения пользователя.
 - CRM, SMS, прежний SLA, inventory/WON и lost-orders этим решением не
   включаются и не изменяются.
 

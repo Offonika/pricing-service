@@ -19,7 +19,7 @@ REQUIRED_STAGES = (
     {
         "STATUS_ID": "PICKUP_TRANSIT",
         "NAME": "В пути на точку самовывоза",
-        "SORT": 64,
+        "SORT": 55,
     },
     {
         "STATUS_ID": "PICKUP_WAITING",

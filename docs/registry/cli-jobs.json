@@ -94,6 +94,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "export_management_marks.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "supported",
+      "idempotency": "not_idempotent_unique_message_per_run",
+      "side_effect_level": "external_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "export_manual_status_overrides.py": {
       "owner": "procurement",
       "kind": "export",

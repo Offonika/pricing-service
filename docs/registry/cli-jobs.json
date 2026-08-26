@@ -94,6 +94,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "export_manual_status_overrides.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "supported",
+      "idempotency": "artifact_merge_by_nomenclature_code_and_byte_stable_noop",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "evaluate_competitor_matching_policy.py": {
       "owner": "matching",
       "kind": "report",

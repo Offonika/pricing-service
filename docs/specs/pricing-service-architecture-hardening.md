@@ -3,7 +3,7 @@ spec_id: "pricing-service-architecture-hardening"
 title: "Pricing Service Architecture Hardening"
 doc_type: spec
 domain: "architecture"
-status: "implemented"
+status: "accepted"
 owner: "engineering"
 source_of_truth: true
 related_code:
@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-19"
+updated_at: "2026-08-26"
 ---
 
 # Назначение
@@ -106,6 +106,17 @@ Spec фиксирует вывод устаревшего источника и�
   Версионированный source контроллера находится в
   `/opt/MM/scripts/pricing_release/pricing_service_release_controller.py`;
   установленный entrypoint остаётся `/usr/local/sbin/mm-pricing-service-release`.
+- Решение от 2026-08-26: непрерывная параллельная разработка считается штатной
+  и не требует ожидания общего простоя. Convergence выполняется в коротком окне,
+  блокирующем только production `switch`/`deploy`; разработка и CI продолжаются.
+  В начале окна фиксируется текущий `active_source_commit`. Итоговый commit обязан
+  содержать его в ancestry и попасть в `origin/main` до сборки production candidate.
+  Если active source изменился, convergence повторяется от нового commit.
+- После convergence штатные production releases разрешены только из commit,
+  входящего в ancestry канонического `origin/main`. Действующая проверка
+  наследования полного active source сохраняется. Версионированный source
+  контроллера и тесты должны быть восстановлены до изменения установленного
+  entrypoint.
 - Не меняется: внешние HTTP-маршруты, business rules, роли и production delivery.
 
 # Acceptance Criteria
@@ -283,6 +294,27 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Rollout
 
+0. Deploy-freeze блокирует только `switch` и `deploy`, имеет явную причину и срок
+   действия; `status`, `check`, разработка и CI остаются доступными. Перед switch
+   controller повторно проверяет freeze, active source и принадлежность candidate
+   к `origin/main`.
+
+   После merge и отдельно подтверждённой установки controller v3 оператор
+   открывает и закрывает convergence-окно только штатными командами:
+
+   ```bash
+   git -C /opt/MM/pricing-service fetch --prune origin main
+   sudo /usr/local/sbin/mm-pricing-service-release freeze \
+     --reason "pricing-service convergence" \
+     --minutes <1-180>
+   sudo /usr/local/sbin/mm-pricing-service-release status
+   sudo /usr/local/sbin/mm-pricing-service-release unfreeze \
+     --freeze-id <freeze_id-from-freeze-or-status>
+   ```
+
+   `freeze_id` из ответа `freeze` либо `status` сохраняется до конца окна;
+   снять freeze другим ID нельзя. Установка controller, активация freeze,
+   merge release PR и production cutover являются отдельными действиями.
 1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
    `main` с проверенной цепочкой активного production source в отдельной
    интеграционной ветке и провести её через PR. До merge и отдельного cutover
@@ -348,6 +380,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-26 — утверждена постоянная convergence-схема с коротким deploy-freeze,
+  main-only releases и сохранением active-source ancestry guard.
 - 2026-08-19 — frontend встроенных Bitrix24-приложений закреплён за сборкой
   активного релиза: порядок `_INDEX_PATHS` исправлен в `bitrix_matching` и
   `logistics_web`, легаси-каталог `/var/www/pricing-service` выведен из

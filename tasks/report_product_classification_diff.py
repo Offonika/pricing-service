@@ -8,8 +8,7 @@ import json
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import Product
 
 
@@ -51,9 +50,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, help="Limit rows in the report")
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         report = build_report(session, limit=args.limit)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

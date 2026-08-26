@@ -26,7 +26,7 @@ def test_build_plan_requires_manual_review_for_existing_stage_mismatch() -> None
             {
                 "STATUS_ID": "PICKUP_TRANSIT",
                 "NAME": "В пути на точку самовывоза",
-                "SORT": "64",
+                "SORT": "55",
             },
             {
                 "STATUS_ID": "PICKUP_WAITING",

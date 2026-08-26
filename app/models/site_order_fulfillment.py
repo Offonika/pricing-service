@@ -490,3 +490,46 @@ class SiteOrderFulfillmentOutbox(Base):
     depends_on = relationship(
         "SiteOrderFulfillmentOutbox", remote_side="SiteOrderFulfillmentOutbox.id"
     )
+
+
+class SiteOrderStageOutbox(Base):
+    __tablename__ = "site_order_stage_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_site_order_stage_outbox_event"),
+        UniqueConstraint("idempotency_key", name="uq_site_order_stage_outbox_idempotency"),
+        Index("ix_site_order_stage_outbox_status_next", "status", "next_attempt_at"),
+        Index("ix_site_order_stage_outbox_case_id", "case_id", "id"),
+    )
+
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_execution_case.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_execution_event.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    site_order_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    bitrix_deal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_live_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    timeline_written_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    case = relationship("SiteOrderExecutionCase")
+    event = relationship("SiteOrderExecutionEvent")

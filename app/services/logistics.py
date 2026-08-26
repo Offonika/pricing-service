@@ -27,6 +27,7 @@ from app.services import site_order_fulfillment
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
 ROLE_LOGIST = {"logist", "admin"}
+SOURCE_CHANNELS = {"bitrix", "telegram", "web_fallback"}
 
 SOURCE_TRANSFER = "transfer"
 SOURCE_RTU = "rtu"
@@ -295,6 +296,9 @@ def _bridge_rtu_receipt_to_order_fulfillment(
     expected_warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
     if warehouse_id != expected_warehouse_id:
         return
+    warehouse = session.get(LogisticsWarehouse, warehouse_id)
+    driver = session.get(LogisticsDriver, event.driver_id) if event.driver_id is not None else None
+    user = session.get(LogisticsUser, event.user_id) if event.user_id is not None else None
     site_order_fulfillment.upsert_execution_event(
         session,
         site_order_number=transfer.site_order_number,
@@ -309,6 +313,62 @@ def _bridge_rtu_receipt_to_order_fulfillment(
             "source_document_type": transfer.source_document_type,
             "source_external_id": transfer.external_id,
             "warehouse_id": warehouse_id,
+            "warehouse_name": warehouse.name if warehouse is not None else None,
+            "driver_id": event.driver_id,
+            "driver_name": driver.full_name if driver is not None else None,
+            "user_id": event.user_id,
+            "user_name": user.full_name if user is not None else None,
+            "source_channel": event.source,
+        },
+    )
+
+
+def _bridge_rtu_handoff_to_order_fulfillment(
+    session: Session,
+    *,
+    transfer: LogisticsTransfer,
+    event: LogisticsTransferEvent,
+) -> None:
+    if transfer.source_document_type != SOURCE_RTU:
+        return
+    if not transfer.site_order_number:
+        return
+    if isinstance(transfer.payload, dict) and transfer.payload.get("external_carrier_flow"):
+        return
+    warehouse = (
+        session.get(LogisticsWarehouse, event.warehouse_id)
+        if event.warehouse_id is not None
+        else None
+    )
+    dropoff = (
+        session.get(LogisticsWarehouse, event.dropoff_warehouse_id)
+        if event.dropoff_warehouse_id is not None
+        else None
+    )
+    driver = session.get(LogisticsDriver, event.driver_id) if event.driver_id is not None else None
+    user = session.get(LogisticsUser, event.user_id) if event.user_id is not None else None
+    site_order_fulfillment.upsert_execution_event(
+        session,
+        site_order_number=transfer.site_order_number,
+        event_type=site_order_fulfillment.EVENT_PICKUP_MOVING,
+        event_at=event.event_at,
+        source="logistics",
+        source_ref=f"logistics_transfer_event:{event.id}",
+        confidence="strong",
+        raw_message_id=None,
+        payload={
+            "logistics_transfer_id": transfer.id,
+            "source_document_type": transfer.source_document_type,
+            "source_external_id": transfer.external_id,
+            "warehouse_id": event.warehouse_id,
+            "warehouse_name": warehouse.name if warehouse is not None else None,
+            "dropoff_warehouse_id": event.dropoff_warehouse_id,
+            "dropoff_warehouse_name": dropoff.name if dropoff is not None else None,
+            "driver_id": event.driver_id,
+            "driver_name": driver.full_name if driver is not None else None,
+            "user_id": event.user_id,
+            "user_name": user.full_name if user is not None else None,
+            "source_channel": event.source,
         },
     )
 
@@ -441,6 +501,7 @@ def telegram_auth(session: Session, telegram_user_id: int, username: str | None 
         "id": user.id,
         "external_id": user.external_id,
         "telegram_user_id": user.telegram_user_id,
+        "bitrix_user_id": user.bitrix_user_id,
         "username": user.username,
         "full_name": user.full_name,
         "role": user.role,
@@ -653,7 +714,10 @@ def confirm_draft(
     comment: str | None,
     idempotency_key: str | None,
     photos: list[dict],
+    source_channel: str = "telegram",
 ) -> dict:
+    if source_channel not in SOURCE_CHANNELS:
+        raise _http_error(422, "unsupported logistics source channel")
     draft = _get_draft(session, draft_id)
     actor = _get_actor(session, actor_user_id)
     if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
@@ -693,13 +757,19 @@ def confirm_draft(
                 driver_id=draft.driver_id,
                 user_id=actor.id,
                 comment=comment or draft.comment,
-                source="telegram",
+                source=source_channel,
                 idempotency_key=event_key,
                 document_ref=transfer.document_number,
                 meta={"draft_id": draft.id},
             )
             _attach_photos(event, photos)
             session.add(event)
+            session.flush()
+            _bridge_rtu_handoff_to_order_fulfillment(
+                session,
+                transfer=transfer,
+                event=event,
+            )
             route_item = _get_or_create_route_item(
                 session,
                 route_run_id=draft.route_run_id,
@@ -728,7 +798,7 @@ def confirm_draft(
                 driver_id=state.driver_id,
                 user_id=actor.id,
                 comment=comment or draft.comment,
-                source="telegram",
+                source=source_channel,
                 idempotency_key=event_key,
                 document_ref=transfer.document_number,
                 meta={"draft_id": draft.id},
@@ -778,14 +848,13 @@ def confirm_draft(
 def list_expected_deliveries(
     session: Session,
     *,
-    warehouse_id: int,
+    warehouse_id: int | None,
     driver_id: int | None = None,
 ) -> list[dict]:
     stmt: Select[tuple[LogisticsTransferState]] = (
         select(LogisticsTransferState)
         .where(
             LogisticsTransferState.status == STATUS_IN_TRANSIT,
-            LogisticsTransferState.dropoff_warehouse_id == warehouse_id,
         )
         .options(
             joinedload(LogisticsTransferState.transfer).joinedload(
@@ -799,6 +868,8 @@ def list_expected_deliveries(
         )
         .order_by(LogisticsTransferState.last_event_at.desc())
     )
+    if warehouse_id is not None:
+        stmt = stmt.where(LogisticsTransferState.dropoff_warehouse_id == warehouse_id)
     if driver_id is not None:
         stmt = stmt.where(LogisticsTransferState.driver_id == driver_id)
     rows = session.scalars(stmt).all()
@@ -1174,6 +1245,10 @@ def sync_users(session: Session, items: list[dict]) -> dict:
                     LogisticsUser.telegram_user_id == item["telegram_user_id"]
                 )
             )
+        if row is None and item.get("bitrix_user_id"):
+            row = session.scalar(
+                select(LogisticsUser).where(LogisticsUser.bitrix_user_id == item["bitrix_user_id"])
+            )
         warehouse_id = None
         if item.get("default_warehouse_external_id") is not None:
             warehouse_id = warehouses.get(item["default_warehouse_external_id"])
@@ -1183,6 +1258,7 @@ def sync_users(session: Session, items: list[dict]) -> dict:
             row = LogisticsUser(
                 external_id=item.get("external_id"),
                 telegram_user_id=item.get("telegram_user_id"),
+                bitrix_user_id=item.get("bitrix_user_id"),
                 username=item.get("username"),
                 full_name=item["full_name"],
                 role=item["role"],
@@ -1193,6 +1269,7 @@ def sync_users(session: Session, items: list[dict]) -> dict:
             counters.created += 1
         else:
             row.telegram_user_id = item.get("telegram_user_id", row.telegram_user_id)
+            row.bitrix_user_id = item.get("bitrix_user_id", row.bitrix_user_id)
             row.username = item.get("username", row.username)
             row.full_name = item["full_name"]
             row.role = item["role"]

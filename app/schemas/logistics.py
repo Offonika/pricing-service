@@ -29,6 +29,7 @@ class LogisticsDriverSyncItem(BaseModel):
 class LogisticsUserSyncItem(BaseModel):
     external_id: str | None = None
     telegram_user_id: int | None = None
+    bitrix_user_id: str | None = None
     username: str | None = None
     full_name: str
     role: str
@@ -72,6 +73,7 @@ class LogisticsUserProfile(BaseModel):
     id: int
     external_id: str | None = None
     telegram_user_id: int | None = None
+    bitrix_user_id: str | None = None
     username: str | None = None
     full_name: str
     role: str

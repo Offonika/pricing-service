@@ -18,6 +18,8 @@ from app.api.bitrix_executive_dashboard import (
     page_router as bitrix_executive_dashboard_page_router,
 )
 from app.api.bitrix_executive_dashboard import router as bitrix_executive_dashboard_router
+from app.api.bitrix_logistics import page_router as bitrix_logistics_page_router
+from app.api.bitrix_logistics import router as bitrix_logistics_router
 from app.api.bitrix_matching import page_router as bitrix_matching_page_router
 from app.api.bitrix_matching import router as bitrix_matching_router
 from app.api.bitrix_receivables import page_router as bitrix_receivables_page_router
@@ -166,6 +168,7 @@ async def log_requests(request: Request, call_next: Callable[[Request], Response
 app.include_router(health_router)
 app.include_router(bitrix_matching_page_router)
 app.include_router(bitrix_executive_dashboard_page_router)
+app.include_router(bitrix_logistics_page_router)
 app.include_router(bitrix_receivables_page_router)
 app.include_router(logistics_web_page_router)
 app.include_router(site_defect_archive_page_router)
@@ -184,6 +187,7 @@ app.include_router(bank_payments_router, prefix="/api")
 app.include_router(matching_router, prefix="/api")
 app.include_router(bitrix_matching_router, prefix="/api")
 app.include_router(bitrix_executive_dashboard_router, prefix="/api")
+app.include_router(bitrix_logistics_router, prefix="/api")
 app.include_router(bitrix_receivables_router, prefix="/api")
 app.include_router(management_router, prefix="/api/management")
 app.include_router(receivables_router, prefix="/api/receivables")

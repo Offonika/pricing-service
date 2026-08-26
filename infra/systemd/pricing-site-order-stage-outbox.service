@@ -1,0 +1,9 @@
+[Unit]
+Description=Process pricing-service site order stage outbox
+After=pricing-service.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/MM/pricing-service-task43-current
+EnvironmentFile=/opt/MM/pricing-service-task43-current/.env
+ExecStart=/opt/MM/pricing-service-task43-current/.venv/bin/python -m tasks.process_site_order_stage_outbox --apply

@@ -509,6 +509,24 @@ class Settings(BaseSettings):
     logistics_bot_webhook_url: str | None = None
     logistics_web_session_secret: str | None = None
     logistics_web_session_ttl_seconds: int = 8 * 60 * 60
+    logistics_web_fallback_token_ttl_seconds: int = 5 * 60
+    logistics_bitrix_app_enabled: bool = False
+    logistics_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    logistics_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_bitrix_session_secret: str | None = None
+    logistics_bitrix_session_ttl_seconds: int = 3600
+    logistics_bitrix_rest_timeout_seconds: float = 6.0
+    logistics_stage_automation_enabled: bool = False
+    logistics_stage_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_stage_worker_batch_size: int = 50
+    pickup_ready_sms_enabled: bool = False
+    pickup_ready_sms_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     logistics_transfer_assistant_pickup_hold_days: int = 7
 
     # Embeddings / matching pipeline
@@ -724,6 +742,10 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "logistics_bitrix_allowed_domains",
+        "logistics_bitrix_allowed_member_ids",
+        "logistics_stage_pilot_warehouse_external_ids",
+        "pickup_ready_sms_pilot_warehouse_external_ids",
         mode="before",
     )
     @classmethod

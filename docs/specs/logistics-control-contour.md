@@ -9,10 +9,12 @@ source_of_truth: true
 related_code:
   - app/api/logistics.py
   - app/api/logistics_web.py
+  - app/api/bitrix_logistics.py
   - app/models/logistics.py
   - app/schemas/logistics.py
   - app/services/logistics.py
   - app/services/logistics_onec.py
+  - app/services/bitrix_logistics_auth.py
   - tasks/apply_logistics_warehouse_alias_overrides.py
   - tasks/report_logistics_rtu_manual_review.py
   - tasks/sync_logistics_warehouse_aliases_from_onec.py
@@ -23,6 +25,7 @@ related_tests:
   - tests/test_logistics_onec.py
   - tests/test_logistics_bot.py
   - tests/test_logistics_bot_webhook_api.py
+  - tests/test_bitrix_logistics.py
   - tests/test_order_fulfillment_api.py
 contracts:
   - docs/TechDesign.LogisticsTelegramMVP.md
@@ -32,7 +35,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-22"
+updated_at: "2026-08-26"
 ---
 
 # Назначение
@@ -58,6 +61,9 @@ updated_at: "2026-05-22"
 - очередь `logistics_manual_review`;
 - external carrier state `with_external_carrier`;
 - web fallback `/logistics/fallback` через signed cookie;
+- встроенное приложение Bitrix24 `/bitrix/logistics/` с короткой BFF-сессией;
+- одноразовый fallback launch token на 5 минут с однократным обменом на cookie;
+- связь `logistics_user.bitrix_user_id`, роли склада и source-channel audit;
 - bridge в `site_order_execution_event` для РТУ, принятой на финальной точке.
 
 Не входит:
@@ -140,6 +146,17 @@ External carrier:
   `empty_pickup_address_target_source = true`.
 
 # API / Data Contracts
+
+Пользовательский Bitrix BFF, не раскрывающий internal token браузеру:
+
+- `POST /api/bitrix/logistics/session`, `GET /bootstrap`;
+- `/handoffs/draft/*`, `/receipts/draft/*`;
+- `GET /expected-deliveries`, `/monitor`, `/errors`;
+- `GET /transfers/{id}/history`;
+- `POST /fallback-link`, `/fallback-session`.
+
+Internal sync/admin endpoints `/api/logistics/*` сохраняют отдельный internal
+token. Все интерфейсы подтверждения используют общие drafts и state machine.
 
 QR v1:
 
@@ -252,6 +269,9 @@ Manual review создается для:
 - RTU sync использует `ONEC_DATABASE_URL`, генерирует `MMLOG1|rtu|...` и не
   пишет обратно в `1С`;
 - web fallback работает без Telegram и без internal token в браузере;
+- Bitrix OAuth-сессия проверяет allowlist портала и привязку пользователя;
+- `sender/receiver` не могут работать с чужим складом или операцией другой роли;
+- fallback launch token истекает и обменивается только один раз;
 - OpenAPI drift и spec manifest validation.
 
 # Rollout
@@ -262,11 +282,17 @@ Manual review создается для:
 3. Выпустить backend с новыми endpoints, не отключая старый Telegram flow.
 4. Подключить read-only sync РТУ из `1С` через
    `tasks/sync_logistics_rtu_from_onec.py` сначала в dry-run, затем с `--apply`.
-5. Пилотировать web fallback на ограниченной группе `logist/admin`.
-6. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
+5. С выключенным `LOGISTICS_BITRIX_APP_ENABLED` настроить OAuth placement и связи
+   пользователей, затем включить приложение только для пилотных складов.
+6. Пилотировать центральный склад -> Тёплый Стан на 3–5 заказах; web и Telegram
+   оставить резервом.
+7. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
 
 # Changelog
 
+- 2026-08-26 — добавлен контракт встроенного приложения Bitrix24, BFF-сессий,
+  складских ролей и одноразового web fallback; основной UX перенесен в Bitrix24,
+  Telegram и web остаются резервом общей state machine.
 - 2026-07-01 — зафиксирована граница задачи `1530`: сначала read-only
   backend-витрина и очереди, 1С-доработку отдельных статусов товара отложить.
 - 2026-05-22 — draft created, контур зафиксирован для первой волны реализации.

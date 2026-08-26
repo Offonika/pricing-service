@@ -104,6 +104,9 @@ FIELD_SPECS: tuple[dict[str, Any], ...] = (
         "title": "Техническая ошибка синхронизации",
         "type": "string",
     },
+    {"key": "mail_activity_id", "title": "ID email-активности", "type": "string"},
+    {"key": "mail_activity_url", "title": "Открыть письмо в CRM", "type": "url"},
+    {"key": "mail_thread_key", "title": "Технический ключ email-цепочки", "type": "string"},
     {
         "key": "return_decision_approved_by_user",
         "title": "Кто согласовал решение",
@@ -121,6 +124,8 @@ FORM_SECTIONS = (
             "ASSIGNED_BY_ID",
             "UF_CRM_36_CUSTOMERREQUESTCHOICE",
             "UF_CRM_36_PRIORITYCHOICE",
+            "mail_activity_id",
+            "mail_activity_url",
             "first_response_due_at",
             "site_sync_status",
         ),

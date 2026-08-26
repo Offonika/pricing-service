@@ -1267,7 +1267,10 @@ def build_site_service_request_worker_plans(
             SiteServiceRequestEvent.case_id.label("case_id"),
             func.min(SiteServiceRequestEvent.source_message_id).label("source_message_id"),
         )
-        .where(SiteServiceRequestEvent.status.in_(("pending", "retry")))
+        .where(
+            SiteServiceRequestEvent.status.in_(("pending", "retry")),
+            ~SiteServiceRequestEvent.event_type.like("email.%"),
+        )
         .group_by(SiteServiceRequestEvent.case_id)
         .subquery()
     )
@@ -1283,6 +1286,7 @@ def build_site_service_request_worker_plans(
         )
         .where(
             available,
+            ~SiteServiceRequestEvent.event_type.like("email.%"),
         )
         .order_by(SiteServiceRequestEvent.created_at, SiteServiceRequestEvent.id)
         .limit(batch_limit)
@@ -2619,7 +2623,8 @@ def collect_site_service_request_outbound_commands(
         try:
             _lock_site_service_request_outbound_sequence(session)
             query = select(SiteServiceRequestCase).where(
-                SiteServiceRequestCase.bitrix_item_id.is_not(None)
+                SiteServiceRequestCase.bitrix_item_id.is_not(None),
+                SiteServiceRequestCase.source_kind == "site_ticket",
             )
             if processed_case_ids:
                 query = query.where(SiteServiceRequestCase.id.not_in(processed_case_ids))
@@ -2735,8 +2740,12 @@ def _deliver_site_service_request_escalation(
         writer.notify_user(
             user_id=settings.site_service_requests_escalation_user_id,
             message=(
-                "Просрочен SLA первого ответа по сервисному обращению "
-                f"сайта #{case.source_ticket_id}."
+                "Просрочен SLA первого ответа по "
+                + (
+                    "сервисному email-обращению."
+                    if case.source_kind == "bitrix_mail"
+                    else f"сервисному обращению сайта #{case.source_ticket_id}."
+                )
             ),
             tag=(
                 f"mm-site-service-escalation:{case.id}:"
@@ -2982,6 +2991,13 @@ def reconcile_site_service_request_assignments(
                     _item_field_value(updated_item, field_map["site_sync_error"]) or ""
                 ) != str(expected_sync_error):
                     raise RuntimeError("bitrix_assignment_error_readback_failed")
+            if case.primary_activity_id is not None:
+                _sync_site_service_email_activity_assignment(
+                    api=writer.api,
+                    activity_id=case.primary_activity_id,
+                    assigned_user_id=decision.assigned_user_id,
+                    deadline=decision.first_response_due_at,
+                )
             # The escalation decision and the confirmed card update must survive
             # a later timeline/notification failure. Delivery has its own durable
             # checkpoints and is retried idempotently on the next tick.
@@ -3027,6 +3043,40 @@ def reconcile_site_service_request_assignments(
             if not isinstance(exc, (RuntimeError, SQLAlchemyError)):
                 raise
     return results
+
+
+def _sync_site_service_email_activity_assignment(
+    *,
+    api: SiteServiceRequestBitrixApi,
+    activity_id: int,
+    assigned_user_id: int | None,
+    deadline: datetime | None,
+) -> None:
+    fields: dict[str, Any] = {"COMPLETED": "N"}
+    if assigned_user_id is not None:
+        fields["RESPONSIBLE_ID"] = assigned_user_id
+    if deadline is not None:
+        fields["DEADLINE"] = deadline.isoformat()
+    response = api.call_json(
+        "crm.activity.update",
+        {"id": activity_id, "fields": fields},
+    )
+    if response.get("result") not in (True, 1, "1"):
+        raise RuntimeError("email_activity_assignment_write_failed")
+    readback_response = api.call("crm.activity.get", [("id", str(activity_id))])
+    readback = readback_response.get("result")
+    if not isinstance(readback, dict):
+        raise RuntimeError("email_activity_assignment_readback_failed")
+    if _positive_int(readback.get("ID") or readback.get("id")) != activity_id:
+        raise RuntimeError("email_activity_assignment_readback_failed")
+    if str(readback.get("COMPLETED") or readback.get("completed") or "N") != "N":
+        raise RuntimeError("email_activity_assignment_readback_failed")
+    if (
+        assigned_user_id is not None
+        and _positive_int(readback.get("RESPONSIBLE_ID") or readback.get("responsibleId"))
+        != assigned_user_id
+    ):
+        raise RuntimeError("email_activity_assignment_readback_failed")
 
 
 def _apply_site_service_request_worker_plan(

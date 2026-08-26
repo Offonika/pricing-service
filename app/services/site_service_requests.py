@@ -23,9 +23,11 @@ from app.models.site_service_requests import (
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestSource,
 )
 from app.schemas.site_service_requests import (
     SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
+    SiteServiceEmailEventPayload,
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestEventPayload,
 )
@@ -169,14 +171,43 @@ def accept_site_service_request_event(
                 .with_for_update()
             )
             if case is None:
+                source_key = f"site-support-ticket:{payload.ticket.id}"
                 case = SiteServiceRequestCase(
                     source_ticket_id=payload.ticket.id,
+                    source_kind="site_ticket",
+                    source_key=source_key,
                     first_seen_at=_as_utc(payload.occurred_at),
                 )
                 session.add(case)
                 session.flush()
             elif _as_utc(payload.occurred_at) < _as_utc(case.first_seen_at):
                 case.first_seen_at = _as_utc(payload.occurred_at)
+
+            source_key = f"site-support-ticket:{payload.ticket.id}"
+            if case.source_key is None:
+                case.source_key = source_key
+            elif case.source_kind != "site_ticket" or case.source_key != source_key:
+                raise SiteServiceRequestConflictError("site_source_identity_conflict")
+            source = session.scalar(
+                select(SiteServiceRequestSource)
+                .where(
+                    SiteServiceRequestSource.source_kind == "site_ticket",
+                    SiteServiceRequestSource.source_key == source_key,
+                )
+                .with_for_update()
+            )
+            if source is None:
+                session.add(
+                    SiteServiceRequestSource(
+                        case_id=case.id,
+                        source_kind="site_ticket",
+                        source_key=source_key,
+                        created_at=current_time,
+                        updated_at=current_time,
+                    )
+                )
+            elif source.case_id != case.id:
+                raise SiteServiceRequestConflictError("site_source_identity_conflict")
 
             latest_customer_message = max(
                 (
@@ -241,6 +272,172 @@ def accept_site_service_request_event(
         duplicate=False,
         missing_file_ids=missing_file_ids,
     )
+
+
+def accept_site_service_email_event(
+    session: Session,
+    *,
+    payload: SiteServiceEmailEventPayload,
+    raw_body: bytes,
+    payload_sha256: str,
+    cipher: SiteServiceRequestCipher,
+    now: datetime | None = None,
+) -> AcceptedSiteServiceRequestEvent:
+    """Persist a PII-free email event and bind its thread to one service case."""
+
+    existing_event = session.scalar(
+        select(SiteServiceRequestEvent).where(SiteServiceRequestEvent.event_id == payload.event_id)
+    )
+    if existing_event is not None:
+        if existing_event.payload_sha256 != payload_sha256:
+            raise SiteServiceRequestConflictError("event_payload_conflict")
+        return AcceptedSiteServiceRequestEvent(
+            event_id=existing_event.event_id,
+            duplicate=True,
+            missing_file_ids=[],
+        )
+
+    current_time = _as_utc(now or datetime.now(UTC))
+    source_kind = "bitrix_mail"
+    try:
+        with session.begin_nested():
+            source = session.scalar(
+                select(SiteServiceRequestSource)
+                .where(
+                    SiteServiceRequestSource.source_kind == source_kind,
+                    SiteServiceRequestSource.source_key == payload.source_key,
+                )
+                .with_for_update()
+            )
+            case = source.case if source is not None else None
+
+            preferred_case = None
+            if payload.existing_service_item_id is not None:
+                preferred_case = session.scalar(
+                    select(SiteServiceRequestCase)
+                    .where(
+                        SiteServiceRequestCase.bitrix_item_id == payload.existing_service_item_id
+                    )
+                    .with_for_update()
+                )
+                if (
+                    case is not None
+                    and case.bitrix_item_id is not None
+                    and case.bitrix_item_id != payload.existing_service_item_id
+                ):
+                    raise SiteServiceRequestConflictError("email_source_item_conflict")
+                if case is not None and preferred_case is not None and case.id != preferred_case.id:
+                    raise SiteServiceRequestConflictError("email_source_item_conflict")
+                if case is None:
+                    case = preferred_case
+
+            if case is None:
+                case = SiteServiceRequestCase(
+                    source_ticket_id=_email_source_ticket_id(payload.source_key),
+                    source_kind=source_kind,
+                    source_key=payload.source_key,
+                    source_mailbox=payload.mailbox,
+                    source_thread_id=payload.thread_id,
+                    primary_activity_id=(
+                        payload.activity_id if payload.event_type == "email.received" else None
+                    ),
+                    bitrix_item_id=payload.existing_service_item_id,
+                    first_seen_at=_as_utc(payload.occurred_at),
+                )
+                session.add(case)
+                session.flush()
+            elif _as_utc(payload.occurred_at) < _as_utc(case.first_seen_at):
+                case.first_seen_at = _as_utc(payload.occurred_at)
+
+            if source is None:
+                source = SiteServiceRequestSource(
+                    case_id=case.id,
+                    source_kind=source_kind,
+                    source_key=payload.source_key,
+                    source_mailbox=payload.mailbox,
+                    source_thread_id=payload.thread_id,
+                    primary_activity_id=(
+                        payload.activity_id if payload.event_type == "email.received" else None
+                    ),
+                    created_at=current_time,
+                    updated_at=current_time,
+                )
+                session.add(source)
+            elif (
+                source.source_mailbox != payload.mailbox
+                or source.source_thread_id != payload.thread_id
+            ):
+                raise SiteServiceRequestConflictError("email_source_identity_conflict")
+
+            if payload.event_type == "email.received":
+                if source.primary_activity_id is None:
+                    source.primary_activity_id = payload.activity_id
+                if case.source_kind == source_kind and case.primary_activity_id is None:
+                    case.primary_activity_id = payload.activity_id
+                case.latest_inbound_message_id = max(
+                    case.latest_inbound_message_id or 0,
+                    payload.message_id,
+                )
+            else:
+                case.latest_outbound_message_id = max(
+                    case.latest_outbound_message_id or 0,
+                    payload.message_id,
+                )
+
+            if case.source_kind == source_kind:
+                case.sync_status = "pending"
+                case.last_error_code = None
+            case.updated_at = current_time
+            source.updated_at = current_time
+            session.add(
+                SiteServiceRequestEvent(
+                    event_id=payload.event_id,
+                    case_id=case.id,
+                    source_message_id=payload.message_id,
+                    source_activity_id=payload.activity_id,
+                    event_type=payload.event_type,
+                    direction=("inbound" if payload.event_type == "email.received" else "outbound"),
+                    payload_encrypted=cipher.encrypt(raw_body, event_id=payload.event_id),
+                    payload_sha256=payload_sha256,
+                    source_message_sha256=payload_sha256,
+                    status="pending",
+                    created_at=current_time,
+                    updated_at=current_time,
+                )
+            )
+            session.flush()
+    except IntegrityError as exc:
+        concurrent_event = session.scalar(
+            select(SiteServiceRequestEvent).where(
+                SiteServiceRequestEvent.event_id == payload.event_id
+            )
+        )
+        if concurrent_event is None:
+            raise
+        if concurrent_event.payload_sha256 != payload_sha256:
+            raise SiteServiceRequestConflictError("event_payload_conflict") from exc
+        return AcceptedSiteServiceRequestEvent(
+            event_id=concurrent_event.event_id,
+            duplicate=True,
+            missing_file_ids=[],
+        )
+
+    return AcceptedSiteServiceRequestEvent(
+        event_id=payload.event_id,
+        duplicate=False,
+        missing_file_ids=[],
+    )
+
+
+def _email_source_ticket_id(source_key: str) -> int:
+    # Site ticket IDs are positive. A deterministic negative identity preserves
+    # the historic non-null/unique column without coupling email cases to it.
+    value = int.from_bytes(
+        hashlib.sha256(source_key.encode("utf-8")).digest()[:7],
+        byteorder="big",
+        signed=False,
+    )
+    return -(value or 1)
 
 
 def stage_site_service_request_file(
@@ -862,7 +1059,10 @@ def build_site_service_request_health(
 
     if alert_codes:
         status = "degraded"
-    elif not settings.site_service_requests_ingest_enabled:
+    elif not (
+        settings.site_service_requests_ingest_enabled
+        or settings.site_service_requests_email_ingest_enabled
+    ):
         status = "disabled"
     else:
         status = "healthy"
@@ -884,6 +1084,7 @@ def build_site_service_request_health(
             else None
         ),
         "ingest_enabled": settings.site_service_requests_ingest_enabled,
+        "email_ingest_enabled": settings.site_service_requests_email_ingest_enabled,
         "bitrix_writes_enabled": settings.site_service_requests_bitrix_writes_enabled,
         "outbound_replies_enabled": settings.site_service_requests_outbound_replies_enabled,
     }

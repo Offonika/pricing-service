@@ -269,6 +269,7 @@ class IngestResult:
     events: list[SiteOrderExecutionEvent]
     duplicate_message: bool
     edited_message: bool = False
+    message_at_backfilled: bool = False
     reactions_added: int = 0
     reactions_removed: int = 0
 
@@ -1025,6 +1026,13 @@ def ingest_bitrix_message(
         )
     )
     if existing is not None:
+        message_at_backfilled = bool(existing.message_at is None and message_at is not None)
+        if message_at_backfilled:
+            # A bot event may save the message before polling sees Bitrix's
+            # canonical ISO timestamp.  Keep the original row/idempotency
+            # identity, but let the later read complete the missing source
+            # date so cutover and SMS guards can evaluate it safely.
+            existing.message_at = message_at
         new_hash = _text_hash(text_value)
         edited = bool(existing.raw_text_hash and new_hash and existing.raw_text_hash != new_hash)
         if edited:
@@ -1064,6 +1072,7 @@ def ingest_bitrix_message(
             list(events),
             True,
             edited_message=edited,
+            message_at_backfilled=message_at_backfilled,
             reactions_added=reactions_added,
             reactions_removed=reactions_removed,
         )
@@ -2138,6 +2147,7 @@ def ingest_bitrix_chat(
         "events": 0,
         "duplicates": 0,
         "edited": 0,
+        "message_dates_backfilled": 0,
         "reactions_added": 0,
         "reactions_removed": 0,
         "ocr_images": 0,
@@ -2191,6 +2201,7 @@ def ingest_bitrix_chat(
         stats["events"] += len(ingested.events)
         stats["duplicates"] += 1 if ingested.duplicate_message else 0
         stats["edited"] += 1 if ingested.edited_message else 0
+        stats["message_dates_backfilled"] += 1 if ingested.message_at_backfilled else 0
         stats["reactions_added"] += ingested.reactions_added
         stats["reactions_removed"] += ingested.reactions_removed
     return stats
@@ -2218,6 +2229,7 @@ def poll_bitrix_chat_pages(
         "events": 0,
         "duplicates": 0,
         "edited": 0,
+        "message_dates_backfilled": 0,
         "reactions_added": 0,
         "reactions_removed": 0,
         "ocr_images": 0,
@@ -2265,6 +2277,7 @@ def poll_bitrix_chat_pages(
             "events",
             "duplicates",
             "edited",
+            "message_dates_backfilled",
             "reactions_added",
             "reactions_removed",
             "ocr_images",

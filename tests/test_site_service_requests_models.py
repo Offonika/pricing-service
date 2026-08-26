@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
+    SiteServiceRequestSource,
 )
 
 
@@ -87,6 +88,18 @@ def _load_finalize_hardening_migration():
         / "alembic/versions/7b9d1f3a5c46_finalize_site_request_hardening.py"
     )
     spec = importlib.util.spec_from_file_location("site_service_request_finalize", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def _load_email_sources_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/8c0e2a4b6d57_add_service_email_sources.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_email_sources", path)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
@@ -479,4 +492,89 @@ def test_finalize_hardening_migration_corrects_delivery_backfills(tmp_path: Path
         }
 
     assert migrations[-1].down_revision == "6a8c0e2f4b35"
+    engine.dispose()
+
+
+def test_email_sources_migration_backfills_site_identity_and_is_reversible(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-email-sources.db'}")
+    migrations = [
+        _load_migration(),
+        _load_open_stage_migration(),
+        _load_hardening_migration(),
+        _load_delivery_migration(),
+        _load_outbound_error_migration(),
+        _load_finalize_hardening_migration(),
+        _load_email_sources_migration(),
+    ]
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in migrations:
+            migration.op = operations
+        for migration in migrations[:-1]:
+            migration.upgrade()
+        connection.execute(
+            text(
+                "INSERT INTO site_service_request_case "
+                "(source_ticket_id, assignment_state, round_robin_seq, first_seen_at, "
+                "base_sync_status, sync_status, version, created_at, updated_at) "
+                "VALUES (741, 'waiting', 0, CURRENT_TIMESTAMP, 'pending', 'pending', 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+
+        migrations[-1].upgrade()
+
+        case_row = connection.execute(
+            text(
+                "SELECT source_kind, source_key FROM site_service_request_case "
+                "WHERE source_ticket_id=741"
+            )
+        ).one()
+        source_row = connection.execute(
+            text("SELECT source_kind, source_key FROM site_service_request_source")
+        ).one()
+        assert case_row == ("site_ticket", "site-support-ticket:741")
+        assert source_row == case_row
+        assert "source_activity_id" in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_event")
+        }
+
+        migrations[-1].downgrade()
+        assert "site_service_request_source" not in inspect(connection).get_table_names()
+        assert "source_kind" not in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_case")
+        }
+
+    assert migrations[-1].down_revision == "3e7a9c1d5f24"
+    engine.dispose()
+
+
+def test_email_source_identity_is_unique_in_models() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        first = SiteServiceRequestCase(source_ticket_id=-1)
+        second = SiteServiceRequestCase(source_ticket_id=-2)
+        first.sources.append(
+            SiteServiceRequestSource(
+                source_kind="bitrix_mail",
+                source_key="bitrix-mail:shop:777",
+            )
+        )
+        second.sources.append(
+            SiteServiceRequestSource(
+                source_kind="bitrix_mail",
+                source_key="bitrix-mail:shop:777",
+            )
+        )
+        session.add_all((first, second))
+        with pytest.raises(IntegrityError):
+            session.commit()
+
     engine.dispose()

@@ -262,6 +262,66 @@ def test_polling_normalizes_aware_message_dates_for_lookback(db_session) -> None
     assert stats["pages"] == 1
 
 
+def test_polling_date_backfill_requeues_full_batch_arrival(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 25, 12, tzinfo=UTC),
+    )
+    _warehouse(db_session, "mitino", "Митино")
+    order_numbers = [str(241500 + index) for index in range(12)]
+    text_value = f"Митино: {', '.join(order_numbers)}"
+
+    assert (
+        bot.create_candidates_from_message(
+            db_session,
+            dialog_id="chat8729",
+            message_id="273088",
+            author_id="7",
+            text_value=text_value,
+            message_at=None,
+            settings=settings,
+        )
+        == []
+    )
+    raw_message = db_session.scalar(
+        select(BitrixChatMessage).where(BitrixChatMessage.message_id == 273088)
+    )
+    assert raw_message is not None and raw_message.message_at is None
+
+    ingested = fulfillment.ingest_bitrix_message(
+        db_session,
+        chat_code=fulfillment.CHAT_PICKUP_READY,
+        dialog_id="chat8729",
+        chat_id=8729,
+        message_id=273088,
+        message_at=datetime(2026, 8, 25, 14, 31, 33),
+        author_id="7",
+        text_value=text_value,
+        payload={"date": "2026-08-25T17:31:33+03:00"},
+    )
+    stats = pickup_control.create_missing_pickup_candidates(
+        db_session,
+        settings=settings,
+    )
+
+    assert ingested.message_at_backfilled is True
+    assert stats == {"checked": 1, "created": 12}
+    candidates = db_session.scalars(
+        select(BitrixChatActionCandidate).order_by(BitrixChatActionCandidate.id.asc())
+    ).all()
+    assert [candidate.site_order_number for candidate in candidates] == order_numbers
+    assert {candidate.status for candidate in candidates} == {bot.CANDIDATE_QUEUED}
+    assert db_session.scalar(select(func.count(BitrixChatAction.id))) == 12
+    assert (
+        db_session.scalar(
+            select(func.count(SiteOrderFulfillmentOutbox.id)).where(
+                SiteOrderFulfillmentOutbox.operation == bot.OP_PROCESS_ACTION
+            )
+        )
+        == 12
+    )
+
+
 def test_pickup_control_poll_reads_all_five_configured_chats(db_session) -> None:
     class EmptyClient:
         def __init__(self) -> None:

@@ -2,6 +2,7 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
 
-# Reads 1C SQL events "Собран" and sends safe assembled signal to CRM.
+# Reads 1C SQL events "Собран"/"Отсканирован". Transport remains legacy-php
+# until the unified service-db reconciler completes dry-run/canary acceptance.
 # The script keeps local idempotency state in .local/onec_assembly_crm_reconciler.sqlite3.
 */30 * * * * root PYTHONPATH=/opt/MM/pricing-service-task43-current REPO_DIR=/opt/MM/pricing-service-task43-current ONEC_ASSEMBLY_CRM_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/onec_assembly_crm_reconciler.sh >> /var/log/pricing/onec_assembly_crm_reconciler.cron.log 2>&1

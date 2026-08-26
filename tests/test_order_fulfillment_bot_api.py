@@ -736,3 +736,7 @@ def test_bot_health_reports_runtime_apply_switch(monkeypatch) -> None:
     assert response.json()["pickup_warehouse_alias_count"] == 1
     assert response.json()["task_route_count"] == 1
     assert response.json()["task_route_configuration_errors"] == []
+    assert response.json()["execution_master_enabled"] is False
+    assert response.json()["execution_reconciliation_enabled"] is False
+    assert response.json()["execution_stage_apply_enabled"] is False
+    assert response.json()["execution_outbox_active"] == 0

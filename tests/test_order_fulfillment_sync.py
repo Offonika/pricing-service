@@ -77,6 +77,28 @@ class FakeNotifyClient:
         return {"result": 1000 + len(self.calls)}
 
 
+class FakeExecutingScanClient:
+    def __init__(self, *, recent_ids: list[int], historical_ids: list[int]) -> None:
+        self.recent_ids = recent_ids
+        self.historical_ids = historical_ids
+        self.calls: list[dict] = []
+
+    def call(self, method: str, payload: dict) -> dict:
+        assert method == "crm.deal.list"
+        self.calls.append(payload)
+        ids = self.recent_ids if payload["order"]["ID"] == "DESC" else self.historical_ids
+        return {
+            "result": [
+                {
+                    "ID": str(deal_id),
+                    "STAGE_ID": "EXECUTING",
+                    service.CRM_ORDER_NUMBER_FIELD: str(240000 + deal_id),
+                }
+                for deal_id in ids
+            ]
+        }
+
+
 def _deal(
     *,
     deal_id: int = 100,
@@ -153,6 +175,87 @@ def test_decide_new_deal_stage_for_safe_v1_rules() -> None:
         ).recommended_stage
         == "EXECUTING"
     )
+
+
+def test_executing_scan_prioritizes_recent_and_rotates_history(tmp_path: Path) -> None:
+    client = FakeExecutingScanClient(
+        recent_ids=[500, 499],
+        historical_ids=[101, 102, 103],
+    )
+
+    scan = sync.fetch_executing_deal_scan(
+        client,
+        recent_limit=2,
+        historical_limit=3,
+        cursor=100,
+    )
+    state_path = tmp_path / "cursor.json"
+    sync.save_executing_cursor(state_path, scan)
+
+    assert {deal.deal_id for deal in scan.deals} == {101, 102, 103, 499, 500}
+    assert scan.recent_deal_ids == {499, 500}
+    assert scan.historical_deal_ids == {101, 102, 103}
+    assert scan.cursor_before == 100
+    assert scan.cursor_after == 103
+    assert scan.cycle_completed is False
+    assert sync.load_executing_cursor(state_path) == 103
+    historical_call = next(call for call in client.calls if call["order"]["ID"] == "ASC")
+    assert historical_call["filter"][">ID"] == 100
+
+
+def test_executing_scan_resets_cursor_after_full_cycle() -> None:
+    client = FakeExecutingScanClient(recent_ids=[500], historical_ids=[499])
+
+    scan = sync.fetch_executing_deal_scan(
+        client,
+        recent_limit=1,
+        historical_limit=3,
+        cursor=498,
+    )
+
+    assert scan.cursor_after == 0
+    assert scan.cycle_completed is True
+
+
+def test_execution_cutover_not_scan_cohort_controls_historical_apply_gate() -> None:
+    deal = _deal(
+        deal_id=500,
+        stage_id="EXECUTING",
+        order_number="242901",
+        delivery="Самовывоз",
+        assembled="1",
+    )
+    common = {
+        "deals": [deal],
+        "order_statuses": {},
+        "onec_settlements": {},
+        "onec_evidence_available": True,
+        "cutover_at": datetime.fromisoformat("2026-08-26T00:00:00+03:00"),
+    }
+
+    old = sync.build_execution_snapshots(
+        **common,
+        rtu_signals={
+            "242901": {
+                "rtu_count": 1,
+                "assembled_rtu_count": 1,
+                "latest_assembled_at": datetime(2026, 8, 25, 23, 59),
+            }
+        },
+    )
+    new = sync.build_execution_snapshots(
+        **common,
+        rtu_signals={
+            "242901": {
+                "rtu_count": 1,
+                "assembled_rtu_count": 1,
+                "latest_assembled_at": datetime(2026, 8, 26, 0, 1),
+            }
+        },
+    )
+
+    assert old[0].historical is True
+    assert new[0].historical is False
 
 
 def test_decide_delivery_review_completed_order_requires_handoff_confirmation() -> None:

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 
+from sqlalchemy import select
+
+from app.models import SiteOrderExecutionCase, SiteOrderExecutionEvent
 from tasks import reconcile_onec_assembly_to_crm as task
 
 
@@ -87,3 +91,44 @@ def test_send_to_crm_keeps_assembled_payload_for_assembly_event(monkeypatch) -> 
     assert payload["status"] == "assembled"
     assert payload["assembled_at"] == "2026-05-01 18:59:00"
     assert "issued_at" not in payload
+
+
+def test_service_db_transport_persists_append_only_onec_event(
+    db_session,
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def fake_session_scope():
+        try:
+            yield db_session
+            db_session.commit()
+        except BaseException:
+            db_session.rollback()
+            raise
+
+    monkeypatch.setattr(task, "session_scope", fake_session_scope)
+    event = task.AssemblyEvent(
+        event_key="assembled:0x01",
+        crm_status="assembled",
+        event_at=datetime(2026, 8, 26, 10, 0),
+        rtu_external_id="0xrtu",
+        rtu_number="РБГУ0001001",
+        rtu_date=datetime(2026, 8, 26, 9, 55),
+        onec_order_number="РБГУ0002001",
+        site_order_number="242901",
+        is_posted=True,
+    )
+
+    first = task.persist_event_to_service_db(event)
+    second = task.persist_event_to_service_db(event)
+
+    assert first["ok"] is True
+    assert first["duplicate"] is False
+    assert second["duplicate"] is True
+    events = db_session.scalars(select(SiteOrderExecutionEvent)).all()
+    case = db_session.scalar(select(SiteOrderExecutionCase))
+    assert len(events) == 1
+    assert events[0].source == "onec"
+    assert events[0].event_type == "execution_assembled_raw"
+    assert case is not None
+    assert case.onec_order_external_id == "РБГУ0002001"

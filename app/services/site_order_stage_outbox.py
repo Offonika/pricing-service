@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import case, exists, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -36,10 +36,18 @@ ALLOWED_FROM_STAGE = {
     CRM_STAGE_PICKUP_WAITING: CRM_STAGE_PICKUP_TRANSIT,
 }
 STAGE_ORDER = {
+    "PREPAYMENT_INVOICE": 5,
+    "EXECUTING": 8,
     "FINAL_INVOICE": 10,
     CRM_STAGE_PICKUP_TRANSIT: 20,
     CRM_STAGE_PICKUP_WAITING: 30,
+    "IN_DELIVERY": 40,
+    "DISMANTLING": 50,
+    "WON": 100,
+    "LOSE": 100,
 }
+EXECUTION_TARGET_STAGES = {"PREPAYMENT_INVOICE", "FINAL_INVOICE", "WON", "LOSE"}
+EXECUTION_HISTORICAL_APPLY_BATCH_LIMIT = 20
 
 
 @dataclass(slots=True)
@@ -59,6 +67,21 @@ class StageOutboxResult:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _is_execution_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return payload.get(
+        "pipeline"
+    ) == "execution_reconciliation" or row.source_event_type.startswith("execution_")
+
+
+def _is_historical_execution_row(row: SiteOrderStageOutbox) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return _is_execution_reconciliation_row(row) and (
+        payload.get("historical") is True
+        or row.source_event_type.startswith("execution_historical_")
+    )
 
 
 def _pilot_warehouse_allowed(
@@ -206,6 +229,17 @@ def _timeline_marker(row: SiteOrderStageOutbox) -> str:
 
 def _timeline_comment(row: SiteOrderStageOutbox) -> str:
     payload = row.payload if isinstance(row.payload, dict) else {}
+    if _is_execution_reconciliation_row(row):
+        decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+        return "\n".join(
+            [
+                _timeline_marker(row),
+                f"Контроль интернет-заказа №{row.site_order_number}",
+                f"Основание: {decision.get('reason') or row.source_event_type}",
+                f"Новая стадия: {row.target_stage}",
+                f"Ревизия evidence: {payload.get('evidence_fingerprint') or '-'}",
+            ]
+        )
     return "\n".join(
         [
             _timeline_marker(row),
@@ -358,7 +392,7 @@ def _mark_manual_review(
     session.add(
         LogisticsManualReview(
             review_type="site_order_stage_conflict",
-            source_document_type="rtu",
+            source_document_type=("site_order" if _is_execution_reconciliation_row(row) else "rtu"),
             source_external_id=row.site_order_number,
             reason=reason,
             payload={
@@ -398,6 +432,17 @@ def _has_blocking_predecessor(session: Session, row: SiteOrderStageOutbox) -> bo
 def _resolve_deal(
     client: BitrixChatClient, row: SiteOrderStageOutbox
 ) -> tuple[int | None, str | None]:
+    if _is_execution_reconciliation_row(row):
+        deals = client.list_deals_by_site_order(row.site_order_number)
+        if not deals:
+            return None, "bitrix_deal_not_found"
+        if len(deals) != 1:
+            return None, "multiple_bitrix_deals"
+        live_deal_id = deals[0].deal_id
+        if row.bitrix_deal_id not in (None, live_deal_id):
+            return None, f"bitrix_deal_mismatch:{live_deal_id}"
+        row.bitrix_deal_id = live_deal_id
+        return live_deal_id, None
     if row.bitrix_deal_id is not None:
         return row.bitrix_deal_id, None
     deals = client.list_deals_by_site_order(row.site_order_number)
@@ -420,7 +465,14 @@ def _process_row(
 ) -> StageOutboxResult:
     if _has_blocking_predecessor(session, row):
         return _result(row, "waiting_for_predecessor")
-    if not _pilot_warehouse_allowed(
+    execution_row = _is_execution_reconciliation_row(row)
+    if execution_row and row.case.last_evidence_event_id != row.event_id:
+        if apply:
+            row.status = STATUS_APPLIED
+            row.last_error = "superseded_by_newer_evidence"
+            row.updated_at = now
+        return _result(row, "superseded_by_newer_evidence")
+    if not execution_row and not _pilot_warehouse_allowed(
         session,
         row,
         settings.logistics_stage_pilot_warehouse_external_ids,
@@ -452,15 +504,23 @@ def _process_row(
             row.updated_at = now
         return _result(row, "terminal_live_stage", live_stage=live_stage)
 
-    expected_stage = ALLOWED_FROM_STAGE[row.target_stage]
-    if live_stage not in {expected_stage, row.target_stage}:
+    if execution_row:
+        if row.target_stage not in EXECUTION_TARGET_STAGES:
+            reason = f"execution_target_not_allowed:{row.target_stage or '-'}"
+            if apply:
+                _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
+            return _result(row, "manual_review", live_stage=live_stage, reason=reason)
+        expected_stages = {"EXECUTING"}
+    else:
+        expected_stages = {ALLOWED_FROM_STAGE[row.target_stage]}
+    if live_stage not in {*expected_stages, row.target_stage}:
         if STAGE_ORDER.get(live_stage, 0) > STAGE_ORDER.get(row.target_stage, 0):
             if apply:
                 row.status = STATUS_APPLIED
                 row.applied_at = now
                 row.last_error = "superseded_by_later_stage"
             return _result(row, "superseded", live_stage=live_stage)
-        if apply:
+        if apply and not execution_row:
             conflict_reason = f"unexpected_live_stage:{live_stage or '-'}"
             client.update_deal_stage(deal_id, CRM_STAGE_DELIVERY_REVIEW)
             review_readback = client.get_deal_by_id(deal_id)
@@ -479,6 +539,13 @@ def _process_row(
                 session,
                 row,
                 reason=conflict_reason,
+                live_stage=live_stage,
+            )
+        elif apply:
+            _mark_manual_review(
+                session,
+                row,
+                reason=f"unexpected_live_stage:{live_stage or '-'}",
                 live_stage=live_stage,
             )
         return _result(
@@ -542,15 +609,47 @@ def process_stage_outbox(
                 SiteOrderStageOutbox.next_attempt_at <= current_time,
             ),
         )
-        .order_by(SiteOrderStageOutbox.case_id, SiteOrderStageOutbox.id)
-        .limit(batch_size)
+        .order_by(
+            case(
+                (
+                    SiteOrderStageOutbox.source_event_type.like("execution_historical_%"),
+                    2,
+                ),
+                (SiteOrderStageOutbox.source_event_type.like("execution_%"), 0),
+                else_=1,
+            ),
+            SiteOrderStageOutbox.created_at.desc(),
+            SiteOrderStageOutbox.case_id,
+            SiteOrderStageOutbox.id,
+        )
+        .limit(max(batch_size, 500))
         .with_for_update(skip_locked=True)
     ).all()
     results: list[StageOutboxResult] = []
-    for row in rows:
-        if apply and not settings.logistics_stage_automation_enabled:
-            results.append(_result(row, "automation_disabled"))
-            continue
+    historical_apply_attempts = 0
+    for row in rows[:batch_size]:
+        if apply:
+            if _is_execution_reconciliation_row(row):
+                if not (
+                    settings.order_fulfillment_execution_master_enabled
+                    and settings.order_fulfillment_execution_stage_apply_enabled
+                ):
+                    results.append(_result(row, "automation_disabled"))
+                    continue
+                if (
+                    _is_historical_execution_row(row)
+                    and not settings.order_fulfillment_execution_historical_apply_enabled
+                ):
+                    results.append(_result(row, "historical_apply_disabled"))
+                    continue
+                if _is_historical_execution_row(row):
+                    if historical_apply_attempts >= EXECUTION_HISTORICAL_APPLY_BATCH_LIMIT:
+                        results.append(_result(row, "historical_batch_limit"))
+                        continue
+                    historical_apply_attempts += 1
+            elif not settings.logistics_stage_automation_enabled:
+                results.append(_result(row, "automation_disabled"))
+                continue
         try:
             result = _process_row(
                 session,

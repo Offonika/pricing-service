@@ -13,11 +13,13 @@ related_code:
   - app/models/site_order_fulfillment.py
   - app/schemas/order_fulfillment.py
   - app/services/site_order_fulfillment.py
+  - app/services/site_order_execution_reconciliation.py
   - app/services/site_order_fulfillment_bot.py
   - app/services/pickup_control.py
   - app/services/pickup_history.py
   - app/services/pickup_inventory.py
   - infra/cron/order_fulfillment_sync.py
+  - tasks/reconcile_onec_assembly_to_crm.py
   - scripts/process_order_fulfillment_bot_outbox.py
   - scripts/register_order_fulfillment_bitrix_bot.py
   - scripts/ensure_site_order_deal_stages.py
@@ -30,6 +32,8 @@ related_tests:
   - tests/test_order_fulfillment_api.py
   - tests/test_order_fulfillment_parser.py
   - tests/test_order_fulfillment_sync.py
+  - tests/test_site_order_execution_reconciliation.py
+  - tests/test_site_order_stage_outbox.py
   - tests/test_order_fulfillment_bot.py
   - tests/test_order_fulfillment_bot_api.py
   - tests/test_register_order_fulfillment_bitrix_bot.py
@@ -853,6 +857,37 @@ Shell-обвязка `infra/cron/order_fulfillment_sync.sh` по умолчан�
 `--apply`. Auto-apply включается только явным env
 `ORDER_FULFILLMENT_SYNC_APPLY=true` после приемки нескольких дней dry-run.
 
+## Постоянный reconciliation стадии EXECUTING — решение от 2026-08-26
+
+`pricing-service` является единственным владельцем решений об автоматическом
+изменении стадий интернет-заказов. Стадия `EXECUTING` / `Сборка / обеспечение`
+проверяется постоянно по актуальным фактам `1С`, сайта, логистики и чатов.
+
+Каждый проход сначала обрабатывает свежие сделки, затем продолжает историческую
+очередь вращающимся курсором. Фиксированный лимит не должен приводить к повторной
+проверке одних и тех же старейших сделок.
+
+Строгие переходы:
+
+- `Собран` без возврата -> `FINAL_INVOICE`;
+- `Распечатан + Отсканирован` одной РТУ без более нового возврата -> `WON`;
+- полный возврат без оплаты и факта выдачи -> `LOSE`;
+- неоплаченная внешняя доставка -> `PREPAYMENT_INVOICE`.
+
+Дубли сделок, частичные возвраты, оплата вместе с возвратом, конфликт способа
+доставки и противоречащие события не меняют стадию и попадают в ручную проверку.
+Все переходы выполняются через durable outbox с idempotency key, live-readback до записи
+и проверкой результата. Исторический хвост применяется пакетами до 20 сделок после
+dry-run. Прямое принятие решений о стадиях в PHP выводится из использования после canary.
+
+Новые контуры закрыты мастер-флагом и отдельными флагами ingest,
+reconciliation, применения стадий и исторического применения; все значения по
+умолчанию `false`. `ORDER_FULFILLMENT_EXECUTION_CUTOVER_AT` отделяет новые
+события от истории по времени учетного evidence, а не по месту сделки в текущей
+пачке сканирования. Без заданного cutover любое событие считается историческим.
+Курсор хранится во внешнем общем `.local`, чтобы выпуск нового immutable release
+не начинал обход сначала.
+
 Чат остается источником сообщений и evidence, но свободный текст самовывоза не
 создаёт execution event и не меняет CRM. Подтверждённое событие самовывоза
 создаётся только кнопкой нового бота. После включения
@@ -1191,6 +1226,10 @@ Smoke:
 
 # Changelog
 
+- 2026-08-26 — утверждён постоянный reconciliation стадии `EXECUTING`:
+  свежие и исторические сделки разбираются единой state machine
+  `pricing-service`; строгие переходы применяются через durable outbox,
+  неоднозначные и конфликтные случаи остаются на ручной проверке.
 - 2026-08-26 — зафиксировано сохранение `PICKUP_TRANSIT` с `SORT = 55`;
   ensure-скрипт приведён к фактическому порядку стадий Bitrix24.
 - 2026-08-26 — строгое поступление из `chat8729` с однозначной точкой принято

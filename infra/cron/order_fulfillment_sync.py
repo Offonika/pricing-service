@@ -14,6 +14,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -33,7 +35,11 @@ from app.core.config import get_settings  # noqa: E402
 from app.infrastructure.db import session_scope  # noqa: E402
 from app.infrastructure.db.engines import build_engine  # noqa: E402
 from app.services import pickup_control  # noqa: E402
+from app.services import (  # noqa: E402
+    site_order_execution_reconciliation as execution_reconciliation,
+)
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
+from app.services import site_order_stage_outbox as stage_outbox_service  # noqa: E402
 
 DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
 QUICK_STAGE_IDS = (
@@ -147,6 +153,27 @@ RTU_SIGNAL_CSV_FIELDS = (
     "latest_rtu_date",
     "assembled_rtu_count",
 )
+EXECUTING_RECONCILIATION_CSV_FIELDS = (
+    "site_order_number",
+    "bitrix_deal_id",
+    "historical",
+    "crm_stage",
+    "delivery_class",
+    "crm_assembled",
+    "rtu_count",
+    "assembled_rtu_count",
+    "issued_rtu_count",
+    "returned_rtu_count",
+    "posted_sale_amount",
+    "returned_amount",
+    "payment_confirmed",
+    "site_canceled",
+    "action",
+    "target_stage",
+    "reason",
+    "event_type",
+    "evidence_fingerprint",
+)
 DEFAULT_ONEC_ASSEMBLY_CRM_STATE_PATH = REPO_ROOT / ".local/onec_assembly_crm_reconciler.sqlite3"
 BITRIX_READ_RETRY_DELAYS = (0.5, 1.5)
 
@@ -198,6 +225,16 @@ class OneCOrderSettlement:
     debt_amount: Decimal | None
     payment_confirmed: bool
     evidence: str
+
+
+@dataclass(slots=True)
+class ExecutingDealScan:
+    deals: list[fulfillment.BitrixDealSnapshot]
+    recent_deal_ids: set[int]
+    historical_deal_ids: set[int]
+    cursor_before: int
+    cursor_after: int
+    cycle_completed: bool
 
 
 def load_env_files(paths: tuple[Path, ...] = DEFAULT_ENV_FILES) -> dict[str, str]:
@@ -497,10 +534,13 @@ def _new_decision(
 
 
 def fetch_new_deals(
-    client: fulfillment.BitrixChatClient, *, limit: int
+    client: fulfillment.BitrixChatClient,
+    *,
+    limit: int,
+    stage_ids: tuple[str, ...] = QUICK_STAGE_IDS,
 ) -> list[fulfillment.BitrixDealSnapshot]:
     deals: list[fulfillment.BitrixDealSnapshot] = []
-    for stage_id in QUICK_STAGE_IDS:
+    for stage_id in stage_ids:
         stage_count = 0
         start: int | None = 0
         while start is not None and stage_count < limit:
@@ -523,6 +563,108 @@ def fetch_new_deals(
             next_value = response.get("next")
             start = int(next_value) if next_value is not None else None
     return deals
+
+
+def fetch_executing_deal_scan(
+    client: fulfillment.BitrixChatClient,
+    *,
+    recent_limit: int,
+    historical_limit: int,
+    cursor: int,
+) -> ExecutingDealScan:
+    recent = _fetch_stage_deal_batch(
+        client,
+        stage_id="EXECUTING",
+        limit=recent_limit,
+        order="DESC",
+    )
+    historical = _fetch_stage_deal_batch(
+        client,
+        stage_id="EXECUTING",
+        limit=historical_limit,
+        order="ASC",
+        after_id=cursor,
+    )
+    cycle_completed = len(historical) < historical_limit
+    cursor_after = 0 if cycle_completed else max(deal.deal_id for deal in historical)
+    deals_by_id = {deal.deal_id: deal for deal in recent}
+    deals_by_id.update({deal.deal_id: deal for deal in historical})
+    recent_ids = {deal.deal_id for deal in recent}
+    return ExecutingDealScan(
+        deals=list(deals_by_id.values()),
+        recent_deal_ids=recent_ids,
+        historical_deal_ids={deal.deal_id for deal in historical} - recent_ids,
+        cursor_before=max(0, int(cursor)),
+        cursor_after=cursor_after,
+        cycle_completed=cycle_completed,
+    )
+
+
+def _fetch_stage_deal_batch(
+    client: fulfillment.BitrixChatClient,
+    *,
+    stage_id: str,
+    limit: int,
+    order: str,
+    after_id: int | None = None,
+) -> list[fulfillment.BitrixDealSnapshot]:
+    result: list[fulfillment.BitrixDealSnapshot] = []
+    start: int | None = 0
+    while start is not None and len(result) < max(1, int(limit)):
+        filter_payload: dict[str, Any] = {"STAGE_ID": stage_id}
+        if after_id is not None and after_id > 0:
+            filter_payload[">ID"] = int(after_id)
+        response = client.call(
+            "crm.deal.list",
+            {
+                "filter": filter_payload,
+                "select": [*fulfillment.CRM_REVIEW_SELECT_FIELDS, CRM_ASSEMBLED_FIELD],
+                "order": {"ID": order},
+                "start": start,
+            },
+        )
+        for item in response.get("result") or []:
+            deal = fulfillment.bitrix_deal_from_payload(item)
+            if deal is None:
+                continue
+            result.append(deal)
+            if len(result) >= limit:
+                break
+        next_value = response.get("next")
+        start = int(next_value) if next_value is not None else None
+    return result
+
+
+def load_executing_cursor(path: Path) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return 0
+    try:
+        return max(0, int(payload.get("last_deal_id") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def save_executing_cursor(path: Path, scan: ExecutingDealScan) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_deal_id": scan.cursor_after,
+        "previous_deal_id": scan.cursor_before,
+        "cycle_completed": scan.cycle_completed,
+        "updated_at": datetime.now().isoformat(),
+    }
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as file_obj:
+        json.dump(payload, file_obj, ensure_ascii=False, sort_keys=True)
+        file_obj.write("\n")
+        temporary_path = Path(file_obj.name)
+    temporary_path.replace(path)
 
 
 def fetch_sale_order_statuses(order_numbers: list[str]) -> dict[str, SaleOrderStatus]:
@@ -577,7 +719,11 @@ def fetch_sale_order_statuses(order_numbers: list[str]) -> dict[str, SaleOrderSt
     return result
 
 
-def fetch_onec_order_settlements(order_numbers: list[str]) -> dict[str, OneCOrderSettlement]:
+def fetch_onec_order_settlements(
+    order_numbers: list[str],
+    *,
+    strict: bool = False,
+) -> dict[str, OneCOrderSettlement]:
     settings = get_settings()
     if not settings.onec_database_url:
         return {}
@@ -700,6 +846,8 @@ def fetch_onec_order_settlements(order_numbers: list[str]) -> dict[str, OneCOrde
         with engine.connect() as connection:
             rows = connection.execute(statement, params).fetchall()
     except Exception:
+        if strict:
+            raise
         return {}
     finally:
         if engine is not None:
@@ -888,6 +1036,190 @@ def build_new_deal_outbox_rows(
     )
 
 
+def build_execution_snapshots(
+    deals: list[fulfillment.BitrixDealSnapshot],
+    *,
+    order_statuses: dict[str, SaleOrderStatus],
+    onec_settlements: dict[str, OneCOrderSettlement],
+    rtu_signals: dict[str, dict[str, Any]],
+    cutover_at: datetime | None,
+    onec_evidence_available: bool,
+) -> list[execution_reconciliation.ExecutionEvidenceSnapshot]:
+    deals_by_order: dict[str, list[int]] = defaultdict(list)
+    for deal in deals:
+        order_number = fulfillment._clean_string(  # noqa: SLF001
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        if order_number:
+            deals_by_order[order_number].append(deal.deal_id)
+
+    snapshots: list[execution_reconciliation.ExecutionEvidenceSnapshot] = []
+    for deal in deals:
+        order_number = fulfillment._clean_string(  # noqa: SLF001
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        order_status = order_statuses.get(order_number)
+        settlement = onec_settlements.get(order_number)
+        signal = rtu_signals.get(order_number) or {}
+        latest_rtu_at = _datetime_or_none(signal.get("latest_rtu_date"))
+        latest_assembled_at = _datetime_or_none(signal.get("latest_assembled_at"))
+        latest_issued_at = _datetime_or_none(signal.get("latest_issued_at"))
+        latest_return_at = _datetime_or_none(signal.get("latest_return_at"))
+        evidence_at = max(
+            (
+                value
+                for value in (
+                    latest_rtu_at,
+                    latest_assembled_at,
+                    latest_issued_at,
+                    latest_return_at,
+                )
+                if value is not None
+            ),
+            default=None,
+        )
+        snapshots.append(
+            execution_reconciliation.ExecutionEvidenceSnapshot(
+                site_order_number=order_number,
+                bitrix_deal_id=deal.deal_id,
+                current_stage=fulfillment._clean_string(deal.stage_id) or None,  # noqa: SLF001
+                delivery_class=fulfillment.classify_delivery_method(deal.delivery),
+                raw_delivery=fulfillment._clean_string(deal.delivery) or None,  # noqa: SLF001
+                duplicate_deal_ids=tuple(sorted(set(deals_by_order.get(order_number, [])))),
+                crm_assembled=_truthy_bitrix_value((deal.raw or {}).get(CRM_ASSEMBLED_FIELD)),
+                crm_payment_confirmed=(
+                    fulfillment._clean_string(deal.payment_status) == "1"  # noqa: SLF001
+                ),
+                site_canceled=(order_status.canceled if order_status is not None else None),
+                site_status=(order_status.status_id if order_status is not None else None),
+                site_paid=(order_status.payed if order_status is not None else None),
+                rtu_count=int(signal.get("rtu_count") or 0),
+                assembled_rtu_count=int(signal.get("assembled_rtu_count") or 0),
+                issued_rtu_count=int(signal.get("issued_rtu_count") or 0),
+                returned_rtu_count=int(signal.get("returned_rtu_count") or 0),
+                posted_sale_amount=_decimal_or_none(signal.get("posted_sale_amount")),
+                returned_amount=_decimal_or_none(signal.get("returned_amount")),
+                onec_payment_confirmed=(
+                    settlement.payment_confirmed if settlement is not None else False
+                ),
+                latest_rtu_at=latest_rtu_at,
+                latest_assembled_at=latest_assembled_at,
+                latest_issued_at=latest_issued_at,
+                latest_return_at=latest_return_at,
+                onec_evidence_available=onec_evidence_available,
+                historical=_historical_execution_evidence(
+                    evidence_at=evidence_at,
+                    cutover_at=cutover_at,
+                ),
+            )
+        )
+    return snapshots
+
+
+def persist_execution_snapshots(
+    snapshots: list[execution_reconciliation.ExecutionEvidenceSnapshot],
+    decisions: list[execution_reconciliation.ExecutionDecision],
+) -> list[execution_reconciliation.PersistExecutionDecisionResult]:
+    results: list[execution_reconciliation.PersistExecutionDecisionResult] = []
+    with session_scope() as session:
+        for snapshot, decision in zip(snapshots, decisions, strict=True):
+            results.append(
+                execution_reconciliation.persist_execution_decision(
+                    session,
+                    snapshot=snapshot,
+                    decision=decision,
+                )
+            )
+    return results
+
+
+def execution_decision_review_row(
+    snapshot: execution_reconciliation.ExecutionEvidenceSnapshot,
+    decision: execution_reconciliation.ExecutionDecision,
+    *,
+    deal: fulfillment.BitrixDealSnapshot,
+    order_status: SaleOrderStatus | None,
+    onec_settlement: OneCOrderSettlement | None,
+) -> NewDealDecision:
+    row = _new_decision(
+        deal,
+        decision.target_stage,
+        decision.reason,
+        order_status=order_status,
+        onec_settlement=onec_settlement,
+    )
+    row.action = (
+        "durable_outbox"
+        if decision.action == execution_reconciliation.ACTION_UPDATE_STAGE
+        else decision.action
+    )
+    row.assembled = snapshot.assembled
+    return row
+
+
+def write_execution_reconciliation_csv(
+    path: Path,
+    snapshots: list[execution_reconciliation.ExecutionEvidenceSnapshot],
+    decisions: list[execution_reconciliation.ExecutionDecision],
+) -> Path:
+    rows: list[dict[str, Any]] = []
+    for snapshot, decision in zip(snapshots, decisions, strict=True):
+        rows.append(
+            {
+                "site_order_number": snapshot.site_order_number,
+                "bitrix_deal_id": snapshot.bitrix_deal_id,
+                "historical": snapshot.historical,
+                "crm_stage": snapshot.current_stage,
+                "delivery_class": snapshot.delivery_class,
+                "crm_assembled": snapshot.crm_assembled,
+                "rtu_count": snapshot.rtu_count,
+                "assembled_rtu_count": snapshot.assembled_rtu_count,
+                "issued_rtu_count": snapshot.issued_rtu_count,
+                "returned_rtu_count": snapshot.returned_rtu_count,
+                "posted_sale_amount": snapshot.posted_sale_amount,
+                "returned_amount": snapshot.returned_amount,
+                "payment_confirmed": snapshot.payment_confirmed,
+                "site_canceled": snapshot.site_canceled,
+                "action": decision.action,
+                "target_stage": decision.target_stage,
+                "reason": decision.reason,
+                "event_type": decision.event_type,
+                "evidence_fingerprint": execution_reconciliation.snapshot_fingerprint(snapshot),
+            }
+        )
+    return write_dict_csv(
+        path,
+        rows,
+        fieldnames=list(EXECUTING_RECONCILIATION_CSV_FIELDS),
+    )
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    return _parse_bitrix_datetime(value)
+
+
+def _historical_execution_evidence(
+    *,
+    evidence_at: datetime | None,
+    cutover_at: datetime | None,
+) -> bool:
+    if evidence_at is None or cutover_at is None:
+        return True
+    normalized_evidence = evidence_at
+    if normalized_evidence.tzinfo is not None:
+        normalized_evidence = normalized_evidence.astimezone(ZoneInfo("Europe/Moscow")).replace(
+            tzinfo=None
+        )
+    normalized_cutover = cutover_at
+    if normalized_cutover.tzinfo is not None:
+        normalized_cutover = normalized_cutover.astimezone(ZoneInfo("Europe/Moscow")).replace(
+            tzinfo=None
+        )
+    return normalized_evidence < normalized_cutover
+
+
 def run_quick_sync(
     *,
     client: fulfillment.BitrixChatClient,
@@ -896,7 +1228,30 @@ def run_quick_sync(
     apply: bool,
     limit: int,
 ) -> dict[str, Any]:
-    deals = fetch_new_deals(client, limit=limit)
+    settings = get_settings()
+    execution_enabled = bool(
+        settings.order_fulfillment_execution_master_enabled
+        and settings.order_fulfillment_execution_reconciliation_enabled
+    )
+    execution_scan: ExecutingDealScan | None = None
+    cursor_path = Path(settings.order_fulfillment_execution_cursor_path)
+    if not cursor_path.is_absolute():
+        cursor_path = REPO_ROOT / cursor_path
+    if execution_enabled:
+        deals = fetch_new_deals(
+            client,
+            limit=limit,
+            stage_ids=tuple(stage for stage in QUICK_STAGE_IDS if stage != "EXECUTING"),
+        )
+        execution_scan = fetch_executing_deal_scan(
+            client,
+            recent_limit=settings.order_fulfillment_execution_recent_limit,
+            historical_limit=settings.order_fulfillment_execution_history_limit,
+            cursor=load_executing_cursor(cursor_path),
+        )
+        deals.extend(execution_scan.deals)
+    else:
+        deals = fetch_new_deals(client, limit=limit)
     order_numbers = [
         fulfillment._clean_string(
             (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
@@ -904,9 +1259,29 @@ def run_quick_sync(
         for deal in deals
     ]
     order_statuses = fetch_sale_order_statuses(order_numbers)
-    onec_settlements = fetch_onec_order_settlements(
-        quick_onec_settlement_candidate_orders(deals, order_statuses)
-    )
+    settlement_candidates = quick_onec_settlement_candidate_orders(deals, order_statuses)
+    if execution_scan is not None:
+        settlement_candidates.extend(
+            fulfillment._clean_string(  # noqa: SLF001
+                (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+            )
+            for deal in execution_scan.deals
+        )
+    onec_settlement_evidence_available = True
+    try:
+        onec_settlements = fetch_onec_order_settlements(
+            settlement_candidates,
+            strict=execution_enabled,
+        )
+    except Exception:
+        onec_settlements = {}
+        onec_settlement_evidence_available = False
+    regular_deals = [
+        deal
+        for deal in deals
+        if execution_scan is None
+        or fulfillment._clean_string(deal.stage_id) != "EXECUTING"  # noqa: SLF001
+    ]
     decisions = [
         decide_new_deal_stage(
             deal,
@@ -921,8 +1296,79 @@ def run_quick_sync(
                 )  # noqa: SLF001
             ),
         )
-        for deal in deals
+        for deal in regular_deals
     ]
+    execution_snapshots: list[execution_reconciliation.ExecutionEvidenceSnapshot] = []
+    execution_decisions: list[execution_reconciliation.ExecutionDecision] = []
+    execution_persist_results: list[execution_reconciliation.PersistExecutionDecisionResult] = []
+    execution_worker_results: list[stage_outbox_service.StageOutboxResult] = []
+    execution_artifact_path: Path | None = None
+    onec_execution_evidence_available = onec_settlement_evidence_available
+    if execution_scan is not None:
+        if not settings.onec_database_url:
+            rtu_signals: dict[str, dict[str, Any]] = {}
+            onec_execution_evidence_available = False
+        else:
+            try:
+                rtu_signals = query_rtu_signal_by_orders(
+                    [
+                        fulfillment._clean_string(  # noqa: SLF001
+                            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+                        )
+                        for deal in execution_scan.deals
+                    ]
+                )
+            except Exception:
+                rtu_signals = {}
+                onec_execution_evidence_available = False
+        execution_snapshots = build_execution_snapshots(
+            execution_scan.deals,
+            order_statuses=order_statuses,
+            onec_settlements=onec_settlements,
+            rtu_signals=rtu_signals,
+            cutover_at=settings.order_fulfillment_execution_cutover_at,
+            onec_evidence_available=onec_execution_evidence_available,
+        )
+        execution_decisions = [
+            execution_reconciliation.decide_execution_stage(snapshot)
+            for snapshot in execution_snapshots
+        ]
+        execution_deals_by_id = {deal.deal_id: deal for deal in execution_scan.deals}
+        for snapshot, decision in zip(execution_snapshots, execution_decisions, strict=True):
+            deal = execution_deals_by_id[snapshot.bitrix_deal_id]
+            decisions.append(
+                execution_decision_review_row(
+                    snapshot,
+                    decision,
+                    deal=deal,
+                    order_status=order_statuses.get(snapshot.site_order_number),
+                    onec_settlement=onec_settlements.get(snapshot.site_order_number),
+                )
+            )
+        execution_artifact_path = output_dir / f"executing-reconciliation-{stamp}.csv"
+        write_execution_reconciliation_csv(
+            execution_artifact_path,
+            execution_snapshots,
+            execution_decisions,
+        )
+        if (
+            settings.order_fulfillment_execution_master_enabled
+            and settings.order_fulfillment_execution_ingest_enabled
+        ):
+            execution_persist_results = persist_execution_snapshots(
+                execution_snapshots,
+                execution_decisions,
+            )
+            with session_scope() as session:
+                execution_worker_results = stage_outbox_service.process_stage_outbox(
+                    session,
+                    client=client,
+                    apply=apply,
+                    settings=settings,
+                    limit=settings.order_fulfillment_execution_history_limit,
+                )
+        if onec_execution_evidence_available:
+            save_executing_cursor(cursor_path, execution_scan)
     available_stage_ids = client.list_deal_stage_ids()
     review_path = output_dir / f"new-deals-review-{stamp}.csv"
     write_new_review_csv(review_path, decisions)
@@ -970,6 +1416,33 @@ def run_quick_sync(
             1 for row in stage_summary if clean_csv_value(row.get("error"))
         ),
         "rtu_without_assembled_rows": len(rtu_signal_rows),
+        "executing_reconciliation": {
+            "enabled": execution_enabled,
+            "ingest_enabled": bool(
+                settings.order_fulfillment_execution_master_enabled
+                and settings.order_fulfillment_execution_ingest_enabled
+            ),
+            "stage_apply_enabled": settings.order_fulfillment_execution_stage_apply_enabled,
+            "historical_apply_enabled": (
+                settings.order_fulfillment_execution_historical_apply_enabled
+            ),
+            "cutover_at": (
+                settings.order_fulfillment_execution_cutover_at.isoformat()
+                if settings.order_fulfillment_execution_cutover_at is not None
+                else None
+            ),
+            "artifact": str(execution_artifact_path) if execution_artifact_path else None,
+            "scanned": len(execution_snapshots),
+            "recent": len(execution_scan.recent_deal_ids) if execution_scan else 0,
+            "historical": len(execution_scan.historical_deal_ids) if execution_scan else 0,
+            "cursor_before": execution_scan.cursor_before if execution_scan else None,
+            "cursor_after": execution_scan.cursor_after if execution_scan else None,
+            "cycle_completed": execution_scan.cycle_completed if execution_scan else False,
+            "onec_evidence_available": onec_execution_evidence_available,
+            "decisions": dict(Counter(item.reason for item in execution_decisions)),
+            "persist_results": dict(Counter(item.result for item in execution_persist_results)),
+            "worker_results": dict(Counter(item.result for item in execution_worker_results)),
+        },
     }
     enrich_summary_item_from_artifacts(summary)
     enrich_summary_item_from_monitoring(summary)
@@ -1134,10 +1607,12 @@ def run_daily_sync(
 def load_pickup_daily_metrics(settings: Any) -> dict[str, Any]:
     try:
         with session_scope() as session:
-            return pickup_control.pickup_operational_metrics(
+            metrics = pickup_control.pickup_operational_metrics(
                 session,
                 settings=settings,
             )
+            metrics.update(execution_reconciliation.execution_reconciliation_metrics(session))
+            return metrics
     except Exception as exc:  # daily digest must survive a temporary service DB failure.
         return {"error": type(exc).__name__}
 
@@ -1341,6 +1816,7 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                 NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
                 LTRIM(RTRIM(rtu._Number)) AS rtu_number,
                 rtu._Date_Time AS rtu_date,
+                CAST(rtu._Fld4948 AS decimal(18, 2)) AS sale_amount,
                 CASE WHEN EXISTS (
                     SELECT 1
                     FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
@@ -1349,6 +1825,14 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                       AND assembled_event._Fld9449_RTRef = 0x000000CB
                       AND assembled_event._Fld9454 = N'Собран'
                 ) THEN 1 ELSE 0 END AS has_assembled,
+                (
+                    SELECT MAX(assembled_event._Fld9450)
+                    FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
+                    WHERE assembled_event._Fld9449_RRRef = rtu._IDRRef
+                      AND assembled_event._Fld9449_TYPE = 0x08
+                      AND assembled_event._Fld9449_RTRef = 0x000000CB
+                      AND assembled_event._Fld9454 = N'Собран'
+                ) AS assembled_at,
                 CASE WHEN EXISTS (
                     SELECT 1
                     FROM dbo._InfoRg9448 AS print_event WITH (NOLOCK)
@@ -1365,6 +1849,14 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                       AND scan_event._Fld9449_RTRef = 0x000000CB
                       AND scan_event._Fld9454 = N'Отсканирован'
                 ) THEN 1 ELSE 0 END AS has_scan,
+                (
+                    SELECT MAX(scan_event._Fld9450)
+                    FROM dbo._InfoRg9448 AS scan_event WITH (NOLOCK)
+                    WHERE scan_event._Fld9449_RRRef = rtu._IDRRef
+                      AND scan_event._Fld9449_TYPE = 0x08
+                      AND scan_event._Fld9449_RTRef = 0x000000CB
+                      AND scan_event._Fld9454 = N'Отсканирован'
+                ) AS scanned_at,
                 CASE WHEN EXISTS (
                     SELECT 1
                     FROM dbo._Document109 AS return_doc WITH (NOLOCK)
@@ -1385,7 +1877,48 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                                 AND return_line._Fld1712_RRRef = rtu._IDRRef
                           )
                       )
-                ) THEN 1 ELSE 0 END AS has_return
+                ) THEN 1 ELSE 0 END AS has_return,
+                COALESCE((
+                    SELECT SUM(ABS(CAST(return_line._Fld1707 AS decimal(18, 2))))
+                    FROM dbo._Document109 AS return_doc WITH (NOLOCK)
+                    JOIN dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
+                      ON return_line._Document109_IDRRef = return_doc._IDRRef
+                    WHERE return_doc._Posted = 0x01
+                      AND return_doc._Marked = 0x00
+                      AND (
+                          (
+                              return_doc._Fld1684_TYPE = 0x08
+                              AND return_doc._Fld1684_RTRef = 0x000000CB
+                              AND return_doc._Fld1684_RRRef = rtu._IDRRef
+                          )
+                          OR (
+                              return_line._Fld1712_TYPE = 0x08
+                              AND return_line._Fld1712_RTRef = 0x000000CB
+                              AND return_line._Fld1712_RRRef = rtu._IDRRef
+                          )
+                      )
+                ), 0) AS returned_amount,
+                (
+                    SELECT MAX(return_doc._Date_Time)
+                    FROM dbo._Document109 AS return_doc WITH (NOLOCK)
+                    WHERE return_doc._Posted = 0x01
+                      AND return_doc._Marked = 0x00
+                      AND (
+                          (
+                              return_doc._Fld1684_TYPE = 0x08
+                              AND return_doc._Fld1684_RTRef = 0x000000CB
+                              AND return_doc._Fld1684_RRRef = rtu._IDRRef
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
+                              WHERE return_line._Document109_IDRRef = return_doc._IDRRef
+                                AND return_line._Fld1712_TYPE = 0x08
+                                AND return_line._Fld1712_RTRef = 0x000000CB
+                                AND return_line._Fld1712_RRRef = rtu._IDRRef
+                          )
+                      )
+                ) AS returned_at
             FROM dbo._Document203 AS rtu WITH (NOLOCK)
             JOIN dbo._Document132 AS ord WITH (NOLOCK)
                 ON ord._IDRRef = rtu._Fld4939_RRRef
@@ -1399,10 +1932,15 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                 site_order_number,
                 rtu_number,
                 rtu_date,
+                sale_amount,
                 has_assembled,
+                assembled_at,
                 has_print,
                 has_scan,
+                scanned_at,
                 has_return,
+                returned_amount,
+                returned_at,
                 ROW_NUMBER() OVER (
                     PARTITION BY site_order_number
                     ORDER BY rtu_date DESC, rtu_number DESC
@@ -1419,6 +1957,12 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             SUM(CASE WHEN has_print = 1 AND has_scan = 1 THEN 1 ELSE 0 END)
                 AS issued_rtu_count,
             SUM(has_return) AS returned_rtu_count,
+            CAST(SUM(sale_amount) AS decimal(18, 2)) AS posted_sale_amount,
+            CAST(SUM(returned_amount) AS decimal(18, 2)) AS returned_amount,
+            MAX(assembled_at) AS latest_assembled_at,
+            MAX(CASE WHEN has_print = 1 AND has_scan = 1 THEN scanned_at END)
+                AS latest_issued_at,
+            MAX(returned_at) AS latest_return_at,
             MAX(CASE WHEN rn = 1 THEN rtu_number END) AS latest_rtu_number,
             MAX(CASE WHEN rn = 1 THEN rtu_date END) AS latest_rtu_date
         FROM ranked
@@ -1443,6 +1987,11 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             "scanned_rtu_count": int(mapping["scanned_rtu_count"] or 0),
             "issued_rtu_count": int(mapping["issued_rtu_count"] or 0),
             "returned_rtu_count": int(mapping["returned_rtu_count"] or 0),
+            "posted_sale_amount": _decimal_or_none(mapping.get("posted_sale_amount")),
+            "returned_amount": _decimal_or_none(mapping.get("returned_amount")),
+            "latest_assembled_at": mapping.get("latest_assembled_at"),
+            "latest_issued_at": mapping.get("latest_issued_at"),
+            "latest_return_at": mapping.get("latest_return_at"),
             "latest_rtu_number": clean_csv_value(mapping["latest_rtu_number"]),
             "latest_rtu_date": mapping["latest_rtu_date"],
         }

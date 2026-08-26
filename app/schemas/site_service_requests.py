@@ -277,6 +277,9 @@ class SiteServiceRequestHealthResponse(BaseModel):
             "assignment_failure",
             "outbound_failure",
             "escalation_delivery_pending",
+            "file_failure",
+            "worker_failure",
+            "worker_stale",
         ]
     ] = Field(alias="alertCodes")
     pending_events: int = Field(alias="pendingEvents", ge=0)
@@ -290,6 +293,17 @@ class SiteServiceRequestHealthResponse(BaseModel):
     assignment_failures: int = Field(alias="assignmentFailures", ge=0)
     outbound_failures: int = Field(alias="outboundFailures", ge=0)
     pending_escalation_deliveries: int = Field(alias="pendingEscalationDeliveries", ge=0)
+    failed_files: int = Field(alias="failedFiles", ge=0)
+    worker_failure: bool = Field(alias="workerFailure")
+    worker_stale: bool = Field(alias="workerStale")
+    worker_last_started_at: datetime | None = Field(alias="workerLastStartedAt")
+    worker_last_success_at: datetime | None = Field(alias="workerLastSuccessAt")
+    worker_last_failure_at: datetime | None = Field(alias="workerLastFailureAt")
+    worker_last_error_code: str | None = Field(
+        alias="workerLastErrorCode",
+        max_length=128,
+    )
+    worker_consecutive_failures: int = Field(alias="workerConsecutiveFailures", ge=0)
     last_successful_exchange_at: datetime | None = Field(
         alias="lastSuccessfulExchangeAt",
     )

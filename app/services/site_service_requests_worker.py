@@ -173,6 +173,10 @@ class SiteServiceRequestPermanentError(RuntimeError):
         self.code = code
 
 
+class SiteServiceRequestFileDuplicateGuardError(RuntimeError):
+    pass
+
+
 def _preflight_aliased_string(
     user: dict[str, Any],
     *field_names: str,
@@ -862,6 +866,9 @@ class SiteServiceRequestBitrixWriter:
         content: bytes,
         expected_sha256: str,
         max_bytes: int,
+        max_existing_files: int = 50,
+        baseline_file_ids: list[int] | None = None,
+        allow_write: bool = True,
     ) -> tuple[str, dict[str, Any]]:
         if (
             not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
@@ -870,17 +877,47 @@ class SiteServiceRequestBitrixWriter:
         ):
             raise RuntimeError("bitrix_file_payload_invalid")
 
-        before = self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
-        before_entries = _item_file_entries(before, field_name)
-        matching_before = self._matching_file_ids(
-            before_entries,
-            expected_sha256=expected_sha256,
-            max_bytes=max_bytes,
-        )
-        if len(matching_before) > 1:
-            raise RuntimeError("bitrix_file_duplicate")
-        if matching_before:
-            return str(matching_before[0]), before
+        if baseline_file_ids is None:
+            matching_before, before, before_entries = self.find_file_content(
+                entity_type_id=entity_type_id,
+                item_id=item_id,
+                field_name=field_name,
+                expected_sha256=expected_sha256,
+                max_bytes=max_bytes,
+                max_existing_files=max_existing_files,
+                require_capacity=True,
+            )
+            if matching_before is not None:
+                return matching_before, before
+            baseline_ids = {file_id for file_id, _url in before_entries}
+        else:
+            baseline_ids = set(
+                _strict_file_id_baseline(
+                    baseline_file_ids,
+                    max_existing_files=max_existing_files,
+                )
+            )
+            before = self._readback_item(
+                entity_type_id=entity_type_id,
+                item_id=item_id,
+            )
+            before_entries = _item_file_entries(before, field_name)
+            if len(before_entries) > max_existing_files:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            before_ids = {file_id for file_id, _url in before_entries}
+            if len(before_ids) != len(before_entries):
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            if not baseline_ids.issubset(before_ids):
+                raise RuntimeError("bitrix_file_preservation_failed")
+            current_delta = before_ids - baseline_ids
+            if len(current_delta) > 1:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            if len(current_delta) == 1:
+                return str(next(iter(current_delta))), before
+            if not allow_write:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            if len(before_entries) >= max_existing_files:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
 
         values: list[Any] = [{"ID": file_id} for file_id, _url in before_entries]
         values.append(
@@ -905,26 +942,56 @@ class SiteServiceRequestBitrixWriter:
         try:
             after = self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
             after_entries = _item_file_entries(after, field_name)
+            if len(after_entries) > max_existing_files:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
             before_ids = {file_id for file_id, _url in before_entries}
             after_ids = {file_id for file_id, _url in after_entries}
-            if not before_ids.issubset(after_ids):
+            if len(after_ids) != len(after_entries):
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            if not before_ids.issubset(after_ids) or not baseline_ids.issubset(after_ids):
                 raise RuntimeError("bitrix_file_preservation_failed")
-            matching_after = self._matching_file_ids(
-                after_entries,
-                expected_sha256=expected_sha256,
-                max_bytes=max_bytes,
-            )
-            if len(matching_after) > 1:
-                raise RuntimeError("bitrix_file_duplicate")
-            if len(matching_after) != 1:
-                raise RuntimeError("bitrix_file_readback_failed")
-            if len(after_ids - before_ids) != 1:
+            new_file_ids = after_ids - baseline_ids
+            if len(new_file_ids) > 1:
+                raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+            if len(new_file_ids) != 1:
                 raise RuntimeError("bitrix_file_readback_failed")
         except RuntimeError as readback_error:
             if write_error is not None:
                 raise write_error from readback_error
             raise
-        return str(matching_after[0]), after
+        return str(next(iter(new_file_ids))), after
+
+    def find_file_content(
+        self,
+        *,
+        entity_type_id: int,
+        item_id: int,
+        field_name: str,
+        expected_sha256: str,
+        max_bytes: int,
+        max_existing_files: int,
+        require_capacity: bool = False,
+    ) -> tuple[str | None, dict[str, Any], list[tuple[int, str]]]:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise RuntimeError("bitrix_file_payload_invalid")
+        item = self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
+        entries = _item_file_entries(item, field_name)
+        if len(entries) > max_existing_files:
+            raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+        if len({file_id for file_id, _url in entries}) != len(entries):
+            raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+        matching = self._matching_file_ids(
+            entries,
+            expected_sha256=expected_sha256,
+            max_bytes=max_bytes,
+        )
+        if len(matching) > 1:
+            raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+        if matching:
+            return str(matching[0]), item, entries
+        if require_capacity and len(entries) >= max_existing_files:
+            raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+        return None, item, entries
 
     def _matching_file_ids(
         self,
@@ -1746,20 +1813,106 @@ def sync_staged_site_service_request_files(
                 f"ticket-{case.source_ticket_id}-message-{file.source_message_id}-"
                 f"file-{file.source_file_id}-{file.safe_filename}"
             )[:255]
-            disk_file_id, disk_url = writer.upload_file(
-                folder_id=folder_id,
-                deterministic_name=deterministic_name,
-                content=content,
-            )
-            crm_file_id, item = writer.attach_file_content(
-                entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
-                item_id=int(case.bitrix_item_id),
-                field_name=field_map["files"],
-                deterministic_name=deterministic_name,
-                content=content,
-                expected_sha256=file.sha256,
-                max_bytes=settings.site_service_requests_max_file_bytes,
-            )
+            guarded_retry = file.bitrix_attach_attempted_at is not None
+            if guarded_retry:
+                guarded_baseline = _strict_file_id_baseline(
+                    file.bitrix_attach_baseline_file_ids,
+                    max_existing_files=settings.site_service_requests_max_crm_files_per_item,
+                )
+                crm_file_id, item = writer.attach_file_content(
+                    entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                    item_id=int(case.bitrix_item_id),
+                    field_name=field_map["files"],
+                    deterministic_name=deterministic_name,
+                    content=content,
+                    expected_sha256=file.sha256,
+                    max_bytes=settings.site_service_requests_max_file_bytes,
+                    max_existing_files=settings.site_service_requests_max_crm_files_per_item,
+                    baseline_file_ids=list(guarded_baseline),
+                    allow_write=False,
+                )
+                disk_file_id, disk_url = writer.upload_file(
+                    folder_id=folder_id,
+                    deterministic_name=deterministic_name,
+                    content=content,
+                )
+            else:
+                crm_file_id, item, existing_entries = writer.find_file_content(
+                    entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                    item_id=int(case.bitrix_item_id),
+                    field_name=field_map["files"],
+                    expected_sha256=file.sha256,
+                    max_bytes=settings.site_service_requests_max_file_bytes,
+                    max_existing_files=settings.site_service_requests_max_crm_files_per_item,
+                    require_capacity=True,
+                )
+                disk_file_id, disk_url = writer.upload_file(
+                    folder_id=folder_id,
+                    deterministic_name=deterministic_name,
+                    content=content,
+                )
+            if not guarded_retry and crm_file_id is None:
+                guarded_path = str(file.temporary_path)
+                guarded_sha256 = file.sha256
+                guarded_byte_size = file.byte_size
+                guarded_baseline = tuple(file_id for file_id, _url in existing_entries)
+                file.bitrix_attach_attempted_at = current_time
+                file.bitrix_attach_baseline_file_ids = list(guarded_baseline)
+                file.updated_at = current_time
+                session.flush()
+                # The marker must survive a process death or an ambiguous REST
+                # timeout. Every later attempt is readback-only.
+                session.commit()
+
+                case = session.scalar(
+                    select(SiteServiceRequestCase)
+                    .where(SiteServiceRequestCase.id == case_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                file = session.scalar(
+                    select(SiteServiceRequestFile)
+                    .where(
+                        SiteServiceRequestFile.id == file_id,
+                        SiteServiceRequestFile.case_id == case_id,
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if (
+                    case is None
+                    or case.bitrix_item_id is None
+                    or file is None
+                    or file.status not in {"staged", "failed"}
+                    or file.temporary_path != guarded_path
+                    or file.sha256 != guarded_sha256
+                    or file.byte_size != guarded_byte_size
+                    or file.bitrix_attach_attempted_at is None
+                    or _strict_file_id_baseline(
+                        file.bitrix_attach_baseline_file_ids,
+                        max_existing_files=(settings.site_service_requests_max_crm_files_per_item),
+                    )
+                    != guarded_baseline
+                ):
+                    continue
+                content = Path(guarded_path).read_bytes()
+                if (
+                    len(content) != guarded_byte_size
+                    or hashlib.sha256(content).hexdigest() != guarded_sha256
+                ):
+                    raise SiteServiceRequestPermanentError("file_payload_invalid")
+                crm_file_id, item = writer.attach_file_content(
+                    entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
+                    item_id=int(case.bitrix_item_id),
+                    field_name=field_map["files"],
+                    deterministic_name=deterministic_name,
+                    content=content,
+                    expected_sha256=file.sha256,
+                    max_bytes=settings.site_service_requests_max_file_bytes,
+                    max_existing_files=settings.site_service_requests_max_crm_files_per_item,
+                    baseline_file_ids=list(guarded_baseline),
+                    allow_write=True,
+                )
             other_failed_files = int(
                 session.scalar(
                     select(func.count(SiteServiceRequestFile.id)).where(
@@ -1869,26 +2022,47 @@ def sync_staged_site_service_request_files(
                     "errorCode": exc.code,
                 }
             )
-        except (OSError, RuntimeError):
+        except SiteServiceRequestFileDuplicateGuardError:
             file.status = "failed"
-            file.last_error_code = "file_sync_error"
+            file.last_error_code = "file_duplicate_guard"
             file.bitrix_error_reported_at = None
             file.updated_at = current_time
             case.sync_status = "file_sync_error"
             case.last_error_code = "file_sync_error"
             case.updated_at = current_time
-            if _write_file_sync_error_to_item(
-                file=file,
-                settings=settings,
-                writer=writer,
-                field_map=field_map,
-            ):
-                file.bitrix_error_reported_at = current_time
             results.append(
                 {
                     "fileId": file.source_file_id,
                     "status": "failed",
-                    "errorCode": "file_sync_error",
+                    "errorCode": "file_duplicate_guard",
+                }
+            )
+        except (OSError, RuntimeError):
+            error_code = (
+                "file_duplicate_guard"
+                if file.bitrix_attach_attempted_at is not None
+                else "file_sync_error"
+            )
+            file.status = "failed"
+            file.last_error_code = error_code
+            file.bitrix_error_reported_at = None
+            file.updated_at = current_time
+            case.sync_status = "file_sync_error"
+            case.last_error_code = "file_sync_error"
+            case.updated_at = current_time
+            if error_code != "file_duplicate_guard":
+                if _write_file_sync_error_to_item(
+                    file=file,
+                    settings=settings,
+                    writer=writer,
+                    field_map=field_map,
+                ):
+                    file.bitrix_error_reported_at = current_time
+            results.append(
+                {
+                    "fileId": file.source_file_id,
+                    "status": "failed",
+                    "errorCode": error_code,
                 }
             )
     session.flush()
@@ -3833,6 +4007,23 @@ def _item_file_entries(item: dict[str, Any], field_name: str) -> list[tuple[int,
     if len({file_id for file_id, _url in entries}) != len(entries):
         raise RuntimeError("bitrix_file_readback_failed")
     return entries
+
+
+def _strict_file_id_baseline(
+    value: Any,
+    *,
+    max_existing_files: int,
+) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+    parsed: list[int] = []
+    for candidate in value:
+        if type(candidate) is not int or candidate <= 0:
+            raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+        parsed.append(candidate)
+    if len(parsed) > max_existing_files or len(parsed) != len(set(parsed)):
+        raise SiteServiceRequestFileDuplicateGuardError("file_duplicate_guard")
+    return tuple(parsed)
 
 
 def _strict_preferred_file_url(item: dict[str, Any]) -> str:

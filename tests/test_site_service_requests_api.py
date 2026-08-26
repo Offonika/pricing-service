@@ -26,6 +26,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
+    SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
     SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
@@ -1641,6 +1642,14 @@ def test_health_contains_only_safe_technical_aggregates(client, db_session) -> N
     assert result["assignmentFailures"] == 0
     assert result["outboundFailures"] == 0
     assert result["pendingEscalationDeliveries"] == 0
+    assert result["failedFiles"] == 0
+    assert result["workerFailure"] is False
+    assert result["workerStale"] is False
+    assert result["workerLastStartedAt"] is None
+    assert result["workerLastSuccessAt"] is None
+    assert result["workerLastFailureAt"] is None
+    assert result["workerLastErrorCode"] is None
+    assert result["workerConsecutiveFailures"] == 0
     assert result["lastSuccessfulExchangeAt"] is None
     assert result["ingestEnabled"] is True
     rendered = json.dumps(result, ensure_ascii=False)
@@ -1749,6 +1758,105 @@ def test_health_degrades_for_worker_failure_and_recovers_after_retry(
     assert recovered_result["assignmentFailures"] == 0
     assert recovered_result["outboundFailures"] == 0
     assert recovered_result["pendingEscalationDeliveries"] == 0
+
+
+def test_health_degrades_for_durable_worker_failure_and_recovers(client, db_session) -> None:
+    current_time = datetime.now(UTC)
+    state = SiteServiceRequestWorkerState(
+        id=1,
+        last_started_at=current_time,
+        last_failure_at=current_time,
+        last_error_code="bitrix_access_denied",
+        consecutive_failures=1,
+        created_at=current_time,
+        updated_at=current_time,
+    )
+    db_session.add(state)
+    db_session.commit()
+
+    with _api_dependencies(
+        db_session,
+        _settings(site_service_requests_bitrix_writes_enabled=True),
+    ):
+        degraded = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+        state.last_success_at = datetime.now(UTC)
+        state.last_error_code = None
+        state.consecutive_failures = 0
+        db_session.commit()
+        recovered = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    result = degraded.json()
+    assert degraded.status_code == 200
+    assert result["status"] == "degraded"
+    assert result["alertCodes"] == ["worker_failure"]
+    assert result["workerFailure"] is True
+    assert result["workerStale"] is False
+    assert result["workerLastErrorCode"] == "bitrix_access_denied"
+    assert result["workerConsecutiveFailures"] == 1
+    assert recovered.json()["status"] == "healthy"
+    assert recovered.json()["workerFailure"] is False
+    assert recovered.json()["workerLastErrorCode"] is None
+
+
+def test_health_marks_worker_stale_after_configured_threshold(client, db_session) -> None:
+    old_success = datetime.now(UTC) - timedelta(seconds=181)
+    db_session.add(
+        SiteServiceRequestWorkerState(
+            id=1,
+            last_started_at=old_success,
+            last_success_at=old_success,
+            consecutive_failures=0,
+            created_at=old_success,
+            updated_at=old_success,
+        )
+    )
+    db_session.commit()
+
+    with _api_dependencies(
+        db_session,
+        _settings(
+            site_service_requests_bitrix_writes_enabled=True,
+            site_service_requests_worker_stale_seconds=180,
+        ),
+    ):
+        response = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    result = response.json()
+    assert response.status_code == 200
+    assert result["status"] == "degraded"
+    assert result["alertCodes"] == ["worker_stale"]
+    assert result["workerFailure"] is False
+    assert result["workerStale"] is True
+
+
+def test_failed_file_degrades_health_without_exposing_file_identity(client, db_session) -> None:
+    with _api_dependencies(db_session, _settings()):
+        assert _post_event(client, _event_payload()).status_code == 202
+        file = db_session.scalar(select(SiteServiceRequestFile))
+        assert file is not None
+        file.status = "failed"
+        file.last_error_code = "PRIVATE-FILE-DETAIL"
+        db_session.commit()
+        response = client.get(
+            _HEALTH_PATH,
+            headers=_signed_headers(method="GET", path=_HEALTH_PATH, body=b""),
+        )
+
+    result = response.json()
+    assert response.status_code == 200
+    assert result["status"] == "degraded"
+    assert result["alertCodes"] == ["file_failure"]
+    assert result["failedFiles"] == 1
+    assert "PRIVATE" not in response.text
 
 
 def test_validation_error_does_not_echo_customer_payload(client, db_session) -> None:

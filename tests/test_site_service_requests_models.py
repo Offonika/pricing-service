@@ -19,6 +19,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
     SiteServiceRequestSource,
+    SiteServiceRequestWorkerState,
 )
 
 
@@ -106,6 +107,30 @@ def _load_email_sources_migration():
     return migration
 
 
+def _load_worker_stability_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/9d1f3a5b7c68_stabilize_site_request_worker.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_worker_stability", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
+def _load_file_attach_baseline_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/a4c6e8f0b2d3_add_site_file_attach_baseline.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_file_baseline", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -150,6 +175,13 @@ def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
                 expires_at=now + timedelta(minutes=10),
             )
         )
+        session.add(
+            SiteServiceRequestWorkerState(
+                id=1,
+                last_started_at=now,
+                consecutive_failures=0,
+            )
+        )
         session.commit()
 
         assert case.assignment_state == "waiting"
@@ -158,6 +190,8 @@ def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
         assert case.version == 1
         assert case.events[0].payload_encrypted == b"encrypted-event"
         assert case.files[0].temporary_path is None
+        assert case.files[0].bitrix_attach_attempted_at is None
+        assert case.files[0].bitrix_attach_baseline_file_ids is None
         assert case.commands[0].status == "pending"
 
     engine.dispose()
@@ -577,4 +611,85 @@ def test_email_source_identity_is_unique_in_models() -> None:
         with pytest.raises(IntegrityError):
             session.commit()
 
+    engine.dispose()
+
+
+def test_worker_stability_migration_is_reversible(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-worker-stability.db'}")
+    migrations = [
+        _load_migration(),
+        _load_open_stage_migration(),
+        _load_hardening_migration(),
+        _load_delivery_migration(),
+        _load_outbound_error_migration(),
+        _load_finalize_hardening_migration(),
+        _load_email_sources_migration(),
+        _load_worker_stability_migration(),
+    ]
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in migrations:
+            migration.op = operations
+            migration.upgrade()
+
+        inspector = inspect(connection)
+        assert "site_service_request_worker_state" in inspector.get_table_names()
+        assert "bitrix_attach_attempted_at" in {
+            column["name"] for column in inspector.get_columns("site_service_request_file")
+        }
+        worker_columns = {
+            column["name"] for column in inspector.get_columns("site_service_request_worker_state")
+        }
+        assert {
+            "last_started_at",
+            "last_success_at",
+            "last_failure_at",
+            "last_error_code",
+            "consecutive_failures",
+        } <= worker_columns
+
+        migrations[-1].downgrade()
+        inspector = inspect(connection)
+        assert "site_service_request_worker_state" not in inspector.get_table_names()
+        assert "bitrix_attach_attempted_at" not in {
+            column["name"] for column in inspector.get_columns("site_service_request_file")
+        }
+
+    assert migrations[-1].down_revision == "8c0e2a4b6d57"
+    engine.dispose()
+
+
+def test_file_attach_baseline_migration_is_reversible(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-file-attach-baseline.db'}")
+    migrations = [
+        _load_migration(),
+        _load_open_stage_migration(),
+        _load_hardening_migration(),
+        _load_delivery_migration(),
+        _load_outbound_error_migration(),
+        _load_finalize_hardening_migration(),
+        _load_email_sources_migration(),
+        _load_worker_stability_migration(),
+        _load_file_attach_baseline_migration(),
+    ]
+
+    with engine.begin() as connection:
+        operations = Operations(MigrationContext.configure(connection))
+        for migration in migrations:
+            migration.op = operations
+            migration.upgrade()
+
+        assert "bitrix_attach_baseline_file_ids" in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_file")
+        }
+
+        migrations[-1].downgrade()
+        assert "bitrix_attach_baseline_file_ids" not in {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_file")
+        }
+
+    assert migrations[-1].down_revision == "9d1f3a5b7c68"
     engine.dispose()

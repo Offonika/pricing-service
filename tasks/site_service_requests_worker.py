@@ -4,13 +4,15 @@ import argparse
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.infrastructure.db.session import session_scope
-from app.services.expertise_bitrix import BitrixRestClient
+from app.services.expertise_bitrix import BitrixRestClient, BitrixRestError
 from app.services.site_service_request_email_worker import (
     process_site_service_email_events,
     resolved_site_service_email_field_map,
@@ -18,6 +20,9 @@ from app.services.site_service_request_email_worker import (
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     build_site_service_request_cipher,
+    record_site_service_request_worker_failure,
+    record_site_service_request_worker_started,
+    record_site_service_request_worker_success,
 )
 from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixApi,
@@ -69,18 +74,65 @@ def main(
     args = parse_args(argv)
     settings = settings_override or get_settings()
     mode = "check" if args.check else "apply" if args.apply else "dry_run"
+    if args.apply:
+        with session_scope_factory(read_only=False) as heartbeat_session:
+            record_site_service_request_worker_started(
+                heartbeat_session,
+                now=datetime.now(UTC),
+            )
+    try:
+        result = _run_worker(
+            args=args,
+            settings=settings,
+            mode=mode,
+            api=api,
+            session_scope_factory=session_scope_factory,
+        )
+    except BaseException as exc:
+        if args.apply:
+            try:
+                with session_scope_factory(read_only=False) as heartbeat_session:
+                    record_site_service_request_worker_failure(
+                        heartbeat_session,
+                        error_code=_safe_worker_failure_code(exc),
+                        now=datetime.now(UTC),
+                    )
+            except Exception:
+                # Never replace the original worker failure with a secondary
+                # heartbeat-storage exception.
+                pass
+        raise
+    if args.apply:
+        with session_scope_factory(read_only=False) as heartbeat_session:
+            record_site_service_request_worker_success(
+                heartbeat_session,
+                now=datetime.now(UTC),
+            )
+    _print_result(result, compact=args.compact)
+    return result
+
+
+def _run_worker(
+    *,
+    args: argparse.Namespace,
+    settings: Settings,
+    mode: str,
+    api: SiteServiceRequestBitrixApi | None,
+    session_scope_factory: SessionScopeFactory,
+) -> dict[str, Any]:
     check = _configuration_check(
         settings,
         apply=args.apply or (args.check and settings.site_service_requests_bitrix_writes_enabled),
     )
     if args.check:
-        result: dict[str, Any] = {"mode": mode, **check}
-        _print_result(result, compact=args.compact)
-        return result
+        return {"mode": mode, **check}
     if not check["ready"]:
         raise SystemExit("site service request worker configuration is incomplete")
 
-    resolved_api = api or BitrixRestClient(str(settings.site_service_requests_bitrix_webhook_url))
+    resolved_api = api or BitrixRestClient(
+        str(settings.site_service_requests_bitrix_webhook_url),
+        retry_transient_html_403=True,
+    )
     user_preflight = (
         preflight_site_service_request_users(api=resolved_api, settings=settings)
         if args.apply
@@ -171,8 +223,17 @@ def main(
                 "count": len(plans),
                 "plans": [safe_site_service_request_plan_dict(plan) for plan in plans],
             }
-    _print_result(result, compact=args.compact)
     return result
+
+
+def _safe_worker_failure_code(exc: BaseException) -> str:
+    if isinstance(exc, BitrixRestError):
+        return exc.code
+    if isinstance(exc, SQLAlchemyError):
+        return "worker_storage_unavailable"
+    if isinstance(exc, SystemExit):
+        return "worker_configuration_error"
+    return "worker_failure"
 
 
 def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:

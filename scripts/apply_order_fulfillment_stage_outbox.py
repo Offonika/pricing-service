@@ -21,7 +21,7 @@ from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(".local/order-fulfillment-pilot")
 DEFAULT_ENV_FILES = (Path(".env"), Path("/etc/mm-management-orchestrator.env"))
-DEFAULT_TARGET_STAGE = "PICKUP_WAITING"
+DEFAULT_TARGET_STAGES = ("PICKUP_TRANSIT", "PICKUP_WAITING")
 
 
 def load_env_files(paths: list[Path]) -> dict[str, str]:
@@ -58,8 +58,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target-stage",
-        default=DEFAULT_TARGET_STAGE,
-        help=f"Allowed target stage. Default: {DEFAULT_TARGET_STAGE}.",
+        action="append",
+        default=[],
+        help=(
+            "Allowed target stage; may be repeated. "
+            f"Defaults: {', '.join(DEFAULT_TARGET_STAGES)}."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -95,7 +99,7 @@ def main() -> int:
         client=client,
         apply=args.apply,
         limit=args.limit,
-        target_stage=args.target_stage,
+        target_stages=set(args.target_stage or DEFAULT_TARGET_STAGES),
     )
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     path = args.output_dir / f"stage-apply-result-{stamp}.csv"

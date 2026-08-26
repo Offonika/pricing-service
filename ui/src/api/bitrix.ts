@@ -14,6 +14,8 @@ const PROCUREMENT_ORDER_FORMATION_SESSION_STORAGE_KEY =
   "mm_procurement_order_formation_bitrix_session";
 const PROCUREMENT_ORDER_FORMATION_PLACEMENT_STORAGE_KEY =
   "mm_procurement_order_formation_left_menu_v3_bound";
+const LOGISTICS_SESSION_STORAGE_KEY = "mm_logistics_bitrix_session";
+const LOGISTICS_LEFT_MENU_STORAGE_KEY = "mm_logistics_bitrix_left_menu_bound";
 const REFRESH_SKEW_MS = 60_000;
 const MATCHING_LEFT_MENU_PLACEMENT = "LEFT_MENU";
 const PROCUREMENT_LABELS_DETAIL_PLACEMENT = "CRM_DYNAMIC_1056_DETAIL_TAB";
@@ -152,6 +154,11 @@ export function isBitrixProcurementOrderFormationRoute() {
     path === "/bitrix/procurement-order-formation" ||
     path.startsWith("/bitrix/procurement-order-formation/")
   );
+}
+
+export function isBitrixLogisticsRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path === "/bitrix/logistics" || path.startsWith("/bitrix/logistics/");
 }
 
 function readCachedSession(): CachedBitrixSession | null {
@@ -1015,4 +1022,120 @@ export function getProcurementLabelsItemId() {
 
 export function getProcurementAssortmentItemId() {
   return getProcurementLabelsItemId();
+}
+
+export interface BitrixLogisticsProfile {
+  id: number;
+  full_name: string;
+  role: string;
+  default_warehouse_id: number | null;
+  default_warehouse_name: string | null;
+}
+
+export interface BitrixLogisticsSessionResponse {
+  session_token: string;
+  token_type: string;
+  expires_at: string;
+  expires_in: number;
+  profile: BitrixLogisticsProfile;
+}
+
+interface CachedBitrixLogisticsSession extends BitrixLogisticsSessionResponse {
+  cached_at: string;
+}
+
+function readCachedBitrixLogisticsSession(): CachedBitrixLogisticsSession | null {
+  try {
+    const raw = window.sessionStorage.getItem(LOGISTICS_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as CachedBitrixLogisticsSession;
+    if (Date.parse(cached.expires_at) - Date.now() <= REFRESH_SKEW_MS) {
+      window.sessionStorage.removeItem(LOGISTICS_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function cacheBitrixLogisticsSession(session: BitrixLogisticsSessionResponse) {
+  try {
+    window.sessionStorage.setItem(
+      LOGISTICS_SESSION_STORAGE_KEY,
+      JSON.stringify({ ...session, cached_at: new Date().toISOString() })
+    );
+  } catch {
+    // Embedded WebView may restrict storage; axios still keeps the token in memory.
+  }
+}
+
+async function ensureBitrixLogisticsLeftMenuPlacement() {
+  try {
+    if (window.sessionStorage.getItem(LOGISTICS_LEFT_MENU_STORAGE_KEY) === "1") return;
+  } catch {
+    // Continue without storage cache.
+  }
+  await loadBitrixSdk();
+  await initBitrix();
+  const handler = new URL("/bitrix/logistics/", window.location.origin).toString();
+  const normalizedHandler = normalizeHandlerUrl(handler);
+  const placements = await bitrixCall<
+    Array<{ placement?: string; handler?: string; title?: string }>
+  >("placement.get", {});
+  const alreadyBound = placements.some(
+    (item) =>
+      item.placement === MATCHING_LEFT_MENU_PLACEMENT &&
+      normalizeHandlerUrl(String(item.handler || "")) === normalizedHandler
+  );
+  if (!alreadyBound) {
+    await bitrixCall<boolean>("placement.bind", {
+      PLACEMENT: MATCHING_LEFT_MENU_PLACEMENT,
+      HANDLER: handler,
+      TITLE: "Логистика",
+      DESCRIPTION: "Передача и приёмка внутренних перемещений",
+      LANG_ALL: {
+        ru: { TITLE: "Логистика", DESCRIPTION: "Передача и приёмка внутренних перемещений" },
+        en: { TITLE: "Logistics", DESCRIPTION: "Internal transfer handoff and receipt" },
+      },
+    });
+  }
+  try {
+    window.sessionStorage.setItem(LOGISTICS_LEFT_MENU_STORAGE_KEY, "1");
+  } catch {
+    // Binding is already complete.
+  }
+}
+
+function ensureBitrixLogisticsLeftMenuPlacementInBackground() {
+  ensureBitrixLogisticsLeftMenuPlacement().catch((error: unknown) => {
+    console.warn("Не удалось добавить логистику в левое меню Bitrix24", error);
+  });
+}
+
+export async function initializeBitrixLogisticsSession() {
+  const cached = readCachedBitrixLogisticsSession();
+  if (cached) {
+    setApiAuthToken(cached.session_token);
+    ensureBitrixLogisticsLeftMenuPlacementInBackground();
+    return cached;
+  }
+  clearApiAuthToken();
+  let auth = getLaunchAuth();
+  if (!auth) {
+    await loadBitrixSdk();
+    auth = await initBitrix();
+  }
+  const { data } = await api.post<BitrixLogisticsSessionResponse>(
+    "/bitrix/logistics/session",
+    {
+      access_token: auth.access_token,
+      domain: auth.domain,
+      member_id: auth.member_id,
+    }
+  );
+  setApiAuthToken(data.session_token);
+  cacheBitrixLogisticsSession(data);
+  ensureBitrixLogisticsLeftMenuPlacementInBackground();
+  return data;
 }

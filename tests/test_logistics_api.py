@@ -22,6 +22,7 @@ from app.models import (
     LogisticsWarehouse,
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
+    SiteOrderStageOutbox,
 )
 from app.services import logistics
 
@@ -612,6 +613,17 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
         assert event is not None
         assert event.source == "logistics"
         assert event.event_type != "pickup_client_received"
+        stage_rows = session.scalars(
+            select(SiteOrderStageOutbox).order_by(SiteOrderStageOutbox.id)
+        ).all()
+        assert [row.target_stage for row in stage_rows] == [
+            "PICKUP_TRANSIT",
+            "PICKUP_WAITING",
+        ]
+        assert [row.payload["source_channel"] for row in stage_rows] == [
+            "telegram",
+            "telegram",
+        ]
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

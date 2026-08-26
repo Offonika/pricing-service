@@ -315,6 +315,10 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    `freeze_id` из ответа `freeze` либо `status` сохраняется до конца окна;
    снять freeze другим ID нельзя. Установка controller, активация freeze,
    merge release PR и production cutover являются отдельными действиями.
+   Операционное решение от 2026-08-26: финальная convergence-итерация выполняется
+   после merge controller PR №32 и проверенной установки controller v3 под
+   deploy-freeze длительностью 30 минут. Merge pricing-service PR №58 и
+   production cutover в это разрешение не входят.
 1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
    `main` с проверенной цепочкой активного production source в отдельной
    интеграционной ветке и провести её через PR. До merge и отдельного cutover
@@ -380,6 +384,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-26 — для финальной convergence-итерации подтверждены merge controller
+  PR №32, установка controller v3 и 30-минутный deploy-freeze; merge PR №58 и
+  production cutover оставлены отдельными решениями.
 - 2026-08-26 — утверждена постоянная convergence-схема с коротким deploy-freeze,
   main-only releases и сохранением active-source ancestry guard.
 - 2026-08-19 — frontend встроенных Bitrix24-приложений закреплён за сборкой

@@ -21,6 +21,7 @@ REVIEW_RTU_WITHOUT_SITE_ORDER = "rtu_without_site_order"
 REVIEW_RTU_TARGET_WAREHOUSE_UNRESOLVED = "rtu_target_warehouse_unresolved"
 REVIEW_RTU_LOOKUP_NOT_UNIQUE = "rtu_lookup_not_unique"
 REVIEW_RTU_READINESS_GATE_FAILED = "rtu_readiness_gate_failed"
+REVIEW_RTU_SOURCE_INVALID = "rtu_source_invalid"
 REVIEW_RTU_SOURCE_WAREHOUSE_UNRESOLVED = "rtu_source_warehouse_unresolved"
 REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED = "rtu_external_carrier_unmapped"
 REVIEW_RTU_EXTERNAL_CARRIER_STATE_CONFLICT = "rtu_external_carrier_state_conflict"
@@ -97,6 +98,8 @@ class RtuSkippedRow:
 class RtuNormalizationResult:
     ready: list[RtuSourceRow]
     skipped: list[RtuSkippedRow]
+    pending_readiness: list[RtuSkippedRow]
+    ignored_non_site: list[RtuSkippedRow]
 
 
 @dataclass(slots=True)
@@ -118,6 +121,8 @@ class RtuSyncReport:
     skipped: int = 0
     manual_review_created: int = 0
     manual_review_planned: int = 0
+    pending_readiness: int = 0
+    ignored_non_site: int = 0
     warehouses_created: int = 0
     warehouses_planned: int = 0
     external_carrier_planned: int = 0
@@ -138,6 +143,8 @@ class RtuSyncReport:
             "skipped": self.skipped,
             "manual_review_created": self.manual_review_created,
             "manual_review_planned": self.manual_review_planned,
+            "pending_readiness": self.pending_readiness,
+            "ignored_non_site": self.ignored_non_site,
             "warehouses_created": self.warehouses_created,
             "warehouses_planned": self.warehouses_planned,
             "external_carrier_planned": self.external_carrier_planned,
@@ -367,7 +374,13 @@ def sync_ready_rtu_units(
         else _fetch_rtu_source_rows(onec_engine, date_from=date_from, limit=limit)
     )
     normalized = normalize_rtu_source_rows(raw_rows)
-    report = RtuSyncReport(dry_run=dry_run, fetched=len(raw_rows), ready=len(normalized.ready))
+    report = RtuSyncReport(
+        dry_run=dry_run,
+        fetched=len(raw_rows),
+        ready=len(normalized.ready),
+        pending_readiness=len(normalized.pending_readiness),
+        ignored_non_site=len(normalized.ignored_non_site),
+    )
 
     for skipped in normalized.skipped:
         _record_skip(session, report, skipped, dry_run=dry_run)
@@ -524,20 +537,45 @@ def sync_ready_rtu_units(
 def normalize_rtu_source_rows(rows: Iterable[dict[str, Any] | Any]) -> RtuNormalizationResult:
     ready: list[RtuSourceRow] = []
     skipped: list[RtuSkippedRow] = []
+    pending_readiness: list[RtuSkippedRow] = []
+    ignored_non_site: list[RtuSkippedRow] = []
     for raw_row in rows:
         row = _row_to_dict(raw_row)
+        if not _is_site_order_candidate(row):
+            ignored_non_site.append(
+                RtuSkippedRow(
+                    review_type="not_site_order",
+                    reason="RTU has no positive site-order marker",
+                    source_external_id=_clean_ref(row.get("rtu_external_id")) or None,
+                    site_order_number=None,
+                    payload=row,
+                )
+            )
+            continue
         if not _bool_value(row.get("is_posted")) or _bool_value(row.get("is_marked")):
-            skipped.append(_readiness_skip(row, "RTU is not posted or is marked for deletion"))
+            pending_readiness.append(
+                _readiness_skip(row, "RTU is not posted or is marked for deletion")
+            )
             continue
         if not _bool_value(row.get("has_printed")) or not _bool_value(row.get("has_assembled")):
-            skipped.append(_readiness_skip(row, "RTU does not pass printed/assembled gate"))
+            pending_readiness.append(
+                _readiness_skip(row, "RTU does not pass printed/assembled gate")
+            )
             continue
 
         rtu_external_id = _clean_ref(row.get("rtu_external_id"))
         rtu_number = _clean_string(row.get("rtu_number"))
         rtu_date = row.get("rtu_date")
         if not rtu_external_id or not rtu_number or not isinstance(rtu_date, datetime):
-            skipped.append(_readiness_skip(row, "RTU row is missing required identity fields"))
+            skipped.append(
+                RtuSkippedRow(
+                    review_type=REVIEW_RTU_SOURCE_INVALID,
+                    reason="RTU row is missing required identity fields",
+                    source_external_id=rtu_external_id or None,
+                    site_order_number=_clean_string(row.get("site_order_number")) or None,
+                    payload=row,
+                )
+            )
             continue
 
         ready.append(
@@ -557,7 +595,19 @@ def normalize_rtu_source_rows(rows: Iterable[dict[str, Any] | Any]) -> RtuNormal
                 raw=row,
             )
         )
-    return RtuNormalizationResult(ready=ready, skipped=skipped)
+    return RtuNormalizationResult(
+        ready=ready,
+        skipped=skipped,
+        pending_readiness=pending_readiness,
+        ignored_non_site=ignored_non_site,
+    )
+
+
+def _is_site_order_candidate(row: dict[str, Any]) -> bool:
+    return bool(
+        _clean_string(row.get("site_order_number"))
+        or _clean_string(row.get("site_delivery_method"))
+    )
 
 
 def resolve_target_warehouse(
@@ -799,6 +849,10 @@ def _fetch_rtu_source_rows(
         LEFT JOIN dbo._Reference80 AS wh WITH (NOLOCK)
             ON wh._IDRRef = rtu._Fld4940RRef
         WHERE rtu._Fld4939_RRRef IS NOT NULL
+          AND (
+              NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') IS NOT NULL
+              OR NULLIF(LTRIM(RTRIM(ord._Fld9266)), N'') IS NOT NULL
+          )
           {date_filter}
         ORDER BY rtu._Date_Time DESC
         """)
@@ -1014,6 +1068,68 @@ def _readiness_skip(row: dict[str, Any], reason: str) -> RtuSkippedRow:
         site_order_number=_clean_string(row.get("site_order_number")) or None,
         payload=row,
     )
+
+
+def cleanup_legacy_rtu_manual_review_noise(
+    session: Session,
+    *,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    statement = select(LogisticsManualReview).where(
+        LogisticsManualReview.source_document_type == logistics.SOURCE_RTU,
+        LogisticsManualReview.status == "open",
+        LogisticsManualReview.review_type.in_(
+            [REVIEW_RTU_READINESS_GATE_FAILED, REVIEW_RTU_WITHOUT_SITE_ORDER]
+        ),
+    )
+    if not dry_run:
+        statement = statement.with_for_update(skip_locked=True)
+    rows = session.scalars(statement).all()
+    matched: list[tuple[LogisticsManualReview, str]] = []
+    by_reason: Counter[str] = Counter()
+    skipped_unsafe = 0
+    for row in rows:
+        payload_is_mapping = isinstance(row.payload, dict)
+        payload = row.payload if payload_is_mapping else {}
+        resolution_reason = None
+        if row.review_type == REVIEW_RTU_READINESS_GATE_FAILED:
+            resolution_reason = "readiness_gate_is_pending_state"
+        elif payload_is_mapping:
+            if not _clean_string(payload.get("site_order_number")) and not _clean_string(
+                payload.get("site_delivery_method")
+            ):
+                resolution_reason = "no_positive_site_order_marker"
+        else:
+            skipped_unsafe += 1
+        if resolution_reason is None:
+            continue
+        matched.append((row, resolution_reason))
+        by_reason[resolution_reason] += 1
+
+    if not dry_run and matched:
+        resolved_at = logistics.utcnow()
+        for row, resolution_reason in matched:
+            payload = dict(row.payload) if isinstance(row.payload, dict) else {}
+            payload.update(
+                {
+                    "auto_resolved_by": "rtu_manual_review_noise_cleanup_v1",
+                    "auto_resolved_at": resolved_at.isoformat(),
+                    "auto_resolved_reason": resolution_reason,
+                }
+            )
+            row.payload = payload
+            row.status = "resolved"
+            row.resolved_at = resolved_at
+            row.updated_at = resolved_at
+        session.commit()
+
+    return {
+        "dry_run": dry_run,
+        "matched": len(matched),
+        "resolved": 0 if dry_run else len(matched),
+        "skipped_unsafe": skipped_unsafe,
+        "by_reason": dict(sorted(by_reason.items())),
+    }
 
 
 def _row_to_dict(row: dict[str, Any] | Any) -> dict[str, Any]:

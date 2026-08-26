@@ -209,10 +209,9 @@ CRM_PICKUP_DATETIME_FIELDS = {
 }
 
 ALLOWED_ARRIVAL_STAGES = {
-    "PREPARATION",
     "EXECUTING",
     "FINAL_INVOICE",
-    "IN_DELIVERY",
+    "PICKUP_TRANSIT",
     fulfillment.CRM_STAGE_PICKUP_WAITING,
 }
 TERMINAL_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
@@ -1892,8 +1891,6 @@ def decide_pickup_action(
     if action == ACTION_ARRIVED:
         if stage not in ALLOWED_ARRIVAL_STAGES:
             return PickupActionDecision(False, None, None, "arrival_transition_not_allowed")
-        if not onec.assembled:
-            return PickupActionDecision(False, None, None, "assembly_not_confirmed")
         first_arrival = case is None or case.storage_started_at is None
         return PickupActionDecision(
             True,

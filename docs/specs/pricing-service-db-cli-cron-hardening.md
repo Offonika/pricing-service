@@ -165,9 +165,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 12. Для `report_display_sale_auto_order_treatment_plan.py` разрешены реализация в
     отдельной ветке, push и создание PR после локальных проверок. Merge и
     production release требуют отдельного подтверждения.
+13. После зелёного CI разрешён merge PR №76. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №76; production release оставлен отдельным
+  решением.
 - 2026-08-27 — `report_display_sale_auto_order_treatment_plan.py` переведён на
   central read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-27 — разрешена подготовка отдельного read-only slice для

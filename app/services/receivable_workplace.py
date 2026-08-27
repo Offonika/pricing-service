@@ -919,6 +919,32 @@ def _status_for_case(case: ReceivableCase, item: ReceivableWorkItem | None) -> s
     return STATUS_NO_PHONE if not (item.phone if item is not None else None) else "new_debt"
 
 
+def _normalize_counterparty_search(value: object) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _matches_counterparty_query(
+    case: ReceivableCase,
+    *,
+    query: str,
+    item: ReceivableWorkItem | None,
+    fallback_code: str | None,
+) -> bool:
+    normalized_query = _normalize_counterparty_search(query)
+    if not normalized_query:
+        return True
+    item_code = _payload_dict(item).get("counterparty_code")
+    return any(
+        normalized_query in _normalize_counterparty_search(value)
+        for value in (
+            case.counterparty_name,
+            case.counterparty_code,
+            fallback_code,
+            item_code,
+        )
+    )
+
+
 def _case_sort_key(
     case: ReceivableCase,
 ) -> tuple[Decimal, int, str]:
@@ -1043,6 +1069,7 @@ def build_receivable_workplace(
     snapshot_date: date,
     department_ref: str | None = None,
     status: str | None = None,
+    counterparty_query: str | None = None,
     min_debt: Decimal | None = None,
     limit: int = 500,
     sort_by: WorkplaceSortBy = "balance",
@@ -1084,17 +1111,22 @@ def build_receivable_workplace(
         session,
         counterparty_refs=[case.counterparty_ref for case in cases],
     )
-    supervisor_notes_by_work_item = _load_visible_supervisor_notes(
-        session,
-        work_items=list(work_items.values()),
-        viewer_user_id=viewer_user_id,
-        viewer_can_edit=viewer_can_edit_supervisor_notes,
-    )
     counterparty_codes = _load_counterparty_codes_from_folder_cache(
         session,
         snapshot_date=snapshot_date,
         counterparty_refs=[case.counterparty_ref for case in cases],
     )
+    if counterparty_query:
+        cases = [
+            case
+            for case in cases
+            if _matches_counterparty_query(
+                case,
+                query=counterparty_query,
+                item=work_items.get(case.counterparty_ref),
+                fallback_code=counterparty_codes.get(_ref_key(case.counterparty_ref)),
+            )
+        ]
     if status:
         cases = [
             case
@@ -1103,6 +1135,16 @@ def build_receivable_workplace(
         ]
     if min_debt is not None:
         cases = [case for case in cases if case.current_balance > min_debt]
+    supervisor_notes_by_work_item = _load_visible_supervisor_notes(
+        session,
+        work_items=[
+            work_items[case.counterparty_ref]
+            for case in cases
+            if case.counterparty_ref in work_items
+        ],
+        viewer_user_id=viewer_user_id,
+        viewer_can_edit=viewer_can_edit_supervisor_notes,
+    )
     cases.sort(key=_case_sort_key, reverse=True)
     open_debt_cache = load_cached_open_debt_documents(
         session,

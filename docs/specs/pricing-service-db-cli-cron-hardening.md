@@ -116,6 +116,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   session scope с сохранением аргументов и JSON-контракта.
 - [x] Перевести `report_display_quality_mismatch_candidates.py` на central
   read-only session scope с сохранением CSV и JSON-контрактов.
+- [x] Перевести `report_display_sale_auto_order_treatment_plan.py` на central
+  read-only session scope с сохранением `--database-url`, CSV и JSON-контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -164,11 +166,23 @@ JSON/CSV/XLSX артефактов сохраняются.
     Разрешение не включает активацию автоматического движения стадий и SMS:
     `LOGISTICS_STAGE_AUTOMATION_ENABLED=false` и
     `PICKUP_READY_SMS_ENABLED=false` должны сохраниться после cutover.
+13. Для `report_display_sale_auto_order_treatment_plan.py` разрешены реализация в
+    отдельной ветке, push и создание PR после локальных проверок. Merge и
+    production release требуют отдельного подтверждения.
+14. После зелёного CI разрешён merge PR №76. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №76; production release оставлен отдельным
+  решением.
 - 2026-08-27 — разрешён production release текущего `main` с PR №70–73 без
   включения автоматического движения стадий и SMS.
+- 2026-08-27 — `report_display_sale_auto_order_treatment_plan.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `report_display_sale_auto_order_treatment_plan.py`; merge и production оставлены
+  отдельными решениями.
 - 2026-08-27 — разрешён merge PR №73; production release оставлен отдельным
   решением.
 - 2026-08-27 — `report_display_quality_mismatch_candidates.py` переведён на

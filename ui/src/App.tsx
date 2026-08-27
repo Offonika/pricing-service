@@ -434,10 +434,11 @@ function LogisticsFallbackApp() {
   );
 }
 
-function BitrixLogisticsApp() {
+export function BitrixLogisticsApp() {
   const [authState, setAuthState] = useState<
     { status: "loading" } | { status: "ready" } | { status: "error"; message: string }
   >({ status: "loading" });
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -464,15 +465,39 @@ function BitrixLogisticsApp() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [connectionAttempt]);
 
   if (authState.status !== "ready") {
+    const openedOutsideBitrix =
+      authState.status === "error" &&
+      (authState.message.includes("Bitrix24 SDK") || authState.message.includes("OAuth"));
     return (
       <div className="app app--center">
-        <div className="app-state">
+        <div className="app-state app-state--wide">
           <h1>Логистика</h1>
-          <p>{authState.status === "loading" ? "Подключение к Bitrix24…" : authState.message}</p>
-          {authState.status === "error" && <small>Проверьте привязку пользователя к роли и складу.</small>}
+          {authState.status === "loading" && <p>Подключение к Bitrix24…</p>}
+          {authState.status === "error" && (
+            <>
+              <p>
+                {openedOutsideBitrix
+                  ? "Откройте приложение из меню Bitrix24."
+                  : "Нет доступа к логистике. Проверьте роль и привязку склада."}
+              </p>
+              <small>{authState.message}</small>
+              <div className="app-state__actions">
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => {
+                    setAuthState({ status: "loading" });
+                    setConnectionAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  Повторить
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     );

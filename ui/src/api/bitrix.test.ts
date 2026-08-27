@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  initializeBitrixLogisticsSession,
   refreshBitrixAuth,
   refreshBitrixReceivablesSession,
   type BitrixReceivablesSessionResponse,
@@ -10,6 +11,35 @@ const originalBX24 = window.BX24;
 
 afterEach(() => {
   window.BX24 = originalBX24;
+  window.sessionStorage.removeItem("mm_logistics_bitrix_session");
+  document
+    .querySelectorAll('script[src="https://api.bitrix24.com/api/v1/"]')
+    .forEach((script) => script.remove());
+});
+
+describe("initializeBitrixLogisticsSession", () => {
+  it("removes a failed SDK script so the next attempt starts a new load", async () => {
+    window.BX24 = undefined;
+    window.sessionStorage.removeItem("mm_logistics_bitrix_session");
+
+    const firstAttempt = initializeBitrixLogisticsSession();
+    const firstScript = document.querySelector<HTMLScriptElement>(
+      'script[src="https://api.bitrix24.com/api/v1/"]'
+    );
+    expect(firstScript).not.toBeNull();
+    firstScript?.dispatchEvent(new Event("error"));
+    await expect(firstAttempt).rejects.toThrow("Не удалось загрузить Bitrix24 SDK");
+    expect(document.body.contains(firstScript)).toBe(false);
+
+    const secondAttempt = initializeBitrixLogisticsSession();
+    const secondScript = document.querySelector<HTMLScriptElement>(
+      'script[src="https://api.bitrix24.com/api/v1/"]'
+    );
+    expect(secondScript).not.toBeNull();
+    expect(secondScript).not.toBe(firstScript);
+    secondScript?.dispatchEvent(new Event("error"));
+    await expect(secondAttempt).rejects.toThrow("Не удалось загрузить Bitrix24 SDK");
+  });
 });
 
 describe("refreshBitrixAuth", () => {

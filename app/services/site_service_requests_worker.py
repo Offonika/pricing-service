@@ -2914,7 +2914,6 @@ def _deliver_site_service_request_escalation(
         settings.site_service_requests_escalation_user_id is not None
         and case.escalation_notification_delivered_at is None
     ):
-        item_url = site_service_request_item_url(settings, int(case.bitrix_item_id))
         message_lines = [
             (
                 "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту."
@@ -2923,15 +2922,24 @@ def _deliver_site_service_request_escalation(
                     f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
                     "Проверьте обращение и ответьте клиенту."
                 )
-            ),
-            f"[URL={item_url}]Открыть карточку обращения[/URL]",
-        ]
-        if case.source_kind == "bitrix_mail" and case.primary_activity_id is not None:
-            activity_url = site_service_request_activity_url(
-                settings,
-                int(case.primary_activity_id),
             )
-            message_lines.append(f"[URL={activity_url}]Открыть письмо[/URL]")
+        ]
+        try:
+            item_url = site_service_request_item_url(settings, int(case.bitrix_item_id))
+        except SiteServiceRequestConfigurationError:
+            item_url = None
+        if item_url is not None:
+            message_lines.append(f"[URL={item_url}]Открыть карточку обращения[/URL]")
+        if case.source_kind == "bitrix_mail" and case.primary_activity_id is not None:
+            try:
+                activity_url = site_service_request_activity_url(
+                    settings,
+                    int(case.primary_activity_id),
+                )
+            except SiteServiceRequestConfigurationError:
+                activity_url = None
+            if activity_url is not None:
+                message_lines.append(f"[URL={activity_url}]Открыть письмо[/URL]")
         elif case.source_kind == "site_ticket":
             site_ticket_url = (
                 f"{settings.site_service_requests_site_base_url.rstrip('/')}"

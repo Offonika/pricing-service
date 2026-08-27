@@ -16,6 +16,7 @@ related_tests:
   - tests/test_architecture_boundaries.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
+  - tests/test_export_receivable_work_report_task.py
   - tests/test_product_classification.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
@@ -118,6 +119,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   read-only session scope с сохранением CSV и JSON-контрактов.
 - [x] Перевести `report_display_sale_auto_order_treatment_plan.py` на central
   read-only session scope с сохранением `--database-url`, CSV и JSON-контрактов.
+- [x] Перевести `export_receivable_work_report.py` на central read-only session
+  scope с сохранением `--date`, `--output-dir` и XLSX-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -171,9 +174,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельного подтверждения.
 14. После зелёного CI разрешён merge PR №76. Production migration, deploy и cutover
     в это решение не входят.
+15. Для `export_receivable_work_report.py` разрешены реализация в отдельной ветке,
+    push и создание отдельного PR после локальных проверок. Merge и production
+    release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-27 — `export_receivable_work_report.py` переведён на central read-only
+  session scope и зарегистрирован как `application_read_only`; аргументы и
+  XLSX-контракт сохранены.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `export_receivable_work_report.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
 - 2026-08-27 — разрешён merge PR №76; production release оставлен отдельным
   решением.
 - 2026-08-27 — разрешён production release текущего `main` с PR №70–73 без

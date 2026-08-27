@@ -316,9 +316,6 @@ def _case(**overrides) -> SiteServiceRequestCase:
 def _worker_settings(**overrides) -> Settings:
     values = {
         "site_service_requests_bitrix_writes_enabled": True,
-        "site_service_requests_bitrix_webhook_url": (
-            "https://portal.example.invalid/rest/1/test-token/"
-        ),
         "site_service_requests_bitrix_entity_type_id": 1134,
         "site_service_requests_bitrix_working_category_id": 55,
         "site_service_requests_bitrix_field_map": {
@@ -3559,7 +3556,11 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     api = FakeBitrixApi()
     api.timeman = {1001: "OPENED", 1002: "OPENED"}
     reader = SiteServiceRequestBitrixReader(api)
-    settings = _worker_settings()
+    settings = _worker_settings(
+        site_service_requests_bitrix_webhook_url=(
+            "https://portal.example.invalid/rest/1/test-token/"
+        )
+    )
     plans = build_site_service_request_worker_plans(
         db_session,
         settings=settings,
@@ -3654,7 +3655,11 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
     worker_module._deliver_site_service_request_escalation(
         db_session,
         case_id=case.id,
-        settings=_worker_settings(),
+        settings=_worker_settings(
+            site_service_requests_bitrix_webhook_url=(
+                "https://portal.example.invalid/rest/1/test-token/"
+            )
+        ),
         writer=SiteServiceRequestBitrixWriter(api),
         now=now,
     )

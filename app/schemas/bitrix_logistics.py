@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.schemas.logistics import (
+    LogisticsDraftResponse,
     LogisticsDriverResponse,
     LogisticsUserProfile,
     LogisticsWarehouseResponse,
@@ -30,6 +31,7 @@ class BitrixLogisticsBootstrapResponse(BaseModel):
     warehouses: list[LogisticsWarehouseResponse]
     drivers: list[LogisticsDriverResponse]
     capabilities: list[str]
+    open_draft: LogisticsDraftResponse | None = None
 
 
 class BitrixLogisticsManualReviewItem(BaseModel):
@@ -59,18 +61,18 @@ class BitrixLogisticsDraftCreateRequest(BaseModel):
     driver_id: int | None = None
     route_run_id: int | None = None
     default_dropoff_warehouse_id: int | None = None
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
 
 
 class BitrixLogisticsDraftScanRequest(BaseModel):
-    barcode: str | None = None
-    lookup_code: str | None = None
+    barcode: str | None = Field(default=None, max_length=255)
+    lookup_code: str | None = Field(default=None, max_length=255)
     dropoff_warehouse_id: int | None = None
 
 
 class BitrixLogisticsDraftConfirmRequest(BaseModel):
-    comment: str | None = None
-    idempotency_key: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
 
 class BitrixLogisticsFallbackLinkResponse(BaseModel):

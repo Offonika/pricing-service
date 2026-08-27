@@ -346,7 +346,7 @@ function ReceivableSummary({
         ))}
       </section>
       <p className="receivables__summary-hint">
-        Сумма учитывает доступы, подразделение, статус и порог долга и рассчитывается до применения limit.
+        Сумма учитывает доступы, поиск, подразделение, статус и порог долга и рассчитывается до применения limit.
       </p>
     </>
   );
@@ -533,6 +533,14 @@ function ReceivableRow({
     );
   }
   const bitrixCardUrl = resolveBitrixPortalUrl(item.bitrix_detail_url);
+  const supervisorNotes = item.supervisor_notes || [];
+  const commentPreviewTitle = [
+    edit.comment ? `Менеджер: ${edit.comment}` : "Комментарий менеджера не добавлен",
+    ...supervisorNotes.map(
+      (note) =>
+        `${note.visibility === "personal" ? "Личная заметка" : "Коллегам"} · ${note.author_name}: ${note.comment}`
+    ),
+  ].join("\n");
   return (
     <>
       <tr className="receivables__row">
@@ -644,10 +652,20 @@ function ReceivableRow({
             aria-expanded={commentExpanded}
             className="receivables__comment-preview"
             onClick={onToggleComment}
-            title={edit.comment || "Добавить комментарий"}
+            title={commentPreviewTitle}
             type="button"
           >
-            {edit.comment || "Добавить комментарий"}
+            <span className="receivables__comment-preview-manager">
+              {edit.comment || "Добавить комментарий"}
+            </span>
+            {supervisorNotes.map((note) => (
+              <span className="receivables__comment-preview-note" key={note.id}>
+                <strong>
+                  {note.visibility === "personal" ? "Личная" : "Коллегам"} · {note.author_name}:
+                </strong>{" "}
+                {note.comment}
+              </span>
+            ))}
           </button>
         </td>
       </tr>
@@ -875,6 +893,8 @@ export function ReceivablesWorkplace({
   const [date, setDate] = useState(readInitialDate);
   const [departmentRef, setDepartmentRef] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [counterpartySearch, setCounterpartySearch] = useState("");
+  const [debouncedCounterpartySearch, setDebouncedCounterpartySearch] = useState("");
   const [minimumDebt, setMinimumDebt] = useState<MinimumDebtFilter>("");
   const [sortBy, setSortBy] = useState<ReceivableWorkplaceSortBy>("balance");
   const [sortDir, setSortDir] = useState<ReceivableWorkplaceSortDir>("desc");
@@ -904,6 +924,14 @@ export function ReceivablesWorkplace({
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
+
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setDebouncedCounterpartySearch(counterpartySearch.trim()),
+      350
+    );
+    return () => window.clearTimeout(timer);
+  }, [counterpartySearch]);
 
   useEffect(() => {
     if (bitrixMode) return;
@@ -974,6 +1002,7 @@ export function ReceivablesWorkplace({
       const data = await fetchReceivableWorkplace({
         date,
         department_ref: departmentRef,
+        counterparty_query: debouncedCounterpartySearch || undefined,
         min_debt: minimumDebt ? Number(minimumDebt) : undefined,
         sort_by: sortBy,
         sort_dir: sortDir,
@@ -996,7 +1025,16 @@ export function ReceivablesWorkplace({
     } finally {
       setLoading(false);
     }
-  }, [date, departmentRef, hasToken, minimumDebt, sortBy, sortDir, statusFilter]);
+  }, [
+    date,
+    debouncedCounterpartySearch,
+    departmentRef,
+    hasToken,
+    minimumDebt,
+    sortBy,
+    sortDir,
+    statusFilter,
+  ]);
 
   const loadFolders = useCallback(async () => {
     if (!hasToken || !date) {
@@ -1086,6 +1124,34 @@ export function ReceivablesWorkplace({
             </option>
           ))}
         </select>
+        <div className="receivables__counterparty-search">
+          <input
+            aria-label="Поиск контрагента"
+            className="app__search"
+            onChange={(event) => setCounterpartySearch(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                setDebouncedCounterpartySearch(counterpartySearch.trim());
+              }
+            }}
+            placeholder="Название или код 1С"
+            type="search"
+            value={counterpartySearch}
+          />
+          {counterpartySearch && (
+            <button
+              aria-label="Очистить поиск контрагента"
+              className="receivables__counterparty-search-clear"
+              onClick={() => {
+                setCounterpartySearch("");
+                setDebouncedCounterpartySearch("");
+              }}
+              type="button"
+            >
+              ×
+            </button>
+          )}
+        </div>
         <select
           className="app__select"
           value={minimumDebt}

@@ -166,7 +166,7 @@ def test_logistics_telegram_bot_flow() -> None:
                 "chat": {"id": 101},
                 "from": {"id": 101, "username": "sender_user"},
                 "photo": [{"file_id": "photo-small"}, {"file_id": "photo-big"}],
-                "caption": "Пакет передан",
+                "caption": "П" * 1100,
             }
         }
     )
@@ -187,6 +187,7 @@ def test_logistics_telegram_bot_flow() -> None:
     with Session(engine) as session:
         history = logistics_service.get_transfer_history(session, transfer_id=ids["transfer_id"])
         assert history[1]["photos"][0]["telegram_file_id"] == "photo-big"
+        assert history[1]["photos"][0]["comment"] == "П" * 1000
         assert history[0]["source"] == "telegram"
         assert history[1]["source"] == "telegram"
         assert session.query(LogisticsTransferEvent).count() == 2

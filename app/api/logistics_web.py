@@ -11,15 +11,17 @@ from typing import Any
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_logistics_internal_token
 from app.core.config import get_settings
-from app.models import LogisticsUser
+from app.models import LogisticsDraft, LogisticsUser
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
     LogisticsMonitorResponse,
+    LogisticsPhotoInput,
     LogisticsUserProfile,
 )
 from app.services import logistics as logistics_service
@@ -45,25 +47,28 @@ class LogisticsWebDraftCreateRequest(BaseModel):
     driver_id: int | None = None
     route_run_id: int | None = None
     default_dropoff_warehouse_id: int | None = None
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
 
 
 class LogisticsWebDraftScanRequest(BaseModel):
-    barcode: str | None = None
-    lookup_code: str | None = None
+    barcode: str | None = Field(default=None, max_length=255)
+    lookup_code: str | None = Field(default=None, max_length=255)
     dropoff_warehouse_id: int | None = None
 
 
 class LogisticsWebDraftConfirmRequest(BaseModel):
-    comment: str | None = None
-    idempotency_key: str | None = None
-    photos: list[dict[str, str | None]] = Field(default_factory=list)
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
+    photos: list[LogisticsPhotoInput] = Field(default_factory=list, max_length=20)
 
 
 def _read_index() -> str:
     for path in _INDEX_PATHS:
         if path.exists():
-            return path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8").replace(
+                'href="./vite.svg"',
+                'href="/vite.svg"',
+            )
     return "<!doctype html><html><body>Logistics fallback UI is not built</body></html>"
 
 
@@ -157,6 +162,24 @@ def _require_web_role(actor: LogisticsUser, expected: str) -> None:
         raise HTTPException(status_code=403, detail="operation is not allowed for logistics role")
 
 
+def _require_web_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
+    actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
+    if actual_type is None:
+        raise HTTPException(status_code=404, detail="draft not found")
+    if actual_type != expected_type:
+        raise HTTPException(status_code=409, detail="draft type does not match endpoint")
+
+
+def _web_monitor_warehouse_id(actor: LogisticsUser, requested: int | None) -> int | None:
+    if actor.role in {"logist", "admin"}:
+        return requested
+    if actor.default_warehouse_id is None:
+        raise HTTPException(status_code=422, detail="default logistics warehouse is not configured")
+    if requested not in (None, actor.default_warehouse_id):
+        raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
+    return actor.default_warehouse_id
+
+
 @router.post(
     "/session",
     response_model=LogisticsUserProfile,
@@ -204,6 +227,14 @@ def web_drivers(
     return logistics_service.list_drivers(db)
 
 
+@router.get("/draft/open", response_model=LogisticsDraftResponse | None)
+def web_open_draft(
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    return logistics_service.get_open_draft_for_actor(db, actor_user_id=actor.id)
+
+
 @router.get("/monitor", response_model=list[LogisticsMonitorResponse])
 def web_monitor(
     status: str | None = None,
@@ -211,11 +242,10 @@ def web_monitor(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
-    effective_warehouse_id = warehouse_id or actor.default_warehouse_id
     return logistics_service.list_monitor(
         db,
         status=status,
-        warehouse_id=effective_warehouse_id,
+        warehouse_id=_web_monitor_warehouse_id(actor, warehouse_id),
     )
 
 
@@ -246,6 +276,7 @@ def web_scan_handoff(
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
     _require_web_role(actor, "sender")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -264,13 +295,14 @@ def web_confirm_handoff(
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
     _require_web_role(actor, "sender")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
         actor_user_id=actor.id,
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
-        photos=payload.photos,
+        photos=[photo.model_dump() for photo in payload.photos],
         source_channel="web_fallback",
     )
 
@@ -300,6 +332,7 @@ def web_scan_receipt(
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
     _require_web_role(actor, "receiver")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -317,12 +350,13 @@ def web_confirm_receipt(
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
     _require_web_role(actor, "receiver")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
         actor_user_id=actor.id,
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
-        photos=payload.photos,
+        photos=[photo.model_dump() for photo in payload.photos],
         source_channel="web_fallback",
     )

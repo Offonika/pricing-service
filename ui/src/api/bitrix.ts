@@ -25,6 +25,7 @@ const EXECUTIVE_LEFT_MENU_TITLE = "Управленческая витрина";
 const PROCUREMENT_LABELS_TITLE = "Сформировать этикетки";
 const PROCUREMENT_ORDER_FORMATION_MENU_TITLE = "Формирование заказа";
 let receivablesSessionRefreshPromise: Promise<BitrixReceivablesSessionResponse> | null = null;
+let logisticsSessionRefreshPromise: Promise<BitrixLogisticsSessionResponse> | null = null;
 
 interface BitrixAuthPayload {
   access_token: string;
@@ -1073,6 +1074,14 @@ function cacheBitrixLogisticsSession(session: BitrixLogisticsSessionResponse) {
   }
 }
 
+function clearCachedBitrixLogisticsSession() {
+  try {
+    window.sessionStorage.removeItem(LOGISTICS_SESSION_STORAGE_KEY);
+  } catch {
+    // Storage can be restricted in embedded contexts; the in-memory token is cleared below.
+  }
+}
+
 async function ensureBitrixLogisticsLeftMenuPlacement() {
   try {
     if (window.sessionStorage.getItem(LOGISTICS_LEFT_MENU_STORAGE_KEY) === "1") return;
@@ -1116,15 +1125,21 @@ function ensureBitrixLogisticsLeftMenuPlacementInBackground() {
   });
 }
 
-export async function initializeBitrixLogisticsSession() {
-  const cached = readCachedBitrixLogisticsSession();
+async function requestBitrixLogisticsSession(forceRefresh: boolean) {
+  const cached = forceRefresh ? null : readCachedBitrixLogisticsSession();
   if (cached) {
     setApiAuthToken(cached.session_token);
-    ensureBitrixLogisticsLeftMenuPlacementInBackground();
     return cached;
   }
+  if (forceRefresh) clearCachedBitrixLogisticsSession();
   clearApiAuthToken();
-  let auth = getLaunchAuth();
+  let auth: BitrixAuthPayload | null = null;
+  if (forceRefresh) {
+    await loadBitrixSdk();
+    auth = await refreshBitrixAuth();
+  } else {
+    auth = getLaunchAuth();
+  }
   if (!auth) {
     await loadBitrixSdk();
     auth = await initBitrix();
@@ -1139,6 +1154,23 @@ export async function initializeBitrixLogisticsSession() {
   );
   setApiAuthToken(data.session_token);
   cacheBitrixLogisticsSession(data);
+  return data;
+}
+
+export async function refreshBitrixLogisticsSession(
+  requestSession: () => Promise<BitrixLogisticsSessionResponse> = () =>
+    requestBitrixLogisticsSession(true)
+) {
+  if (!logisticsSessionRefreshPromise) {
+    logisticsSessionRefreshPromise = requestSession().finally(() => {
+      logisticsSessionRefreshPromise = null;
+    });
+  }
+  return logisticsSessionRefreshPromise;
+}
+
+export async function initializeBitrixLogisticsSession() {
+  const data = await requestBitrixLogisticsSession(false);
   ensureBitrixLogisticsLeftMenuPlacementInBackground();
   return data;
 }

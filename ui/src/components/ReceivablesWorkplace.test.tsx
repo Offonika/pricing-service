@@ -106,11 +106,75 @@ describe("ReceivablesWorkplace", () => {
     render(<ReceivablesWorkplace bitrixMode />);
 
     expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    await waitFor(() =>
+      expect(fetchReceivableWorkplace).toHaveBeenCalledWith(
+        expect.objectContaining({ date: "2026-07-23" }),
+      ),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Обновить" })).toBeEnabled());
     expect(screen.queryByRole("button", { name: "Сохранить" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
 
     expect(screen.getByRole("button", { name: "Сохранить комментарий" })).toBeVisible();
+  });
+
+  it("searches counterparties on the server and clears the query", async () => {
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    vi.mocked(fetchReceivableWorkplace).mockClear();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Поиск контрагента" }), {
+      target: { value: "  рб000001  " },
+    });
+    await waitFor(
+      () =>
+        expect(fetchReceivableWorkplace).toHaveBeenCalledWith(
+          expect.objectContaining({ counterparty_query: "рб000001" }),
+        ),
+      { timeout: 1200 },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Очистить поиск контрагента" }));
+    await waitFor(() =>
+      expect(fetchReceivableWorkplace).toHaveBeenLastCalledWith(
+        expect.objectContaining({ counterparty_query: undefined }),
+      ),
+    );
+    expect(screen.getByRole("searchbox", { name: "Поиск контрагента" })).toHaveValue("");
+  });
+
+  it("previews visible supervisor notes before opening the comment editor", async () => {
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      payload: [
+        {
+          ...item,
+          supervisor_notes: [
+            {
+              id: 10,
+              visibility: "shared",
+              comment: "Проверить договоренность по пятнице",
+              author_user_id: "43",
+              author_name: "Мария Руководитель",
+              created_at: "2026-07-23T10:00:00",
+              updated_at: "2026-07-23T11:00:00",
+              can_edit: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    const commentButton = await screen.findByRole("button", { name: /Комментарий тест/ });
+    expect(commentButton).toHaveTextContent(
+      "Коллегам · Мария Руководитель: Проверить договоренность по пятнице",
+    );
+    expect(commentButton.getAttribute("title")).toContain("Коллегам · Мария Руководитель");
+    expect(screen.queryByText("Заметки руководителя")).not.toBeInTheDocument();
   });
 
   it("exposes the workplace table as a keyboard-scrollable region", async () => {
@@ -294,7 +358,7 @@ describe("ReceivablesWorkplace", () => {
       screen.getByText("Комментарий менеджера очистится после успешного сохранения."),
     ).toBeVisible();
 
-    fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
+    fireEvent.click(screen.getByRole("button", { name: /Комментарий тест/ }));
     const comment = screen.getByRole("textbox", { name: /Комментарий менеджера/ });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить комментарий" }));
     expect(comment).toHaveValue("Комментарий тест");
@@ -365,7 +429,7 @@ describe("ReceivablesWorkplace", () => {
     expect(await screen.findByText("Просроченная дебиторка в выборке")).toBeVisible();
     expect(
       screen.getByText(
-        "Сумма учитывает доступы, подразделение, статус и порог долга и рассчитывается до применения limit.",
+        "Сумма учитывает доступы, поиск, подразделение, статус и порог долга и рассчитывается до применения limit.",
       ),
     ).toBeVisible();
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -429,12 +493,12 @@ describe("ReceivablesWorkplace", () => {
 
     render(<ReceivablesWorkplace bitrixMode accessLevel="full" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Комментарий тест" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Комментарий тест/ }));
     expect(screen.getByText("Заметки руководителя")).toBeVisible();
     expect(screen.getByRole("button", { name: "Личная" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Коллегам" }));
-    expect(screen.getByText("Заметка коллеги")).toBeVisible();
-    expect(screen.getByText(/Мария Руководитель/)).toBeVisible();
+    expect(screen.getAllByText("Заметка коллеги")[0]).toBeVisible();
+    expect(screen.getAllByText(/Мария Руководитель/)[0]).toBeVisible();
     fireEvent.change(screen.getByRole("textbox", { name: "Заметка коллегам" }), {
       target: { value: "Моя общая заметка" },
     });
@@ -476,8 +540,8 @@ describe("ReceivablesWorkplace", () => {
 
     render(<ReceivablesWorkplace bitrixMode accessLevel="department" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Комментарий тест" }));
-    expect(screen.getByText("Общая заметка для отдела")).toBeVisible();
+    fireEvent.click(await screen.findByRole("button", { name: /Комментарий тест/ }));
+    expect(screen.getAllByText("Общая заметка для отдела")[0]).toBeVisible();
     expect(screen.getByText("Общие заметки доступны только для чтения.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Личная" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Сохранить заметку" })).not.toBeInTheDocument();

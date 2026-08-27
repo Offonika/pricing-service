@@ -160,9 +160,15 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельного подтверждения.
 11. После зелёного CI разрешён merge PR №73. Production migration, deploy и cutover
     в это решение не входят.
+12. 2026-08-27 разрешён production release текущего `main`, включающего PR №70–73.
+    Разрешение не включает активацию автоматического движения стадий и SMS:
+    `LOGISTICS_STAGE_AUTOMATION_ENABLED=false` и
+    `PICKUP_READY_SMS_ENABLED=false` должны сохраниться после cutover.
 
 # Changelog
 
+- 2026-08-27 — разрешён production release текущего `main` с PR №70–73 без
+  включения автоматического движения стадий и SMS.
 - 2026-08-27 — разрешён merge PR №73; production release оставлен отдельным
   решением.
 - 2026-08-27 — `report_display_quality_mismatch_candidates.py` переведён на

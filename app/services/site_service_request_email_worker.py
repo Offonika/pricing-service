@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
@@ -34,6 +33,8 @@ from app.services.site_service_requests_worker import (
     _site_service_request_enum_value,
     decide_site_service_assignment,
     resolved_site_service_request_field_map,
+    site_service_request_activity_url,
+    site_service_request_item_url,
     validate_site_service_request_enum_map,
 )
 
@@ -550,7 +551,10 @@ def _email_item_fields(
             "assignment_waiting" if case.assignment_state == "waiting" else None
         ),
         field_map["mail_activity_id"]: str(payload.activity_id),
-        field_map["mail_activity_url"]: _activity_url(settings, payload.activity_id),
+        field_map["mail_activity_url"]: site_service_request_activity_url(
+            settings,
+            payload.activity_id,
+        ),
         field_map["mail_thread_key"]: payload.source_key,
     }
     if case.assigned_user_id is not None or case.assignment_state == "waiting":
@@ -658,7 +662,8 @@ def _notify_deal_manager_once(
         message=(
             "Новое сервисное email-обращение по заказу "
             f"№{payload.order_number}. Ответственный назначается сервисной очередью. "
-            f"[URL={_item_url(settings, case.bitrix_item_id)}]Открыть обращение[/URL]"
+            f"[URL={site_service_request_item_url(settings, case.bitrix_item_id)}]"
+            "Открыть обращение[/URL]"
         ),
         tag=f"mm-service-email-manager:{case.id}",
     )
@@ -888,27 +893,6 @@ def _activity_thread_id(activity: dict[str, Any]) -> int | None:
 
     return _positive_int(activity.get("THREAD_ID") or activity.get("threadId")) or _positive_int(
         activity.get("ID") or activity.get("id")
-    )
-
-
-def _portal_base_url(settings: Settings) -> str:
-    webhook = str(settings.site_service_requests_bitrix_webhook_url or "")
-    parsed = urlsplit(webhook)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise SiteServiceRequestConfigurationError(
-            "site service request Bitrix webhook URL is invalid"
-        )
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-def _activity_url(settings: Settings, activity_id: int) -> str:
-    return f"{_portal_base_url(settings)}/crm/activity/?ID={activity_id}&open_view={activity_id}"
-
-
-def _item_url(settings: Settings, item_id: int) -> str:
-    return (
-        f"{_portal_base_url(settings)}/crm/type/"
-        f"{settings.site_service_requests_bitrix_entity_type_id}/details/{item_id}/"
     )
 
 

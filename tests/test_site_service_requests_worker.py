@@ -3556,7 +3556,11 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     api = FakeBitrixApi()
     api.timeman = {1001: "OPENED", 1002: "OPENED"}
     reader = SiteServiceRequestBitrixReader(api)
-    settings = _worker_settings()
+    settings = _worker_settings(
+        site_service_requests_bitrix_webhook_url=(
+            "https://portal.example.invalid/rest/1/test-token/"
+        )
+    )
     plans = build_site_service_request_worker_plans(
         db_session,
         settings=settings,
@@ -3614,7 +3618,11 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     )
     assert notification_params["MESSAGE"] == (
         f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
-        "Проверьте обращение и ответьте клиенту."
+        "Проверьте обращение и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        f"[URL=https://master-mobile.ru/personal/tickets/?ID={case.source_ticket_id}]"
+        "Открыть обращение на сайте[/URL]"
     )
     assert "SLA" not in notification_params["MESSAGE"]
 
@@ -3636,6 +3644,7 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
         source_kind="bitrix_mail",
         source_ticket_id=-741,
         bitrix_item_id=1000,
+        primary_activity_id=555,
         escalated_at=now,
     )
     db_session.add(case)
@@ -3646,7 +3655,11 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
     worker_module._deliver_site_service_request_escalation(
         db_session,
         case_id=case.id,
-        settings=_worker_settings(),
+        settings=_worker_settings(
+            site_service_requests_bitrix_webhook_url=(
+                "https://portal.example.invalid/rest/1/test-token/"
+            )
+        ),
         writer=SiteServiceRequestBitrixWriter(api),
         now=now,
     )
@@ -3655,7 +3668,11 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
         dict(params) for method, params in api.calls if method == "im.notify.personal.add"
     )
     assert notification_params["MESSAGE"] == (
-        "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту."
+        "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        "[URL=https://portal.example.invalid/crm/activity/?ID=555&open_view=555]"
+        "Открыть письмо[/URL]"
     )
     assert "SLA" not in notification_params["MESSAGE"]
 

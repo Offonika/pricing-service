@@ -97,6 +97,13 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
                     reason="external carrier",
                     payload={"rtu_number": "РБГУ0408002"},
                 ),
+                LogisticsManualReview(
+                    review_type="site_order_execution_conflict",
+                    source_document_type="site_order",
+                    source_external_id="220003",
+                    reason="execution reconciliation conflict",
+                    payload={"site_order_number": "220003"},
+                ),
             ]
         )
         session.commit()
@@ -193,6 +200,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             "rtu_external_carrier_unmapped": 1,
             "rtu_target_warehouse_unresolved": 1,
         }
+        assert "site_order_execution_conflict" not in review_payload["counts"]
         assert "payload" not in review_payload["items"][0]
         assert "source_external_id" not in review_payload["items"][0]
         assert "secret customer address" not in review_page.text
@@ -206,6 +214,15 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         assert filtered_reviews.status_code == 200
         assert filtered_reviews.json()["total"] == 1
         assert filtered_reviews.json()["items"][0]["document_number"] == "РБГУ0408001"
+
+        foreign_reviews = client.get(
+            "/api/bitrix/logistics/errors",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"review_type": "site_order_execution_conflict"},
+        )
+        assert foreign_reviews.status_code == 200
+        assert foreign_reviews.json()["total"] == 0
+        assert foreign_reviews.json()["items"] == []
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()

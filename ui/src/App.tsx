@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
-import { LogisticsWorkspace } from "./components/LogisticsWorkspace";
+import { CameraScanner, LogisticsWorkspace } from "./components/LogisticsWorkspace";
 import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
 import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
 import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
@@ -144,6 +144,9 @@ type LogisticsDraft = {
   id: number;
   draft_type: string;
   status: string;
+  warehouse_id: number;
+  driver_id: number | null;
+  default_dropoff_warehouse_id?: number | null;
   item_count: number;
   items: Array<{
     id: number;
@@ -180,7 +183,12 @@ async function logisticsFetch<T>(path: string, options: RequestInit = {}): Promi
     let message = `HTTP ${response.status}`;
     try {
       const data = await response.json();
-      message = typeof data.detail === "string" ? data.detail : message;
+      message =
+        typeof data.detail === "string"
+          ? data.detail
+          : typeof data.detail?.message === "string"
+            ? data.detail.message
+            : message;
     } catch {
       // keep status message
     }
@@ -205,12 +213,15 @@ function exchangeFallbackLaunchToken() {
       const url = new URL(window.location.href);
       url.searchParams.delete("launch");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }).catch((error: unknown) => {
+      fallbackExchangePromise = null;
+      throw error;
     });
   }
   return fallbackExchangePromise;
 }
 
-function LogisticsFallbackApp() {
+export function LogisticsFallbackApp() {
   const [profile, setProfile] = useState<LogisticsProfile | null>(null);
   const [warehouses, setWarehouses] = useState<LogisticsWarehouse[]>([]);
   const [drivers, setDrivers] = useState<LogisticsDriver[]>([]);
@@ -223,6 +234,18 @@ function LogisticsFallbackApp() {
   const [draft, setDraft] = useState<LogisticsDraft | null>(null);
   const [monitor, setMonitor] = useState<LogisticsMonitorItem[]>([]);
   const [message, setMessage] = useState("Загрузка...");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const operationInFlight = useRef(false);
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = "Логистика — браузер";
+    return () => {
+      document.title = previousTitle;
+    };
+  }, []);
 
   const refreshMonitorForWarehouse = useCallback(async (effectiveWarehouseId: string) => {
     const params = new URLSearchParams();
@@ -244,18 +267,34 @@ function LogisticsFallbackApp() {
           logisticsFetch<LogisticsProfile>("/profile"),
           logisticsFetch<LogisticsWarehouse[]>("/warehouses"),
           logisticsFetch<LogisticsDriver[]>("/drivers"),
+          logisticsFetch<LogisticsDraft | null>("/draft/open"),
         ])
       )
-      .then(([profileData, warehouseData, driverData]) => {
+      .then(([profileData, warehouseData, driverData, openDraft]) => {
         if (cancelled) return;
         setProfile(profileData);
         setWarehouses(warehouseData);
         setDrivers(driverData);
-        const defaultWarehouse = String(profileData.default_warehouse_id || warehouseData[0]?.id || "");
+        const defaultWarehouse = String(profileData.default_warehouse_id || "");
+        const firstDropoff = warehouseData.find(
+          (warehouse) => warehouse.id !== profileData.default_warehouse_id
+        );
+        if (openDraft) setMode(openDraft.draft_type as "handoff" | "receipt");
+        else if (profileData.role === "sender") setMode("handoff");
+        else if (profileData.role === "receiver") setMode("receipt");
+        setDraft(openDraft);
         setWarehouseId(defaultWarehouse);
-        setDropoffWarehouseId(defaultWarehouse);
-        setDriverId(String(driverData[0]?.id || ""));
-        setMessage("");
+        setDropoffWarehouseId(
+          String(openDraft?.default_dropoff_warehouse_id || firstDropoff?.id || "")
+        );
+        setDriverId(String(openDraft?.driver_id || driverData[0]?.id || ""));
+        setMessage(
+          openDraft
+            ? `Черновик #${openDraft.id} восстановлен`
+            : ["sender", "receiver"].includes(profileData.role)
+              ? ""
+              : "Для этой роли доступны мониторинг и история в приложении Bitrix24"
+        );
         return refreshMonitorForWarehouse(defaultWarehouse);
       })
       .catch((error: unknown) => {
@@ -264,10 +303,32 @@ function LogisticsFallbackApp() {
     return () => {
       cancelled = true;
     };
-  }, [refreshMonitorForWarehouse]);
+  }, [bootstrapAttempt, refreshMonitorForWarehouse]);
 
-  const createDraft = async () => {
+  const runOperation = async (action: () => Promise<void>, fallbackMessage: string) => {
+    if (operationInFlight.current) return;
+    operationInFlight.current = true;
+    setBusy(true);
     try {
+      await action();
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : fallbackMessage);
+    } finally {
+      operationInFlight.current = false;
+      setBusy(false);
+    }
+  };
+
+  const createDraft = () =>
+    runOperation(async () => {
+      if (!profile || !["sender", "receiver"].includes(profile.role)) {
+        throw new Error("Для этой роли доступны только мониторинг и история");
+      }
+      if (!warehouseId) throw new Error("Для профиля не назначен склад");
+      if (mode === "handoff" && !driverId) throw new Error("Нет активного водителя");
+      if (mode === "handoff" && !dropoffWarehouseId) {
+        throw new Error("Нет доступного склада назначения");
+      }
       const path = mode === "handoff" ? "/handoffs/draft" : "/receipts/draft";
       const payload =
         mode === "handoff"
@@ -284,33 +345,29 @@ function LogisticsFallbackApp() {
       });
       setDraft(data);
       setMessage(`Черновик #${data.id}`);
-    } catch (error: unknown) {
-      setMessage(error instanceof Error ? error.message : "Ошибка черновика");
-    }
-  };
+    }, "Ошибка черновика");
 
-  const scanDraft = async () => {
-    if (!draft || !scanCode.trim()) return;
-    try {
+  const scanDraft = (overrideCode?: string) => {
+    const code = (overrideCode || scanCode).trim();
+    if (!draft || !code) return Promise.resolve();
+    return runOperation(async () => {
       const base = mode === "handoff" ? "/handoffs" : "/receipts";
       const data = await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/scan`, {
         method: "POST",
         body: JSON.stringify({
-          lookup_code: scanCode.trim(),
+          lookup_code: code,
           dropoff_warehouse_id: mode === "handoff" && dropoffWarehouseId ? Number(dropoffWarehouseId) : null,
         }),
       });
       setDraft(data);
       setScanCode("");
       setMessage("Скан принят");
-    } catch (error: unknown) {
-      setMessage(error instanceof Error ? error.message : "Ошибка скана");
-    }
+    }, "Ошибка скана");
   };
 
-  const confirmDraft = async () => {
-    if (!draft) return;
-    try {
+  const confirmDraft = () => {
+    if (!draft || !draft.item_count) return Promise.resolve();
+    return runOperation(async () => {
       const base = mode === "handoff" ? "/handoffs" : "/receipts";
       const data = await logisticsFetch<{ processed_count: number }>(`${base}/draft/${draft.id}/confirm`, {
         method: "POST",
@@ -319,9 +376,7 @@ function LogisticsFallbackApp() {
       setDraft(null);
       setMessage(`Подтверждено: ${data.processed_count}`);
       await refreshMonitor();
-    } catch (error: unknown) {
-      setMessage(error instanceof Error ? error.message : "Ошибка подтверждения");
-    }
+    }, "Ошибка подтверждения");
   };
 
   return (
@@ -329,84 +384,148 @@ function LogisticsFallbackApp() {
       <header className="app__header">
         <h1>Логистика</h1>
         {profile && <span className="app__user">{profile.full_name}</span>}
-        <button className="btn btn--ghost" onClick={() => refreshMonitor()}>
-          Обновить
-        </button>
+        {profile && (
+          <button
+            className="btn btn--ghost"
+            disabled={busy}
+            onClick={() =>
+              void refreshMonitor().catch((error: unknown) =>
+                setMessage(error instanceof Error ? error.message : "Ошибка обновления")
+              )
+            }
+          >
+            Обновить
+          </button>
+        )}
       </header>
       <main className="logistics__grid">
-        <section className="logistics__panel">
-          <div className="logistics__tabs">
-            <button className={mode === "receipt" ? "btn" : "btn btn--ghost"} onClick={() => setMode("receipt")}>
-              Приемка
-            </button>
-            <button className={mode === "handoff" ? "btn" : "btn btn--ghost"} onClick={() => setMode("handoff")}>
-              Передача
-            </button>
-          </div>
-          <select className="app__select" value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
-            {warehouses.map((warehouse) => (
-              <option key={warehouse.id} value={warehouse.id}>
-                {warehouse.name}
-              </option>
-            ))}
-          </select>
-          {mode === "handoff" && (
-            <>
-              <select className="app__select" value={driverId} onChange={(e) => setDriverId(e.target.value)}>
-                {drivers.map((driver) => (
-                  <option key={driver.id} value={driver.id}>
-                    {driver.full_name}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="app__select"
-                value={dropoffWarehouseId}
-                onChange={(e) => setDropoffWarehouseId(e.target.value)}
-              >
-                {warehouses.map((warehouse) => (
-                  <option key={warehouse.id} value={warehouse.id}>
-                    {warehouse.name}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-          <input className="app__search" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Комментарий" />
-          <button className="btn" onClick={createDraft}>
-            Открыть
-          </button>
-          {draft && (
-            <div className="logistics__draft">
-              <strong>#{draft.id}</strong>
-              <input
-                className="app__search"
-                value={scanCode}
-                onChange={(e) => setScanCode(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") scanDraft();
-                }}
-                placeholder="QR или штрихкод"
-              />
-              <div className="logistics__actions">
-                <button className="btn" onClick={scanDraft}>
-                  Скан
-                </button>
-                <button className="btn btn--ghost" onClick={confirmDraft}>
-                  Подтвердить
-                </button>
-              </div>
-              <ul>
-                {draft.items.map((item) => (
-                  <li key={item.id}>
-                    {item.document_number} · {item.lookup_code || item.barcode}
-                  </li>
-                ))}
-              </ul>
+        {profile && ["sender", "receiver"].includes(profile.role) && (
+          <section className="logistics__panel">
+            <h2>{profile.role === "sender" ? "Передача" : "Приёмка"}</h2>
+            <div className="logistics-field logistics-field--fixed">
+              <span>Склад</span>
+              <strong>
+                {warehouses.find(
+                  (warehouse) => warehouse.id === profile.default_warehouse_id
+                )?.name || "Не назначен"}
+              </strong>
             </div>
-          )}
-          {message && <p className="logistics__message">{message}</p>}
-        </section>
+            {mode === "handoff" && (
+              <>
+                <select
+                  className="app__select"
+                  aria-label="Водитель"
+                  value={driverId}
+                  onChange={(e) => setDriverId(e.target.value)}
+                >
+                  {drivers.map((driver) => (
+                    <option key={driver.id} value={driver.id}>
+                      {driver.full_name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="app__select"
+                  aria-label="Склад назначения"
+                  value={dropoffWarehouseId}
+                  onChange={(e) => setDropoffWarehouseId(e.target.value)}
+                >
+                  {warehouses
+                    .filter((warehouse) => warehouse.id !== profile.default_warehouse_id)
+                    .map((warehouse) => (
+                      <option key={warehouse.id} value={warehouse.id}>
+                        {warehouse.name}
+                      </option>
+                    ))}
+                </select>
+              </>
+            )}
+            <input
+              className="app__search"
+              value={comment}
+              maxLength={1000}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Комментарий"
+            />
+            {!draft && (
+              <button
+                className="btn"
+                disabled={
+                  busy ||
+                  !warehouseId ||
+                  (mode === "handoff" && (!driverId || !dropoffWarehouseId))
+                }
+                onClick={createDraft}
+              >
+                Открыть
+              </button>
+            )}
+            {draft && (
+              <div className="logistics__draft">
+                <strong>#{draft.id}</strong>
+                <input
+                  className="app__search"
+                  value={scanCode}
+                  maxLength={255}
+                  onChange={(e) => setScanCode(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void scanDraft();
+                  }}
+                  placeholder="QR или штрихкод"
+                />
+                <button
+                  className="btn btn--ghost"
+                  type="button"
+                  aria-label="Открыть камеру"
+                  disabled={busy}
+                  onClick={() => setCameraOpen(true)}
+                >
+                  Камера
+                </button>
+                <div className="logistics__actions">
+                  <button
+                    className="btn"
+                    disabled={busy || !scanCode.trim()}
+                    onClick={() => void scanDraft()}
+                  >
+                    Скан
+                  </button>
+                  <button
+                    className="btn btn--ghost"
+                    disabled={busy || !draft.item_count}
+                    onClick={confirmDraft}
+                  >
+                    Подтвердить
+                  </button>
+                </div>
+                <ul>
+                  {draft.items.map((item) => (
+                    <li key={item.id}>
+                      {item.document_number} · {item.lookup_code || item.barcode}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        )}
+        {message && (
+          <p className="logistics__message" role="status">
+            {message}
+          </p>
+        )}
+        {!profile && message !== "Загрузка..." && (
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              setMessage("Загрузка...");
+              setBootstrapAttempt((attempt) => attempt + 1);
+            }}
+          >
+            Повторить
+          </button>
+        )}
         <section className="logistics__panel logistics__monitor">
           <table>
             <thead>
@@ -418,6 +537,11 @@ function LogisticsFallbackApp() {
               </tr>
             </thead>
             <tbody>
+              {!monitor.length && (
+                <tr>
+                  <td colSpan={4}>Активных перемещений нет</td>
+                </tr>
+              )}
               {monitor.map((item) => (
                 <tr key={item.transfer_id}>
                   <td>{item.document_number}</td>
@@ -430,6 +554,15 @@ function LogisticsFallbackApp() {
           </table>
         </section>
       </main>
+      {cameraOpen && (
+        <CameraScanner
+          onCode={(code) => {
+            setScanCode(code);
+            void scanDraft(code);
+          }}
+          onClose={() => setCameraOpen(false)}
+        />
+      )}
     </div>
   );
 }

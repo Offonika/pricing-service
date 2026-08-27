@@ -5,8 +5,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { LogisticsWorkspace } from "./LogisticsWorkspace";
 
+const zxing = vi.hoisted(() => ({
+  decodeFromConstraints: vi.fn(),
+  decodeFromImageUrl: vi.fn(),
+  stop: vi.fn(),
+}));
+
 vi.mock("../api/client", () => ({
   api: { get: vi.fn(), post: vi.fn() },
+}));
+
+vi.mock("@zxing/browser", () => ({
+  BrowserMultiFormatReader: class {
+    decodeFromConstraints = zxing.decodeFromConstraints;
+    decodeFromImageUrl = zxing.decodeFromImageUrl;
+  },
 }));
 
 const bootstrap = {
@@ -39,6 +52,7 @@ const logistBootstrap = {
 
 describe("LogisticsWorkspace", () => {
   beforeEach(() => {
+    zxing.decodeFromConstraints.mockResolvedValue({ stop: zxing.stop });
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === "/bitrix/logistics/bootstrap") return { data: bootstrap };
       if (path === "/bitrix/logistics/monitor") return { data: [] };
@@ -46,8 +60,62 @@ describe("LogisticsWorkspace", () => {
     });
   });
 
+  it("просит заднюю камеру в запасном ZXing-сканере", async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        id: 42,
+        draft_type: "handoff",
+        status: "open",
+        warehouse_id: 10,
+        driver_id: 30,
+        item_count: 0,
+        items: [],
+      },
+    });
+
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Начать сканирование" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть камеру" }));
+
+    await waitFor(() =>
+      expect(zxing.decodeFromConstraints).toHaveBeenCalledWith(
+        {
+          video: { facingMode: { ideal: "environment" } },
+          audio: false,
+        },
+        expect.any(HTMLVideoElement),
+        expect.any(Function)
+      )
+    );
+  });
+
+  it("объясняет отказ в доступе к камере без сырого текста браузера", async () => {
+    zxing.decodeFromConstraints.mockRejectedValueOnce(
+      Object.assign(new Error("Permission denied by system"), { name: "NotAllowedError" })
+    );
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        id: 43,
+        draft_type: "handoff",
+        status: "open",
+        warehouse_id: 10,
+        driver_id: 30,
+        item_count: 0,
+        items: [],
+      },
+    });
+
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Начать сканирование" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть камеру" }));
+
+    expect(await screen.findByText(/Нет доступа к камере/)).toBeVisible();
+    expect(screen.queryByText("Permission denied by system")).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -98,6 +166,194 @@ describe("LogisticsWorkspace", () => {
     expect(await screen.findByText("Код уже добавлен")).toBeVisible();
     expect(screen.getByText("РТУ-000051")).toBeVisible();
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
+  });
+
+  it("повторяет загрузку рабочего места после ошибки bootstrap", async () => {
+    vi.mocked(api.get)
+      .mockRejectedValueOnce(new Error("Сервис временно недоступен"))
+      .mockResolvedValueOnce({ data: bootstrap })
+      .mockResolvedValue({ data: [] });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Сервис временно недоступен")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+
+    expect(await screen.findByText("Передать водителю")).toBeVisible();
+    expect(api.get).toHaveBeenCalledWith("/bitrix/logistics/bootstrap", undefined);
+  });
+
+  it("открывает ровно один fallback-контекст для одноразовой ссылки", async () => {
+    const replace = vi.fn();
+    const popup = {
+      opener: window,
+      location: { replace },
+      close: vi.fn(),
+    } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: { url: "https://bitrix-app.example/logistics/fallback?launch=one-time" },
+    });
+
+    render(<LogisticsWorkspace />);
+    const fallbackButton = await screen.findByRole("button", {
+      name: "Открыть сканер в браузере",
+    });
+    fireEvent.click(fallbackButton);
+    fireEvent.click(fallbackButton);
+
+    await waitFor(() =>
+      expect(replace).toHaveBeenCalledWith(
+        "https://bitrix-app.example/logistics/fallback?launch=one-time"
+      )
+    );
+    expect(window.open).toHaveBeenCalledTimes(1);
+    expect(popup.opener).toBeNull();
+  });
+
+  it("восстанавливает собственный открытый черновик после перезагрузки", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") {
+        return {
+          data: {
+            ...bootstrap,
+            open_draft: {
+              id: 77,
+              draft_type: "handoff",
+              status: "open",
+              warehouse_id: 10,
+              driver_id: 30,
+              default_dropoff_warehouse_id: 20,
+              item_count: 1,
+              items: [
+                {
+                  id: 78,
+                  document_number: "РТУ-000077",
+                  lookup_code: "MMLOG1|rtu|77|220077",
+                  barcode: "BC-77",
+                },
+              ],
+            },
+          },
+        };
+      }
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Черновик №77")).toBeVisible();
+    expect(screen.getByText("РТУ-000077")).toBeVisible();
+    expect(screen.getByText("Черновик №77 восстановлен")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("не начинает передачу без активного водителя", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") {
+        return { data: { ...bootstrap, drivers: [] } };
+      }
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Нет активных водителей")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeDisabled();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("объясняет отправителю отсутствие привязки склада", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") {
+        return {
+          data: {
+            ...bootstrap,
+            profile: {
+              ...bootstrap.profile,
+              default_warehouse_id: null,
+              default_warehouse_name: null,
+            },
+          },
+        };
+      }
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Не назначен")).toBeVisible();
+    expect(screen.getByText("Обратитесь к логисту для привязки склада")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeDisabled();
+  });
+
+  it("не начинает передачу без магазина назначения", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") {
+        return { data: { ...bootstrap, warehouses: [bootstrap.warehouses[0]] } };
+      }
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Нет доступного магазина назначения")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeDisabled();
+    expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it("открывает понятную историю только после выбора перемещения", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: bootstrap };
+      if (path === "/bitrix/logistics/monitor") {
+        return {
+          data: [
+            {
+              transfer_id: 91,
+              document_number: "РТУ-000091",
+              status: "in_transit",
+              dropoff_warehouse_name: "Тёплый Стан",
+              driver_name: "Иван Водитель",
+              last_event_at: "2026-08-27T10:00:00Z",
+              manual_review_count: 0,
+            },
+          ],
+        };
+      }
+      if (path === "/bitrix/logistics/transfers/91/history") {
+        return {
+          data: [
+            {
+              id: 301,
+              event_type: "handed_to_driver",
+              event_at: "2026-08-27T10:00:00Z",
+              warehouse_name: "Центральный склад",
+              dropoff_warehouse_name: "Тёплый Стан",
+              driver_name: "Иван Водитель",
+              user_name: "Отправитель",
+              source: "bitrix",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "В пути" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "История" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "В пути" }));
+    fireEvent.click(await screen.findByRole("button", { name: "История" }));
+
+    expect(await screen.findByText("Передано водителю")).toBeVisible();
+    expect(screen.getByText("Центральный склад → Тёплый Стан")).toBeVisible();
+    expect(screen.getByText("Событие №301 · Водитель: Иван Водитель")).toBeVisible();
   });
 
   it("показывает безопасную очередь разбора с фильтром и пагинацией", async () => {

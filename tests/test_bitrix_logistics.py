@@ -112,6 +112,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         admin_id = session.scalar(
             select(LogisticsUser.id).where(LogisticsUser.bitrix_user_id == "30")
         )
+        driver_id = session.scalar(select(LogisticsDriver.id))
 
     settings = get_settings()
     monkeypatch.setattr(settings, "logistics_bitrix_app_enabled", True)
@@ -157,6 +158,32 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         )
         assert foreign_warehouse.status_code == 403
 
+        oversized_comment = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+                "comment": "x" * 1001,
+            },
+        )
+        assert oversized_comment.status_code == 422
+
+        handoff_draft = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+            },
+        )
+        assert handoff_draft.status_code == 200
+        restored_bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
+        assert restored_bootstrap.status_code == 200
+        assert restored_bootstrap.json()["open_draft"]["id"] == handoff_draft.json()["id"]
+
         fallback = client.post("/api/bitrix/logistics/fallback-link", headers=headers)
         assert fallback.status_code == 200
         launch_token = parse_qs(urlparse(fallback.json()["url"]).query)["launch"][0]
@@ -171,6 +198,16 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             json={"token": launch_token},
         )
         assert repeated.status_code == 401
+        with Session(engine) as audit_session:
+            launch_audit = audit_session.scalar(
+                select(LogisticsWebLaunchToken).where(
+                    LogisticsWebLaunchToken.token_hash
+                    == hashlib.sha256(launch_token.encode()).hexdigest()
+                )
+            )
+            assert launch_audit is not None
+            assert launch_audit.consumed_at is not None
+            assert launch_audit.created_at <= launch_audit.consumed_at
 
         admin_token, _expires_at = create_logistics_bitrix_session_token(
             actor_user_id=admin_id,

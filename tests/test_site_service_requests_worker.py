@@ -34,6 +34,7 @@ from app.services.site_service_requests_worker import (
     SiteServiceRequestBitrixReader,
     SiteServiceRequestBitrixWriter,
     SiteServiceRequestFileCleanup,
+    SiteServiceRequestFileDuplicateGuardError,
     SiteServiceRequestPermanentError,
     apply_site_service_request_worker_plans,
     build_site_service_request_worker_plans,
@@ -1674,7 +1675,290 @@ def test_staged_file_upload_preserves_every_existing_file_id(db_session, tmp_pat
     assert api.items[1000]["ufCrm36Clientfiles"] == ["1999", "3000"]
     assert staged_file.bitrix_object_id == "2000"
     assert staged_file.bitrix_file_id == "3000"
+    assert staged_file.bitrix_attach_baseline_file_ids == [1999]
     assert api.crm_files[3000] == content
+
+
+def test_file_attach_marker_is_committed_before_crm_write(db_session, tmp_path) -> None:
+    class CommitCheckingApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "crm.item.update":
+                with Session(db_session.get_bind()) as observer:
+                    durable_file = observer.scalar(select(SiteServiceRequestFile))
+                    assert durable_file is not None
+                    assert durable_file.bitrix_attach_attempted_at is not None
+                    assert durable_file.bitrix_attach_baseline_file_ids == []
+            return super().call_json(method, payload, **kwargs)
+
+    content = b"commit-before-attach"
+    path = tmp_path / "commit-before-attach.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = CommitCheckingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+
+    result = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert result[0]["status"] == "uploaded"
+    assert file.bitrix_attach_attempted_at is not None
+
+
+def test_ambiguous_attach_retry_is_readback_only_and_does_not_duplicate(
+    db_session,
+    tmp_path,
+) -> None:
+    class AmbiguousAttachApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+            self.fail_next_readback = False
+
+        def call(self, method: str, params=None, **kwargs):
+            if method == "crm.item.get" and self.fail_next_readback:
+                self.fail_next_readback = False
+                raise RuntimeError("simulated ambiguous readback")
+            return super().call(method, params, **kwargs)
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            result = super().call_json(method, payload, **kwargs)
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+                new_file_id = self.next_crm_file_id - 1
+                self.crm_files[new_file_id] += b"-transformed-by-bitrix"
+                self.fail_next_readback = True
+                raise RuntimeError("simulated timeout after crm write")
+            return result
+
+    content = b"ambiguous-attach"
+    path = tmp_path / "ambiguous-attach.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = AmbiguousAttachApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    settings = _worker_settings()
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert first[0]["errorCode"] == "file_duplicate_guard"
+    assert second[0]["status"] == "uploaded"
+    assert file.status == "uploaded"
+    assert api.crm_write_calls == 1
+    assert api.next_crm_file_id == 3001
+    assert api.crm_files[3000] != content
+
+
+def test_guarded_file_without_readback_match_never_writes_again(db_session, tmp_path) -> None:
+    class CountingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+            return super().call_json(method, payload, **kwargs)
+
+    content = b"guarded-without-match"
+    path = tmp_path / "guarded-without-match.bin"
+    path.write_bytes(content)
+    marker = datetime.now(UTC)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="failed",
+        temporary_path=str(path),
+        bitrix_attach_attempted_at=marker,
+        bitrix_attach_baseline_file_ids=[],
+        last_error_code="file_duplicate_guard",
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = CountingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    settings = _worker_settings()
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    assert first[0]["errorCode"] == "file_duplicate_guard"
+    assert second[0]["errorCode"] == "file_duplicate_guard"
+    assert api.crm_write_calls == 0
+    assert file.temporary_path == str(path)
+    assert path.exists() is True
+
+
+def test_transformed_crm_file_is_confirmed_by_persisted_id_delta(
+    db_session,
+    tmp_path,
+) -> None:
+    class TransformingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_write_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            result = super().call_json(method, payload, **kwargs)
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+                new_file_id = self.next_crm_file_id - 1
+                self.crm_files[new_file_id] += b"-transformed-by-bitrix"
+            return result
+
+    content = b"jpeg-source-content"
+    path = tmp_path / "transformed.jpg"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = TransformingApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+
+    first = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+    db_session.commit()
+    second = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert first[0]["status"] == "uploaded"
+    assert second == []
+    assert file.status == "uploaded"
+    assert file.bitrix_file_id == "3000"
+    assert file.bitrix_attach_baseline_file_ids == []
+    assert api.crm_files[3000] != content
+    assert api.crm_write_calls == 1
+    assert api.next_crm_file_id == 3001
+
+
+def test_file_count_guard_fails_before_download_or_crm_write(db_session, tmp_path) -> None:
+    class GuardCountingApi(FakeBitrixApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.download_calls = 0
+            self.crm_write_calls = 0
+            self.disk_upload_calls = 0
+
+        def call_json(self, method: str, payload: dict, **kwargs):
+            if method == "disk.folder.uploadfile":
+                self.disk_upload_calls += 1
+            if method == "crm.item.update":
+                self.crm_write_calls += 1
+            return super().call_json(method, payload, **kwargs)
+
+        def download(self, url: str, *, max_bytes: int, **kwargs) -> bytes:
+            self.download_calls += 1
+            return super().download(url, max_bytes=max_bytes, **kwargs)
+
+    content = b"over-limit"
+    path = tmp_path / "over-limit.bin"
+    path.write_bytes(content)
+    case = _case(bitrix_item_id=1000, base_sync_status="synced", sync_status="synced")
+    file = SiteServiceRequestFile(
+        case=case,
+        source_message_id=1201,
+        source_file_id=93287,
+        safe_filename="photo.jpg",
+        mime_type="image/jpeg",
+        byte_size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        status="staged",
+        temporary_path=str(path),
+    )
+    db_session.add_all([case, file])
+    db_session.commit()
+    api = GuardCountingApi()
+    existing_ids = [str(file_id) for file_id in range(1, 52)]
+    api.items[1000] = {"ufCrm36Clientfiles": existing_ids}
+    api.crm_files.update({file_id: b"existing" for file_id in range(1, 52)})
+
+    result = sync_staged_site_service_request_files(
+        db_session,
+        settings=_worker_settings(site_service_requests_max_crm_files_per_item=50),
+        writer=SiteServiceRequestBitrixWriter(api),
+    )
+
+    db_session.refresh(file)
+    assert result[0]["errorCode"] == "file_duplicate_guard"
+    assert file.status == "failed"
+    assert file.bitrix_attach_attempted_at is None
+    assert api.download_calls == 0
+    assert api.disk_upload_calls == 0
+    assert api.crm_write_calls == 0
+    assert path.exists() is True
 
 
 def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
@@ -1710,6 +1994,58 @@ def test_file_content_attach_recovers_timeout_and_reuses_hash() -> None:
     assert worker_module._item_field_contains(second_item, "UF_CRM_36_CLIENTFILES", "3000")
 
 
+@pytest.mark.parametrize("baseline", [["1"], [1, 1], {"id": 1}])
+def test_file_content_attach_rejects_malformed_persisted_baseline(baseline) -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": []}
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+
+    with pytest.raises(
+        SiteServiceRequestFileDuplicateGuardError,
+        match="file_duplicate_guard",
+    ):
+        writer.attach_file_content(
+            entity_type_id=1134,
+            item_id=1000,
+            field_name="UF_CRM_36_CLIENTFILES",
+            deterministic_name="ticket-file.bin",
+            content=content,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            max_bytes=1024,
+            baseline_file_ids=baseline,
+            allow_write=False,
+        )
+
+    assert api.next_crm_file_id == 3000
+
+
+def test_file_content_attach_rejects_multiple_ids_after_persisted_baseline() -> None:
+    api = FakeBitrixApi()
+    api.items[1000] = {"ufCrm36Clientfiles": [3000, 3001]}
+    api.crm_files.update({3000: b"first", 3001: b"second"})
+    writer = SiteServiceRequestBitrixWriter(api)
+    content = b"file-content"
+
+    with pytest.raises(
+        SiteServiceRequestFileDuplicateGuardError,
+        match="file_duplicate_guard",
+    ):
+        writer.attach_file_content(
+            entity_type_id=1134,
+            item_id=1000,
+            field_name="UF_CRM_36_CLIENTFILES",
+            deterministic_name="ticket-file.bin",
+            content=content,
+            expected_sha256=hashlib.sha256(content).hexdigest(),
+            max_bytes=1024,
+            baseline_file_ids=[],
+            allow_write=False,
+        )
+
+    assert api.next_crm_file_id == 3000
+
+
 def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> None:
     class DualUrlBitrixApi(FakeBitrixApi):
         def call(self, method: str, params=None, **kwargs):
@@ -1721,7 +2057,8 @@ def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> N
             return response
 
     api = DualUrlBitrixApi()
-    api.items[1000] = {"ufCrm36Clientfiles": []}
+    api.items[1000] = {"ufCrm36Clientfiles": [2999]}
+    api.crm_files[2999] = b"file-content"
     writer = SiteServiceRequestBitrixWriter(api)
     content = b"file-content"
 
@@ -1735,8 +2072,9 @@ def test_file_content_attach_prefers_machine_url_when_browser_url_differs() -> N
         max_bytes=1024,
     )
 
-    assert file_id == "3000"
-    assert item["ufCrm36Clientfiles"][0]["urlMachine"].endswith("/3000")
+    assert file_id == "2999"
+    assert item["ufCrm36Clientfiles"][0]["urlMachine"].endswith("/2999")
+    assert api.next_crm_file_id == 3000
 
 
 def test_terminal_file_error_is_delivered_once_after_event_processing(db_session) -> None:
@@ -3218,7 +3556,11 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     api = FakeBitrixApi()
     api.timeman = {1001: "OPENED", 1002: "OPENED"}
     reader = SiteServiceRequestBitrixReader(api)
-    settings = _worker_settings()
+    settings = _worker_settings(
+        site_service_requests_bitrix_webhook_url=(
+            "https://portal.example.invalid/rest/1/test-token/"
+        )
+    )
     plans = build_site_service_request_worker_plans(
         db_session,
         settings=settings,
@@ -3266,6 +3608,23 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     assert api.items[int(case.bitrix_item_id)]["stageId"] == "DT1134_55:WORK"
     assert [method for method, _params in api.calls].count("crm.timeline.comment.add") == 1
     assert [method for method, _params in api.calls].count("im.notify.personal.add") == 1
+    assert api.timeline_comments[0]["COMMENT"] == (
+        "Срок первого ответа клиенту истёк. "
+        "Ответственность передана резервному сотруднику. "
+        f"[site-service-escalation:{case.id}]"
+    )
+    notification_params = next(
+        dict(params) for method, params in api.calls if method == "im.notify.personal.add"
+    )
+    assert notification_params["MESSAGE"] == (
+        f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
+        "Проверьте обращение и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        f"[URL=https://master-mobile.ru/personal/tickets/?ID={case.source_ticket_id}]"
+        "Открыть обращение на сайте[/URL]"
+    )
+    assert "SLA" not in notification_params["MESSAGE"]
 
     api.items[int(case.bitrix_item_id)]["stageId"] = "DT1134_55:FAIL"
     failed_close = reconcile_site_service_request_assignments(
@@ -3277,6 +3636,45 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     )
     assert failed_close[0]["closeReverted"] is True
     assert api.items[int(case.bitrix_item_id)]["stageId"] == "DT1134_55:WORK"
+
+
+def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
+    now = datetime(2026, 8, 22, 8, 0, tzinfo=UTC)
+    case = _case(
+        source_kind="bitrix_mail",
+        source_ticket_id=-741,
+        bitrix_item_id=1000,
+        primary_activity_id=555,
+        escalated_at=now,
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {"stageId": "DT1134_55:WORK"}
+
+    worker_module._deliver_site_service_request_escalation(
+        db_session,
+        case_id=case.id,
+        settings=_worker_settings(
+            site_service_requests_bitrix_webhook_url=(
+                "https://portal.example.invalid/rest/1/test-token/"
+            )
+        ),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=now,
+    )
+
+    notification_params = next(
+        dict(params) for method, params in api.calls if method == "im.notify.personal.add"
+    )
+    assert notification_params["MESSAGE"] == (
+        "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        "[URL=https://portal.example.invalid/crm/activity/?ID=555&open_view=555]"
+        "Открыть письмо[/URL]"
+    )
+    assert "SLA" not in notification_params["MESSAGE"]
 
 
 def test_support_message_readback_is_required_before_first_response_is_recorded(
@@ -3805,6 +4203,120 @@ def test_assignment_reconcile_clears_stale_assignee_when_every_shift_is_closed(
     assert case.assignment_state == "waiting"
     assert case.assigned_user_id is None
     assert api.items[1000]["assignedById"] == ""
+
+
+def test_assignment_reconcile_skips_unchanged_bitrix_item_update(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, 0, 654321, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1001",
+        # Bitrix normalizes the timezone and drops microseconds on readback.
+        "ufFirstResponseDueAt": "2026-08-22T13:00:00+03:00",
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    results = reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    db_session.refresh(case)
+    assert results[0].get("errorCode") is None
+    assert case.assignment_checked_at is not None
+    assert [method for method, _params in api.calls].count("crm.item.update") == 0
+
+
+def test_assignment_reconcile_updates_only_changed_bitrix_item_fields(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1002",
+        "ufFirstResponseDueAt": due_at.isoformat(),
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    update_calls = [params for method, params in api.calls if method == "crm.item.update"]
+    assert len(update_calls) == 1
+    assert dict(update_calls[0]) == {
+        "entityTypeId": "1134",
+        "id": "1000",
+        "fields[assignedById]": "1001",
+    }
+
+
+def test_assignment_reconcile_rewrites_malformed_deadline_readback(db_session) -> None:
+    due_at = datetime(2026, 8, 22, 10, 0, tzinfo=UTC)
+    case = _case(
+        bitrix_item_id=1000,
+        assigned_user_id=1001,
+        assignment_state="assigned",
+        intake_mode="during_open_shift",
+        first_response_due_at=due_at,
+        base_sync_status="synced",
+        sync_status="synced",
+    )
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "stageId": "DT1134_55:NEW",
+        "assignedById": "1001",
+        "ufFirstResponseDueAt": "2026-08-22T10:00:00",
+        "ufSiteSyncStatus": "SYNCED",
+        "ufSiteSyncError": "",
+    }
+
+    reconcile_site_service_request_assignments(
+        db_session,
+        settings=_worker_settings(),
+        reader=SiteServiceRequestBitrixReader(api),
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 22, 8, 0, tzinfo=UTC),
+    )
+
+    update_call = next(params for method, params in api.calls if method == "crm.item.update")
+    assert dict(update_call) == {
+        "entityTypeId": "1134",
+        "id": "1000",
+        "fields[ufFirstResponseDueAt]": due_at.isoformat(),
+    }
 
 
 def test_assignment_clear_readback_requires_assignee_field_presence(db_session) -> None:

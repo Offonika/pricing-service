@@ -16,12 +16,16 @@ related_tests:
   - tests/test_architecture_boundaries.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
+  - tests/test_export_receivable_work_report_task.py
+  - tests/test_product_classification.py
+  - tests/test_report_exclusive_auto_detect_candidates_task.py
+  - tests/test_report_parsed_models_task.py
 contracts: []
 depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-14"
+updated_at: "2026-08-27"
 ---
 
 # Назначение
@@ -101,6 +105,22 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести read-only команды nightly matching на central read-only session scope.
 - [x] Добавить `db_access` policy и проверку для мигрированных CLI.
 - [x] Покрыть read-only rollback тестом DB infrastructure.
+- [x] Перевести manual matching report и Bitrix task adapter на central read-only
+  scope с сохранением application DB override для тестов и one-off запусков.
+- [x] Перевести `export_manual_status_overrides.py` на central read-only session
+  scope и зафиксировать DB access, dry-run и artifact idempotency в CLI registry.
+- [x] Перевести `export_management_marks.py` на central read-only session scope;
+  зафиксировать optional external write и отсутствие идемпотентности между запусками.
+- [x] Перевести `report_procurement_feature_snapshot_quality.py` на central
+  read-only session scope с сохранением `--database-url` override и CSV-контракта.
+- [x] Перевести `report_logistics_rtu_manual_review.py` на central read-only
+  session scope с сохранением аргументов и JSON-контракта.
+- [x] Перевести `report_display_quality_mismatch_candidates.py` на central
+  read-only session scope с сохранением CSV и JSON-контрактов.
+- [x] Перевести `report_display_sale_auto_order_treatment_plan.py` на central
+  read-only session scope с сохранением `--database-url`, CSV и JSON-контрактов.
+- [x] Перевести `export_receivable_work_report.py` на central read-only session
+  scope с сохранением `--date`, `--output-dir` и XLSX-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -126,7 +146,95 @@ JSON/CSV/XLSX артефактов сохраняются.
 2. Перед переключением сравнить counters/artifacts с текущим production.
 3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
 4. Rollback выполняется переключением release symlink; миграций схемы в этом релизе нет.
+5. Для manual matching slice разрешены push ветки и создание PR для полного GitHub CI.
+   ОТМЕНЕНО (2026-08-25): требование отдельного подтверждения merge выполнено для
+   PR №57; разрешён merge в `main`. Production release по-прежнему требует
+   отдельного подтверждения.
+6. Для `export_manual_status_overrides.py` после зелёного CI разрешён и выполнен
+   merge PR №63 коммитом `0496ad30cf7a366e4bb68baa9f34af6d756b4e81`.
+   Production migration, deploy и cutover в это решение не входят и не выполнялись.
+7. Для `export_management_marks.py` после зелёного CI разрешён merge PR №65.
+   Production migration, deploy и cutover в это решение не входят.
+8. Для `report_logistics_rtu_manual_review.py` разрешены реализация в отдельной
+   ветке, push и создание PR после локальных проверок. Merge и production release
+   требуют отдельного подтверждения.
+9. После зелёного CI разрешён merge PR №70. Production migration, deploy и cutover
+   в это решение не входят.
+10. Для `report_display_quality_mismatch_candidates.py` разрешены реализация в
+    отдельной ветке, push и создание PR после локальных проверок. Merge и
+    production release требуют отдельного подтверждения.
+11. После зелёного CI разрешён merge PR №73. Production migration, deploy и cutover
+    в это решение не входят.
+12. 2026-08-27 разрешён production release текущего `main`, включающего PR №70–73.
+    Разрешение не включает активацию автоматического движения стадий и SMS:
+    `LOGISTICS_STAGE_AUTOMATION_ENABLED=false` и
+    `PICKUP_READY_SMS_ENABLED=false` должны сохраниться после cutover.
+13. Для `report_display_sale_auto_order_treatment_plan.py` разрешены реализация в
+    отдельной ветке, push и создание PR после локальных проверок. Merge и
+    production release требуют отдельного подтверждения.
+14. После зелёного CI разрешён merge PR №76. Production migration, deploy и cutover
+    в это решение не входят.
+15. Для `export_receivable_work_report.py` разрешены реализация в отдельной ветке,
+    push и создание отдельного PR после локальных проверок. Merge и production
+    release требуют отдельных подтверждений.
+16. После зелёного CI разрешён merge PR №78. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №78; production release оставлен отдельным
+  решением.
+- 2026-08-27 — `export_receivable_work_report.py` переведён на central read-only
+  session scope и зарегистрирован как `application_read_only`; аргументы и
+  XLSX-контракт сохранены.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `export_receivable_work_report.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
+- 2026-08-27 — разрешён merge PR №76; production release оставлен отдельным
+  решением.
+- 2026-08-27 — разрешён production release текущего `main` с PR №70–73 без
+  включения автоматического движения стадий и SMS.
+- 2026-08-27 — `report_display_sale_auto_order_treatment_plan.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `report_display_sale_auto_order_treatment_plan.py`; merge и production оставлены
+  отдельными решениями.
+- 2026-08-27 — разрешён merge PR №73; production release оставлен отдельным
+  решением.
+- 2026-08-27 — `report_display_quality_mismatch_candidates.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `report_display_quality_mismatch_candidates.py`; merge и production оставлены
+  отдельными решениями.
+- 2026-08-27 — разрешён merge PR №70; production release оставлен отдельным
+  решением.
+- 2026-08-27 — `report_logistics_rtu_manual_review.py` переведён на central
+  read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `report_logistics_rtu_manual_review.py`; merge и production оставлены отдельными
+  решениями.
+- 2026-08-27 — `report_procurement_feature_snapshot_quality.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-26 — разрешён merge PR №65; production release оставлен отдельным
+  решением.
+- 2026-08-26 — `export_management_marks.py` переведён на central read-only session
+  scope; registry фиксирует optional external write и новый `message_id` на запуск.
+- 2026-08-26 — разрешён и выполнен merge PR №63; production release оставлен
+  отдельным решением.
+- 2026-08-26 — `export_manual_status_overrides.py` переведён на central read-only
+  session scope; CLI registry фиксирует application DB read-only, dry-run и
+  byte-stable artifact merge.
+- 2026-08-25 — после зелёного GitHub CI разрешён merge PR №57 в `main`;
+  production release оставлен за отдельным подтверждением.
+- 2026-08-25 — разрешены push manual matching slice и создание PR для полного
+  GitHub CI; merge и production release оставлены за отдельным подтверждением.
+- 2026-08-24 — `manual_matching_control.py` и `manual_matching_bitrix_tasks.py`
+  переведены на central read-only session scope; их DB access и side effects
+  зафиксированы в CLI registry.
+- 2026-08-21 — `report_exclusive_auto_detect_candidates.py` переведён на центральный
+  read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-21 — `report_product_classification_diff.py` переведён на центральный
+  read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-21 — `report_parsed_models.py` переведён на центральный read-only
+  session scope и добавлен в CLI registry как `application_read_only`.
 - 2026-07-14 — accepted Release B spec; started read-only nightly matching slice.

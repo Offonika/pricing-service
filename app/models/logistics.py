@@ -56,9 +56,17 @@ class LogisticsDriver(Base):
 
 class LogisticsUser(Base):
     __tablename__ = "logistics_user"
+    __table_args__ = (
+        Index(
+            "ux_logistics_user_bitrix_user_id",
+            "bitrix_user_id",
+            unique=True,
+        ),
+    )
 
     external_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     telegram_user_id: Mapped[int | None] = mapped_column(nullable=True, unique=True)
+    bitrix_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -77,6 +85,27 @@ class LogisticsUser(Base):
     )
 
     default_warehouse = relationship("LogisticsWarehouse")
+
+
+class LogisticsWebLaunchToken(Base):
+    __tablename__ = "logistics_web_launch_token"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_logistics_web_launch_token_hash"),
+        Index("ix_logistics_web_launch_token_expires", "expires_at"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(
+        ForeignKey("logistics_user.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    actor_user = relationship("LogisticsUser")
 
 
 class LogisticsTransfer(Base):

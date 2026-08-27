@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-24"
+updated_at: "2026-08-26"
 ---
 
 # Инвентарь заданий по расписанию
@@ -50,6 +50,13 @@ updated_at: "2026-08-24"
 | `pricing-executive-dashboard-monitor` | каждые 5 минут | релиз |
 
 Логи всех заданий — в `/var/log/pricing/`, имя файла совпадает с именем задания.
+
+`onec_assembly_crm_reconciler` поддерживает два транспорта. До отдельного
+production-cutover используется `legacy-php`. Целевой `service-db` сохраняет
+append-only события `1С` в `pricing-service`; переходы стадий затем принимает единая
+state machine и применяет durable outbox. Переключение разрешено только вместе с
+`ORDER_FULFILLMENT_EXECUTION_MASTER_ENABLED=true` и
+`ORDER_FULFILLMENT_EXECUTION_INGEST_ENABLED=true` после dry-run/canary.
 
 ## Неактивные файлы
 
@@ -98,6 +105,12 @@ downstream lead-time pipeline. Кандидат строится от актив
 две строки cron переводятся на release; rollback возвращает прежний release и
 сохранённые cron-конфигурации.
 
+Решение 2026-08-24: финальная release-цепочка runtime cutover интегрируется в
+`main` merge-коммитом, который одновременно является потомком active production
+source и актуального `origin/main`. Cherry-pick runtime-коммитов поверх расходящейся
+ветки запрещён: такой source потеряет release provenance и будет отклонён guarded
+controller при следующей production-сборке.
+
 ## Проверка после изменения расписания
 
 1. Убедиться, что скрипт существует по новому пути: `ls <путь>/infra/cron/<скрипт>`.
@@ -126,3 +139,5 @@ downstream lead-time pipeline. Кандидат строится от актив
   развёрнут через guarded controller; `manual_matching_bitrix_tasks` и
   `sync_open_procurement_supplier_orders_to_bitrix` переведены на release,
   production cron-ссылок на mutable checkout больше нет.
+- 2026-08-24 — Подтверждена интеграция runtime cutover в `main` merge-коммитом с
+  сохранением ancestry active production source и актуального `origin/main`.

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import csv
+from contextlib import contextmanager
 from datetime import datetime
 
 from sqlalchemy import create_engine, insert
+from sqlalchemy.orm import Session
 
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
     ASSORTMENT_LIFECYCLE_METADATA,
+)
+from tasks import (
+    report_procurement_feature_snapshot_quality as procurement_feature_quality_task,
 )
 from tasks.report_procurement_feature_snapshot_quality import (
     build_summary,
@@ -44,8 +49,9 @@ def test_report_procurement_feature_snapshot_quality_filters_and_writes_csv(tmp_
             ],
         )
 
-    rows = load_feature_snapshot_rows(engine, folder="дисплеи", only_missing=False)
-    missing_rows = load_feature_snapshot_rows(engine, folder="дисплеи", only_missing=True)
+    with Session(engine) as db:
+        rows = load_feature_snapshot_rows(db, folder="дисплеи", only_missing=False)
+        missing_rows = load_feature_snapshot_rows(db, folder="дисплеи", only_missing=True)
     summary = build_summary(rows)
     csv_path = write_csv(tmp_path / "feature-quality.csv", rows)
 
@@ -68,6 +74,41 @@ def test_report_procurement_feature_snapshot_quality_filters_and_writes_csv(tmp_
     assert csv_rows[0]["nomenclature_code"] == "РБ0002"
     assert csv_rows[0]["missing_required_attributes"] == ('["quality_raw", "model_compatibility"]')
     assert csv_rows[1]["nomenclature_code"] == "РБ0001"
+
+
+def test_report_procurement_feature_snapshot_quality_cli_uses_read_only_scope(
+    db_session, tmp_path, monkeypatch, capsys
+) -> None:
+    calls: list[tuple[bool, str | None]] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False, database_url: str | None = None):
+        calls.append((read_only, database_url))
+        yield db_session
+
+    output_csv = tmp_path / "feature-quality.csv"
+    monkeypatch.setattr(procurement_feature_quality_task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        procurement_feature_quality_task,
+        "load_feature_snapshot_rows",
+        lambda db, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "report_procurement_feature_snapshot_quality",
+            "--database-url",
+            "sqlite:///override.db",
+            "--output-csv",
+            str(output_csv),
+            "--json",
+        ],
+    )
+
+    assert procurement_feature_quality_task.main() == 0
+    assert calls == [(True, "sqlite:///override.db")]
+    assert '"items": 0' in capsys.readouterr().out
+    assert output_csv.is_file()
 
 
 def _classification_row(

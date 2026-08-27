@@ -11,8 +11,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import ReceivableWorkItem
 from app.services.receivable_workflow import STATUS_CLOSED
 
@@ -156,8 +155,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 
-    engine = build_engine(get_settings().database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         items = load_receivable_work_report_items(session)
         path = export_receivable_work_report(
             items,

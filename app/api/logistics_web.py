@@ -130,6 +130,7 @@ def _profile(user: LogisticsUser) -> dict:
         "id": user.id,
         "external_id": user.external_id,
         "telegram_user_id": user.telegram_user_id,
+        "bitrix_user_id": user.bitrix_user_id,
         "username": user.username,
         "full_name": user.full_name,
         "role": user.role,
@@ -149,6 +150,11 @@ def require_logistics_web_actor(
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="unauthorized")
     return user
+
+
+def _require_web_role(actor: LogisticsUser, expected: str) -> None:
+    if actor.role != expected:
+        raise HTTPException(status_code=403, detail="operation is not allowed for logistics role")
 
 
 @router.post(
@@ -219,6 +225,7 @@ def web_create_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "sender")
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_HANDOFF,
@@ -238,6 +245,7 @@ def web_scan_handoff(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "sender")
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -255,6 +263,7 @@ def web_confirm_handoff(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "sender")
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -262,6 +271,7 @@ def web_confirm_handoff(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=payload.photos,
+        source_channel="web_fallback",
     )
 
 
@@ -271,6 +281,7 @@ def web_create_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "receiver")
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_RECEIPT,
@@ -288,6 +299,7 @@ def web_scan_receipt(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "receiver")
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -304,6 +316,7 @@ def web_confirm_receipt(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    _require_web_role(actor, "receiver")
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -311,4 +324,5 @@ def web_confirm_receipt(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=payload.photos,
+        source_channel="web_fallback",
     )

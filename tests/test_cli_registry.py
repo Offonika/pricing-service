@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from scripts.validate_cli_registry import (
     _uses_central_read_only_scope,
+    effective_metadata,
     find_errors,
     load_registry,
     task_files,
@@ -35,3 +36,11 @@ def test_plain_session_is_not_central_read_only_scope(tmp_path) -> None:
     )
 
     assert _uses_central_read_only_scope(command) is False
+
+
+def test_manual_matching_commands_require_central_read_only_db_access() -> None:
+    registry = load_registry()
+
+    for filename in ("manual_matching_control.py", "manual_matching_bitrix_tasks.py"):
+        metadata = effective_metadata(filename, registry)
+        assert metadata["db_access"] == "application_read_only"

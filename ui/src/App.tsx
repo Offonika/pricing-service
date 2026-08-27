@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
+import { LogisticsWorkspace } from "./components/LogisticsWorkspace";
 import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
 import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
 import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
@@ -17,6 +18,7 @@ import {
   initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
+  initializeBitrixLogisticsSession,
   initializeBitrixProcurementAssortmentSession,
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
@@ -24,6 +26,7 @@ import {
   isBitrixCustomerPriceTypesRoute,
   isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
+  isBitrixLogisticsRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
   isBitrixProcurementLabelsRoute,
@@ -186,6 +189,27 @@ async function logisticsFetch<T>(path: string, options: RequestInit = {}): Promi
   return response.json();
 }
 
+let fallbackExchangePromise: Promise<void> | null = null;
+
+function exchangeFallbackLaunchToken() {
+  const token = new URLSearchParams(window.location.search).get("launch");
+  if (!token) return Promise.resolve();
+  if (!fallbackExchangePromise) {
+    fallbackExchangePromise = fetch("/api/bitrix/logistics/fallback-session", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("Одноразовая ссылка истекла или уже использована");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("launch");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    });
+  }
+  return fallbackExchangePromise;
+}
+
 function LogisticsFallbackApp() {
   const [profile, setProfile] = useState<LogisticsProfile | null>(null);
   const [warehouses, setWarehouses] = useState<LogisticsWarehouse[]>([]);
@@ -214,11 +238,14 @@ function LogisticsFallbackApp() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      logisticsFetch<LogisticsProfile>("/profile"),
-      logisticsFetch<LogisticsWarehouse[]>("/warehouses"),
-      logisticsFetch<LogisticsDriver[]>("/drivers"),
-    ])
+    exchangeFallbackLaunchToken()
+      .then(() =>
+        Promise.all([
+          logisticsFetch<LogisticsProfile>("/profile"),
+          logisticsFetch<LogisticsWarehouse[]>("/warehouses"),
+          logisticsFetch<LogisticsDriver[]>("/drivers"),
+        ])
+      )
       .then(([profileData, warehouseData, driverData]) => {
         if (cancelled) return;
         setProfile(profileData);
@@ -405,6 +432,77 @@ function LogisticsFallbackApp() {
       </main>
     </div>
   );
+}
+
+export function BitrixLogisticsApp() {
+  const [authState, setAuthState] = useState<
+    { status: "loading" } | { status: "ready" } | { status: "error"; message: string }
+  >({ status: "loading" });
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = "Логистика — Bitrix24";
+    return () => {
+      document.title = previousTitle;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixLogisticsSession()
+      .then(() => {
+        if (!cancelled) setAuthState({ status: "ready" });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setAuthState({
+            status: "error",
+            message: error instanceof Error ? error.message : "Нет доступа к логистике",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionAttempt]);
+
+  if (authState.status !== "ready") {
+    const openedOutsideBitrix =
+      authState.status === "error" &&
+      (authState.message.includes("Bitrix24 SDK") || authState.message.includes("OAuth"));
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Логистика</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24…</p>}
+          {authState.status === "error" && (
+            <>
+              <p>
+                {openedOutsideBitrix
+                  ? "Откройте приложение из меню Bitrix24."
+                  : "Нет доступа к логистике. Проверьте роль и привязку склада."}
+              </p>
+              <small>{authState.message}</small>
+              <div className="app-state__actions">
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={() => {
+                    setAuthState({ status: "loading" });
+                    setConnectionAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  Повторить
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return <LogisticsWorkspace />;
 }
 
 function MatchingApp() {
@@ -1075,6 +1173,7 @@ function ProcurementOrderFormationBitrixApp() {
 }
 
 function App() {
+  if (isBitrixLogisticsRoute()) return <BitrixLogisticsApp />;
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
   if (isBitrixProcurementOrderFormationRoute()) return <ProcurementOrderFormationBitrixApp />;
   if (isBitrixProcurementAssortmentRoute()) {

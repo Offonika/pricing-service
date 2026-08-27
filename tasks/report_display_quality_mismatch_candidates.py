@@ -8,8 +8,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import Competitor, Product, ProductMatch
 from app.models.competitor_item import CompetitorItem
 from app.services.competitor_matching import (
@@ -265,8 +264,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    engine = build_engine(get_settings().database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         stats, rows = build_report(session)
 
     output_rows = rows

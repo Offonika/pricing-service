@@ -452,9 +452,26 @@ class BitrixDepartmentUser:
     work_position: str | None = None
 
 
+class BitrixRestError(RuntimeError):
+    def __init__(self, message: str, *, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+_TRANSIENT_HTML_403_DELAYS_SECONDS = (2, 5, 10)
+
+
+def _is_transient_html_403(*, status: int, body: str, parsed_json: Any) -> bool:
+    if status != 403 or parsed_json is not None:
+        return False
+    normalized = body.casefold()
+    return "<html" in normalized or "<!doctype html" in normalized
+
+
 class BitrixRestClient:
-    def __init__(self, webhook_url: str):
+    def __init__(self, webhook_url: str, *, retry_transient_html_403: bool = False):
         self.webhook_url = webhook_url.rstrip("/")
+        self.retry_transient_html_403 = retry_transient_html_403
 
     def _request(
         self,
@@ -472,7 +489,9 @@ class BitrixRestClient:
             headers={"Content-Type": content_type},
             method="POST" if data is not None else "GET",
         )
-        for attempt in range(1, 4):
+        transient_html_403_attempts = 0
+        configured_status_attempts = 0
+        while True:
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     payload = json.loads(response.read().decode("utf-8"))
@@ -480,28 +499,76 @@ class BitrixRestClient:
             except urllib.error.HTTPError as error:
                 body = error.read().decode("utf-8", errors="replace")
                 detail = body[:1000]
+                parsed_json: Any = None
                 try:
-                    payload = json.loads(body)
-                    if payload.get("error"):
-                        detail = (
-                            f"{payload['error']} {payload.get('error_description', '')}".strip()
-                        )
+                    parsed_json = json.loads(body)
+                    if isinstance(parsed_json, dict) and parsed_json.get("error"):
+                        detail = f"{parsed_json['error']} {parsed_json.get('error_description', '')}".strip()
                 except json.JSONDecodeError:
                     pass
-                if error.code in retry_http_statuses and attempt < 3:
-                    time_module.sleep(attempt)
+                if (
+                    self.retry_transient_html_403
+                    and _is_transient_html_403(
+                        status=error.code,
+                        body=body,
+                        parsed_json=parsed_json,
+                    )
+                    and transient_html_403_attempts < len(_TRANSIENT_HTML_403_DELAYS_SECONDS)
+                ):
+                    time_module.sleep(
+                        _TRANSIENT_HTML_403_DELAYS_SECONDS[transient_html_403_attempts]
+                    )
+                    transient_html_403_attempts += 1
                     continue
-                raise RuntimeError(f"Bitrix24 {method}: HTTP {error.code} {detail}") from error
+                if (
+                    error.code in retry_http_statuses
+                    and not (error.code == 403 and parsed_json is not None)
+                    and configured_status_attempts < 2
+                ):
+                    configured_status_attempts += 1
+                    time_module.sleep(configured_status_attempts)
+                    continue
+                error_code = (
+                    "bitrix_access_denied"
+                    if error.code in {401, 403} and parsed_json is not None
+                    else f"bitrix_http_{error.code}"
+                )
+                raise BitrixRestError(
+                    f"Bitrix24 {method}: HTTP {error.code} {detail}",
+                    code=error_code,
+                ) from error
             except urllib.error.URLError as error:
-                if isinstance(error.reason, ConnectionRefusedError) and attempt < 3:
-                    time_module.sleep(attempt * 3)
+                if (
+                    isinstance(error.reason, ConnectionRefusedError)
+                    and configured_status_attempts < 2
+                ):
+                    configured_status_attempts += 1
+                    time_module.sleep(configured_status_attempts * 3)
                     continue
-                raise RuntimeError(f"Bitrix24 {method}: network error {error.reason}") from error
+                raise BitrixRestError(
+                    f"Bitrix24 {method}: network error {error.reason}",
+                    code="bitrix_network_error",
+                ) from error
             except TimeoutError as error:
-                raise RuntimeError(f"Bitrix24 {method}: network timeout") from error
+                raise BitrixRestError(
+                    f"Bitrix24 {method}: network timeout",
+                    code="bitrix_network_timeout",
+                ) from error
+        if not isinstance(payload, dict):
+            raise BitrixRestError(
+                f"Bitrix24 {method}: malformed response",
+                code="bitrix_response_invalid",
+            )
         if payload.get("error"):
-            raise RuntimeError(
-                f"Bitrix24 {method}: {payload['error']} {payload.get('error_description', '')}"
+            raw_code = str(payload["error"])
+            safe_code = (
+                "bitrix_access_denied"
+                if "denied" in raw_code.casefold() or "auth" in raw_code.casefold()
+                else "bitrix_api_error"
+            )
+            raise BitrixRestError(
+                f"Bitrix24 {method}: {payload['error']} {payload.get('error_description', '')}",
+                code=safe_code,
             )
         return payload
 

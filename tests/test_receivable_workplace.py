@@ -791,6 +791,70 @@ def test_receivable_workplace_min_debt_filters_before_limit_and_summary(
     assert [item.counterparty_ref for item in over_1000.payload] == ["cp-1000-plus"]
 
 
+def test_receivable_workplace_counterparty_query_filters_before_limit_and_summary(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-alpha",
+                counterparty_code="РБ000111",
+                counterparty_name="Альфа   Сервис",
+                balance=Decimal("1000.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-beta",
+                counterparty_name="Бета",
+                balance=Decimal("2000.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-largest",
+                counterparty_code="РБ999999",
+                counterparty_name="Самый крупный долг",
+                balance=Decimal("9000.00"),
+            ),
+            ReceivableFolderRecommendationCache(
+                snapshot_date=as_of,
+                status_scope="all",
+                report_revision="search-codes",
+                summary={"source_snapshot_count": 3},
+                payload=[
+                    {
+                        "counterparty_ref": "cp-beta",
+                        "counterparty_code": "РБ000222",
+                    }
+                ],
+                source_status="cached",
+            ),
+        ]
+    )
+
+    by_name = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_query="  альфа сервис  ",
+        limit=1,
+    )
+    by_cached_code = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_query="рб000222",
+        limit=1,
+    )
+
+    assert by_name.total_count == 1
+    assert by_name.visible_count == 1
+    assert by_name.summary.row_count == 1
+    assert by_name.summary.total_receivable == Decimal("1000.00")
+    assert [item.counterparty_ref for item in by_name.payload] == ["cp-alpha"]
+    assert by_cached_code.total_count == 1
+    assert [item.counterparty_ref for item in by_cached_code.payload] == ["cp-beta"]
+
+
 def test_receivable_workplace_api_forwards_min_debt_to_service(
     monkeypatch: pytest.MonkeyPatch,
     db_session: Session,
@@ -818,6 +882,7 @@ def test_receivable_workplace_api_forwards_min_debt_to_service(
         date_value=date(2026, 6, 23),
         department_ref="dep-1",
         status="new_debt",
+        counterparty_query=" альфа ",
         min_debt=Decimal("500"),
         limit=100,
         sort_by="balance",
@@ -830,6 +895,7 @@ def test_receivable_workplace_api_forwards_min_debt_to_service(
     assert captured["session"] is db_session
     assert captured["department_ref"] == "dep-1"
     assert captured["status"] == "new_debt"
+    assert captured["counterparty_query"] == " альфа "
     assert captured["min_debt"] == Decimal("500")
     assert captured["limit"] == 100
     assert captured["sort_by"] == "balance"

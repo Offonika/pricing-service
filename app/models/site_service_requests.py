@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -341,6 +343,13 @@ class SiteServiceRequestFile(Base):
     bitrix_error_reported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    bitrix_attach_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    bitrix_attach_baseline_file_ids: Mapped[list[int] | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=True,
+    )
     temporary_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -356,6 +365,39 @@ class SiteServiceRequestFile(Base):
     )
 
     case: Mapped[SiteServiceRequestCase] = relationship(back_populates="files")
+
+
+class SiteServiceRequestWorkerState(Base):
+    __tablename__ = "site_service_request_worker_state"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_site_service_request_worker_state_singleton"),
+        CheckConstraint(
+            "consecutive_failures >= 0",
+            name="ck_site_service_request_worker_state_failures",
+        ),
+    )
+
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class SiteServiceRequestCommand(Base):

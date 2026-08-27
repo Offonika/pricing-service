@@ -10,10 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy.orm import Session
-
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.procurement_manual_status_export import (
     blocked_rows,
     export_manual_status_overrides,
@@ -41,8 +39,7 @@ def main() -> int:
     args = parse_args()
     settings = get_settings()
     overrides_path = args.overrides_path or settings.procurement_assortment_manual_overrides_path
-    engine = build_engine(settings.database_url)
-    with Session(engine) as db:
+    with session_scope(read_only=True) as db:
         decisions, merge_rows = export_manual_status_overrides(
             db,
             overrides_path,

@@ -195,6 +195,8 @@ class Settings(BaseSettings):
     site_service_requests_command_lease_seconds: int = Field(default=300, ge=30, le=3600)
     site_service_requests_file_spool_dir: str = ".local/site-service-requests/files"
     site_service_requests_worker_batch_size: int = Field(default=20, ge=1, le=100)
+    site_service_requests_worker_stale_seconds: int = Field(default=180, ge=60, le=3600)
+    site_service_requests_max_crm_files_per_item: int = Field(default=50, ge=1, le=1000)
     site_service_requests_site_base_url: str = "https://master-mobile.ru"
     site_service_requests_health_lag_alert_seconds: int = Field(
         default=300,
@@ -263,6 +265,18 @@ class Settings(BaseSettings):
     order_fulfillment_pickup_inventory_enabled: bool = False
     order_fulfillment_inventory_won_enabled: bool = False
     order_fulfillment_lost_orders_enabled: bool = False
+    order_fulfillment_execution_master_enabled: bool = False
+    order_fulfillment_execution_ingest_enabled: bool = False
+    order_fulfillment_execution_reconciliation_enabled: bool = False
+    order_fulfillment_execution_stage_apply_enabled: bool = False
+    order_fulfillment_execution_historical_apply_enabled: bool = False
+    order_fulfillment_execution_cutover_at: datetime | None = None
+    order_fulfillment_execution_recent_limit: int = Field(default=100, ge=1, le=1000)
+    order_fulfillment_execution_history_limit: int = Field(default=250, ge=1, le=1000)
+    order_fulfillment_execution_cursor_path: str = (
+        "/opt/MM/pricing-service/.local/order-fulfillment-pilot/"
+        "executing-reconciliation-cursor.json"
+    )
     order_fulfillment_bot_source_chat_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["chat8729", "chat733", "chat8961", "chat729", "chat739"]
     )
@@ -507,6 +521,24 @@ class Settings(BaseSettings):
     logistics_bot_webhook_url: str | None = None
     logistics_web_session_secret: str | None = None
     logistics_web_session_ttl_seconds: int = 8 * 60 * 60
+    logistics_web_fallback_token_ttl_seconds: int = 5 * 60
+    logistics_bitrix_app_enabled: bool = False
+    logistics_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    logistics_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_bitrix_session_secret: str | None = None
+    logistics_bitrix_session_ttl_seconds: int = 3600
+    logistics_bitrix_rest_timeout_seconds: float = 6.0
+    logistics_stage_automation_enabled: bool = False
+    logistics_stage_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    logistics_stage_worker_batch_size: int = 50
+    pickup_ready_sms_enabled: bool = False
+    pickup_ready_sms_pilot_warehouse_external_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     logistics_transfer_assistant_pickup_hold_days: int = 7
 
     # Embeddings / matching pipeline
@@ -722,6 +754,10 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "logistics_bitrix_allowed_domains",
+        "logistics_bitrix_allowed_member_ids",
+        "logistics_stage_pilot_warehouse_external_ids",
+        "pickup_ready_sms_pilot_warehouse_external_ids",
         mode="before",
     )
     @classmethod

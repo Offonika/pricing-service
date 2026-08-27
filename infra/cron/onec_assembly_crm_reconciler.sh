@@ -12,6 +12,7 @@ PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
 SINCE_HOURS="${ONEC_ASSEMBLY_CRM_SINCE_HOURS:-4}"
 LIMIT="${ONEC_ASSEMBLY_CRM_LIMIT:-300}"
 APPLY="${ONEC_ASSEMBLY_CRM_APPLY:-false}"
+TRANSPORT="${ONEC_ASSEMBLY_CRM_TRANSPORT:-legacy-php}"
 LOCK_FILE="${ONEC_ASSEMBLY_CRM_LOCK_FILE:-/tmp/onec_assembly_crm_reconciler.lock}"
 
 mkdir -p "${LOG_DIR}"
@@ -29,6 +30,9 @@ if [[ -f "${ENV_FILE}" ]]; then
   load_env_file_preserve_json "${ENV_FILE}"
 fi
 
+# Transport is a cutover control and may be supplied by the release .env.
+TRANSPORT="${ONEC_ASSEMBLY_CRM_TRANSPORT:-${TRANSPORT}}"
+
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   if command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="$(command -v python3)"
@@ -37,7 +41,7 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
   fi
 fi
 
-if [[ -z "${MM_CRM_1C_ASSEMBLY_TOKEN:-}" && -z "${CRM_1C_ASSEMBLY_TOKEN:-}" ]]; then
+if [[ "${TRANSPORT}" == "legacy-php" && -z "${MM_CRM_1C_ASSEMBLY_TOKEN:-}" && -z "${CRM_1C_ASSEMBLY_TOKEN:-}" ]]; then
   MM_CRM_1C_ASSEMBLY_TOKEN="$(
     ssh -o BatchMode=yes bitrix-box \
       'sudo -u mm php -r '\''$c=include "/var/www/mm/data/www/master-mobile.ru/local/php_interface/.mm_crm_1c_assembly_secret.php"; echo $c["token"];'\''' \
@@ -50,12 +54,13 @@ cmd=(
   "${PYTHON_BIN}" -m tasks.reconcile_onec_assembly_to_crm
   --since-hours "${SINCE_HOURS}"
   --limit "${LIMIT}"
+  --transport "${TRANSPORT}"
 )
 
 if [[ "${APPLY}" == "true" ]]; then
   cmd+=(--apply)
 fi
 
-echo "[$(date -Iseconds)] starting onec_assembly_crm_reconciler apply=${APPLY} since_hours=${SINCE_HOURS} limit=${LIMIT}" >> "${LOG_FILE}"
+echo "[$(date -Iseconds)] starting onec_assembly_crm_reconciler apply=${APPLY} transport=${TRANSPORT} since_hours=${SINCE_HOURS} limit=${LIMIT}" >> "${LOG_FILE}"
 "${cmd[@]}" >> "${LOG_FILE}" 2>&1
 echo "[$(date -Iseconds)] onec_assembly_crm_reconciler finished" >> "${LOG_FILE}"

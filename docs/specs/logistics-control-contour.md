@@ -9,11 +9,14 @@ source_of_truth: true
 related_code:
   - app/api/logistics.py
   - app/api/logistics_web.py
+  - app/api/bitrix_logistics.py
   - app/models/logistics.py
   - app/schemas/logistics.py
   - app/services/logistics.py
   - app/services/logistics_onec.py
+  - app/services/bitrix_logistics_auth.py
   - tasks/apply_logistics_warehouse_alias_overrides.py
+  - tasks/cleanup_logistics_rtu_manual_reviews.py
   - tasks/report_logistics_rtu_manual_review.py
   - tasks/sync_logistics_warehouse_aliases_from_onec.py
   - tasks/sync_logistics_rtu_from_onec.py
@@ -23,6 +26,7 @@ related_tests:
   - tests/test_logistics_onec.py
   - tests/test_logistics_bot.py
   - tests/test_logistics_bot_webhook_api.py
+  - tests/test_bitrix_logistics.py
   - tests/test_order_fulfillment_api.py
 contracts:
   - docs/TechDesign.LogisticsTelegramMVP.md
@@ -32,7 +36,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-22"
+updated_at: "2026-08-26"
 ---
 
 # Назначение
@@ -58,6 +62,9 @@ updated_at: "2026-05-22"
 - очередь `logistics_manual_review`;
 - external carrier state `with_external_carrier`;
 - web fallback `/logistics/fallback` через signed cookie;
+- встроенное приложение Bitrix24 `/bitrix/logistics/` с короткой BFF-сессией;
+- одноразовый fallback launch token на 5 минут с однократным обменом на cookie;
+- связь `logistics_user.bitrix_user_id`, роли склада и source-channel audit;
 - bridge в `site_order_execution_event` для РТУ, принятой на финальной точке.
 
 Не входит:
@@ -107,6 +114,11 @@ RTU sync из SQL `1С`:
   РТУ `_Reference80` и readiness-события `_InfoRg9448`;
 - SQL остается read-only и использует `WITH (NOLOCK)`, как в текущем контуре
   `site_order_fulfillment`;
+- в выборку входят только РТУ с положительным признаком интернет-заказа:
+  заполнен `site_order_number` или `site_delivery_method`; одна лишь связь РТУ
+  с обычным заказом покупателя не считается признаком интернет-заказа;
+- РТУ, которая еще не проведена, не распечатана или не собрана, остается в
+  ожидаемом состоянии readiness и не создает `manual_review`;
 - готовая РТУ превращается в `source_document_type = rtu` с lookup
   `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
 - целевой склад выбирается по address aliases из `logistics_warehouse.payload`;
@@ -140,6 +152,17 @@ External carrier:
   `empty_pickup_address_target_source = true`.
 
 # API / Data Contracts
+
+Пользовательский Bitrix BFF, не раскрывающий internal token браузеру:
+
+- `POST /api/bitrix/logistics/session`, `GET /bootstrap`;
+- `/handoffs/draft/*`, `/receipts/draft/*`;
+- `GET /expected-deliveries`, `/monitor`, `/errors`;
+- `GET /transfers/{id}/history`;
+- `POST /fallback-link`, `/fallback-session`.
+
+Internal sync/admin endpoints `/api/logistics/*` сохраняют отдельный internal
+token. Все интерфейсы подтверждения используют общие drafts и state machine.
 
 QR v1:
 
@@ -178,6 +201,10 @@ RTU sync запускается не публичным API, а CLI:
 - `python tasks/sync_logistics_rtu_from_onec.py --date-from YYYY-MM-DD --limit 500`;
 - без `--apply` выполняется dry-run;
 - с `--apply` пишет logistics units и `manual_review`.
+- `python -m tasks.cleanup_logistics_rtu_manual_reviews` показывает dry-run
+  устаревших readiness-записей и розничных РТУ без положительного интернет-признака;
+- только явный `--apply` закрывает безопасно распознанный шум, добавляет audit markers
+  в payload и оставляет повреждённые payload открытыми для ручного разбора;
 - `python tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`
   группирует открытый ручной разбор по причине, способу доставки и адресу.
 - `python tasks/apply_logistics_warehouse_alias_overrides.py aliases.json` делает
@@ -222,11 +249,14 @@ Backend должен идти первым как read-only слой контр�
 Manual review создается для:
 
 - неизвестного или неоднозначного QR;
-- РТУ без `site_order_number`;
+- РТУ без `site_order_number`, только если есть независимый положительный
+  признак интернет-заказа, например заполненный `site_delivery_method`;
 - РТУ с неразрешенным или неоднозначным target warehouse;
 - РТУ для внешней доставки/перевозчика без выбранного внутреннего flow;
 - РТУ с неуникальным generated lookup;
-- РТУ, которая не прошла readiness gate `проведена + распечатана + собрана`;
+- ОТМЕНЕНО (2026-08-26): РТУ, которая не прошла readiness gate
+  `проведена + распечатана + собрана`, больше не создает `manual_review`, потому
+  что это ожидаемое промежуточное состояние, а не ошибка оператора;
 - изменения/удаления документа `1С` при активном logistics state;
 - ручного override готовности.
 
@@ -252,6 +282,9 @@ Manual review создается для:
 - RTU sync использует `ONEC_DATABASE_URL`, генерирует `MMLOG1|rtu|...` и не
   пишет обратно в `1С`;
 - web fallback работает без Telegram и без internal token в браузере;
+- Bitrix OAuth-сессия проверяет allowlist портала и привязку пользователя;
+- `sender/receiver` не могут работать с чужим складом или операцией другой роли;
+- fallback launch token истекает и обменивается только один раз;
 - OpenAPI drift и spec manifest validation.
 
 # Rollout
@@ -262,11 +295,19 @@ Manual review создается для:
 3. Выпустить backend с новыми endpoints, не отключая старый Telegram flow.
 4. Подключить read-only sync РТУ из `1С` через
    `tasks/sync_logistics_rtu_from_onec.py` сначала в dry-run, затем с `--apply`.
-5. Пилотировать web fallback на ограниченной группе `logist/admin`.
-6. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
+5. С выключенным `LOGISTICS_BITRIX_APP_ENABLED` настроить OAuth placement и связи
+   пользователей, затем включить приложение только для пилотных складов.
+6. Пилотировать центральный склад -> Тёплый Стан на 3–5 заказах; web и Telegram
+   оставить резервом.
+7. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
 
 # Changelog
 
+- 2026-08-26 — исключен розничный шум: для RTU sync обязателен положительный
+  признак интернет-заказа, а readiness gate переведен из ошибок в ожидаемое состояние.
+- 2026-08-26 — добавлен контракт встроенного приложения Bitrix24, BFF-сессий,
+  складских ролей и одноразового web fallback; основной UX перенесен в Bitrix24,
+  Telegram и web остаются резервом общей state machine.
 - 2026-07-01 — зафиксирована граница задачи `1530`: сначала read-only
   backend-витрина и очереди, 1С-доработку отдельных статусов товара отложить.
 - 2026-05-22 — draft created, контур зафиксирован для первой волны реализации.

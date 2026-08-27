@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
     SiteServiceRequestSource,
+    SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
     SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
@@ -33,6 +35,17 @@ from app.schemas.site_service_requests import (
 )
 
 _UNAVAILABLE_FILE_SHA256 = "0" * 64
+_SITE_SERVICE_REQUEST_WORKER_STATE_ID = 1
+_SAFE_SITE_SERVICE_REQUEST_WORKER_ERROR_CODES = {
+    "bitrix_access_denied",
+    "bitrix_api_error",
+    "bitrix_network_error",
+    "bitrix_network_timeout",
+    "bitrix_response_invalid",
+    "worker_configuration_error",
+    "worker_failure",
+    "worker_storage_unavailable",
+}
 
 
 class SiteServiceRequestConfigurationError(RuntimeError):
@@ -972,6 +985,95 @@ def _update_site_service_request_outbound_checkpoint(
     return True
 
 
+def record_site_service_request_worker_started(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    current_time = _as_utc(now or datetime.now(UTC))
+    state = session.scalar(
+        select(SiteServiceRequestWorkerState)
+        .where(SiteServiceRequestWorkerState.id == _SITE_SERVICE_REQUEST_WORKER_STATE_ID)
+        .with_for_update()
+    )
+    if state is None:
+        state = SiteServiceRequestWorkerState(
+            id=_SITE_SERVICE_REQUEST_WORKER_STATE_ID,
+            last_started_at=current_time,
+            consecutive_failures=0,
+            created_at=current_time,
+            updated_at=current_time,
+        )
+        session.add(state)
+    elif state.last_started_at is None or _as_utc(state.last_started_at) <= current_time:
+        state.last_started_at = current_time
+        state.updated_at = current_time
+    session.flush()
+    return current_time
+
+
+def record_site_service_request_worker_success(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> None:
+    current_time = _as_utc(now or datetime.now(UTC))
+    state = session.scalar(
+        select(SiteServiceRequestWorkerState)
+        .where(SiteServiceRequestWorkerState.id == _SITE_SERVICE_REQUEST_WORKER_STATE_ID)
+        .with_for_update()
+    )
+    if state is None:
+        state = SiteServiceRequestWorkerState(
+            id=_SITE_SERVICE_REQUEST_WORKER_STATE_ID,
+            last_started_at=current_time,
+            created_at=current_time,
+        )
+        session.add(state)
+    if state.last_started_at is not None and _as_utc(state.last_started_at) > current_time:
+        return
+    if state.last_failure_at is not None and _as_utc(state.last_failure_at) > current_time:
+        return
+    if state.last_success_at is None or _as_utc(state.last_success_at) <= current_time:
+        state.last_success_at = current_time
+    state.last_error_code = None
+    state.consecutive_failures = 0
+    state.updated_at = current_time
+    session.flush()
+
+
+def record_site_service_request_worker_failure(
+    session: Session,
+    *,
+    error_code: str,
+    now: datetime | None = None,
+) -> None:
+    normalized_code = _safe_site_service_request_worker_error_code(error_code)
+    current_time = _as_utc(now or datetime.now(UTC))
+    state = session.scalar(
+        select(SiteServiceRequestWorkerState)
+        .where(SiteServiceRequestWorkerState.id == _SITE_SERVICE_REQUEST_WORKER_STATE_ID)
+        .with_for_update()
+    )
+    if state is None:
+        state = SiteServiceRequestWorkerState(
+            id=_SITE_SERVICE_REQUEST_WORKER_STATE_ID,
+            last_started_at=current_time,
+            consecutive_failures=0,
+            created_at=current_time,
+        )
+        session.add(state)
+    if state.last_started_at is not None and _as_utc(state.last_started_at) > current_time:
+        return
+    if state.last_success_at is not None and _as_utc(state.last_success_at) > current_time:
+        return
+    state.last_failure_at = current_time
+    state.last_error_code = normalized_code
+    state.consecutive_failures = int(state.consecutive_failures or 0) + 1
+    state.updated_at = current_time
+    session.flush()
+
+
 def build_site_service_request_health(
     session: Session,
     *,
@@ -1030,6 +1132,15 @@ def build_site_service_request_health(
             or_(*pending_escalation_predicates),
         ),
     )
+    failed_files = _count(
+        session,
+        SiteServiceRequestFile,
+        SiteServiceRequestFile.status == "failed",
+    )
+    worker_state = session.get(
+        SiteServiceRequestWorkerState,
+        _SITE_SERVICE_REQUEST_WORKER_STATE_ID,
+    )
     last_successful_exchange_at = session.scalar(
         select(func.max(SiteServiceRequestEvent.processed_at)).where(
             SiteServiceRequestEvent.status == "processed"
@@ -1056,6 +1167,25 @@ def build_site_service_request_health(
         alert_codes.append("outbound_failure")
     if pending_escalation_deliveries:
         alert_codes.append("escalation_delivery_pending")
+    if failed_files:
+        alert_codes.append("file_failure")
+
+    worker_expected = settings.site_service_requests_bitrix_writes_enabled
+    worker_failure = bool(
+        worker_expected and worker_state and worker_state.consecutive_failures > 0
+    )
+    worker_stale = False
+    if worker_expected and worker_state is not None:
+        stale_anchor = worker_state.last_success_at or worker_state.created_at
+        if stale_anchor is not None:
+            stale_age = current_time - _as_utc(stale_anchor)
+            worker_stale = (
+                stale_age.total_seconds() >= settings.site_service_requests_worker_stale_seconds
+            )
+    if worker_failure:
+        alert_codes.append("worker_failure")
+    if worker_stale:
+        alert_codes.append("worker_stale")
 
     if alert_codes:
         status = "degraded"
@@ -1078,6 +1208,32 @@ def build_site_service_request_health(
         "assignment_failures": assignment_failures,
         "outbound_failures": outbound_failures,
         "pending_escalation_deliveries": pending_escalation_deliveries,
+        "failed_files": failed_files,
+        "worker_failure": worker_failure,
+        "worker_stale": worker_stale,
+        "worker_last_started_at": (
+            _as_utc(worker_state.last_started_at)
+            if worker_state is not None and worker_state.last_started_at is not None
+            else None
+        ),
+        "worker_last_success_at": (
+            _as_utc(worker_state.last_success_at)
+            if worker_state is not None and worker_state.last_success_at is not None
+            else None
+        ),
+        "worker_last_failure_at": (
+            _as_utc(worker_state.last_failure_at)
+            if worker_state is not None and worker_state.last_failure_at is not None
+            else None
+        ),
+        "worker_last_error_code": (
+            _safe_site_service_request_worker_error_code(worker_state.last_error_code)
+            if worker_state is not None and worker_state.last_error_code is not None
+            else None
+        ),
+        "worker_consecutive_failures": (
+            worker_state.consecutive_failures if worker_state is not None else 0
+        ),
         "last_successful_exchange_at": (
             _as_utc(last_successful_exchange_at)
             if last_successful_exchange_at is not None
@@ -1088,6 +1244,15 @@ def build_site_service_request_health(
         "bitrix_writes_enabled": settings.site_service_requests_bitrix_writes_enabled,
         "outbound_replies_enabled": settings.site_service_requests_outbound_replies_enabled,
     }
+
+
+def _safe_site_service_request_worker_error_code(error_code: str) -> str:
+    normalized_code = error_code.strip()
+    if normalized_code in _SAFE_SITE_SERVICE_REQUEST_WORKER_ERROR_CODES:
+        return normalized_code
+    if re.fullmatch(r"bitrix_http_[1-5][0-9]{2}", normalized_code):
+        return normalized_code
+    return "worker_failure"
 
 
 def _existing_event_result(

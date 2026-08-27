@@ -76,6 +76,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         LogisticsTransferState,
         LogisticsUser,
         LogisticsWarehouse,
+        LogisticsWebLaunchToken,
     )
     from app.models.matching_property_mapping import (
         MatchingPropertyProfile,
@@ -145,6 +146,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionCase,
         SiteOrderExecutionEvent,
         SiteOrderFulfillmentOutbox,
+        SiteOrderStageOutbox,
     )
     from app.models.site_service_requests import (
         SiteServiceRequestCase,
@@ -153,6 +155,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteServiceRequestFile,
         SiteServiceRequestNonce,
         SiteServiceRequestSource,
+        SiteServiceRequestWorkerState,
     )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
@@ -230,6 +233,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsWarehouse",
         "LogisticsDriver",
         "LogisticsUser",
+        "LogisticsWebLaunchToken",
         "LogisticsBotSession",
         "LogisticsBotSessionPhoto",
         "LogisticsTransfer",
@@ -286,12 +290,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "BitrixChatAction",
         "SiteOrderExecutionEvent",
         "SiteOrderFulfillmentOutbox",
+        "SiteOrderStageOutbox",
         "SiteServiceRequestCase",
         "SiteServiceRequestEvent",
         "SiteServiceRequestFile",
         "SiteServiceRequestCommand",
         "SiteServiceRequestNonce",
         "SiteServiceRequestSource",
+        "SiteServiceRequestWorkerState",
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",

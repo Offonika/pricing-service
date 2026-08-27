@@ -61,10 +61,132 @@ def test_normalize_rtu_source_rows_applies_readiness_gate() -> None:
     )
 
     assert [row.rtu_external_id for row in normalized.ready] == ["0xRTU1"]
-    assert [row.review_type for row in normalized.skipped] == [
+    assert normalized.skipped == []
+    assert [row.review_type for row in normalized.pending_readiness] == [
         "rtu_readiness_gate_failed",
         "rtu_readiness_gate_failed",
     ]
+
+
+def test_normalize_rtu_source_rows_ignores_rows_without_site_markers() -> None:
+    normalized = logistics_onec.normalize_rtu_source_rows(
+        [
+            _rtu_row(
+                site_order_number=None,
+                site_delivery_method=None,
+                source_warehouse_name="Розничный магазин",
+            )
+        ]
+    )
+
+    assert normalized.ready == []
+    assert normalized.skipped == []
+    assert normalized.pending_readiness == []
+    assert [row.review_type for row in normalized.ignored_non_site] == ["not_site_order"]
+
+
+def test_sync_readiness_rows_are_pending_without_manual_review() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[_rtu_row(has_assembled=0)],
+                dry_run=False,
+            )
+
+            assert report["pending_readiness"] == 1
+            assert report["manual_review_created"] == 0
+            assert session.query(LogisticsManualReview).count() == 0
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_cleanup_legacy_rtu_manual_review_noise_is_idempotent() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    LogisticsManualReview(
+                        review_type="rtu_readiness_gate_failed",
+                        status="open",
+                        source_document_type="rtu",
+                        source_external_id="pending-1",
+                        reason="not ready",
+                        payload={"site_order_number": "216951"},
+                    ),
+                    LogisticsManualReview(
+                        review_type="rtu_without_site_order",
+                        status="open",
+                        source_document_type="rtu",
+                        source_external_id="retail-1",
+                        reason="missing site order",
+                        payload={"site_order_number": None, "site_delivery_method": None},
+                    ),
+                    LogisticsManualReview(
+                        review_type="rtu_without_site_order",
+                        status="open",
+                        source_document_type="rtu",
+                        source_external_id="site-1",
+                        reason="missing site order",
+                        payload={"site_order_number": None, "site_delivery_method": "Самовывоз"},
+                    ),
+                    LogisticsManualReview(
+                        review_type="rtu_target_warehouse_unresolved",
+                        status="open",
+                        source_document_type="rtu",
+                        source_external_id="review-1",
+                        reason="warehouse unresolved",
+                    ),
+                    LogisticsManualReview(
+                        review_type="rtu_without_site_order",
+                        status="open",
+                        source_document_type="rtu",
+                        source_external_id="malformed-legacy-1",
+                        reason="missing site order",
+                        payload=["legacy", "payload"],
+                    ),
+                ]
+            )
+            session.commit()
+
+            dry_run = logistics_onec.cleanup_legacy_rtu_manual_review_noise(session, dry_run=True)
+            assert dry_run == {
+                "dry_run": True,
+                "matched": 2,
+                "resolved": 0,
+                "skipped_unsafe": 1,
+                "by_reason": {
+                    "no_positive_site_order_marker": 1,
+                    "readiness_gate_is_pending_state": 1,
+                },
+            }
+            assert session.query(LogisticsManualReview).filter_by(status="open").count() == 5
+
+            applied = logistics_onec.cleanup_legacy_rtu_manual_review_noise(session, dry_run=False)
+            assert applied["resolved"] == 2
+            assert session.query(LogisticsManualReview).filter_by(status="open").count() == 3
+            assert (
+                logistics_onec.cleanup_legacy_rtu_manual_review_noise(session, dry_run=False)[
+                    "resolved"
+                ]
+                == 0
+            )
+            resolved = session.scalar(
+                select(LogisticsManualReview).where(
+                    LogisticsManualReview.source_external_id == "retail-1"
+                )
+            )
+            assert resolved is not None
+            assert resolved.payload["auto_resolved_by"] == ("rtu_manual_review_noise_cleanup_v1")
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
 
 
 def test_resolve_target_warehouse_uses_payload_aliases() -> None:

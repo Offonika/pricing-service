@@ -308,6 +308,7 @@ export async function fetchReceivableWorkplace(params: {
   date: string;
   department_ref?: string;
   status?: string;
+  counterparty_query?: string;
   min_debt?: number;
   sort_by?: ReceivableWorkplaceSortBy;
   sort_dir?: ReceivableWorkplaceSortDir;
@@ -317,6 +318,7 @@ export async function fetchReceivableWorkplace(params: {
       params: {
         date: params.date,
         department_ref: params.department_ref || undefined,
+        counterparty_query: params.counterparty_query?.trim() || undefined,
         limit: 100,
         min_debt: params.min_debt,
         sort_by: params.sort_by || "balance",

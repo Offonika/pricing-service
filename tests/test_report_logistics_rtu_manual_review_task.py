@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
 from tasks import report_logistics_rtu_manual_review
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_report_logistics_rtu_manual_review_supports_documented_direct_invocation() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tasks/report_logistics_rtu_manual_review.py",
+            "--help",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Report open RTU logistics manual reviews." in result.stdout
 
 
 def test_report_logistics_rtu_manual_review_cli_uses_read_only_scope(monkeypatch, capsys) -> None:

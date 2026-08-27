@@ -352,7 +352,10 @@ function loadBitrixSdk() {
     script.src = BITRIX_SDK_URL;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Не удалось загрузить Bitrix24 SDK"));
+    script.onerror = () => {
+      script.remove();
+      reject(new Error("Не удалось загрузить Bitrix24 SDK"));
+    };
     document.head.appendChild(script);
   });
 }

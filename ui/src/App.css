@@ -41,6 +41,11 @@
   color: #667085;
 }
 
+.app-state__actions {
+  display: flex;
+  margin-top: 16px;
+}
+
 .app-state__hint {
   display: grid;
   gap: 6px;

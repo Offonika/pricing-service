@@ -6,9 +6,7 @@ from contextlib import contextmanager
 from tasks import report_logistics_rtu_manual_review
 
 
-def test_report_logistics_rtu_manual_review_cli_uses_read_only_scope(
-    monkeypatch, capsys
-) -> None:
+def test_report_logistics_rtu_manual_review_cli_uses_read_only_scope(monkeypatch, capsys) -> None:
     session = object()
     scope_calls: list[bool] = []
     report_calls: list[tuple[object, str | None, int]] = []

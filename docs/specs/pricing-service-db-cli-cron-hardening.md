@@ -177,9 +177,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 15. Для `export_receivable_work_report.py` разрешены реализация в отдельной ветке,
     push и создание отдельного PR после локальных проверок. Merge и production
     release требуют отдельных подтверждений.
+16. После зелёного CI разрешён merge PR №78. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №78; production release оставлен отдельным
+  решением.
 - 2026-08-27 — `export_receivable_work_report.py` переведён на central read-only
   session scope и зарегистрирован как `application_read_only`; аргументы и
   XLSX-контракт сохранены.

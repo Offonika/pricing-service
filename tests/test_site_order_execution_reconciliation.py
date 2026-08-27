@@ -145,6 +145,49 @@ def test_return_rules_fail_closed_for_payment_partial_or_issue_conflicts() -> No
     )
 
 
+def test_canceled_before_fulfillment_requires_inactive_marked_onec_order() -> None:
+    canceled_before_fulfillment = _snapshot(
+        site_canceled=True,
+        onec_order_count=1,
+        onec_inactive_marked_order_count=1,
+        rtu_count=0,
+        assembled_rtu_count=0,
+        posted_sale_amount=None,
+        latest_rtu_at=None,
+        latest_assembled_at=None,
+    )
+
+    safe = reconciliation.decide_execution_stage(canceled_before_fulfillment)
+    active_onec_order = reconciliation.decide_execution_stage(
+        replace(canceled_before_fulfillment, onec_inactive_marked_order_count=0)
+    )
+    paid = reconciliation.decide_execution_stage(
+        replace(canceled_before_fulfillment, site_paid=True)
+    )
+    assembled = reconciliation.decide_execution_stage(
+        replace(canceled_before_fulfillment, crm_assembled=True)
+    )
+    with_rtu = reconciliation.decide_execution_stage(
+        replace(
+            canceled_before_fulfillment,
+            rtu_count=1,
+            latest_rtu_at=datetime(2026, 8, 26, 10, 0),
+        )
+    )
+
+    assert safe.action == reconciliation.ACTION_UPDATE_STAGE
+    assert safe.target_stage == "LOSE"
+    assert safe.reason == "canceled_before_fulfillment"
+    assert all(
+        item.action == reconciliation.ACTION_MANUAL_REVIEW
+        for item in (active_onec_order, paid, assembled, with_rtu)
+    )
+    assert all(
+        item.reason == "canceled_without_confirmed_return"
+        for item in (active_onec_order, paid, assembled, with_rtu)
+    )
+
+
 def test_duplicate_terminal_and_missing_onec_evidence_never_change_stage() -> None:
     duplicate = reconciliation.decide_execution_stage(_snapshot(duplicate_deal_ids=(39001, 39002)))
     terminal = reconciliation.decide_execution_stage(_snapshot(current_stage="WON"))

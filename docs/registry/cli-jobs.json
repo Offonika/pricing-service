@@ -44,6 +44,16 @@
     }
   ],
   "commands": {
+    "analyze_manual_matching_feedback.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_as_of_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "manual_matching_control.py": {
       "owner": "matching",
       "kind": "permanent_cli",

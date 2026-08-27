@@ -316,6 +316,9 @@ def _case(**overrides) -> SiteServiceRequestCase:
 def _worker_settings(**overrides) -> Settings:
     values = {
         "site_service_requests_bitrix_writes_enabled": True,
+        "site_service_requests_bitrix_webhook_url": (
+            "https://portal.example.invalid/rest/1/test-token/"
+        ),
         "site_service_requests_bitrix_entity_type_id": 1134,
         "site_service_requests_bitrix_working_category_id": 55,
         "site_service_requests_bitrix_field_map": {
@@ -3614,7 +3617,11 @@ def test_assignment_reconcile_escalates_once_and_adds_one_timeline_comment(
     )
     assert notification_params["MESSAGE"] == (
         f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
-        "Проверьте обращение и ответьте клиенту."
+        "Проверьте обращение и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        f"[URL=https://master-mobile.ru/personal/tickets/?ID={case.source_ticket_id}]"
+        "Открыть обращение на сайте[/URL]"
     )
     assert "SLA" not in notification_params["MESSAGE"]
 
@@ -3636,6 +3643,7 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
         source_kind="bitrix_mail",
         source_ticket_id=-741,
         bitrix_item_id=1000,
+        primary_activity_id=555,
         escalated_at=now,
     )
     db_session.add(case)
@@ -3655,7 +3663,11 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
         dict(params) for method, params in api.calls if method == "im.notify.personal.add"
     )
     assert notification_params["MESSAGE"] == (
-        "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту."
+        "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту.\n"
+        "[URL=https://portal.example.invalid/crm/type/1134/details/1000/]"
+        "Открыть карточку обращения[/URL]\n"
+        "[URL=https://portal.example.invalid/crm/activity/?ID=555&open_view=555]"
+        "Открыть письмо[/URL]"
     )
     assert "SLA" not in notification_params["MESSAGE"]
 

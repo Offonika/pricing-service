@@ -191,6 +191,26 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
     assert duplicate_handoff.status_code == 409
     assert duplicate_handoff.json()["detail"]["draft_id"] == draft_id
 
+    long_unknown_code = "X" * 255
+    unknown_scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": long_unknown_code,
+        },
+        headers=headers,
+    )
+    assert unknown_scan.status_code == 404
+    oversized_scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": "X" * 256,
+        },
+        headers=headers,
+    )
+    assert oversized_scan.status_code == 422
+
     scanned = client.post(
         f"/api/logistics/handoffs/draft/{draft_id}/scan",
         json={
@@ -202,12 +222,24 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
     assert scanned.status_code == 200
     assert scanned.json()["item_count"] == 1
 
+    repeated_scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "barcode": "BC-0001",
+        },
+        headers=headers,
+    )
+    assert repeated_scan.status_code == 200
+    assert repeated_scan.json()["item_count"] == 1
+
+    long_idempotency_key = "handoff-" + "x" * 247
     confirmed = client.post(
         f"/api/logistics/handoffs/draft/{draft_id}/confirm",
         json={
             "actor_user_id": ids["users"]["Отправитель"],
             "comment": "Передано водителю",
-            "idempotency_key": "handoff-1",
+            "idempotency_key": long_idempotency_key,
             "photos": [{"telegram_file_id": "photo-handoff"}],
         },
         headers=headers,
@@ -219,7 +251,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         f"/api/logistics/handoffs/draft/{draft_id}/confirm",
         json={
             "actor_user_id": ids["users"]["Отправитель"],
-            "idempotency_key": "handoff-1",
+            "idempotency_key": long_idempotency_key,
         },
         headers=headers,
     )
@@ -345,6 +377,19 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
     with Session(engine) as session:
         events_count = session.query(LogisticsTransferEvent).count()
         assert events_count == 3
+        handoff_event = session.scalar(
+            select(LogisticsTransferEvent).where(
+                LogisticsTransferEvent.event_type == "handed_to_driver"
+            )
+        )
+        assert handoff_event is not None
+        assert len(handoff_event.idempotency_key or "") <= 255
+        unknown_review = session.scalar(
+            select(LogisticsManualReview).where(LogisticsManualReview.review_type == "unknown_qr")
+        )
+        assert unknown_review is not None
+        assert unknown_review.source_external_id == long_unknown_code[:64]
+        assert unknown_review.payload["lookup_code"] == long_unknown_code
 
     app.dependency_overrides = {}
     get_settings.cache_clear()
@@ -771,6 +816,10 @@ def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
     app.dependency_overrides = {get_db: override_db(engine)}
     client = TestClient(app)
 
+    fallback_page = client.get("/logistics/fallback")
+    assert fallback_page.status_code == 200
+    assert 'href="./vite.svg"' not in fallback_page.text
+
     _seed_reference_data(client, headers)
     ids = _id_maps(engine)
 
@@ -792,6 +841,109 @@ def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
     web_monitor = client.get("/api/logistics/web/monitor")
     assert web_monitor.status_code == 200
     assert isinstance(web_monitor.json(), list)
+
+    oversized_comment = client.post(
+        "/api/logistics/web/receipts/draft",
+        json={
+            "warehouse_id": ids["warehouses"]["central"],
+            "comment": "x" * 1001,
+        },
+    )
+    assert oversized_comment.status_code == 422
+
+    receipt_draft = client.post(
+        "/api/logistics/web/receipts/draft",
+        json={"warehouse_id": ids["warehouses"]["central"]},
+    )
+    assert receipt_draft.status_code == 200
+    restored_draft = client.get("/api/logistics/web/draft/open")
+    assert restored_draft.status_code == 200
+    assert restored_draft.json()["id"] == receipt_draft.json()["id"]
+    assert restored_draft.json()["draft_type"] == "receipt"
+
+    malformed_photos = client.post(
+        f"/api/logistics/web/receipts/draft/{receipt_draft.json()['id']}/confirm",
+        json={"photos": [{}]},
+    )
+    assert malformed_photos.status_code == 422
+
+    with Session(engine) as session:
+        receiver = session.get(LogisticsUser, ids["users"]["Получатель"])
+        assert receiver is not None
+        receiver.default_warehouse_id = ids["warehouses"]["store-2"]
+        session.commit()
+
+    reassigned_warehouse = client.post(
+        f"/api/logistics/web/receipts/draft/{receipt_draft.json()['id']}/scan",
+        json={"barcode": "BC-0001"},
+    )
+    assert reassigned_warehouse.status_code == 403
+    assert reassigned_warehouse.json()["detail"] == (
+        "draft warehouse is outside current user assignment"
+    )
+
+    with Session(engine) as session:
+        receiver = session.get(LogisticsUser, ids["users"]["Получатель"])
+        assert receiver is not None
+        receiver.role = "sender"
+        session.commit()
+
+    wrong_endpoint = client.post(
+        f"/api/logistics/web/handoffs/draft/{receipt_draft.json()['id']}/scan",
+        json={"barcode": "BC-0001"},
+    )
+    assert wrong_endpoint.status_code == 409
+    assert wrong_endpoint.json()["detail"] == "draft type does not match endpoint"
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_web_fallback_enforces_assigned_warehouse(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    monkeypatch.setenv("LOGISTICS_WEB_SESSION_SECRET", "test-web-session-secret")
+    monkeypatch.setenv("DEBUG", "true")
+    get_settings.cache_clear()
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+    session_response = client.post(
+        "/api/logistics/web/session",
+        json={"actor_user_id": ids["users"]["Получатель"]},
+        headers=headers,
+    )
+    assert session_response.status_code == 200
+
+    foreign_monitor = client.get(
+        "/api/logistics/web/monitor",
+        params={"warehouse_id": ids["warehouses"]["store-1"]},
+    )
+    assert foreign_monitor.status_code == 403
+
+    foreign_draft = client.post(
+        "/api/logistics/web/receipts/draft",
+        json={"warehouse_id": ids["warehouses"]["store-1"]},
+    )
+    assert foreign_draft.status_code == 403
+
+    with Session(engine) as session:
+        receiver = session.get(LogisticsUser, ids["users"]["Получатель"])
+        assert receiver is not None
+        receiver.default_warehouse_id = None
+        session.commit()
+
+    missing_assignment = client.post(
+        "/api/logistics/web/receipts/draft",
+        json={"warehouse_id": ids["warehouses"]["central"]},
+    )
+    assert missing_assignment.status_code == 422
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

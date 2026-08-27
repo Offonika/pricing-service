@@ -44,6 +44,16 @@
     }
   ],
   "commands": {
+    "analyze_manual_matching_feedback.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_as_of_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "manual_matching_control.py": {
       "owner": "matching",
       "kind": "permanent_cli",
@@ -338,6 +348,16 @@
       "db_access": "application_write",
       "spec": "docs/specs/site-order-fulfillment-control-contour.md",
       "remove_after": null
+    },
+    "apply_historical_partial_return_sales.py": {
+      "owner": "pricing-platform",
+      "kind": "maintenance",
+      "dry_run": "supported",
+      "idempotency": "verified_by_evidence_fingerprint_and_outbox_keys",
+      "side_effect_level": "external_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": "2026-12-31"
     },
     "site_service_requests_worker.py": {
       "owner": "site-service-requests",

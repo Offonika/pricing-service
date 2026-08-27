@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_logistics_internal_token
+from app.models import LogisticsDraft
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftConfirmRequest,
@@ -41,6 +43,14 @@ from app.services import transfer_assistant as transfer_assistant_service
 router = APIRouter(dependencies=[Depends(require_logistics_internal_token)])
 
 
+def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
+    actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
+    if actual_type is None:
+        raise HTTPException(status_code=404, detail="draft not found")
+    if actual_type != expected_type:
+        raise HTTPException(status_code=409, detail="draft type does not match endpoint")
+
+
 @router.post("/auth/telegram", response_model=LogisticsUserProfile)
 def auth_telegram(payload: LogisticsTelegramAuthRequest, db: Session = Depends(get_db)):
     return logistics_service.telegram_auth(
@@ -74,7 +84,7 @@ def sync_units(items: list[LogisticsUnitSyncItem], db: Session = Depends(get_db)
 
 
 @router.get("/units/lookup", response_model=LogisticsUnitLookupResponse)
-def lookup_unit(code: str = Query(min_length=1), db: Session = Depends(get_db)):
+def lookup_unit(code: str = Query(min_length=1, max_length=255), db: Session = Depends(get_db)):
     return logistics_service.lookup_unit(db, code=code)
 
 
@@ -108,6 +118,7 @@ def scan_handoff_item(
     payload: LogisticsDraftScanRequest,
     db: Session = Depends(get_db),
 ):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -124,6 +135,7 @@ def confirm_handoff(
     payload: LogisticsDraftConfirmRequest,
     db: Session = Depends(get_db),
 ):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -153,6 +165,7 @@ def scan_receipt_item(
     payload: LogisticsDraftScanRequest,
     db: Session = Depends(get_db),
 ):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -168,6 +181,7 @@ def confirm_receipt(
     payload: LogisticsDraftConfirmRequest,
     db: Session = Depends(get_db),
 ):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,

@@ -168,6 +168,8 @@ EXECUTING_RECONCILIATION_CSV_FIELDS = (
     "returned_amount",
     "payment_confirmed",
     "site_canceled",
+    "onec_order_count",
+    "onec_inactive_marked_order_count",
     "action",
     "target_stage",
     "reason",
@@ -1093,6 +1095,10 @@ def build_execution_snapshots(
                 site_canceled=(order_status.canceled if order_status is not None else None),
                 site_status=(order_status.status_id if order_status is not None else None),
                 site_paid=(order_status.payed if order_status is not None else None),
+                onec_order_count=int(signal.get("onec_order_count") or 0),
+                onec_inactive_marked_order_count=int(
+                    signal.get("onec_inactive_marked_order_count") or 0
+                ),
                 rtu_count=int(signal.get("rtu_count") or 0),
                 assembled_rtu_count=int(signal.get("assembled_rtu_count") or 0),
                 issued_rtu_count=int(signal.get("issued_rtu_count") or 0),
@@ -1180,6 +1186,8 @@ def write_execution_reconciliation_csv(
                 "returned_amount": snapshot.returned_amount,
                 "payment_confirmed": snapshot.payment_confirmed,
                 "site_canceled": snapshot.site_canceled,
+                "onec_order_count": snapshot.onec_order_count,
+                "onec_inactive_marked_order_count": (snapshot.onec_inactive_marked_order_count),
                 "action": decision.action,
                 "target_stage": decision.target_stage,
                 "reason": decision.reason,
@@ -1309,15 +1317,17 @@ def run_quick_sync(
             rtu_signals: dict[str, dict[str, Any]] = {}
             onec_execution_evidence_available = False
         else:
-            try:
-                rtu_signals = query_rtu_signal_by_orders(
-                    [
-                        fulfillment._clean_string(  # noqa: SLF001
-                            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
-                        )
-                        for deal in execution_scan.deals
-                    ]
+            execution_order_numbers = [
+                fulfillment._clean_string(  # noqa: SLF001
+                    (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
                 )
+                for deal in execution_scan.deals
+            ]
+            try:
+                rtu_signals = query_rtu_signal_by_orders(execution_order_numbers)
+                order_states = query_onec_order_states_by_orders(execution_order_numbers)
+                for order_number, order_state in order_states.items():
+                    rtu_signals.setdefault(order_number, {}).update(order_state)
             except Exception:
                 rtu_signals = {}
                 onec_execution_evidence_available = False
@@ -1994,6 +2004,54 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             "latest_return_at": mapping.get("latest_return_at"),
             "latest_rtu_number": clean_csv_value(mapping["latest_rtu_number"]),
             "latest_rtu_date": mapping["latest_rtu_date"],
+        }
+    return result
+
+
+def query_onec_order_states_by_orders(order_numbers: list[str]) -> dict[str, dict[str, int]]:
+    settings = get_settings()
+    unique_orders = [
+        order_number
+        for order_number in dict.fromkeys(clean_csv_value(item) for item in order_numbers)
+        if order_number
+    ]
+    if not unique_orders or not settings.onec_database_url:
+        return {}
+
+    params = {f"order_{index}": order for index, order in enumerate(unique_orders)}
+    placeholders = ", ".join(f":order_{index}" for index in range(len(unique_orders)))
+    statement = text(f"""
+        SELECT
+            NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+            COUNT(*) AS onec_order_count,
+            SUM(
+                CASE
+                    WHEN ord._Posted = 0x00 AND ord._Marked = 0x01 THEN 1
+                    ELSE 0
+                END
+            ) AS onec_inactive_marked_order_count
+        FROM dbo._Document132 AS ord WITH (NOLOCK)
+        WHERE LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+        GROUP BY NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'')
+        """)
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(statement, params).fetchall()
+    finally:
+        engine.dispose()
+
+    result: dict[str, dict[str, int]] = {}
+    for row in rows:
+        mapping = getattr(row, "_mapping", row)
+        order_number = clean_csv_value(mapping["site_order_number"])
+        if not order_number:
+            continue
+        result[order_number] = {
+            "onec_order_count": int(mapping["onec_order_count"] or 0),
+            "onec_inactive_marked_order_count": int(
+                mapping["onec_inactive_marked_order_count"] or 0
+            ),
         }
     return result
 

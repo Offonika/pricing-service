@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
@@ -2897,7 +2898,9 @@ def _deliver_site_service_request_escalation(
                 entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
                 item_id=int(case.bitrix_item_id),
                 comment=(
-                    "SLA первого ответа просрочен. Ответственность передана резерву. " f"{marker}"
+                    "Срок первого ответа клиенту истёк. "
+                    "Ответственность передана резервному сотруднику. "
+                    f"{marker}"
                 ),
             )
         if not writer.timeline_comment_exists(
@@ -2911,16 +2914,41 @@ def _deliver_site_service_request_escalation(
         settings.site_service_requests_escalation_user_id is not None
         and case.escalation_notification_delivered_at is None
     ):
+        message_lines = [
+            (
+                "Срок ответа на письмо клиента истёк. Проверьте письмо и ответьте клиенту."
+                if case.source_kind == "bitrix_mail"
+                else (
+                    f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
+                    "Проверьте обращение и ответьте клиенту."
+                )
+            )
+        ]
+        try:
+            item_url = site_service_request_item_url(settings, int(case.bitrix_item_id))
+        except SiteServiceRequestConfigurationError:
+            item_url = None
+        if item_url is not None:
+            message_lines.append(f"[URL={item_url}]Открыть карточку обращения[/URL]")
+        if case.source_kind == "bitrix_mail" and case.primary_activity_id is not None:
+            try:
+                activity_url = site_service_request_activity_url(
+                    settings,
+                    int(case.primary_activity_id),
+                )
+            except SiteServiceRequestConfigurationError:
+                activity_url = None
+            if activity_url is not None:
+                message_lines.append(f"[URL={activity_url}]Открыть письмо[/URL]")
+        elif case.source_kind == "site_ticket":
+            site_ticket_url = (
+                f"{settings.site_service_requests_site_base_url.rstrip('/')}"
+                f"/personal/tickets/?ID={case.source_ticket_id}"
+            )
+            message_lines.append(f"[URL={site_ticket_url}]Открыть обращение на сайте[/URL]")
         writer.notify_user(
             user_id=settings.site_service_requests_escalation_user_id,
-            message=(
-                "Просрочен SLA первого ответа по "
-                + (
-                    "сервисному email-обращению."
-                    if case.source_kind == "bitrix_mail"
-                    else f"сервисному обращению сайта #{case.source_ticket_id}."
-                )
-            ),
+            message="\n".join(message_lines),
             tag=(
                 f"mm-site-service-escalation:{case.id}:"
                 f"{settings.site_service_requests_escalation_user_id}"
@@ -4180,6 +4208,30 @@ def _positive_int(value: Any) -> int | None:
     else:
         return None
     return parsed if parsed > 0 else None
+
+
+def site_service_request_portal_base_url(settings: Settings) -> str:
+    webhook = str(settings.site_service_requests_bitrix_webhook_url or "")
+    parsed = urlsplit(webhook)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SiteServiceRequestConfigurationError(
+            "site service request Bitrix webhook URL is invalid"
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def site_service_request_activity_url(settings: Settings, activity_id: int) -> str:
+    return (
+        f"{site_service_request_portal_base_url(settings)}/crm/activity/"
+        f"?ID={activity_id}&open_view={activity_id}"
+    )
+
+
+def site_service_request_item_url(settings: Settings, item_id: int) -> str:
+    return (
+        f"{site_service_request_portal_base_url(settings)}/crm/type/"
+        f"{settings.site_service_requests_bitrix_entity_type_id}/details/{item_id}/"
+    )
 
 
 def _strict_pagination_offset(value: Any, *, error_code: str) -> int:

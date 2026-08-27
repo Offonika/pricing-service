@@ -1140,6 +1140,8 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "25,55 * * * *" in cron_source
     assert "0 11 * * *" in cron_source
     assert "ORDER_FULFILLMENT_SYNC_MODE=daily" in cron_source
+    daily_line = next(line for line in cron_source.splitlines() if "SYNC_MODE=daily" in line)
+    assert "ORDER_FULFILLMENT_NOTIFY_ENABLED=false" in daily_line
     assert "ORDER_FULFILLMENT_SYNC_MODE=all" not in cron_source
     assert (
         "/opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh" in cron_source

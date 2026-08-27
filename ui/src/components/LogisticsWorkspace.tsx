@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAxiosError } from "axios";
-import { api } from "../api/client";
+import { logisticsApi as api } from "../api/logistics";
 import type { BitrixLogisticsProfile } from "../api/bitrix";
 
 type Warehouse = {
@@ -19,6 +19,7 @@ type Draft = {
   status: string;
   warehouse_id: number;
   driver_id: number | null;
+  default_dropoff_warehouse_id?: number | null;
   item_count: number;
   items: Array<{
     id: number;
@@ -91,6 +92,7 @@ type Bootstrap = {
   warehouses: Warehouse[];
   drivers: Driver[];
   capabilities: string[];
+  open_draft?: Draft | null;
 };
 
 type Screen = "operation" | "expected" | "transit" | "history" | "errors";
@@ -110,6 +112,25 @@ const STATUS_LABELS: Record<string, string> = {
   in_transit: "В пути",
   accepted_at_point: "Принято",
   returned: "Возвращено",
+};
+
+const EVENT_LABELS: Record<string, string> = {
+  created: "Создано перемещение",
+  ready_at_warehouse: "Готово к передаче",
+  handed_to_driver: "Передано водителю",
+  pickup_moving_to_point: "В пути в магазин",
+  arrived_at_point: "Прибыло в магазин",
+  accepted_at_point: "Принято в магазине",
+  pickup_stored_at_point: "Размещено на хранение",
+  returned: "Возвращено",
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  bitrix: "Bitrix24",
+  telegram: "Telegram",
+  web_fallback: "Браузер",
+  onec: "1С",
+  system: "Система",
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -229,6 +250,23 @@ function apiError(error: unknown) {
   return error instanceof Error ? error.message : "Неизвестная ошибка";
 }
 
+function cameraErrorMessage(error: unknown) {
+  const name =
+    typeof error === "object" && error !== null && "name" in error
+      ? String((error as { name?: unknown }).name || "")
+      : "";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Нет доступа к камере. Разрешите камеру для Bitrix24 или откройте сканер в браузере.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "Камера не найдена. Используйте фото или ручной ввод кода.";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError") {
+    return "Камера занята другим приложением. Закройте его и повторите.";
+  }
+  return "Не удалось открыть камеру. Используйте фото, ручной ввод или внешний браузер.";
+}
+
 function newIdempotencyKey() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `logistics-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -259,7 +297,7 @@ function formatReviewDate(value: string) {
       }).format(parsed);
 }
 
-function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
+export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
@@ -309,14 +347,21 @@ function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; on
 
         const { BrowserMultiFormatReader } = await import("@zxing/browser");
         const reader = new BrowserMultiFormatReader();
-        controls = await reader.decodeFromVideoDevice(undefined, video, (result) => {
-          if (result?.getText()) finish(result.getText());
-        });
+        controls = await reader.decodeFromConstraints(
+          {
+            video: { facingMode: { ideal: "environment" } },
+            audio: false,
+          },
+          video,
+          (result) => {
+            if (result?.getText()) finish(result.getText());
+          }
+        );
         setStarting(false);
       } catch (cameraError) {
         if (active) {
           setStarting(false);
-          setError(apiError(cameraError));
+          setError(cameraErrorMessage(cameraError));
         }
       }
     };
@@ -391,13 +436,19 @@ export function LogisticsWorkspace() {
   const [message, setMessage] = useState("Загрузка…");
   const [busy, setBusy] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const reviewRequestId = useRef(0);
+  const operationInFlight = useRef(false);
 
   const capabilities = useMemo(
     () => new Set(bootstrap?.capabilities || []),
     [bootstrap?.capabilities]
   );
   const warehouseId = bootstrap?.profile.default_warehouse_id ?? null;
+  const dropoffWarehouses = useMemo(
+    () => bootstrap?.warehouses.filter((warehouse) => warehouse.id !== warehouseId) || [],
+    [bootstrap?.warehouses, warehouseId]
+  );
 
   const loadReviews = useCallback(
     async (offset = 0, append = false) => {
@@ -459,15 +510,21 @@ export function LogisticsWorkspace() {
       .then(({ data }) => {
         if (cancelled) return;
         setBootstrap(data);
-        const initialOperation = data.capabilities.includes("handoff") ? "handoff" : "receipt";
+        const initialOperation =
+          data.open_draft?.draft_type ||
+          (data.capabilities.includes("handoff") ? "handoff" : "receipt");
         setOperation(initialOperation);
         if (!data.capabilities.includes("handoff") && !data.capabilities.includes("receipt")) {
           setScreen("transit");
         }
-        setDriverId(String(data.drivers[0]?.id || ""));
+        setDraft(data.open_draft || null);
+        setConfirmKey(data.open_draft ? newIdempotencyKey() : "");
+        setDriverId(String(data.open_draft?.driver_id || data.drivers[0]?.id || ""));
         const firstDropoff = data.warehouses.find((item) => item.id !== data.profile.default_warehouse_id);
-        setDropoffWarehouseId(String(firstDropoff?.id || data.warehouses[0]?.id || ""));
-        setMessage("");
+        setDropoffWarehouseId(
+          String(data.open_draft?.default_dropoff_warehouse_id || firstDropoff?.id || "")
+        );
+        setMessage(data.open_draft ? `Черновик №${data.open_draft.id} восстановлен` : "");
       })
       .catch((error: unknown) => {
         if (!cancelled) setMessage(apiError(error));
@@ -475,19 +532,22 @@ export function LogisticsWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bootstrapAttempt]);
 
   useEffect(() => {
     void loadLists(screen).catch((error: unknown) => setMessage(apiError(error)));
   }, [loadLists, screen]);
 
   const run = async (action: () => Promise<void>) => {
+    if (operationInFlight.current) return;
+    operationInFlight.current = true;
     setBusy(true);
     try {
       await action();
     } catch (error) {
       setMessage(apiError(error));
     } finally {
+      operationInFlight.current = false;
       setBusy(false);
     }
   };
@@ -495,6 +555,12 @@ export function LogisticsWorkspace() {
   const createDraft = () =>
     run(async () => {
       if (!warehouseId) throw new Error("Для профиля не назначен склад");
+      if (operation === "handoff" && !driverId) {
+        throw new Error("Нет активного водителя для передачи");
+      }
+      if (operation === "handoff" && !dropoffWarehouseId) {
+        throw new Error("Нет доступного магазина назначения");
+      }
       const payload =
         operation === "handoff"
           ? {
@@ -556,12 +622,21 @@ export function LogisticsWorkspace() {
       setMessage("");
     });
 
-  const openFallback = () =>
-    run(async () => {
-      const { data } = await api.post<{ url: string }>("/bitrix/logistics/fallback-link");
-      const popup = window.open(data.url, "_blank", "noopener,noreferrer");
-      if (!popup) window.location.assign(data.url);
+  const openFallback = () => {
+    if (operationInFlight.current) return;
+    const popup = window.open("about:blank", "_blank");
+    if (popup) popup.opener = null;
+    return run(async () => {
+      try {
+        const { data } = await api.post<{ url: string }>("/bitrix/logistics/fallback-link");
+        if (popup) popup.location.replace(data.url);
+        else window.location.assign(data.url);
+      } catch (error) {
+        popup?.close();
+        throw error;
+      }
     });
+  };
 
   const loadMoreReviews = () => {
     void loadReviews(reviewPage.items.length, true).catch((error: unknown) =>
@@ -570,12 +645,27 @@ export function LogisticsWorkspace() {
   };
 
   if (!bootstrap) {
+    const loading = message === "Загрузка…";
     return (
       <div className="app app--center">
         <div className="app-state">
           <h1>Логистика</h1>
           <p>{message}</p>
           <small>Откройте приложение из левого меню Bitrix24.</small>
+          {!loading && (
+            <div className="app-state__actions">
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setMessage("Загрузка…");
+                  setBootstrapAttempt((attempt) => attempt + 1);
+                }}
+              >
+                Повторить
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -585,7 +675,7 @@ export function LogisticsWorkspace() {
     { id: "operation", label: "Сканирование", show: capabilities.has("handoff") || capabilities.has("receipt") },
     { id: "expected", label: "Ожидаются", show: capabilities.has("expected") },
     { id: "transit", label: "В пути", show: capabilities.has("monitor") },
-    { id: "history", label: "История", show: capabilities.has("history") },
+    { id: "history", label: "История", show: capabilities.has("history") && Boolean(historyTitle) },
     { id: "errors", label: "Разбор", show: capabilities.has("errors") },
   ];
 
@@ -637,7 +727,8 @@ export function LogisticsWorkspace() {
               <div className="logistics-form">
                 <div className="logistics-field logistics-field--fixed">
                   <span>Склад</span>
-                  <strong>{bootstrap.profile.default_warehouse_name}</strong>
+                  <strong>{bootstrap.profile.default_warehouse_name || "Не назначен"}</strong>
+                  {!warehouseId && <small>Обратитесь к логисту для привязки склада</small>}
                 </div>
                 {operation === "handoff" && (
                   <>
@@ -648,22 +739,38 @@ export function LogisticsWorkspace() {
                           <option key={driver.id} value={driver.id}>{driver.full_name}</option>
                         ))}
                       </select>
+                      {!bootstrap.drivers.length && <small>Нет активных водителей</small>}
                     </label>
                     <label className="logistics-field">
                       <span>Магазин назначения</span>
                       <select value={dropoffWarehouseId} onChange={(event) => setDropoffWarehouseId(event.target.value)}>
-                        {bootstrap.warehouses.filter((warehouse) => warehouse.id !== warehouseId).map((warehouse) => (
+                        {dropoffWarehouses.map((warehouse) => (
                           <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
                         ))}
                       </select>
+                      {!dropoffWarehouses.length && <small>Нет доступного магазина назначения</small>}
                     </label>
                   </>
                 )}
                 <label className="logistics-field">
                   <span>Комментарий</span>
-                  <input value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Необязательно" />
+                  <input
+                    value={comment}
+                    maxLength={1000}
+                    onChange={(event) => setComment(event.target.value)}
+                    placeholder="Необязательно"
+                  />
                 </label>
-                <button className="btn logistics-primary" type="button" disabled={busy} onClick={createDraft}>
+                <button
+                  className="btn logistics-primary"
+                  type="button"
+                  disabled={
+                    busy ||
+                    !warehouseId ||
+                    (operation === "handoff" && (!driverId || !dropoffWarehouseId))
+                  }
+                  onClick={createDraft}
+                >
                   Начать сканирование
                 </button>
               </div>
@@ -678,6 +785,7 @@ export function LogisticsWorkspace() {
                     autoFocus
                     inputMode="text"
                     autoComplete="off"
+                    maxLength={255}
                     value={scanCode}
                     onChange={(event) => setScanCode(event.target.value)}
                     onKeyDown={(event) => {
@@ -685,7 +793,7 @@ export function LogisticsWorkspace() {
                     }}
                     placeholder="QR, штрихкод или номер"
                   />
-                  <button className="btn" type="button" onClick={() => setCameraOpen(true)} aria-label="Открыть камеру">
+                  <button className="btn" type="button" disabled={busy} onClick={() => setCameraOpen(true)} aria-label="Открыть камеру">
                     Камера
                   </button>
                 </div>
@@ -750,9 +858,19 @@ export function LogisticsWorkspace() {
                 <article key={event.id}>
                   <i />
                   <div>
-                    <strong>{event.event_type}</strong>
-                    <span>{event.warehouse_name || event.dropoff_warehouse_name || "Без точки"}</span>
-                    <small>{formatDate(event.event_at)} · {event.user_name || event.source}</small>
+                    <strong>{EVENT_LABELS[event.event_type] || event.event_type}</strong>
+                    <span>
+                      {event.warehouse_name && event.dropoff_warehouse_name
+                        ? `${event.warehouse_name} → ${event.dropoff_warehouse_name}`
+                        : event.warehouse_name || event.dropoff_warehouse_name || "Без точки"}
+                    </span>
+                    <small>
+                      {formatDate(event.event_at)} · {event.user_name || SOURCE_LABELS[event.source] || event.source}
+                    </small>
+                    <small>
+                      Событие №{event.id}
+                      {event.driver_name ? ` · Водитель: ${event.driver_name}` : ""}
+                    </small>
                     {event.comment && <p>{event.comment}</p>}
                   </div>
                 </article>
@@ -837,7 +955,9 @@ export function LogisticsWorkspace() {
 
         {message && <div className="logistics-toast" role="status">{message}</div>}
         <button className="logistics-fallback-link" type="button" disabled={busy} onClick={openFallback}>
-          Открыть сканер в браузере
+          {capabilities.has("handoff") || capabilities.has("receipt")
+            ? "Открыть сканер в браузере"
+            : "Открыть мониторинг в браузере"}
         </button>
       </main>
       {cameraOpen && (

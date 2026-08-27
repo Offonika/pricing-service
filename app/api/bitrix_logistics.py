@@ -215,6 +215,10 @@ def bootstrap(
         warehouses=logistics_service.list_warehouses(db),
         drivers=logistics_service.list_drivers(db),
         capabilities=capabilities,
+        open_draft=logistics_service.get_open_draft_for_actor(
+            db,
+            actor_user_id=actor.id,
+        ),
     )
 
 
@@ -399,14 +403,14 @@ def create_fallback_link(
 ) -> BitrixLogisticsFallbackLinkResponse:
     settings = get_settings()
     raw_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(
-        seconds=settings.logistics_web_fallback_token_ttl_seconds
-    )
+    created_at = datetime.now(UTC).replace(tzinfo=None)
+    expires_at = created_at + timedelta(seconds=settings.logistics_web_fallback_token_ttl_seconds)
     db.add(
         LogisticsWebLaunchToken(
             token_hash=hashlib.sha256(raw_token.encode()).hexdigest(),
             actor_user_id=actor.id,
             expires_at=expires_at,
+            created_at=created_at,
         )
     )
     db.commit()

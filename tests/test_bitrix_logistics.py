@@ -97,6 +97,13 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
                     reason="external carrier",
                     payload={"rtu_number": "РБГУ0408002"},
                 ),
+                LogisticsManualReview(
+                    review_type="site_order_execution_conflict",
+                    source_document_type="site_order",
+                    source_external_id="220003",
+                    reason="execution reconciliation conflict",
+                    payload={"site_order_number": "220003"},
+                ),
             ]
         )
         session.commit()
@@ -105,6 +112,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         admin_id = session.scalar(
             select(LogisticsUser.id).where(LogisticsUser.bitrix_user_id == "30")
         )
+        driver_id = session.scalar(select(LogisticsDriver.id))
 
     settings = get_settings()
     monkeypatch.setattr(settings, "logistics_bitrix_app_enabled", True)
@@ -150,6 +158,32 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         )
         assert foreign_warehouse.status_code == 403
 
+        oversized_comment = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+                "comment": "x" * 1001,
+            },
+        )
+        assert oversized_comment.status_code == 422
+
+        handoff_draft = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+            },
+        )
+        assert handoff_draft.status_code == 200
+        restored_bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
+        assert restored_bootstrap.status_code == 200
+        assert restored_bootstrap.json()["open_draft"]["id"] == handoff_draft.json()["id"]
+
         fallback = client.post("/api/bitrix/logistics/fallback-link", headers=headers)
         assert fallback.status_code == 200
         launch_token = parse_qs(urlparse(fallback.json()["url"]).query)["launch"][0]
@@ -164,6 +198,16 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             json={"token": launch_token},
         )
         assert repeated.status_code == 401
+        with Session(engine) as audit_session:
+            launch_audit = audit_session.scalar(
+                select(LogisticsWebLaunchToken).where(
+                    LogisticsWebLaunchToken.token_hash
+                    == hashlib.sha256(launch_token.encode()).hexdigest()
+                )
+            )
+            assert launch_audit is not None
+            assert launch_audit.consumed_at is not None
+            assert launch_audit.created_at <= launch_audit.consumed_at
 
         admin_token, _expires_at = create_logistics_bitrix_session_token(
             actor_user_id=admin_id,
@@ -193,6 +237,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             "rtu_external_carrier_unmapped": 1,
             "rtu_target_warehouse_unresolved": 1,
         }
+        assert "site_order_execution_conflict" not in review_payload["counts"]
         assert "payload" not in review_payload["items"][0]
         assert "source_external_id" not in review_payload["items"][0]
         assert "secret customer address" not in review_page.text
@@ -206,6 +251,15 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         assert filtered_reviews.status_code == 200
         assert filtered_reviews.json()["total"] == 1
         assert filtered_reviews.json()["items"][0]["document_number"] == "РБГУ0408001"
+
+        foreign_reviews = client.get(
+            "/api/bitrix/logistics/errors",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"review_type": "site_order_execution_conflict"},
+        )
+        assert foreign_reviews.status_code == 200
+        assert foreign_reviews.json()["total"] == 0
+        assert foreign_reviews.json()["items"] == []
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()

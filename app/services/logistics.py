@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -49,6 +50,9 @@ EVENT_INCIDENT = "incident"
 DRAFT_TYPE_HANDOFF = "handoff"
 DRAFT_TYPE_RECEIPT = "receipt"
 
+BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES = ("ambiguous_qr", "unknown_qr")
+EVENT_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -63,6 +67,21 @@ def _coerce_datetime(value: datetime | str) -> datetime:
 
 def _http_error(status: int, detail) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
+
+
+def _bounded_event_key(idempotency_key: str | None, *parts: object) -> str | None:
+    if not idempotency_key:
+        return None
+    raw = ":".join((idempotency_key, *(str(part) for part in parts)))
+    if len(raw) <= EVENT_IDEMPOTENCY_KEY_MAX_LENGTH:
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    prefix_length = EVENT_IDEMPOTENCY_KEY_MAX_LENGTH - len(digest) - 1
+    return f"{raw[:prefix_length]}:{digest}"
+
+
+def _clip(value: str | None, max_length: int) -> str | None:
+    return value[:max_length] if value is not None else None
 
 
 def _get_actor(session: Session, actor_user_id: int) -> LogisticsUser:
@@ -119,11 +138,11 @@ def _create_manual_review(
     commit: bool = False,
 ) -> LogisticsManualReview:
     review = LogisticsManualReview(
-        review_type=review_type,
-        source_document_type=source_document_type,
-        source_external_id=source_external_id,
+        review_type=_clip(review_type, 64),
+        source_document_type=_clip(source_document_type, 32),
+        source_external_id=_clip(source_external_id, 64),
         transfer_id=transfer_id,
-        reason=reason,
+        reason=_clip(reason, 1000),
         payload=payload,
     )
     session.add(review)
@@ -577,6 +596,8 @@ def create_draft(
     if default_dropoff_warehouse_id is not None:
         _get_warehouse(session, default_dropoff_warehouse_id)
 
+    if actor.role in {"sender", "receiver"} and actor.default_warehouse_id is None:
+        raise _http_error(422, "default logistics warehouse is not configured")
     if (
         actor.default_warehouse_id is not None
         and actor.role != "admin"
@@ -591,7 +612,7 @@ def create_draft(
         driver_id=driver_id,
         route_run_id=route_run_id,
         default_dropoff_warehouse_id=default_dropoff_warehouse_id,
-        comment=comment,
+        comment=_clip(comment, 1000),
     )
     session.add(draft)
     try:
@@ -620,6 +641,46 @@ def _get_draft(session: Session, draft_id: int) -> LogisticsDraft:
     return draft
 
 
+def _get_draft_for_update(session: Session, draft_id: int) -> LogisticsDraft:
+    locked_id = session.scalar(
+        select(LogisticsDraft.id).where(LogisticsDraft.id == draft_id).with_for_update()
+    )
+    if locked_id is None:
+        raise _http_error(404, "draft not found")
+    # Endpoint-level contract checks may have loaded this row before the lock.
+    # Refresh after waiting so a concurrent confirmation is observed as closed.
+    session.expire_all()
+    return _get_draft(session, draft_id)
+
+
+def _require_draft_mutation_access(actor: LogisticsUser, draft: LogisticsDraft) -> None:
+    if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
+        raise _http_error(403, "user cannot modify this draft")
+    if draft.draft_type == DRAFT_TYPE_HANDOFF:
+        _require_role(actor, ROLE_SENDER)
+    elif draft.draft_type == DRAFT_TYPE_RECEIPT:
+        _require_role(actor, ROLE_RECEIVER)
+    else:
+        raise _http_error(422, "unsupported draft type")
+    if actor.role in {"sender", "receiver"}:
+        if actor.default_warehouse_id is None:
+            raise _http_error(422, "default logistics warehouse is not configured")
+        if actor.default_warehouse_id != draft.warehouse_id:
+            raise _http_error(403, "draft warehouse is outside current user assignment")
+
+
+def get_open_draft_for_actor(session: Session, *, actor_user_id: int) -> dict | None:
+    actor = _get_actor(session, actor_user_id)
+    drafts = _list_open_drafts_for_actor(session, actor_user_id)
+    if not drafts:
+        return None
+    if len(drafts) > 1:
+        _raise_open_draft_conflict(drafts)
+    draft = _get_draft(session, drafts[0].id)
+    _require_draft_mutation_access(actor, draft)
+    return _serialize_draft(draft)
+
+
 def add_scan_to_draft(
     session: Session,
     *,
@@ -629,12 +690,11 @@ def add_scan_to_draft(
     lookup_code: str | None = None,
     dropoff_warehouse_id: int | None = None,
 ) -> dict:
-    draft = _get_draft(session, draft_id)
+    draft = _get_draft_for_update(session, draft_id)
     if draft.status != "open":
         raise _http_error(409, "draft is already closed")
     actor = _get_actor(session, actor_user_id)
-    if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
-        raise _http_error(403, "user cannot modify this draft")
+    _require_draft_mutation_access(actor, draft)
 
     scan_code = lookup_code or barcode
     if not scan_code:
@@ -649,7 +709,7 @@ def add_scan_to_draft(
         )
     )
     if existing is not None:
-        raise _http_error(409, "transfer already added to this draft")
+        return _serialize_draft(draft)
 
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
         if state.status != STATUS_AT_WAREHOUSE or state.current_warehouse_id != draft.warehouse_id:
@@ -700,8 +760,8 @@ def _attach_photos(event: LogisticsTransferEvent, photos: list[dict]) -> None:
     for photo in photos:
         event.photos.append(
             LogisticsEventPhoto(
-                telegram_file_id=photo["telegram_file_id"],
-                comment=photo.get("comment"),
+                telegram_file_id=_clip(str(photo["telegram_file_id"]), 255),
+                comment=_clip(photo.get("comment"), 1000),
             )
         )
 
@@ -718,10 +778,9 @@ def confirm_draft(
 ) -> dict:
     if source_channel not in SOURCE_CHANNELS:
         raise _http_error(422, "unsupported logistics source channel")
-    draft = _get_draft(session, draft_id)
+    draft = _get_draft_for_update(session, draft_id)
     actor = _get_actor(session, actor_user_id)
-    if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
-        raise _http_error(403, "user cannot confirm this draft")
+    _require_draft_mutation_access(actor, draft)
     if draft.status == "confirmed":
         return {
             "draft_id": draft.id,
@@ -740,7 +799,7 @@ def confirm_draft(
     for item in draft.items:
         transfer = session.get(LogisticsTransfer, item.transfer_id)
         state = _seed_state(session, transfer)
-        event_key = f"{idempotency_key}:{transfer.id}" if idempotency_key else None
+        event_key = _bounded_event_key(idempotency_key, transfer.id)
 
         if draft.draft_type == DRAFT_TYPE_HANDOFF:
             if (
@@ -756,7 +815,7 @@ def confirm_draft(
                 dropoff_warehouse_id=item.dropoff_warehouse_id,
                 driver_id=draft.driver_id,
                 user_id=actor.id,
-                comment=comment or draft.comment,
+                comment=_clip(comment or draft.comment, 1000),
                 source=source_channel,
                 idempotency_key=event_key,
                 document_ref=transfer.document_number,
@@ -797,7 +856,7 @@ def confirm_draft(
                 dropoff_warehouse_id=state.dropoff_warehouse_id,
                 driver_id=state.driver_id,
                 user_id=actor.id,
-                comment=comment or draft.comment,
+                comment=_clip(comment or draft.comment, 1000),
                 source=source_channel,
                 idempotency_key=event_key,
                 document_ref=transfer.document_number,
@@ -831,7 +890,7 @@ def confirm_draft(
 
     draft.status = "confirmed"
     draft.confirmed_at = utcnow()
-    draft.comment = comment or draft.comment
+    draft.comment = _clip(comment or draft.comment, 1000)
     session.commit()
     return {
         "draft_id": draft.id,
@@ -1105,7 +1164,7 @@ def create_transfer_event(
     if transfer is None:
         raise _http_error(404, "transfer not found")
     state = _seed_state(session, transfer)
-    event_key = f"{idempotency_key}:{transfer_id}:{event_type}" if idempotency_key else None
+    event_key = _bounded_event_key(idempotency_key, transfer_id, event_type)
     if event_key is not None:
         existing = session.scalar(
             select(LogisticsTransferEvent).where(
@@ -1147,7 +1206,7 @@ def create_transfer_event(
         dropoff_warehouse_id=state.dropoff_warehouse_id,
         driver_id=state.driver_id,
         user_id=actor.id,
-        comment=comment,
+        comment=_clip(comment, 1000),
         source=source,
         idempotency_key=event_key,
         document_ref=transfer.document_number,
@@ -1620,7 +1679,8 @@ def list_bitrix_manual_reviews(
     limit: int = 30,
     offset: int = 0,
 ) -> dict:
-    conditions = [LogisticsManualReview.status == "open"]
+    scope_condition = _bitrix_logistics_manual_review_scope_condition()
+    conditions = [LogisticsManualReview.status == "open", scope_condition]
     if review_type is not None:
         conditions.append(LogisticsManualReview.review_type == review_type)
 
@@ -1630,7 +1690,7 @@ def list_bitrix_manual_reviews(
     )
     count_rows = session.execute(
         select(LogisticsManualReview.review_type, func.count())
-        .where(LogisticsManualReview.status == "open")
+        .where(LogisticsManualReview.status == "open", scope_condition)
         .group_by(LogisticsManualReview.review_type)
         .order_by(LogisticsManualReview.review_type)
     ).all()
@@ -1673,6 +1733,14 @@ def list_bitrix_manual_reviews(
     }
 
 
+def _bitrix_logistics_manual_review_scope_condition():
+    return or_(
+        LogisticsManualReview.transfer_id.is_not(None),
+        LogisticsManualReview.source_document_type.in_((SOURCE_TRANSFER, SOURCE_RTU)),
+        LogisticsManualReview.review_type.in_(BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES),
+    )
+
+
 def _optional_string(value) -> str | None:
     if value is None:
         return None
@@ -1699,11 +1767,7 @@ def handoff_to_external_carrier(
     state = _seed_state(session, transfer)
     if state.status != STATUS_IN_TRANSIT:
         raise _http_error(409, "transfer must be in transit before external carrier handoff")
-    event_key = (
-        f"{idempotency_key}:{transfer_id}:{EVENT_HANDED_TO_EXTERNAL_CARRIER}"
-        if idempotency_key
-        else None
-    )
+    event_key = _bounded_event_key(idempotency_key, transfer_id, EVENT_HANDED_TO_EXTERNAL_CARRIER)
     if event_key is not None:
         existing = session.scalar(
             select(LogisticsTransferEvent).where(
@@ -1720,7 +1784,7 @@ def handoff_to_external_carrier(
         dropoff_warehouse_id=state.dropoff_warehouse_id,
         driver_id=state.driver_id,
         user_id=actor.id,
-        comment=comment,
+        comment=_clip(comment, 1000),
         source="api",
         idempotency_key=event_key,
         document_ref=transfer.document_number,
@@ -1758,11 +1822,7 @@ def handoff_to_external_carrier_from_sync(
     if transfer is None:
         raise _http_error(404, "transfer not found")
     state = _seed_state(session, transfer)
-    event_key = (
-        f"{idempotency_key}:{transfer_id}:{EVENT_HANDED_TO_EXTERNAL_CARRIER}"
-        if idempotency_key
-        else None
-    )
+    event_key = _bounded_event_key(idempotency_key, transfer_id, EVENT_HANDED_TO_EXTERNAL_CARRIER)
     if event_key is not None:
         existing = session.scalar(
             select(LogisticsTransferEvent).where(
@@ -1797,7 +1857,7 @@ def handoff_to_external_carrier_from_sync(
         dropoff_warehouse_id=state.dropoff_warehouse_id,
         driver_id=state.driver_id,
         user_id=None,
-        comment=comment,
+        comment=_clip(comment, 1000),
         source="1c_sync",
         idempotency_key=event_key,
         document_ref=transfer.document_number,
@@ -1844,10 +1904,8 @@ def accept_from_external_carrier(
     expected_warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
     if warehouse_id != expected_warehouse_id and actor.role not in ROLE_LOGIST:
         raise _http_error(409, "external carrier acceptance warehouse does not match target")
-    event_key = (
-        f"{idempotency_key}:{transfer_id}:{EVENT_ACCEPTED_FROM_EXTERNAL_CARRIER}"
-        if idempotency_key
-        else None
+    event_key = _bounded_event_key(
+        idempotency_key, transfer_id, EVENT_ACCEPTED_FROM_EXTERNAL_CARRIER
     )
     if event_key is not None:
         existing = session.scalar(
@@ -1865,7 +1923,7 @@ def accept_from_external_carrier(
         dropoff_warehouse_id=state.dropoff_warehouse_id,
         driver_id=None,
         user_id=actor.id,
-        comment=comment,
+        comment=_clip(comment, 1000),
         source="api",
         idempotency_key=event_key,
         document_ref=transfer.document_number,

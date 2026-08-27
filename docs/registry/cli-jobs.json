@@ -184,6 +184,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "report_logistics_rtu_manual_review.py": {
+      "owner": "logistics",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "read_only",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "report_exclusive_auto_detect_candidates.py": {
       "owner": "catalog",
       "kind": "report",

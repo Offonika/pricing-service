@@ -112,6 +112,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   зафиксировать optional external write и отсутствие идемпотентности между запусками.
 - [x] Перевести `report_procurement_feature_snapshot_quality.py` на central
   read-only session scope с сохранением `--database-url` override и CSV-контракта.
+- [x] Перевести `report_logistics_rtu_manual_review.py` на central read-only
+  session scope с сохранением аргументов и JSON-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -146,9 +148,17 @@ JSON/CSV/XLSX артефактов сохраняются.
    Production migration, deploy и cutover в это решение не входят и не выполнялись.
 7. Для `export_management_marks.py` после зелёного CI разрешён merge PR №65.
    Production migration, deploy и cutover в это решение не входят.
+8. Для `report_logistics_rtu_manual_review.py` разрешены реализация в отдельной
+   ветке, push и создание PR после локальных проверок. Merge и production release
+   требуют отдельного подтверждения.
 
 # Changelog
 
+- 2026-08-27 — `report_logistics_rtu_manual_review.py` переведён на central
+  read-only session scope и зарегистрирован как `application_read_only`.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `report_logistics_rtu_manual_review.py`; merge и production оставлены отдельными
+  решениями.
 - 2026-08-27 — `report_procurement_feature_snapshot_quality.py` переведён на
   central read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-26 — разрешён merge PR №65; production release оставлен отдельным

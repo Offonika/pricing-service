@@ -8,8 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import LogisticsManualReview
 
 
@@ -31,8 +30,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    engine = build_engine(get_settings().database_url, pool_pre_ping=True)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         report = build_report(
             session,
             review_type=args.review_type,

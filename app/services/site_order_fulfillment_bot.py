@@ -2910,6 +2910,9 @@ def _publish_card(
             settings=settings,
             onec_validator=onec_validator,
         )
+        if interaction == "structured_arrival" and (candidate.payload or {}).get("arrival_silent"):
+            candidate.updated_at = now
+            return
         candidate.bot_message_id = client.add_bot_message(
             dialog_id=candidate.source_chat_id,
             bot_id=settings.order_fulfillment_bot_id,
@@ -3108,6 +3111,8 @@ def _structured_arrival_snapshot(
     onec_validator: Callable[[str], OneCPickupValidation],
 ) -> tuple[list[str], str | None]:
     order_numbers = list((candidate.payload or {}).get("order_numbers") or [])
+    remaining_order_numbers: list[str] = []
+    terminal_order_numbers: set[str] = set()
     expected_ids: set[int] = set()
     problems: list[str] = []
     for order_number in order_numbers:
@@ -3116,13 +3121,16 @@ def _structured_arrival_snapshot(
         except Exception as exc:
             raise RetryableBeforeExternalEffect(str(exc)) from exc
         if len(deals) != 1:
+            remaining_order_numbers.append(order_number)
             problems.append(f"№{order_number}: сделка не уникальна")
             continue
         deal = deals[0]
+        if fulfillment._clean_string(deal.stage_id) in TERMINAL_STAGES:
+            terminal_order_numbers.add(order_number)
+            continue
+        remaining_order_numbers.append(order_number)
         if not fulfillment._is_internal_pickup_deal(deal):
             problems.append(f"№{order_number}: не внутренний самовывоз")
-        if fulfillment._clean_string(deal.stage_id) in TERMINAL_STAGES:
-            problems.append(f"№{order_number}: сделка закрыта")
         onec = onec_validator(order_number)
         if not onec.available:
             problems.append(f"№{order_number}: 1С недоступна")
@@ -3143,6 +3151,39 @@ def _structured_arrival_snapshot(
             )
             if resolution.warehouse is not None:
                 expected_ids.add(resolution.warehouse.id)
+    batch_candidate_ids = [
+        int(value) for value in (candidate.payload or {}).get("batch_candidate_ids") or []
+    ]
+    batch_candidates = (
+        session.scalars(
+            select(BitrixChatActionCandidate).where(
+                BitrixChatActionCandidate.id.in_(batch_candidate_ids)
+            )
+        ).all()
+        if batch_candidate_ids
+        else [candidate]
+    )
+    remaining_order_set = set(remaining_order_numbers)
+    remaining_candidate_ids = [
+        item.id for item in batch_candidates if item.site_order_number in remaining_order_set
+    ]
+    for item in batch_candidates:
+        item.payload = {
+            **(item.payload or {}),
+            "order_numbers": remaining_order_numbers,
+            "batch_candidate_ids": remaining_candidate_ids,
+        }
+        if item.site_order_number in terminal_order_numbers and item.id != candidate.id:
+            item.status = CANDIDATE_DISMISSED
+    if order_numbers and not remaining_order_numbers:
+        for item in batch_candidates:
+            item.status = CANDIDATE_DISMISSED
+            item.payload = {
+                **(item.payload or {}),
+                "arrival_blocked": True,
+                "arrival_silent": True,
+            }
+        return [], None
     if len(expected_ids) == 1:
         point = session.get(LogisticsWarehouse, next(iter(expected_ids)))
         if point is not None:
@@ -3151,7 +3192,7 @@ def _structured_arrival_snapshot(
     elif len(expected_ids) > 1:
         problems.append("заказы ожидаются в разных точках; разделите команды")
     candidate.payload = {**(candidate.payload or {}), "arrival_blocked": bool(problems)}
-    details = [f"Проверено заказов: {len(order_numbers)}"]
+    details = [f"Проверено заказов: {len(remaining_order_numbers)}"]
     if problems:
         details.extend(f"Проверка: {problem}" for problem in problems[:8])
         return details, "Поступление не зафиксировано"

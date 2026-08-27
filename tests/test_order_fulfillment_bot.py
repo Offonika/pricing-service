@@ -521,6 +521,92 @@ def test_closed_deal_from_chat_is_ignored_without_card(db_session) -> None:
     assert client.bot_messages == []
 
 
+def test_unresolved_arrival_for_closed_deal_is_ignored_without_summary(db_session) -> None:
+    settings = _settings(
+        order_fulfillment_pickup_auto_arrival_enabled=True,
+        order_fulfillment_bot_cutover_at=datetime(2026, 8, 23, 10, 0),
+    )
+    candidate = bot.create_candidates_from_message(
+        db_session,
+        dialog_id="chat8729",
+        message_id="22019",
+        author_id="7",
+        text_value="Заказ 241500 поступил",
+        message_at=datetime(2026, 8, 23, 12, 0),
+        settings=settings,
+        now=datetime(2026, 8, 23, 12, 0),
+    )[0]
+    client = FakeBitrixClient(stage="WON")
+    onec_calls: list[str] = []
+
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda order_number: (
+            onec_calls.append(order_number)
+            or bot.OneCPickupValidation(available=True, assembled=True)
+        ),
+        now=datetime(2026, 8, 23, 12, 1),
+    )
+
+    db_session.refresh(candidate)
+    publish_row = db_session.scalar(select(SiteOrderFulfillmentOutbox))
+    assert candidate.status == bot.CANDIDATE_DISMISSED
+    assert candidate.payload["arrival_silent"] is True
+    assert publish_row is not None and publish_row.status == bot.OUTBOX_COMPLETED
+    assert client.bot_messages == []
+    assert onec_calls == []
+
+
+def test_structured_arrival_skips_closed_order_in_mixed_batch(db_session) -> None:
+    settings = _settings()
+    candidates = bot.create_interactive_candidates(
+        db_session,
+        dialog_id="chat8729",
+        source_message_id="22021",
+        actor_id="7",
+        order_numbers=["241500", "241501"],
+        interaction="structured_arrival",
+        settings=settings,
+        now=datetime(2026, 8, 23, 12, 0),
+    )
+
+    class MixedStageClient(FakeBitrixClient):
+        def list_deals_by_site_order(self, site_order_number: str):
+            stage = "WON" if site_order_number == "241500" else "FINAL_INVOICE"
+            return [
+                fulfillment.BitrixDealSnapshot(
+                    deal_id=500 if site_order_number == "241500" else 501,
+                    stage_id=stage,
+                    delivery="Самовывоз",
+                    raw={fulfillment.CRM_ORDER_NUMBER_FIELD: site_order_number},
+                )
+            ]
+
+    client = MixedStageClient()
+    onec_calls: list[str] = []
+    bot.process_outbox(
+        db_session,
+        client=client,
+        settings=settings,
+        onec_validator=lambda order_number: (
+            onec_calls.append(order_number)
+            or bot.OneCPickupValidation(available=True, assembled=True)
+        ),
+        now=datetime(2026, 8, 23, 12, 1),
+    )
+
+    leader = candidates[0]
+    db_session.refresh(leader)
+    assert leader.payload["order_numbers"] == ["241501"]
+    assert leader.payload["batch_candidate_ids"] == [candidates[1].id]
+    assert len(client.bot_messages) == 1
+    assert "241501" in client.bot_messages[0]["message"]
+    assert "241500" not in client.bot_messages[0]["message"]
+    assert onec_calls == ["241501"]
+
+
 def test_strict_arrival_for_closed_deal_stays_silent_and_fail_closed(db_session) -> None:
     settings = _settings(
         order_fulfillment_pickup_auto_arrival_enabled=True,

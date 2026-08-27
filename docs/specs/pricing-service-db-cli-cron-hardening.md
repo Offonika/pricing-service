@@ -24,7 +24,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-26"
+updated_at: "2026-08-27"
 ---
 
 # Назначение
@@ -110,6 +110,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   scope и зафиксировать DB access, dry-run и artifact idempotency в CLI registry.
 - [x] Перевести `export_management_marks.py` на central read-only session scope;
   зафиксировать optional external write и отсутствие идемпотентности между запусками.
+- [x] Перевести `report_procurement_feature_snapshot_quality.py` на central
+  read-only session scope с сохранением `--database-url` override и CSV-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -147,6 +149,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-27 — `report_procurement_feature_snapshot_quality.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`.
 - 2026-08-26 — разрешён merge PR №65; production release оставлен отдельным
   решением.
 - 2026-08-26 — `export_management_marks.py` переведён на central read-only session

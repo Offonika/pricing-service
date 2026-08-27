@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -53,18 +53,14 @@ FEATURE_SNAPSHOT_SCHEMA = "procurement_feature_snapshot.v1"
 
 def main() -> int:
     args = _parse_args()
-    settings = get_settings()
-    database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = build_engine(database_url, pool_pre_ping=True)
-    try:
+    database_url = args.database_url or os.environ.get("DATABASE_URL") or None
+    with session_scope(read_only=True, database_url=database_url) as db:
         rows = load_feature_snapshot_rows(
-            engine,
+            db,
             folder=args.folder,
             only_missing=args.only_missing,
             limit=args.limit,
         )
-    finally:
-        engine.dispose()
 
     summary = build_summary(rows)
     output_csv = args.output_csv
@@ -84,7 +80,7 @@ def main() -> int:
 
 
 def load_feature_snapshot_rows(
-    engine,
+    db: Session,
     *,
     folder: str = "",
     only_missing: bool = False,
@@ -106,8 +102,7 @@ def load_feature_snapshot_rows(
         query = query.where(table.c.future_ka_mapping_status != "ready")
     if limit:
         query = query.limit(limit)
-    with engine.connect() as conn:
-        return [normalize_row(row) for row in conn.execute(query).mappings()]
+    return [normalize_row(row) for row in db.execute(query).mappings()]
 
 
 def build_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

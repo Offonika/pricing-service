@@ -193,9 +193,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 19. Для `export_display_quality_review_workbook.py` разрешены реализация в отдельной
     ветке, push и создание отдельного PR после локальных проверок. Merge и
     production release требуют отдельных подтверждений.
+20. После зелёного CI разрешён merge PR №83. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №83; production release оставлен отдельным
+  решением.
 - 2026-08-27 — `export_display_quality_review_workbook.py` переведён на central
   read-only session scope и зарегистрирован как `application_read_only`; `--output`
   и XLSX-контракт сохранены.

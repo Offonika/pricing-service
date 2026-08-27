@@ -185,9 +185,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 17. Для `analyze_manual_matching_feedback.py` разрешены реализация в отдельной
     ветке, push и создание отдельного PR после локальных проверок. Merge и
     production release требуют отдельных подтверждений.
+18. После зелёного CI разрешён merge PR №80. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №80; production release оставлен отдельным
+  решением.
 - 2026-08-27 — `analyze_manual_matching_feedback.py` переведён на central
   read-only session scope и зарегистрирован как `application_read_only`; аргументы
   и Markdown/JSON/CSV-контракты сохранены.

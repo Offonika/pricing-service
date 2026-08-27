@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -48,6 +48,8 @@ EVENT_INCIDENT = "incident"
 
 DRAFT_TYPE_HANDOFF = "handoff"
 DRAFT_TYPE_RECEIPT = "receipt"
+
+BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES = ("ambiguous_qr", "unknown_qr")
 
 
 def utcnow() -> datetime:
@@ -1620,7 +1622,8 @@ def list_bitrix_manual_reviews(
     limit: int = 30,
     offset: int = 0,
 ) -> dict:
-    conditions = [LogisticsManualReview.status == "open"]
+    scope_condition = _bitrix_logistics_manual_review_scope_condition()
+    conditions = [LogisticsManualReview.status == "open", scope_condition]
     if review_type is not None:
         conditions.append(LogisticsManualReview.review_type == review_type)
 
@@ -1630,7 +1633,7 @@ def list_bitrix_manual_reviews(
     )
     count_rows = session.execute(
         select(LogisticsManualReview.review_type, func.count())
-        .where(LogisticsManualReview.status == "open")
+        .where(LogisticsManualReview.status == "open", scope_condition)
         .group_by(LogisticsManualReview.review_type)
         .order_by(LogisticsManualReview.review_type)
     ).all()
@@ -1671,6 +1674,14 @@ def list_bitrix_manual_reviews(
         "offset": offset,
         "counts": {str(review): int(count) for review, count in count_rows},
     }
+
+
+def _bitrix_logistics_manual_review_scope_condition():
+    return or_(
+        LogisticsManualReview.transfer_id.is_not(None),
+        LogisticsManualReview.source_document_type.in_((SOURCE_TRANSFER, SOURCE_RTU)),
+        LogisticsManualReview.review_type.in_(BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES),
+    )
 
 
 def _optional_string(value) -> str | None:

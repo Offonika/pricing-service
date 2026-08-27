@@ -42,6 +42,8 @@ class ExecutionEvidenceSnapshot:
     site_canceled: bool | None = None
     site_status: str | None = None
     site_paid: bool | None = None
+    onec_order_count: int = 0
+    onec_inactive_marked_order_count: int = 0
     rtu_count: int = 0
     assembled_rtu_count: int = 0
     issued_rtu_count: int = 0
@@ -65,6 +67,10 @@ class ExecutionEvidenceSnapshot:
     @property
     def assembled(self) -> bool:
         return self.crm_assembled or self.assembled_rtu_count > 0
+
+    @property
+    def onec_order_inactive_marked(self) -> bool:
+        return self.onec_order_count == 1 and self.onec_inactive_marked_order_count == 1
 
     @property
     def partial_rtu_assembly(self) -> bool:
@@ -154,6 +160,18 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         if snapshot.latest_return_at is None:
             return _manual("return_chronology_missing", "execution_return_time_missing")
         return _update("LOSE", "full_unpaid_return", "execution_full_return")
+
+    if snapshot.site_canceled and (
+        not snapshot.payment_confirmed
+        and not snapshot.assembled
+        and snapshot.rtu_count == 0
+        and snapshot.onec_order_inactive_marked
+    ):
+        return _update(
+            "LOSE",
+            "canceled_before_fulfillment",
+            "execution_canceled_before_fulfillment",
+        )
 
     if snapshot.site_canceled:
         return _manual("canceled_without_confirmed_return", "execution_canceled_unresolved")

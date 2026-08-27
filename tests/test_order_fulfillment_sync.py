@@ -1024,6 +1024,69 @@ def test_rtu_signal_requires_print_and_scan_on_same_rtu_and_reads_returns(
     assert engine.disposed is True
 
 
+def test_onec_order_states_require_single_unposted_marked_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResult:
+        def fetchall(self):
+            return [
+                {
+                    "site_order_number": "226030",
+                    "onec_order_count": 1,
+                    "onec_inactive_marked_order_count": 1,
+                },
+                {
+                    "site_order_number": "242704",
+                    "onec_order_count": 1,
+                    "onec_inactive_marked_order_count": 0,
+                },
+            ]
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, statement, params):
+            captured["sql"] = str(statement)
+            captured["params"] = params
+            return FakeResult()
+
+    class FakeEngine:
+        disposed = False
+
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            self.disposed = True
+
+    engine = FakeEngine()
+    monkeypatch.setattr(
+        sync,
+        "get_settings",
+        lambda: Settings(_env_file=None, onec_database_url="mssql://placeholder"),
+    )
+    monkeypatch.setattr(sync, "build_engine", lambda *args, **kwargs: engine)
+
+    result = sync.query_onec_order_states_by_orders(["226030", "242704"])
+
+    assert result["226030"] == {
+        "onec_order_count": 1,
+        "onec_inactive_marked_order_count": 1,
+    }
+    assert result["242704"] == {
+        "onec_order_count": 1,
+        "onec_inactive_marked_order_count": 0,
+    }
+    assert "ord._Posted = 0x00 AND ord._Marked = 0x01" in str(captured["sql"])
+    assert engine.disposed is True
+
+
 def test_stage_summary_uses_fast_totals_without_pagination() -> None:
     client = FakeListClient()
 

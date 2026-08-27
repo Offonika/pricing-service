@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Safely close strict historical partial-sale and full-refund orders.
+"""Safely close strict historical return scenarios.
 
 Dry-run is the default. ``--apply`` persists an execution event and uses the
 existing stage outbox, including live Bitrix readback and timeline audit.
 ``--full-refunds`` requires a complete goods return and an exact linked money
 refund before moving an order to ``LOSE``.
+Pickup return modes require an explicit bounded order list and distinguish a
+payment received before the customer return from a payment created afterwards.
 """
 
 from __future__ import annotations
@@ -41,6 +43,17 @@ PARTIAL_RETURN_TARGET_STAGE = "WON"
 FULL_REFUND_EVENT_TYPE = "execution_historical_full_goods_money_refund"
 FULL_REFUND_REASON = "full_goods_and_money_refund"
 FULL_REFUND_TARGET_STAGE = "LOSE"
+PICKUP_PAID_RETURN_EVENT_TYPE = "execution_historical_pickup_paid_then_returned"
+PICKUP_PAID_RETURN_REASON = "pickup_paid_at_receipt_then_customer_return"
+PICKUP_PAID_RETURN_TARGET_STAGE = "WON"
+PICKUP_RETURNED_LATE_PAYMENT_EVENT_TYPE = (
+    "execution_historical_pickup_returned_without_prior_payment"
+)
+PICKUP_RETURNED_LATE_PAYMENT_REASON = "pickup_returned_without_prior_payment"
+PICKUP_RETURNED_LATE_PAYMENT_TARGET_STAGE = "DISMANTLING"
+PICKUP_ISSUED_RETURN_EVENT_TYPE = "execution_historical_pickup_issued_then_returned"
+PICKUP_ISSUED_RETURN_REASON = "pickup_partial_issue_confirms_sale"
+PICKUP_ISSUED_RETURN_TARGET_STAGE = "WON"
 BATCH_SIZE = 20
 QTY_TOLERANCE = Decimal("0.0001")
 MONEY_TOLERANCE = Decimal("0.05")
@@ -80,6 +93,50 @@ class FullRefundEvidence:
     payment_amount: Decimal
     refund_amount: Decimal
     latest_return_at: datetime
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentMovement:
+    paid_at: datetime
+    amount: Decimal
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class PickupReturnEvidence:
+    order_number: str
+    rtu_count: int
+    returned_rtu_count: int
+    posted_sale_amount: Decimal
+    returned_goods_amount: Decimal
+    latest_rtu_at: datetime
+    latest_return_at: datetime
+    payment_before_return_amount: Decimal
+    payment_after_return_amount: Decimal
+    qualifying_payment_at: datetime | None
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedRtuMovement:
+    rtu_number: str
+    sale_amount: Decimal
+    issued: bool
+    scanned_at: datetime | None
+    returned_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class PickupIssuedReturnEvidence:
+    order_number: str
+    rtu_count: int
+    issued_rtu_count: int
+    qualifying_issued_rtu_count: int
+    retained_issued_rtu_count: int
+    returned_after_issue_rtu_count: int
+    qualifying_rtu_numbers: tuple[str, ...]
+    latest_qualifying_issue_at: datetime
     fingerprint: str
 
 
@@ -160,6 +217,27 @@ def _full_return_candidates() -> list[Candidate]:
         WHERE return_amount >= sale_amount - 0.05
           AND bitrix_deal_id IS NOT NULL
         ORDER BY order_number
+        """)
+    with session_scope(read_only=True) as session:
+        return [
+            Candidate(order_number=str(row.order_number), deal_id=int(row.bitrix_deal_id))
+            for row in session.execute(statement)
+        ]
+
+
+def _issued_return_candidates() -> list[Candidate]:
+    statement = text("""
+        SELECT DISTINCT ON (review.source_external_id)
+            review.source_external_id AS order_number,
+            case_row.bitrix_deal_id
+        FROM logistics_manual_review AS review
+        JOIN site_order_execution_case AS case_row
+          ON case_row.site_order_number = review.source_external_id
+        WHERE review.review_type = 'site_order_execution_conflict'
+          AND review.status = 'open'
+          AND review.reason = 'issued_and_returned'
+          AND case_row.bitrix_deal_id IS NOT NULL
+        ORDER BY review.source_external_id, review.created_at DESC
         """)
     with session_scope(read_only=True) as session:
         return [
@@ -371,6 +449,215 @@ def _money_refund_evidence(order_numbers: list[str]) -> dict[str, MoneyRefundEvi
     return result
 
 
+def _pickup_payment_movements(order_numbers: list[str]) -> dict[str, list[PaymentMovement]]:
+    if not order_numbers:
+        return {}
+    params = {f"order_{index}": value for index, value in enumerate(order_numbers)}
+    placeholders = ", ".join(f":order_{index}" for index in range(len(order_numbers)))
+    statement = text(f"""
+        WITH orders AS (
+            SELECT _IDRRef AS order_ref, LTRIM(RTRIM(_Fld2425)) AS order_number
+            FROM dbo._Document132 WITH (NOLOCK)
+            WHERE LTRIM(RTRIM(_Fld2425)) IN ({placeholders})
+        ),
+        sales AS (
+            SELECT orders.order_number, sale._IDRRef AS sale_ref
+            FROM orders
+            JOIN dbo._Document203 AS sale WITH (NOLOCK)
+              ON sale._Fld4939_TYPE = 0x08
+             AND sale._Fld4939_RTRef = 0x00000084
+             AND sale._Fld4939_RRRef = orders.order_ref
+            WHERE sale._Posted = 0x01 AND sale._Marked <> 0x01
+        ),
+        movements AS (
+            SELECT orders.order_number, card._IDRRef AS document_ref,
+                   card._Date_Time AS paid_at,
+                   CAST(card._Fld3414 AS decimal(18, 2)) AS amount,
+                   N'acquiring_order' AS source
+            FROM orders
+            JOIN dbo._Document169 AS card WITH (NOLOCK)
+              ON card._Fld3417_TYPE = 0x08
+             AND card._Fld3417_RTRef = 0x00000084
+             AND card._Fld3417_RRRef = orders.order_ref
+            JOIN dbo._Enum278 AS operation WITH (NOLOCK)
+              ON operation._IDRRef = card._Fld3412RRef AND operation._EnumOrder = 0
+            WHERE card._Posted = 0x01 AND card._Marked = 0x00
+            UNION ALL
+            SELECT sales.order_number, card._IDRRef, card._Date_Time,
+                   CAST(card._Fld3414 AS decimal(18, 2)), N'acquiring_sale'
+            FROM sales
+            JOIN dbo._Document169 AS card WITH (NOLOCK)
+              ON card._Fld3417_TYPE = 0x08
+             AND card._Fld3417_RTRef = 0x000000CB
+             AND card._Fld3417_RRRef = sales.sale_ref
+            JOIN dbo._Enum278 AS operation WITH (NOLOCK)
+              ON operation._IDRRef = card._Fld3412RRef AND operation._EnumOrder = 0
+            WHERE card._Posted = 0x01 AND card._Marked = 0x00
+            UNION ALL
+            SELECT orders.order_number, cash_in._IDRRef, cash_in._Date_Time,
+                   CAST(cash_in._Fld4688 AS decimal(18, 2)), N'cash_order'
+            FROM orders
+            JOIN dbo._Document196 AS cash_in WITH (NOLOCK)
+              ON cash_in._Fld4697_TYPE = 0x08
+             AND cash_in._Fld4697_RTRef = 0x00000084
+             AND cash_in._Fld4697_RRRef = orders.order_ref
+            WHERE cash_in._Posted = 0x01 AND cash_in._Marked = 0x00
+            UNION ALL
+            SELECT sales.order_number, cash_in._IDRRef, cash_in._Date_Time,
+                   CAST(cash_in._Fld4688 AS decimal(18, 2)), N'cash_sale'
+            FROM sales
+            JOIN dbo._Document196 AS cash_in WITH (NOLOCK)
+              ON cash_in._Fld4697_TYPE = 0x08
+             AND cash_in._Fld4697_RTRef = 0x000000CB
+             AND cash_in._Fld4697_RRRef = sales.sale_ref
+            WHERE cash_in._Posted = 0x01 AND cash_in._Marked = 0x00
+        )
+        SELECT order_number,
+               master.dbo.fn_varbintohexstr(document_ref) AS document_ref,
+               paid_at, amount, source
+        FROM movements
+        """)
+    engine = build_engine(get_settings().onec_database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            rows = [dict(row) for row in connection.execute(statement, params).mappings()]
+    finally:
+        engine.dispose()
+    unique = {(str(row["order_number"]), str(row["document_ref"])): row for row in rows}
+    grouped: dict[str, list[PaymentMovement]] = defaultdict(list)
+    for row in unique.values():
+        paid_at = row.get("paid_at")
+        if not isinstance(paid_at, datetime):
+            continue
+        grouped[str(row["order_number"])].append(
+            PaymentMovement(
+                paid_at=paid_at,
+                amount=Decimal(str(row.get("amount") or 0)),
+                source=str(row.get("source") or "unknown"),
+            )
+        )
+    return {order: sorted(items, key=lambda item: item.paid_at) for order, items in grouped.items()}
+
+
+def _pickup_payment_sequence(
+    movements: list[PaymentMovement],
+    *,
+    latest_rtu_at: datetime,
+    latest_return_at: datetime,
+    posted_sale_amount: Decimal,
+) -> tuple[Decimal, Decimal, datetime | None]:
+    before_return = [item for item in movements if latest_rtu_at <= item.paid_at < latest_return_at]
+    after_return = [item for item in movements if item.paid_at >= latest_return_at]
+    before_amount = sum((item.amount for item in before_return), Decimal("0"))
+    after_amount = sum((item.amount for item in after_return), Decimal("0"))
+    qualifying_at = (
+        max(item.paid_at for item in before_return)
+        if before_amount >= posted_sale_amount - MONEY_TOLERANCE
+        else None
+    )
+    return before_amount, after_amount, qualifying_at
+
+
+def _pickup_issued_rtu_movements(
+    order_numbers: list[str],
+) -> dict[str, list[IssuedRtuMovement]]:
+    if not order_numbers:
+        return {}
+    params = {f"order_{index}": value for index, value in enumerate(order_numbers)}
+    placeholders = ", ".join(f":order_{index}" for index in range(len(order_numbers)))
+    statement = text(f"""
+        SELECT
+            LTRIM(RTRIM(ord._Fld2425)) AS order_number,
+            LTRIM(RTRIM(rtu._Number)) AS rtu_number,
+            CAST(rtu._Fld4948 AS decimal(18, 2)) AS sale_amount,
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM dbo._InfoRg9448 AS event WITH (NOLOCK)
+                WHERE event._Fld9449_RRRef = rtu._IDRRef
+                  AND event._Fld9449_TYPE = 0x08
+                  AND event._Fld9449_RTRef = 0x000000CB
+                  AND event._Fld9454 = N'Распечатан'
+            ) AND EXISTS (
+                SELECT 1
+                FROM dbo._InfoRg9448 AS event WITH (NOLOCK)
+                WHERE event._Fld9449_RRRef = rtu._IDRRef
+                  AND event._Fld9449_TYPE = 0x08
+                  AND event._Fld9449_RTRef = 0x000000CB
+                  AND event._Fld9454 = N'Отсканирован'
+            ) THEN 1 ELSE 0 END AS issued,
+            (
+                SELECT MAX(event._Fld9450)
+                FROM dbo._InfoRg9448 AS event WITH (NOLOCK)
+                WHERE event._Fld9449_RRRef = rtu._IDRRef
+                  AND event._Fld9449_TYPE = 0x08
+                  AND event._Fld9449_RTRef = 0x000000CB
+                  AND event._Fld9454 = N'Отсканирован'
+            ) AS scanned_at,
+            (
+                SELECT MAX(return_doc._Date_Time)
+                FROM dbo._Document109 AS return_doc WITH (NOLOCK)
+                WHERE return_doc._Posted = 0x01
+                  AND return_doc._Marked = 0x00
+                  AND (
+                      (
+                          return_doc._Fld1684_TYPE = 0x08
+                          AND return_doc._Fld1684_RTRef = 0x000000CB
+                          AND return_doc._Fld1684_RRRef = rtu._IDRRef
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
+                          WHERE return_line._Document109_IDRRef = return_doc._IDRRef
+                            AND return_line._Fld1712_TYPE = 0x08
+                            AND return_line._Fld1712_RTRef = 0x000000CB
+                            AND return_line._Fld1712_RRRef = rtu._IDRRef
+                      )
+                  )
+            ) AS returned_at
+        FROM dbo._Document203 AS rtu WITH (NOLOCK)
+        JOIN dbo._Document132 AS ord WITH (NOLOCK)
+          ON ord._IDRRef = rtu._Fld4939_RRRef
+        WHERE rtu._Posted = 0x01
+          AND rtu._Marked <> 0x01
+          AND LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+        ORDER BY order_number, rtu._Date_Time, rtu_number
+        """)
+    engine = build_engine(get_settings().onec_database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            rows = [dict(row) for row in connection.execute(statement, params).mappings()]
+    finally:
+        engine.dispose()
+    grouped: dict[str, list[IssuedRtuMovement]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["order_number"])].append(
+            IssuedRtuMovement(
+                rtu_number=str(row.get("rtu_number") or ""),
+                sale_amount=Decimal(str(row.get("sale_amount") or 0)),
+                issued=bool(row.get("issued")),
+                scanned_at=(
+                    row.get("scanned_at") if isinstance(row.get("scanned_at"), datetime) else None
+                ),
+                returned_at=(
+                    row.get("returned_at") if isinstance(row.get("returned_at"), datetime) else None
+                ),
+            )
+        )
+    return dict(grouped)
+
+
+def _qualifying_issued_rtu_rows(
+    rows: list[IssuedRtuMovement],
+) -> list[IssuedRtuMovement]:
+    return [
+        row
+        for row in rows
+        if row.issued
+        and row.scanned_at is not None
+        and (row.returned_at is None or row.returned_at > row.scanned_at)
+    ]
+
+
 def _line_evidence(order_numbers: list[str]) -> dict[str, RetainedGoodsEvidence]:
     if not order_numbers:
         return {}
@@ -399,7 +686,10 @@ def _line_evidence(order_numbers: list[str]) -> dict[str, RetainedGoodsEvidence]
                 sales.order_number,
                 line._Fld4974RRef AS product_ref,
                 SUM(CAST(line._Fld4971 AS decimal(18, 4))) AS sale_quantity,
-                SUM(CAST(line._Fld4982 AS decimal(18, 2))) AS sale_amount
+                SUM(
+                    CAST(line._Fld4971 AS decimal(18, 4))
+                    * CAST(line._Fld4982 AS decimal(18, 2))
+                ) AS sale_amount
             FROM sales
             JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
               ON line._Document203_IDRRef = sales.sale_ref
@@ -525,7 +815,12 @@ def _live_deals(
                 "crm.deal.list",
                 {
                     "filter": {f"@{fulfillment.CRM_ORDER_NUMBER_FIELD}": batch},
-                    "select": ["ID", "STAGE_ID", fulfillment.CRM_ORDER_NUMBER_FIELD],
+                    "select": [
+                        "ID",
+                        "STAGE_ID",
+                        fulfillment.CRM_ORDER_NUMBER_FIELD,
+                        fulfillment.CRM_DELIVERY_FIELD,
+                    ],
                     "order": {"ID": "ASC"},
                     "start": offset,
                 },
@@ -1080,11 +1375,464 @@ def _enqueue_full_refunds(ready: list[tuple[Candidate, FullRefundEvidence]]) -> 
     return outbox_ids
 
 
+def _pickup_return_ready_batch(
+    candidates: list[Candidate],
+    *,
+    payment_movements: dict[str, list[PaymentMovement]],
+    rtu_signals: dict[str, dict[str, Any]],
+    client: fulfillment.BitrixChatClient,
+    target_stage: str,
+) -> tuple[list[tuple[Candidate, PickupReturnEvidence]], Counter[str]]:
+    if target_stage not in {
+        PICKUP_PAID_RETURN_TARGET_STAGE,
+        PICKUP_RETURNED_LATE_PAYMENT_TARGET_STAGE,
+    }:
+        raise ValueError(f"unsupported pickup return target stage: {target_stage}")
+    live = _live_deals(client, [item.order_number for item in candidates])
+    reasons: Counter[str] = Counter()
+    ready: list[tuple[Candidate, PickupReturnEvidence]] = []
+    with session_scope(read_only=True) as session:
+        for candidate in candidates:
+            signal = rtu_signals.get(candidate.order_number)
+            if signal is None:
+                reasons["rtu_evidence_missing"] += 1
+                continue
+            rtu_count = int(signal.get("rtu_count") or 0)
+            returned_rtu_count = int(signal.get("returned_rtu_count") or 0)
+            posted_sale_amount = Decimal(str(signal.get("posted_sale_amount") or 0))
+            returned_goods_amount = Decimal(str(signal.get("returned_amount") or 0))
+            latest_rtu_at = signal.get("latest_rtu_date")
+            latest_return_at = signal.get("latest_return_at")
+            if rtu_count <= 0 or returned_rtu_count != rtu_count:
+                reasons["not_all_rtu_returned"] += 1
+                continue
+            if posted_sale_amount <= MONEY_TOLERANCE:
+                reasons["sale_amount_missing"] += 1
+                continue
+            if returned_goods_amount < posted_sale_amount - MONEY_TOLERANCE:
+                reasons["goods_return_incomplete"] += 1
+                continue
+            if not isinstance(latest_rtu_at, datetime) or not isinstance(
+                latest_return_at, datetime
+            ):
+                reasons["return_chronology_missing"] += 1
+                continue
+            if latest_return_at <= latest_rtu_at:
+                reasons["return_not_after_rtu"] += 1
+                continue
+
+            before_amount, after_amount, qualifying_at = _pickup_payment_sequence(
+                payment_movements.get(candidate.order_number, []),
+                latest_rtu_at=latest_rtu_at,
+                latest_return_at=latest_return_at,
+                posted_sale_amount=posted_sale_amount,
+            )
+            if target_stage == PICKUP_PAID_RETURN_TARGET_STAGE:
+                if qualifying_at is None:
+                    reasons["payment_before_return_not_full"] += 1
+                    continue
+            elif qualifying_at is not None:
+                reasons["confirmed_payment_before_return"] += 1
+                continue
+            elif after_amount <= MONEY_TOLERANCE:
+                reasons["payment_after_return_missing"] += 1
+                continue
+
+            deals = live.get(candidate.order_number, [])
+            if len(deals) != 1:
+                reasons["deal_not_unique"] += 1
+                continue
+            deal = deals[0]
+            if int(deal["ID"]) != candidate.deal_id:
+                reasons["deal_changed"] += 1
+                continue
+            stage = str(deal.get("STAGE_ID") or "").strip()
+            if stage == target_stage:
+                reasons[f"already_{target_stage.lower()}"] += 1
+                continue
+            if stage != "EXECUTING":
+                reasons[f"unexpected_stage:{stage or '-'}"] += 1
+                continue
+            delivery = str(deal.get(fulfillment.CRM_DELIVERY_FIELD) or "").strip()
+            if fulfillment.classify_delivery_method(delivery) != fulfillment.DELIVERY_CLASS_PICKUP:
+                reasons["not_pickup_delivery"] += 1
+                continue
+
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == candidate.order_number
+                )
+            )
+            if case_row is None:
+                reasons["execution_case_missing"] += 1
+                continue
+            warehouses = pickup_history._current_inventory_warehouse_ids(  # noqa: SLF001
+                session,
+                site_order_number=candidate.order_number,
+            )
+            if warehouses:
+                reasons["current_inventory"] += 1
+                continue
+
+            canonical = json.dumps(
+                {
+                    "order_number": candidate.order_number,
+                    "target_stage": target_stage,
+                    "rtu_count": rtu_count,
+                    "returned_rtu_count": returned_rtu_count,
+                    "posted_sale_amount": str(posted_sale_amount),
+                    "returned_goods_amount": str(returned_goods_amount),
+                    "latest_rtu_at": latest_rtu_at.isoformat(),
+                    "latest_return_at": latest_return_at.isoformat(),
+                    "payment_before_return_amount": str(before_amount),
+                    "payment_after_return_amount": str(after_amount),
+                    "qualifying_payment_at": (
+                        qualifying_at.isoformat() if qualifying_at is not None else None
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            ready.append(
+                (
+                    candidate,
+                    PickupReturnEvidence(
+                        order_number=candidate.order_number,
+                        rtu_count=rtu_count,
+                        returned_rtu_count=returned_rtu_count,
+                        posted_sale_amount=posted_sale_amount,
+                        returned_goods_amount=returned_goods_amount,
+                        latest_rtu_at=latest_rtu_at,
+                        latest_return_at=latest_return_at,
+                        payment_before_return_amount=before_amount,
+                        payment_after_return_amount=after_amount,
+                        qualifying_payment_at=qualifying_at,
+                        fingerprint=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    ),
+                )
+            )
+    return ready, reasons
+
+
+def _enqueue_pickup_returns(
+    ready: list[tuple[Candidate, PickupReturnEvidence]],
+    *,
+    event_type: str,
+    reason: str,
+    target_stage: str,
+) -> list[int]:
+    outbox_ids: list[int] = []
+    now = datetime.now()
+    with session_scope() as session:
+        for candidate, evidence in ready:
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == candidate.order_number
+                )
+            )
+            if case_row is None:
+                continue
+            source_ref = f"historical-pickup-return:{reason}:{evidence.fingerprint}"
+            payload = {
+                "pipeline": "execution_reconciliation",
+                "historical": True,
+                "explicit_user_approved_batch": True,
+                "decision": {
+                    "action": "update_stage",
+                    "reason": reason,
+                    "target_stage": target_stage,
+                },
+                "evidence_fingerprint": evidence.fingerprint,
+                "pickup_return_chronology": {
+                    "rtu_count": evidence.rtu_count,
+                    "returned_rtu_count": evidence.returned_rtu_count,
+                    "posted_sale_amount": str(evidence.posted_sale_amount),
+                    "returned_goods_amount": str(evidence.returned_goods_amount),
+                    "latest_rtu_at": evidence.latest_rtu_at.isoformat(),
+                    "latest_return_at": evidence.latest_return_at.isoformat(),
+                    "payment_before_return_amount": str(evidence.payment_before_return_amount),
+                    "payment_after_return_amount": str(evidence.payment_after_return_amount),
+                    "qualifying_payment_at": (
+                        evidence.qualifying_payment_at.isoformat()
+                        if evidence.qualifying_payment_at is not None
+                        else None
+                    ),
+                },
+            }
+            event_at = evidence.qualifying_payment_at or evidence.latest_return_at
+            event = fulfillment.upsert_execution_event(
+                session,
+                site_order_number=candidate.order_number,
+                event_type=event_type,
+                event_at=event_at,
+                source="onec",
+                source_ref=source_ref,
+                confidence="strong",
+                raw_message_id=None,
+                payload=payload,
+            )
+            if event is None:
+                existing = session.scalar(
+                    select(SiteOrderStageOutbox).where(
+                        SiteOrderStageOutbox.idempotency_key
+                        == (
+                            f"execution-stage|{candidate.order_number}|"
+                            f"{evidence.fingerprint}|{target_stage}"
+                        )
+                    )
+                )
+                if existing is not None and existing.status in {
+                    stage_outbox.STATUS_PENDING,
+                    stage_outbox.STATUS_RETRY,
+                }:
+                    outbox_ids.append(existing.id)
+                continue
+            case_row.bitrix_deal_id = candidate.deal_id
+            case_row.current_derived_status = event_type
+            case_row.current_crm_stage = "EXECUTING"
+            case_row.confidence = "strong"
+            case_row.last_evidence_event_id = event.id
+            case_row.updated_at = now
+            outbox = SiteOrderStageOutbox(
+                case_id=case_row.id,
+                event_id=event.id,
+                idempotency_key=(
+                    f"execution-stage|{candidate.order_number}|{evidence.fingerprint}|"
+                    f"{target_stage}"
+                ),
+                site_order_number=candidate.order_number,
+                bitrix_deal_id=candidate.deal_id,
+                source_event_type=event_type,
+                target_stage=target_stage,
+                payload=payload,
+            )
+            session.add(outbox)
+            session.flush()
+            outbox_ids.append(outbox.id)
+        session.commit()
+    return outbox_ids
+
+
+def _record_case_stages(
+    results: list[stage_outbox.StageOutboxResult], *, target_stage: str
+) -> None:
+    applied_orders = {item.site_order_number for item in results if item.applied}
+    if not applied_orders:
+        return
+    now = datetime.now()
+    with session_scope() as session:
+        cases = session.scalars(
+            select(SiteOrderExecutionCase).where(
+                SiteOrderExecutionCase.site_order_number.in_(applied_orders)
+            )
+        ).all()
+        for case_row in cases:
+            case_row.current_crm_stage = target_stage
+            case_row.updated_at = now
+        session.commit()
+
+
+def _pickup_issued_return_ready_batch(
+    candidates: list[Candidate],
+    *,
+    movements: dict[str, list[IssuedRtuMovement]],
+    client: fulfillment.BitrixChatClient,
+) -> tuple[list[tuple[Candidate, PickupIssuedReturnEvidence]], Counter[str]]:
+    live = _live_deals(client, [item.order_number for item in candidates])
+    reasons: Counter[str] = Counter()
+    ready: list[tuple[Candidate, PickupIssuedReturnEvidence]] = []
+    with session_scope(read_only=True) as session:
+        for candidate in candidates:
+            rows = movements.get(candidate.order_number, [])
+            if not rows:
+                reasons["rtu_evidence_missing"] += 1
+                continue
+            issued_rows = [row for row in rows if row.issued and row.scanned_at is not None]
+            qualifying_rows = _qualifying_issued_rtu_rows(rows)
+            if not qualifying_rows:
+                reasons["no_issued_rtu_before_return"] += 1
+                continue
+
+            deals = live.get(candidate.order_number, [])
+            if len(deals) != 1:
+                reasons["deal_not_unique"] += 1
+                continue
+            deal = deals[0]
+            if int(deal["ID"]) != candidate.deal_id:
+                reasons["deal_changed"] += 1
+                continue
+            stage = str(deal.get("STAGE_ID") or "").strip()
+            if stage == PICKUP_ISSUED_RETURN_TARGET_STAGE:
+                reasons["already_won"] += 1
+                continue
+            if stage != "EXECUTING":
+                reasons[f"unexpected_stage:{stage or '-'}"] += 1
+                continue
+            delivery = str(deal.get(fulfillment.CRM_DELIVERY_FIELD) or "").strip()
+            if fulfillment.classify_delivery_method(delivery) != fulfillment.DELIVERY_CLASS_PICKUP:
+                reasons["not_pickup_delivery"] += 1
+                continue
+
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == candidate.order_number
+                )
+            )
+            if case_row is None:
+                reasons["execution_case_missing"] += 1
+                continue
+            warehouses = pickup_history._current_inventory_warehouse_ids(  # noqa: SLF001
+                session,
+                site_order_number=candidate.order_number,
+            )
+            if warehouses:
+                reasons["current_inventory"] += 1
+                continue
+
+            qualifying_numbers = tuple(sorted(row.rtu_number for row in qualifying_rows))
+            latest_issue_at = max(
+                row.scanned_at for row in qualifying_rows if row.scanned_at is not None
+            )
+            canonical = json.dumps(
+                {
+                    "order_number": candidate.order_number,
+                    "rtu_count": len(rows),
+                    "issued_rtu_count": len(issued_rows),
+                    "qualifying_rtu_numbers": qualifying_numbers,
+                    "qualifying_rows": [
+                        {
+                            "rtu_number": row.rtu_number,
+                            "sale_amount": str(row.sale_amount),
+                            "scanned_at": (
+                                row.scanned_at.isoformat() if row.scanned_at is not None else None
+                            ),
+                            "returned_at": (
+                                row.returned_at.isoformat() if row.returned_at is not None else None
+                            ),
+                        }
+                        for row in qualifying_rows
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            ready.append(
+                (
+                    candidate,
+                    PickupIssuedReturnEvidence(
+                        order_number=candidate.order_number,
+                        rtu_count=len(rows),
+                        issued_rtu_count=len(issued_rows),
+                        qualifying_issued_rtu_count=len(qualifying_rows),
+                        retained_issued_rtu_count=sum(
+                            1 for row in qualifying_rows if row.returned_at is None
+                        ),
+                        returned_after_issue_rtu_count=sum(
+                            1 for row in qualifying_rows if row.returned_at is not None
+                        ),
+                        qualifying_rtu_numbers=qualifying_numbers,
+                        latest_qualifying_issue_at=latest_issue_at,
+                        fingerprint=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    ),
+                )
+            )
+    return ready, reasons
+
+
+def _enqueue_pickup_issued_returns(
+    ready: list[tuple[Candidate, PickupIssuedReturnEvidence]],
+) -> list[int]:
+    outbox_ids: list[int] = []
+    now = datetime.now()
+    with session_scope() as session:
+        for candidate, evidence in ready:
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == candidate.order_number
+                )
+            )
+            if case_row is None:
+                continue
+            source_ref = f"historical-pickup-issued-return:{evidence.fingerprint}"
+            payload = {
+                "pipeline": "execution_reconciliation",
+                "historical": True,
+                "explicit_user_approved_batch": True,
+                "decision": {
+                    "action": "update_stage",
+                    "reason": PICKUP_ISSUED_RETURN_REASON,
+                    "target_stage": PICKUP_ISSUED_RETURN_TARGET_STAGE,
+                },
+                "evidence_fingerprint": evidence.fingerprint,
+                "pickup_issue_evidence": {
+                    "rtu_count": evidence.rtu_count,
+                    "issued_rtu_count": evidence.issued_rtu_count,
+                    "qualifying_issued_rtu_count": evidence.qualifying_issued_rtu_count,
+                    "retained_issued_rtu_count": evidence.retained_issued_rtu_count,
+                    "returned_after_issue_rtu_count": (evidence.returned_after_issue_rtu_count),
+                    "qualifying_rtu_numbers": list(evidence.qualifying_rtu_numbers),
+                    "latest_qualifying_issue_at": (evidence.latest_qualifying_issue_at.isoformat()),
+                },
+            }
+            event = fulfillment.upsert_execution_event(
+                session,
+                site_order_number=candidate.order_number,
+                event_type=PICKUP_ISSUED_RETURN_EVENT_TYPE,
+                event_at=evidence.latest_qualifying_issue_at,
+                source="onec",
+                source_ref=source_ref,
+                confidence="strong",
+                raw_message_id=None,
+                payload=payload,
+            )
+            if event is None:
+                existing = session.scalar(
+                    select(SiteOrderStageOutbox).where(
+                        SiteOrderStageOutbox.idempotency_key
+                        == (
+                            f"execution-stage|{candidate.order_number}|"
+                            f"{evidence.fingerprint}|{PICKUP_ISSUED_RETURN_TARGET_STAGE}"
+                        )
+                    )
+                )
+                if existing is not None and existing.status in {
+                    stage_outbox.STATUS_PENDING,
+                    stage_outbox.STATUS_RETRY,
+                }:
+                    outbox_ids.append(existing.id)
+                continue
+            case_row.bitrix_deal_id = candidate.deal_id
+            case_row.current_derived_status = PICKUP_ISSUED_RETURN_EVENT_TYPE
+            case_row.current_crm_stage = "EXECUTING"
+            case_row.confidence = "strong"
+            case_row.last_evidence_event_id = event.id
+            case_row.updated_at = now
+            outbox = SiteOrderStageOutbox(
+                case_id=case_row.id,
+                event_id=event.id,
+                idempotency_key=(
+                    f"execution-stage|{candidate.order_number}|{evidence.fingerprint}|"
+                    f"{PICKUP_ISSUED_RETURN_TARGET_STAGE}"
+                ),
+                site_order_number=candidate.order_number,
+                bitrix_deal_id=candidate.deal_id,
+                source_event_type=PICKUP_ISSUED_RETURN_EVENT_TYPE,
+                target_stage=PICKUP_ISSUED_RETURN_TARGET_STAGE,
+                payload=payload,
+            )
+            session.add(outbox)
+            session.flush()
+            outbox_ids.append(outbox.id)
+        session.commit()
+    return outbox_ids
+
+
 def _select_candidates(
     all_candidates: list[Candidate],
     *,
     batch_number: int | None,
     order_numbers: list[str] | None,
+    candidate_kind: str = "full-return",
 ) -> tuple[list[Candidate], int]:
     if batch_number is not None and order_numbers:
         raise SystemExit("--batch and --orders cannot be used together")
@@ -1092,7 +1840,9 @@ def _select_candidates(
         by_order = {item.order_number: item for item in all_candidates}
         missing = [value for value in order_numbers if value not in by_order]
         if missing:
-            raise SystemExit(f"orders are not open full-return candidates: {', '.join(missing)}")
+            raise SystemExit(
+                f"orders are not open {candidate_kind} candidates: {', '.join(missing)}"
+            )
         return [by_order[value] for value in dict.fromkeys(order_numbers)], 0
     if batch_number is None:
         return all_candidates, 0
@@ -1201,12 +1951,224 @@ def _run_full_refunds(
     return 0
 
 
+def _run_pickup_return_mode(
+    *,
+    apply: bool,
+    order_numbers: list[str] | None,
+    recover_pending: bool,
+    client: fulfillment.BitrixChatClient,
+    paid_before_return: bool,
+) -> int:
+    if paid_before_return:
+        event_type = PICKUP_PAID_RETURN_EVENT_TYPE
+        reason = PICKUP_PAID_RETURN_REASON
+        target_stage = PICKUP_PAID_RETURN_TARGET_STAGE
+        mode_name = "pickup-paid-then-returned"
+    else:
+        event_type = PICKUP_RETURNED_LATE_PAYMENT_EVENT_TYPE
+        reason = PICKUP_RETURNED_LATE_PAYMENT_REASON
+        target_stage = PICKUP_RETURNED_LATE_PAYMENT_TARGET_STAGE
+        mode_name = "pickup-returned-without-prior-payment"
+
+    if recover_pending:
+        with session_scope(read_only=True) as session:
+            outbox_ids = list(
+                session.scalars(
+                    select(SiteOrderStageOutbox.id)
+                    .where(
+                        SiteOrderStageOutbox.source_event_type == event_type,
+                        SiteOrderStageOutbox.status.in_(
+                            [stage_outbox.STATUS_PENDING, stage_outbox.STATUS_RETRY]
+                        ),
+                    )
+                    .order_by(SiteOrderStageOutbox.id.asc())
+                    .limit(BATCH_SIZE)
+                ).all()
+            )
+        results = _apply_outbox(outbox_ids, client=client, target_stage=target_stage)
+        _record_case_stages(results, target_stage=target_stage)
+        print(
+            json.dumps(
+                {
+                    "mode": f"{mode_name}-recover",
+                    "pending": len(outbox_ids),
+                    "applied": sum(1 for item in results if item.applied),
+                    "result_counts": dict(Counter(item.result for item in results)),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    if not order_numbers:
+        raise SystemExit(f"{mode_name} requires an explicit --orders selection")
+    all_candidates = _full_return_candidates()
+    candidates, _ = _select_candidates(
+        all_candidates,
+        batch_number=None,
+        order_numbers=order_numbers,
+        candidate_kind="full-return",
+    )
+    if len(candidates) > BATCH_SIZE:
+        raise SystemExit(f"{mode_name} is capped at {BATCH_SIZE} explicit orders")
+
+    selected_orders = [item.order_number for item in candidates]
+    payment_movements = _pickup_payment_movements(selected_orders)
+    rtu_signals = sync.query_rtu_signal_by_orders(selected_orders)
+    ready, blocked = _pickup_return_ready_batch(
+        candidates,
+        payment_movements=payment_movements,
+        rtu_signals=rtu_signals,
+        client=client,
+        target_stage=target_stage,
+    )
+    results: list[stage_outbox.StageOutboxResult] = []
+    if apply and ready:
+        outbox_ids = _enqueue_pickup_returns(
+            ready,
+            event_type=event_type,
+            reason=reason,
+            target_stage=target_stage,
+        )
+        results = _apply_outbox(outbox_ids, client=client, target_stage=target_stage)
+        _record_case_stages(results, target_stage=target_stage)
+    print(
+        json.dumps(
+            {
+                "mode": f"{mode_name}-apply" if apply else f"{mode_name}-dry-run",
+                "scanned": len(candidates),
+                "ready": len(ready),
+                "ready_orders": [item.order_number for item, _ in ready],
+                "ready_evidence": [
+                    {
+                        "order_number": item.order_number,
+                        "sale_amount": str(evidence.posted_sale_amount),
+                        "returned_amount": str(evidence.returned_goods_amount),
+                        "latest_rtu_at": evidence.latest_rtu_at.isoformat(),
+                        "latest_return_at": evidence.latest_return_at.isoformat(),
+                        "payment_before_return_amount": str(evidence.payment_before_return_amount),
+                        "payment_after_return_amount": str(evidence.payment_after_return_amount),
+                    }
+                    for item, evidence in ready
+                ],
+                "blocked": dict(blocked),
+                "applied": sum(1 for item in results if item.applied),
+                "result_counts": dict(Counter(item.result for item in results)),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _run_pickup_issued_returns(
+    *,
+    apply: bool,
+    order_numbers: list[str] | None,
+    recover_pending: bool,
+    client: fulfillment.BitrixChatClient,
+) -> int:
+    if recover_pending:
+        with session_scope(read_only=True) as session:
+            outbox_ids = list(
+                session.scalars(
+                    select(SiteOrderStageOutbox.id)
+                    .where(
+                        SiteOrderStageOutbox.source_event_type == PICKUP_ISSUED_RETURN_EVENT_TYPE,
+                        SiteOrderStageOutbox.status.in_(
+                            [stage_outbox.STATUS_PENDING, stage_outbox.STATUS_RETRY]
+                        ),
+                    )
+                    .order_by(SiteOrderStageOutbox.id.asc())
+                    .limit(BATCH_SIZE)
+                ).all()
+            )
+        results = _apply_outbox(
+            outbox_ids,
+            client=client,
+            target_stage=PICKUP_ISSUED_RETURN_TARGET_STAGE,
+        )
+        _record_case_stages(results, target_stage=PICKUP_ISSUED_RETURN_TARGET_STAGE)
+        print(
+            json.dumps(
+                {
+                    "mode": "pickup-issued-then-returned-recover",
+                    "pending": len(outbox_ids),
+                    "applied": sum(1 for item in results if item.applied),
+                    "result_counts": dict(Counter(item.result for item in results)),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    if not order_numbers:
+        raise SystemExit("pickup-issued-then-returned requires an explicit --orders selection")
+    candidates, _ = _select_candidates(
+        _issued_return_candidates(),
+        batch_number=None,
+        order_numbers=order_numbers,
+        candidate_kind="issued-return",
+    )
+    if len(candidates) > BATCH_SIZE:
+        raise SystemExit(f"pickup-issued-then-returned is capped at {BATCH_SIZE} explicit orders")
+    selected_orders = [item.order_number for item in candidates]
+    movements = _pickup_issued_rtu_movements(selected_orders)
+    ready, blocked = _pickup_issued_return_ready_batch(
+        candidates,
+        movements=movements,
+        client=client,
+    )
+    results: list[stage_outbox.StageOutboxResult] = []
+    if apply and ready:
+        outbox_ids = _enqueue_pickup_issued_returns(ready)
+        results = _apply_outbox(
+            outbox_ids,
+            client=client,
+            target_stage=PICKUP_ISSUED_RETURN_TARGET_STAGE,
+        )
+        _record_case_stages(results, target_stage=PICKUP_ISSUED_RETURN_TARGET_STAGE)
+    print(
+        json.dumps(
+            {
+                "mode": (
+                    "pickup-issued-then-returned-apply"
+                    if apply
+                    else "pickup-issued-then-returned-dry-run"
+                ),
+                "scanned": len(candidates),
+                "ready": len(ready),
+                "ready_orders": [item.order_number for item, _ in ready],
+                "ready_evidence": [
+                    {
+                        "order_number": item.order_number,
+                        "rtu_count": evidence.rtu_count,
+                        "issued_rtu_count": evidence.issued_rtu_count,
+                        "qualifying_issued_rtu_count": (evidence.qualifying_issued_rtu_count),
+                        "retained_issued_rtu_count": evidence.retained_issued_rtu_count,
+                        "returned_after_issue_rtu_count": (evidence.returned_after_issue_rtu_count),
+                    }
+                    for item, evidence in ready
+                ],
+                "blocked": dict(blocked),
+                "applied": sum(1 for item in results if item.applied),
+                "result_counts": dict(Counter(item.result for item in results)),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def run(
     *,
     apply: bool,
     batch_number: int | None = None,
     recover_pending: bool = False,
     full_refunds: bool = False,
+    pickup_paid_then_returned: bool = False,
+    pickup_returned_without_prior_payment: bool = False,
+    pickup_issued_then_returned: bool = False,
     order_numbers: list[str] | None = None,
 ) -> int:
     settings = get_settings()
@@ -1222,6 +2184,38 @@ def run(
     if not webhook_url:
         raise SystemExit("Bitrix webhook is not configured")
     client = fulfillment.BitrixChatClient(webhook_url)
+    selected_modes = sum(
+        int(value)
+        for value in (
+            full_refunds,
+            pickup_paid_then_returned,
+            pickup_returned_without_prior_payment,
+            pickup_issued_then_returned,
+        )
+    )
+    if selected_modes > 1:
+        raise SystemExit("return reconciliation modes are mutually exclusive")
+    if batch_number is not None and (
+        pickup_paid_then_returned
+        or pickup_returned_without_prior_payment
+        or pickup_issued_then_returned
+    ):
+        raise SystemExit("pickup return modes require --orders and do not accept --batch")
+    if pickup_issued_then_returned:
+        return _run_pickup_issued_returns(
+            apply=apply,
+            order_numbers=order_numbers,
+            recover_pending=recover_pending,
+            client=client,
+        )
+    if pickup_paid_then_returned or pickup_returned_without_prior_payment:
+        return _run_pickup_return_mode(
+            apply=apply,
+            order_numbers=order_numbers,
+            recover_pending=recover_pending,
+            client=client,
+            paid_before_return=pickup_paid_then_returned,
+        )
     if full_refunds:
         return _run_full_refunds(
             apply=apply,
@@ -1230,8 +2224,6 @@ def run(
             recover_pending=recover_pending,
             client=client,
         )
-    if order_numbers:
-        raise SystemExit("--orders requires --full-refunds")
     if recover_pending:
         return _recover_pending(
             client=client,
@@ -1240,16 +2232,14 @@ def run(
             resolved_reason=PARTIAL_RETURN_REASON,
         )
     all_candidates = _header_candidates()
-    candidates = all_candidates
-    batch_offset = 0
-    if batch_number is not None:
-        if batch_number < 1:
-            raise SystemExit("batch number must be positive")
-        batch_offset = batch_number - 1
-        start = batch_offset * BATCH_SIZE
-        candidates = all_candidates[start : start + BATCH_SIZE]
-        if not candidates:
-            raise SystemExit(f"batch {batch_number} is empty")
+    candidates, batch_offset = _select_candidates(
+        all_candidates,
+        batch_number=batch_number,
+        order_numbers=order_numbers,
+        candidate_kind="partial-return",
+    )
+    if apply and len(candidates) > BATCH_SIZE and order_numbers:
+        raise SystemExit(f"partial-return explicit apply is capped at {BATCH_SIZE} orders")
     totals: Counter[str] = Counter()
     all_results: list[stage_outbox.StageOutboxResult] = []
     for start in range(0, len(candidates), BATCH_SIZE):
@@ -1314,9 +2304,24 @@ def main() -> int:
         help="Analyze/apply exact full goods and money refunds to LOSE",
     )
     parser.add_argument(
+        "--pickup-paid-then-returned",
+        action="store_true",
+        help="Apply explicit pickup orders paid after RTU and before a customer return to WON",
+    )
+    parser.add_argument(
+        "--pickup-returned-without-prior-payment",
+        action="store_true",
+        help="Apply explicit pickups returned before payment to DISMANTLING",
+    )
+    parser.add_argument(
+        "--pickup-issued-then-returned",
+        action="store_true",
+        help="Apply explicit historical pickups with at least one qualifying issued RTU to WON",
+    )
+    parser.add_argument(
         "--orders",
         default=None,
-        help="Comma-separated stable order selection; requires --full-refunds",
+        help="Comma-separated stable order selection",
     )
     args = parser.parse_args()
     order_numbers = (
@@ -1329,6 +2334,9 @@ def main() -> int:
         batch_number=args.batch,
         recover_pending=args.recover_pending,
         full_refunds=args.full_refunds,
+        pickup_paid_then_returned=args.pickup_paid_then_returned,
+        pickup_returned_without_prior_payment=args.pickup_returned_without_prior_payment,
+        pickup_issued_then_returned=args.pickup_issued_then_returned,
         order_numbers=order_numbers,
     )
 

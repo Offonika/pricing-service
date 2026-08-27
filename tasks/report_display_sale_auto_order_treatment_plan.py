@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -77,13 +77,9 @@ CSV_COLUMNS = [
 
 def main() -> int:
     args = _parse_args()
-    settings = get_settings()
-    database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = build_engine(database_url, pool_pre_ping=True)
-    try:
-        rows = load_sale_rows(engine, folder=args.folder)
-    finally:
-        engine.dispose()
+    database_url = args.database_url or os.environ.get("DATABASE_URL") or None
+    with session_scope(read_only=True, database_url=database_url) as db:
+        rows = load_sale_rows(db, folder=args.folder)
 
     treatment_rows = build_treatment_rows(rows)
     if args.output_csv:
@@ -101,22 +97,21 @@ def main() -> int:
     return 0
 
 
-def load_sale_rows(engine, *, folder: str) -> list[dict[str, Any]]:
+def load_sale_rows(db: Session, *, folder: str) -> list[dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
-    with engine.connect() as conn:
-        last_run_id = conn.execute(
-            select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
-        ).scalar()
-        query = (
-            select(table)
-            .where(
-                table.c.folder.ilike(f"%{folder}%"),
-                table.c.last_run_id == last_run_id,
-                table.c.status == "sale",
-            )
-            .order_by(table.c.nomenclature_code.asc())
+    last_run_id = db.execute(
+        select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
+    ).scalar()
+    query = (
+        select(table)
+        .where(
+            table.c.folder.ilike(f"%{folder}%"),
+            table.c.last_run_id == last_run_id,
+            table.c.status == "sale",
         )
-        return [dict(row) for row in conn.execute(query).mappings()]
+        .order_by(table.c.nomenclature_code.asc())
+    )
+    return [dict(row) for row in db.execute(query).mappings()]
 
 
 def build_treatment_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

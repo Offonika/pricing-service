@@ -114,6 +114,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "export_receivable_work_report.py": {
+      "owner": "receivables",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_business_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "evaluate_competitor_matching_policy.py": {
       "owner": "matching",
       "kind": "report",
@@ -196,6 +206,16 @@
     },
     "report_display_quality_mismatch_candidates.py": {
       "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "report_display_sale_auto_order_treatment_plan.py": {
+      "owner": "procurement",
       "kind": "report",
       "dry_run": "not_applicable",
       "idempotency": "artifact_replace_by_requested_path",

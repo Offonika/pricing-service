@@ -13,6 +13,7 @@ related_code:
   - scripts/validate_cli_registry.py
   - docs/registry/cli-jobs.json
 related_tests:
+  - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
@@ -121,6 +122,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   read-only session scope с сохранением `--database-url`, CSV и JSON-контрактов.
 - [x] Перевести `export_receivable_work_report.py` на central read-only session
   scope с сохранением `--date`, `--output-dir` и XLSX-контракта.
+- [x] Перевести `analyze_manual_matching_feedback.py` на central read-only session
+  scope с сохранением `--database-url`, `--no-files` и Markdown/JSON/CSV-контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -179,9 +182,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     release требуют отдельных подтверждений.
 16. После зелёного CI разрешён merge PR №78. Production migration, deploy и cutover
     в это решение не входят.
+17. Для `analyze_manual_matching_feedback.py` разрешены реализация в отдельной
+    ветке, push и создание отдельного PR после локальных проверок. Merge и
+    production release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-27 — `analyze_manual_matching_feedback.py` переведён на central
+  read-only session scope и зарегистрирован как `application_read_only`; аргументы
+  и Markdown/JSON/CSV-контракты сохранены.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `analyze_manual_matching_feedback.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
 - 2026-08-27 — разрешён merge PR №78; production release оставлен отдельным
   решением.
 - 2026-08-27 — `export_receivable_work_report.py` переведён на central read-only

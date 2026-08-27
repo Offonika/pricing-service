@@ -2897,7 +2897,9 @@ def _deliver_site_service_request_escalation(
                 entity_type_id=settings.site_service_requests_bitrix_entity_type_id,
                 item_id=int(case.bitrix_item_id),
                 comment=(
-                    "SLA первого ответа просрочен. Ответственность передана резерву. " f"{marker}"
+                    "Срок первого ответа клиенту истёк. "
+                    "Ответственность передана резервному сотруднику. "
+                    f"{marker}"
                 ),
             )
         if not writer.timeline_comment_exists(
@@ -2914,11 +2916,11 @@ def _deliver_site_service_request_escalation(
         writer.notify_user(
             user_id=settings.site_service_requests_escalation_user_id,
             message=(
-                "Просрочен SLA первого ответа по "
-                + (
-                    "сервисному email-обращению."
-                    if case.source_kind == "bitrix_mail"
-                    else f"сервисному обращению сайта #{case.source_ticket_id}."
+                ("Срок ответа на письмо клиента истёк. " "Проверьте письмо и ответьте клиенту.")
+                if case.source_kind == "bitrix_mail"
+                else (
+                    f"Срок ответа по обращению клиента №{case.source_ticket_id} истёк. "
+                    "Проверьте обращение и ответьте клиенту."
                 )
             ),
             tag=(

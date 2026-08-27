@@ -17,6 +17,7 @@ related_tests:
   - tests/test_architecture_boundaries.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
+  - tests/test_export_display_quality_review_workbook_task.py
   - tests/test_export_receivable_work_report_task.py
   - tests/test_product_classification.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
@@ -124,6 +125,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   scope с сохранением `--date`, `--output-dir` и XLSX-контракта.
 - [x] Перевести `analyze_manual_matching_feedback.py` на central read-only session
   scope с сохранением `--database-url`, `--no-files` и Markdown/JSON/CSV-контрактов.
+- [x] Перевести `export_display_quality_review_workbook.py` на central read-only
+  session scope с сохранением `--output` и XLSX-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -187,9 +190,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельных подтверждений.
 18. После зелёного CI разрешён merge PR №80. Production migration, deploy и cutover
     в это решение не входят.
+19. Для `export_display_quality_review_workbook.py` разрешены реализация в отдельной
+    ветке, push и создание отдельного PR после локальных проверок. Merge и
+    production release требуют отдельных подтверждений.
+20. После зелёного CI разрешён merge PR №83. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-27 — разрешён merge PR №83; production release оставлен отдельным
+  решением.
+- 2026-08-27 — `export_display_quality_review_workbook.py` переведён на central
+  read-only session scope и зарегистрирован как `application_read_only`; `--output`
+  и XLSX-контракт сохранены.
+- 2026-08-27 — разрешена подготовка отдельного read-only slice для
+  `export_display_quality_review_workbook.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-27 — разрешён merge PR №80; production release оставлен отдельным
   решением.
 - 2026-08-27 — `analyze_manual_matching_feedback.py` переведён на central

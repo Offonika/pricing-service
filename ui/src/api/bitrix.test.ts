@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   initializeBitrixLogisticsSession,
   refreshBitrixAuth,
+  refreshBitrixLogisticsSession,
   refreshBitrixReceivablesSession,
+  type BitrixLogisticsSessionResponse,
   type BitrixReceivablesSessionResponse,
 } from "./bitrix";
 
@@ -94,6 +96,25 @@ describe("refreshBitrixReceivablesSession", () => {
     expect(requestSession).toHaveBeenCalledTimes(1);
 
     resolveRefresh?.({ session_token: "token" } as BitrixReceivablesSessionResponse);
+    await Promise.all([first, second]);
+  });
+});
+
+describe("refreshBitrixLogisticsSession", () => {
+  it("shares one refresh between parallel requests", async () => {
+    let resolveRefresh: ((value: BitrixLogisticsSessionResponse) => void) | undefined;
+    const requestSession = vi.fn(
+      () =>
+        new Promise<BitrixLogisticsSessionResponse>((resolve) => {
+          resolveRefresh = resolve;
+        })
+    );
+
+    const first = refreshBitrixLogisticsSession(requestSession);
+    const second = refreshBitrixLogisticsSession(requestSession);
+    expect(requestSession).toHaveBeenCalledTimes(1);
+
+    resolveRefresh?.({ session_token: "token" } as BitrixLogisticsSessionResponse);
     await Promise.all([first, second]);
   });
 });

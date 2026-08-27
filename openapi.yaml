@@ -7240,6 +7240,7 @@ paths:
         schema:
           type: string
           minLength: 1
+          maxLength: 255
           title: Code
       responses:
         '200':
@@ -8225,6 +8226,35 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/draft/open:
+    get:
+      summary: Web Open Draft
+      operationId: web_open_draft_api_logistics_web_draft_open_get
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/LogisticsDraftResponse'
+                - type: 'null'
+                title: Response Web Open Draft Api Logistics Web Draft Open Get
         '422':
           description: Validation Error
           content:
@@ -11503,6 +11533,10 @@ components:
             type: string
           type: array
           title: Capabilities
+        open_draft:
+          anyOf:
+          - $ref: '#/components/schemas/LogisticsDraftResponse'
+          - type: 'null'
       type: object
       required:
       - profile
@@ -11515,11 +11549,13 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
       type: object
@@ -11547,6 +11583,7 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
       type: object
@@ -11558,11 +11595,13 @@ components:
         barcode:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Barcode
         lookup_code:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Lookup Code
         dropoff_warehouse_id:
@@ -20939,17 +20978,20 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
         photos:
           items:
             $ref: '#/components/schemas/LogisticsPhotoInput'
           type: array
+          maxItems: 20
           title: Photos
       type: object
       required:
@@ -20981,6 +21023,7 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
       type: object
@@ -21092,11 +21135,13 @@ components:
         barcode:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Barcode
         lookup_code:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Lookup Code
         dropoff_warehouse_id:
@@ -21171,17 +21216,20 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
         photos:
           items:
             $ref: '#/components/schemas/LogisticsPhotoInput'
           type: array
+          maxItems: 20
           title: Photos
       type: object
       required:
@@ -21279,11 +21327,13 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
       type: object
@@ -21312,11 +21362,13 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
       type: object
@@ -21584,10 +21636,13 @@ components:
       properties:
         telegram_file_id:
           type: string
+          maxLength: 255
+          minLength: 1
           title: Telegram File Id
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
       type: object
@@ -22299,21 +22354,20 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
         idempotency_key:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Idempotency Key
         photos:
           items:
-            additionalProperties:
-              anyOf:
-              - type: string
-              - type: 'null'
-            type: object
+            $ref: '#/components/schemas/LogisticsPhotoInput'
           type: array
+          maxItems: 20
           title: Photos
       type: object
       title: LogisticsWebDraftConfirmRequest
@@ -22340,6 +22394,7 @@ components:
         comment:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Comment
       type: object
@@ -22351,11 +22406,13 @@ components:
         barcode:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Barcode
         lookup_code:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Lookup Code
         dropoff_warehouse_id:

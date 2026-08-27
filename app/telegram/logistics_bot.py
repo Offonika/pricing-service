@@ -516,8 +516,8 @@ class LogisticsTelegramBot:
         best = photos[-1]
         current.photos.append(
             LogisticsBotSessionPhoto(
-                telegram_file_id=best["file_id"],
-                comment=message.get("caption"),
+                telegram_file_id=str(best["file_id"])[:255],
+                comment=(str(message.get("caption") or "")[:1000] or None),
             )
         )
         session.commit()

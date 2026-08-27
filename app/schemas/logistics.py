@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class LogisticsPhotoInput(BaseModel):
-    telegram_file_id: str
-    comment: str | None = None
+    telegram_file_id: str = Field(min_length=1, max_length=255)
+    comment: str | None = Field(default=None, max_length=1000)
 
 
 class LogisticsWarehouseSyncItem(BaseModel):
@@ -87,13 +87,13 @@ class LogisticsDraftCreateRequest(BaseModel):
     driver_id: int | None = None
     route_run_id: int | None = None
     default_dropoff_warehouse_id: int | None = None
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
 
 
 class LogisticsDraftScanRequest(BaseModel):
     actor_user_id: int
-    barcode: str | None = None
-    lookup_code: str | None = None
+    barcode: str | None = Field(default=None, max_length=255)
+    lookup_code: str | None = Field(default=None, max_length=255)
     dropoff_warehouse_id: int | None = None
 
     @model_validator(mode="after")
@@ -105,9 +105,9 @@ class LogisticsDraftScanRequest(BaseModel):
 
 class LogisticsDraftConfirmRequest(BaseModel):
     actor_user_id: int
-    comment: str | None = None
-    idempotency_key: str | None = None
-    photos: list[LogisticsPhotoInput] = Field(default_factory=list)
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
+    photos: list[LogisticsPhotoInput] = Field(default_factory=list, max_length=20)
 
 
 class LogisticsDraftItemResponse(BaseModel):
@@ -186,9 +186,9 @@ class LogisticsMonitorResponse(BaseModel):
 class LogisticsEventActionRequest(BaseModel):
     actor_user_id: int
     warehouse_id: int | None = None
-    comment: str | None = None
-    idempotency_key: str | None = None
-    photos: list[LogisticsPhotoInput] = Field(default_factory=list)
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
+    photos: list[LogisticsPhotoInput] = Field(default_factory=list, max_length=20)
 
 
 class LogisticsEventPhotoResponse(BaseModel):
@@ -313,15 +313,15 @@ class LogisticsExternalCarrierHandoffRequest(BaseModel):
     carrier_name: str
     tracking_number: str | None = None
     carrier_terminal: str | None = None
-    comment: str | None = None
-    idempotency_key: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
 
 class LogisticsExternalCarrierAcceptRequest(BaseModel):
     actor_user_id: int
     warehouse_id: int
-    comment: str | None = None
-    idempotency_key: str | None = None
+    comment: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
 
 class LogisticsManualReadyOverrideRequest(BaseModel):

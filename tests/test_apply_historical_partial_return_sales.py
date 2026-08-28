@@ -187,3 +187,166 @@ def test_rtu_scanned_only_after_return_does_not_confirm_issue() -> None:
     ]
 
     assert historical_returns._qualifying_issued_rtu_rows(rows) == []  # noqa: SLF001
+
+
+def _historical_execution_snapshot(
+    *,
+    historical: bool = True,
+) -> historical_returns.execution_reconciliation.ExecutionEvidenceSnapshot:
+    return historical_returns.execution_reconciliation.ExecutionEvidenceSnapshot(
+        site_order_number="240000",
+        bitrix_deal_id=42,
+        current_stage="EXECUTING",
+        delivery_class="pickup",
+        latest_assembled_at=datetime(2026, 6, 1, 10, 0),
+        historical=historical,
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "onec_target",
+        "onec_reason",
+        "chat_event",
+        "chat_confidence",
+        "expected_target",
+        "expected_reason",
+    ),
+    [
+        (
+            "WON",
+            "pickup_printed_and_scanned",
+            historical_returns.fulfillment.EVENT_PICKUP_RECEIVED,
+            "strong",
+            "WON",
+            "onec_issued_and_later_pickup_received",
+        ),
+        (
+            "FINAL_INVOICE",
+            "assembled_without_return",
+            historical_returns.fulfillment.EVENT_PICKUP_RECEIVED,
+            "strong",
+            "WON",
+            "onec_assembled_and_later_pickup_received",
+        ),
+        (
+            "LOSE",
+            "full_unpaid_return",
+            historical_returns.fulfillment.EVENT_PICKUP_DISMANTLING,
+            "medium",
+            "LOSE",
+            "onec_full_unpaid_return_and_later_nonreceipt",
+        ),
+        (
+            "LOSE",
+            "full_unpaid_return",
+            historical_returns.fulfillment.EVENT_PICKUP_UNCLAIMED,
+            "medium",
+            "LOSE",
+            "onec_full_unpaid_return_and_later_nonreceipt",
+        ),
+        (
+            "WON",
+            "pickup_printed_and_scanned",
+            historical_returns.fulfillment.EVENT_PICKUP_UNCLAIMED,
+            "medium",
+            None,
+            "pickup_nonreceipt_conflicts_with_onec:WON",
+        ),
+        (
+            "LOSE",
+            "full_unpaid_return",
+            historical_returns.fulfillment.EVENT_PICKUP_RECEIVED,
+            "strong",
+            None,
+            "pickup_received_conflicts_with_onec:LOSE",
+        ),
+    ],
+)
+def test_stale_execution_composite_allows_only_compatible_evidence(
+    onec_target: str,
+    onec_reason: str,
+    chat_event: str,
+    chat_confidence: str,
+    expected_target: str | None,
+    expected_reason: str,
+) -> None:
+    target, reason = historical_returns._classify_stale_execution_composite(  # noqa: SLF001
+        snapshot=_historical_execution_snapshot(),
+        decision=historical_returns.execution_reconciliation.ExecutionDecision(
+            action=historical_returns.execution_reconciliation.ACTION_UPDATE_STAGE,
+            reason=onec_reason,
+            event_type="execution_test",
+            target_stage=onec_target,
+        ),
+        chat_event_type=chat_event,
+        chat_event_at=datetime(2026, 6, 2, 10, 0),
+        chat_event_source=historical_returns.fulfillment.SOURCE_BITRIX_CHAT,
+        chat_event_confidence=chat_confidence,
+    )
+
+    assert (target, reason) == (expected_target, expected_reason)
+
+
+@pytest.mark.parametrize(
+    ("historical", "chat_at", "source", "confidence", "expected_reason"),
+    [
+        (
+            False,
+            datetime(2026, 6, 2, 10, 0),
+            "bitrix_chat",
+            "strong",
+            "onec_evidence_not_historical",
+        ),
+        (True, datetime(2026, 6, 1, 10, 0), "bitrix_chat", "strong", "chat_event_not_later"),
+        (
+            True,
+            datetime(2026, 6, 2, 10, 0),
+            "system",
+            "strong",
+            "latest_event_not_chat_confirmation",
+        ),
+        (True, datetime(2026, 6, 2, 10, 0), "bitrix_chat", "medium", "pickup_received_not_strong"),
+    ],
+)
+def test_stale_execution_composite_is_fail_closed(
+    historical: bool,
+    chat_at: datetime,
+    source: str,
+    confidence: str,
+    expected_reason: str,
+) -> None:
+    target, reason = historical_returns._classify_stale_execution_composite(  # noqa: SLF001
+        snapshot=_historical_execution_snapshot(historical=historical),
+        decision=historical_returns.execution_reconciliation.ExecutionDecision(
+            action=historical_returns.execution_reconciliation.ACTION_UPDATE_STAGE,
+            reason="pickup_printed_and_scanned",
+            event_type="execution_pickup_issued",
+            target_stage="WON",
+        ),
+        chat_event_type=historical_returns.fulfillment.EVENT_PICKUP_RECEIVED,
+        chat_event_at=chat_at,
+        chat_event_source=source,
+        chat_event_confidence=confidence,
+    )
+
+    assert target is None
+    assert reason == expected_reason
+
+
+def test_stale_execution_requires_bounded_explicit_orders() -> None:
+    with pytest.raises(SystemExit, match="requires an explicit --orders"):
+        historical_returns._run_stale_execution(  # noqa: SLF001
+            apply=False,
+            order_numbers=None,
+            recover_pending=False,
+            client=object(),
+        )
+
+    with pytest.raises(SystemExit, match="capped at 20"):
+        historical_returns._run_stale_execution(  # noqa: SLF001
+            apply=False,
+            order_numbers=[str(value) for value in range(21)],
+            recover_pending=False,
+            client=object(),
+        )

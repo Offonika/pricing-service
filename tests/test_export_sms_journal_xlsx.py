@@ -3,7 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import stat
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from openpyxl import load_workbook
@@ -17,6 +20,7 @@ from app.services.sms_journal import (
     SmsJournalService,
 )
 from app.services.sms_journal_export import load_sms_journal_export_rows
+from tasks import export_sms_journal_xlsx as export_sms_journal_xlsx_task
 from tasks.export_sms_journal_xlsx import export_sms_journal_xlsx, validate_export_request
 
 
@@ -94,6 +98,131 @@ def test_sensitive_export_requires_allowlist_confirmation_and_short_period() -> 
             allowed_actors={"owner"},
             confirmed=True,
         )
+
+
+def test_sensitive_export_cli_uses_read_only_scope(tmp_path, monkeypatch, capsys) -> None:
+    session = object()
+    cipher = object()
+    row = object()
+    scope_calls: list[bool] = []
+    cipher_calls: list[tuple[str, str]] = []
+    load_calls: list[tuple[object, object, datetime, datetime, str | None, int]] = []
+    export_calls: list[tuple[list[object], Path, str, date, date, str | None]] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        scope_calls.append(read_only)
+        yield session
+
+    def fake_cipher(encryption_key: str, phone_hash_key: str) -> object:
+        cipher_calls.append((encryption_key, phone_hash_key))
+        return cipher
+
+    def fake_load_rows(
+        current_session: object,
+        current_cipher: object,
+        *,
+        created_from: datetime,
+        created_to: datetime,
+        source_system: str | None,
+        limit: int,
+    ) -> list[object]:
+        load_calls.append(
+            (
+                current_session,
+                current_cipher,
+                created_from,
+                created_to,
+                source_system,
+                limit,
+            )
+        )
+        return [row]
+
+    output_path = tmp_path / "sms-journal.xlsx"
+    audit_path = output_path.with_suffix(".xlsx.audit.json")
+
+    def fake_export(
+        rows: list[object],
+        *,
+        output_path: Path,
+        actor: str,
+        date_from: date,
+        date_to: date,
+        source_system: str | None,
+    ) -> tuple[Path, Path]:
+        export_calls.append((rows, output_path, actor, date_from, date_to, source_system))
+        return output_path, audit_path
+
+    monkeypatch.setattr(
+        export_sms_journal_xlsx_task,
+        "get_settings",
+        lambda: SimpleNamespace(
+            sms_journal_export_allowed_actors="owner,backup",
+            sms_journal_encryption_key="encryption-key",
+            sms_journal_phone_hash_key="phone-hash-key",
+        ),
+    )
+    monkeypatch.setattr(
+        export_sms_journal_xlsx_task,
+        "session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(export_sms_journal_xlsx_task, "SmsJournalCipher", fake_cipher)
+    monkeypatch.setattr(
+        export_sms_journal_xlsx_task,
+        "load_sms_journal_export_rows",
+        fake_load_rows,
+    )
+    monkeypatch.setattr(
+        export_sms_journal_xlsx_task,
+        "export_sms_journal_xlsx",
+        fake_export,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "export_sms_journal_xlsx",
+            "--date-from",
+            "2026-08-11",
+            "--date-to",
+            "2026-08-11",
+            "--actor",
+            "owner",
+            "--source-system",
+            "ut10.3",
+            "--limit",
+            "123",
+            "--output",
+            str(output_path),
+            "--confirm-sensitive-export",
+        ],
+    )
+
+    assert export_sms_journal_xlsx_task.main() is None
+    assert scope_calls == [True]
+    assert cipher_calls == [("encryption-key", "phone-hash-key")]
+    assert load_calls == [
+        (
+            session,
+            cipher,
+            datetime(2026, 8, 10, 21, 0),
+            datetime(2026, 8, 11, 21, 0),
+            "ut10.3",
+            123,
+        )
+    ]
+    assert export_calls == [
+        (
+            [row],
+            output_path,
+            "owner",
+            date(2026, 8, 11),
+            date(2026, 8, 11),
+            "ut10.3",
+        )
+    ]
+    assert capsys.readouterr().out == (f"XLSX={output_path};AUDIT={audit_path};ROWS=1\n")
 
 
 def test_xlsx_export_contains_text_but_only_masked_phone_and_safe_audit(tmp_path) -> None:

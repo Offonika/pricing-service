@@ -154,6 +154,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "export_sms_journal_xlsx.py": {
+      "owner": "pricing-platform",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_create_once_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "evaluate_competitor_matching_policy.py": {
       "owner": "matching",
       "kind": "report",

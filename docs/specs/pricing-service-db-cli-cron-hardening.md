@@ -209,9 +209,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 23. Для `export_sms_journal_xlsx.py` разрешены реализация в отдельной ветке, push и
     создание отдельного PR после локальных проверок. Merge и production release
     требуют отдельных подтверждений.
+24. После зелёного CI разрешён merge PR №86. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №86; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `export_sms_journal_xlsx.py` переведён на central read-only session
   scope и зарегистрирован как `application_read_only`; защитные проверки, XLSX и
   audit-контракты сохранены.

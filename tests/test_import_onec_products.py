@@ -383,13 +383,14 @@ def test_product_compatibility_sync_report_is_dry_run() -> None:
         session.add(ProductCompatibility(product=product, value="Huawei E5577", source="onec"))
         session.commit()
 
-    rows = build_report(
-        app_engine,
-        onec_engine,
-        articles={"041567"},
-        site_values={"041567": ["Huawei E5573", "Huawei E5577"]},
-        only_mismatches=True,
-    )
+    with Session(app_engine) as session:
+        rows = build_report(
+            session,
+            onec_engine,
+            articles={"041567"},
+            site_values={"041567": ["Huawei E5573", "Huawei E5577"]},
+            only_mismatches=True,
+        )
 
     assert len(rows) == 1
     assert rows[0].article == "041567"

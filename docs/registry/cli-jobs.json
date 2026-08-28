@@ -254,6 +254,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "report_product_compatibility_sync.py": {
+      "owner": "catalog",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path_or_stdout",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "report_procurement_feature_snapshot_quality.py": {
       "owner": "procurement",
       "kind": "report",

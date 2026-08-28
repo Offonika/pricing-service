@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -26,17 +26,13 @@ WORKING_CONFIRMATION_RULE = "working_confirmation_required"
 
 def main() -> int:
     args = _parse_args()
-    settings = get_settings()
-    database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = build_engine(database_url, pool_pre_ping=True)
-    try:
+    database_url = args.database_url or os.environ.get("DATABASE_URL") or None
+    with session_scope(read_only=True, database_url=database_url) as session:
         candidates, last_run_id = load_working_confirmation_candidates(
-            engine,
+            session,
             folder=args.folder,
             include_expensive=args.include_expensive,
         )
-    finally:
-        engine.dispose()
 
     payload = build_override_payload(
         candidates,
@@ -68,32 +64,31 @@ def main() -> int:
 
 
 def load_working_confirmation_candidates(
-    engine,
+    session: Session,
     *,
     folder: str,
     include_expensive: bool,
 ) -> tuple[list[dict[str, Any]], int | None]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
-    with engine.connect() as conn:
-        last_run_id = conn.execute(
-            select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
-        ).scalar()
-        rows = (
-            conn.execute(
-                select(table)
-                .where(
-                    table.c.folder.ilike(f"%{folder}%"),
-                    table.c.last_run_id == last_run_id,
-                    table.c.status == "sale",
-                    table.c.future_ka_mapping_status == "ready",
-                    table.c.demand_method_code == "available_days_average",
-                    table.c.manual_review_required.is_(True),
-                )
-                .order_by(table.c.nomenclature_code.asc())
+    last_run_id = session.execute(
+        select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
+    ).scalar()
+    rows = (
+        session.execute(
+            select(table)
+            .where(
+                table.c.folder.ilike(f"%{folder}%"),
+                table.c.last_run_id == last_run_id,
+                table.c.status == "sale",
+                table.c.future_ka_mapping_status == "ready",
+                table.c.demand_method_code == "available_days_average",
+                table.c.manual_review_required.is_(True),
             )
-            .mappings()
-            .all()
+            .order_by(table.c.nomenclature_code.asc())
         )
+        .mappings()
+        .all()
+    )
     candidates = []
     for row in rows:
         blockers = _json_list(row.get("blockers")) + _json_list(row.get("export_blockers"))

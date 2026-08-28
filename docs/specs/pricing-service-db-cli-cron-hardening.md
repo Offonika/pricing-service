@@ -15,6 +15,7 @@ related_code:
 related_tests:
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
+  - tests/test_build_display_working_confirmation_overrides_task.py
   - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
@@ -136,6 +137,9 @@ JSON/CSV/XLSX артефактов сохраняются.
   сохранением allowlist, явного подтверждения, шифрования, XLSX и audit-контрактов.
 - [x] Перевести `check_receivable_authoritative_snapshot.py` на central read-only
   session scope с сохранением `--snapshot-date`, `--control-name` и JSON-контракта.
+- [x] Перевести `build_display_working_confirmation_overrides.py` на central
+  read-only session scope с сохранением `--database-url`, аргументов отбора и
+  JSON-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -219,9 +223,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     и production release требуют отдельных подтверждений.
 26. После зелёного CI разрешён merge PR №88. Production migration, deploy и cutover
     в это решение не входят.
+27. Для `build_display_working_confirmation_overrides.py` разрешены реализация в
+    отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
+    и production release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-28 — `build_display_working_confirmation_overrides.py` переведён на
+  central read-only session scope и зарегистрирован как `application_read_only`;
+  аргументы и JSON-контракт сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `build_display_working_confirmation_overrides.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №88; production release оставлен отдельным
   решением.
 - 2026-08-28 — `check_receivable_authoritative_snapshot.py` переведён на central

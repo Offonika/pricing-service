@@ -253,9 +253,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 33. Для `scripts/build_order_fulfillment_review_csv.py` разрешены реализация в
     отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
     и production release требуют отдельных подтверждений.
+34. После зелёного CI разрешён merge PR №97. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №97; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `scripts/build_order_fulfillment_review_csv.py` переведён на central
   read-only session scope и role-specific 1С factory; аргументы, read-only Bitrix
   enrichment и CSV-контракт сохранены.

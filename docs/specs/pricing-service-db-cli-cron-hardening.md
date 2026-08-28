@@ -271,9 +271,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 37. Для `scripts/analyze_site_defect_working_cases.py` разрешены реализация в
     отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
     и production release требуют отдельных подтверждений.
+38. После зелёного CI разрешён merge PR №99. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №99; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `scripts/analyze_site_defect_working_cases.py` переведён на central
   read-only session scope; аргументы, JSON-контракт и опциональный Bitrix `--apply`
   сохранены.

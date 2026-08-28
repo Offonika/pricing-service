@@ -17,6 +17,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
     SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
@@ -44,6 +45,7 @@ from app.services.site_service_requests_worker import (
     contains_exact_order_token,
     create_site_service_request_command,
     decide_site_service_assignment,
+    deliver_site_service_request_daily_report,
     next_site_service_request_retry_at,
     normalize_site_service_email,
     normalize_site_service_phone,
@@ -77,6 +79,9 @@ class FakeBitrixApi:
         self.timeline_comments: list[dict[str, str]] = []
         self.timeline_page_size: int | None = None
         self.notification_ids_by_tag: dict[str, int] = {}
+        self.dialog_messages: list[dict[str, object]] = []
+        self.next_dialog_message_id = 1
+        self.raise_after_dialog_message_add = False
         self.users: dict[int, dict] = {
             1001: {"ID": "1001", "ACTIVE": "Y", "NAME": "Анна", "LAST_NAME": "Гиря"},
             1002: {"ID": "1002", "ACTIVE": "Y", "NAME": "Ариф", "LAST_NAME": "Рахманов"},
@@ -203,6 +208,22 @@ class FakeBitrixApi:
                 len(self.notification_ids_by_tag) + 1,
             )
             return {"result": notification_id}
+        if method == "im.dialog.messages.get":
+            limit = int(mapped.get("LIMIT") or 50)
+            return {"result": {"messages": list(reversed(self.dialog_messages))[:limit]}}
+        if method == "im.message.add":
+            message_id = self.next_dialog_message_id
+            self.next_dialog_message_id += 1
+            self.dialog_messages.append(
+                {
+                    "id": message_id,
+                    "text": str(mapped["MESSAGE"]),
+                }
+            )
+            if self.raise_after_dialog_message_add:
+                self.raise_after_dialog_message_add = False
+                raise RuntimeError("simulated timeout after dialog message add")
+            return {"result": message_id}
         if method == "timeman.status":
             user_id = int(mapped["USER_ID"])
             return {"result": {"STATUS": self.timeman.get(user_id, "ERROR")}}
@@ -3675,6 +3696,164 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
         "Открыть письмо[/URL]"
     )
     assert "SLA" not in notification_params["MESSAGE"]
+
+
+def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_day(
+    db_session,
+) -> None:
+    site_case = _case(
+        source_ticket_id=743,
+        source_kind="site_ticket",
+        bitrix_item_id=373,
+        first_response_due_at=datetime(2026, 8, 27, 8, 0, tzinfo=UTC),
+        escalated_at=datetime(2026, 8, 27, 8, 1, tzinfo=UTC),
+    )
+    mail_case = _case(
+        source_ticket_id=-57188,
+        source_kind="bitrix_mail",
+        bitrix_item_id=381,
+        primary_activity_id=57188,
+        first_response_due_at=datetime(2026, 8, 27, 9, 0, tzinfo=UTC),
+        escalated_at=datetime(2026, 8, 27, 9, 1, tzinfo=UTC),
+    )
+    waiting_mail = _case(
+        source_ticket_id=-58049,
+        source_kind="bitrix_mail",
+        primary_activity_id=58049,
+    )
+    answered_case = _case(
+        source_ticket_id=742,
+        source_kind="site_ticket",
+        bitrix_item_id=372,
+        first_response_at=datetime(2026, 8, 27, 10, 0, tzinfo=UTC),
+    )
+    synthetic_case = _case(
+        source_ticket_id=3_223_000_000_001,
+        source_kind="site_ticket",
+        bitrix_item_id=999,
+    )
+    db_session.add_all([site_case, mail_case, waiting_mail, answered_case, synthetic_case])
+    db_session.commit()
+    api = FakeBitrixApi()
+    settings = _worker_settings(
+        site_service_requests_bitrix_webhook_url=(
+            "https://portal.example.invalid/rest/1/test-token/"
+        ),
+        site_service_requests_daily_report_enabled=True,
+        site_service_requests_daily_report_dialog_id="chat1457",
+    )
+
+    first = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 28, 8, 0, tzinfo=UTC),
+    )
+    same_day = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 28, 8, 1, tzinfo=UTC),
+    )
+
+    assert first["status"] == "delivered"
+    assert first["unanswered"] == 3
+    assert same_day["status"] == "already_delivered"
+    assert len(api.dialog_messages) == 1
+    message = str(api.dialog_messages[0]["text"])
+    assert "Обращения клиентов: контроль ответов за 28.08.2026" in message
+    assert "— обращения с сайта: 1;" in message
+    assert "— письма: 2;" in message
+    assert "Обращение с сайта №743 — срок ответа истёк." in message
+    assert (
+        "[URL=https://portal.example.invalid/crm/type/1134/details/373/]"
+        "Открыть карточку обращения[/URL]"
+    ) in message
+    assert (
+        "[URL=https://master-mobile.ru/personal/tickets/?ID=743]" "Открыть обращение на сайте[/URL]"
+    ) in message
+    assert (
+        "[URL=https://portal.example.invalid/crm/activity/?ID=57188&open_view=57188]"
+        "Открыть письмо[/URL]"
+    ) in message
+    assert "карточка обращения ещё не создана" in message
+    assert "3223000000001" not in message
+    assert "№742" not in message
+    state = db_session.scalar(select(SiteServiceRequestWorkerState))
+    assert state is not None
+    assert state.last_daily_report_date.isoformat() == "2026-08-28"
+    assert state.last_daily_report_message_id == 1
+
+    next_day = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 29, 8, 0, tzinfo=UTC),
+    )
+    assert next_day["status"] == "delivered"
+    assert next_day["unanswered"] == 3
+    assert len(api.dialog_messages) == 2
+
+
+def test_daily_report_recovers_accepted_message_after_timeout_without_duplicate(
+    db_session,
+) -> None:
+    db_session.add(
+        _case(
+            source_ticket_id=743,
+            source_kind="site_ticket",
+            bitrix_item_id=373,
+            escalated_at=datetime(2026, 8, 27, 8, 1, tzinfo=UTC),
+        )
+    )
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.raise_after_dialog_message_add = True
+    settings = _worker_settings(
+        site_service_requests_bitrix_webhook_url=(
+            "https://portal.example.invalid/rest/1/test-token/"
+        ),
+        site_service_requests_daily_report_enabled=True,
+        site_service_requests_daily_report_dialog_id="chat1457",
+    )
+
+    result = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 28, 8, 0, tzinfo=UTC),
+    )
+
+    assert result["status"] == "delivered"
+    assert result["sent"] == 1
+    assert len(api.dialog_messages) == 1
+
+
+def test_daily_report_waits_until_schedule_and_reports_empty_queue(db_session) -> None:
+    api = FakeBitrixApi()
+    settings = _worker_settings(
+        site_service_requests_daily_report_enabled=True,
+        site_service_requests_daily_report_dialog_id="chat1457",
+    )
+
+    before = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 28, 7, 59, tzinfo=UTC),
+    )
+    due = deliver_site_service_request_daily_report(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        now=datetime(2026, 8, 28, 8, 0, tzinfo=UTC),
+    )
+
+    assert before["status"] == "before_schedule"
+    assert due["status"] == "delivered"
+    assert due["unanswered"] == 0
+    assert len(api.dialog_messages) == 1
+    assert "Просроченных ответов нет." in str(api.dialog_messages[0]["text"])
 
 
 def test_support_message_readback_is_required_before_first_response_is_recorded(

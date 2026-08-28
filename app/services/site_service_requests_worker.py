@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -22,6 +22,7 @@ from app.models.site_service_requests import (
     SiteServiceRequestCommand,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestWorkerState,
 )
 from app.schemas.site_service_requests import (
     SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH,
@@ -80,6 +81,8 @@ _BITRIX_SYNC_STATUSES = {
     "assignment_waiting",
 }
 _VALID_TIMEMAN_STATUSES = {"OPENED", "PAUSED", "CLOSED", "EXPIRED"}
+_MAX_REAL_SITE_TICKET_ID = 2_147_483_647
+_DAILY_REPORT_ENTRY_CHUNK_LENGTH = 9000
 
 
 class SiteServiceRequestBitrixApi(Protocol):
@@ -166,6 +169,17 @@ class SiteServiceRequestFileCleanup:
     case_id: int
     file_id: int
     path: Path
+
+
+@dataclass(frozen=True)
+class SiteServiceRequestDailyReportEntry:
+    case_id: int
+    source_kind: str
+    source_ticket_id: int
+    bitrix_item_id: int | None
+    primary_activity_id: int | None
+    first_response_due_at: datetime | None
+    escalated_at: datetime | None
 
 
 class SiteServiceRequestPermanentError(RuntimeError):
@@ -711,6 +725,54 @@ class SiteServiceRequestBitrixWriter:
 
     def get_item(self, *, entity_type_id: int, item_id: int) -> dict[str, Any]:
         return self._readback_item(entity_type_id=entity_type_id, item_id=item_id)
+
+    def find_dialog_message(
+        self,
+        *,
+        dialog_id: str,
+        marker: str,
+        limit: int = 100,
+    ) -> int | None:
+        response = self.api.call(
+            "im.dialog.messages.get",
+            [("DIALOG_ID", dialog_id), ("LIMIT", str(limit))],
+        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("bitrix_dialog_messages_readback_invalid")
+        messages = result.get("messages")
+        if not isinstance(messages, list) or any(
+            not isinstance(message, dict) for message in messages
+        ):
+            raise RuntimeError("bitrix_dialog_messages_readback_invalid")
+        for message in messages:
+            text_value = message.get("text")
+            if text_value is None:
+                text_value = message.get("TEXT")
+            if not isinstance(text_value, str):
+                raise RuntimeError("bitrix_dialog_messages_readback_invalid")
+            if marker not in text_value:
+                continue
+            return _strict_aliased_positive_int(
+                message,
+                "id",
+                "ID",
+                error_code="bitrix_dialog_messages_readback_invalid",
+            )
+        return None
+
+    def add_dialog_message(self, *, dialog_id: str, message: str) -> int:
+        response = self.api.call(
+            "im.message.add",
+            [("DIALOG_ID", dialog_id), ("MESSAGE", message)],
+        )
+        result = response.get("result")
+        if isinstance(result, dict):
+            result = result.get("MESSAGE_ID") or result.get("message_id") or result.get("ID")
+        message_id = _positive_int(result)
+        if message_id is None:
+            raise RuntimeError("bitrix_dialog_message_failed")
+        return message_id
 
     def update_item_fields(
         self,
@@ -2956,6 +3018,271 @@ def _deliver_site_service_request_escalation(
         )
         case.escalation_notification_delivered_at = now
     session.commit()
+
+
+def deliver_site_service_request_daily_report(
+    session: Session,
+    *,
+    settings: Settings,
+    writer: SiteServiceRequestBitrixWriter,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    current_time = _as_utc(now or datetime.now(UTC))
+    if not settings.site_service_requests_daily_report_enabled:
+        return {"status": "disabled", "sent": 0, "unanswered": 0}
+    dialog_id = str(settings.site_service_requests_daily_report_dialog_id or "").strip()
+    if not dialog_id:
+        raise SiteServiceRequestConfigurationError(
+            "site service requests daily report dialog is not configured"
+        )
+    local_time = current_time.astimezone(ZoneInfo(settings.site_service_requests_timezone))
+    if local_time.hour < settings.site_service_requests_daily_report_hour:
+        return {"status": "before_schedule", "sent": 0, "unanswered": 0}
+    report_date = local_time.date()
+    state = session.scalar(
+        select(SiteServiceRequestWorkerState)
+        .where(SiteServiceRequestWorkerState.id == 1)
+        .with_for_update()
+    )
+    if state is None:
+        state = SiteServiceRequestWorkerState(
+            id=1,
+            consecutive_failures=0,
+            created_at=current_time,
+            updated_at=current_time,
+        )
+        session.add(state)
+        session.flush()
+    if state.last_daily_report_date == report_date:
+        return {"status": "already_delivered", "sent": 0, "unanswered": 0}
+
+    entries = _site_service_request_daily_report_entries(session, now=current_time)
+    messages = render_site_service_request_daily_report(
+        entries,
+        settings=settings,
+        report_date=report_date,
+        now=current_time,
+    )
+    last_message_id: int | None = None
+    sent_count = 0
+    for message in messages:
+        marker = message.splitlines()[0]
+        message_id = writer.find_dialog_message(dialog_id=dialog_id, marker=marker)
+        if message_id is None:
+            try:
+                writer.add_dialog_message(dialog_id=dialog_id, message=message)
+            except RuntimeError:
+                message_id = writer.find_dialog_message(dialog_id=dialog_id, marker=marker)
+                if message_id is None:
+                    raise
+            confirmed_id = writer.find_dialog_message(dialog_id=dialog_id, marker=marker)
+            if confirmed_id is None:
+                raise RuntimeError("bitrix_daily_report_readback_failed")
+            message_id = confirmed_id
+            sent_count += 1
+        last_message_id = message_id
+
+    state.last_daily_report_date = report_date
+    state.last_daily_report_message_id = last_message_id
+    state.last_daily_report_delivered_at = current_time
+    state.updated_at = current_time
+    session.flush()
+    return {
+        "status": "delivered",
+        "sent": sent_count,
+        "unanswered": len(entries),
+        "messageId": last_message_id,
+    }
+
+
+def _site_service_request_daily_report_entries(
+    session: Session,
+    *,
+    now: datetime,
+) -> list[SiteServiceRequestDailyReportEntry]:
+    cases = session.scalars(
+        select(SiteServiceRequestCase)
+        .where(
+            SiteServiceRequestCase.first_response_at.is_(None),
+            SiteServiceRequestCase.source_kind.in_(("site_ticket", "bitrix_mail")),
+        )
+        .order_by(
+            SiteServiceRequestCase.first_response_due_at.asc().nulls_last(),
+            SiteServiceRequestCase.id,
+        )
+    ).all()
+    entries: list[SiteServiceRequestDailyReportEntry] = []
+    for case in cases:
+        if case.source_kind == "site_ticket" and not (
+            0 < case.source_ticket_id <= _MAX_REAL_SITE_TICKET_ID
+        ):
+            # Synthetic health probes use reserved IDs outside the real support
+            # module range and must never appear in an operational report.
+            continue
+        entries.append(
+            SiteServiceRequestDailyReportEntry(
+                case_id=case.id,
+                source_kind=case.source_kind,
+                source_ticket_id=case.source_ticket_id,
+                bitrix_item_id=case.bitrix_item_id,
+                primary_activity_id=case.primary_activity_id,
+                first_response_due_at=(
+                    _as_utc(case.first_response_due_at)
+                    if case.first_response_due_at is not None
+                    else None
+                ),
+                escalated_at=(
+                    _as_utc(case.escalated_at) if case.escalated_at is not None else None
+                ),
+            )
+        )
+    return sorted(
+        entries,
+        key=lambda entry: (
+            not _site_service_request_daily_entry_is_overdue(entry, now=now),
+            (
+                entry.first_response_due_at.timestamp()
+                if entry.first_response_due_at is not None
+                else float("inf")
+            ),
+            entry.case_id,
+        ),
+    )
+
+
+def render_site_service_request_daily_report(
+    entries: list[SiteServiceRequestDailyReportEntry],
+    *,
+    settings: Settings,
+    report_date: date,
+    now: datetime,
+) -> list[str]:
+    date_text = report_date.strftime("%d.%m.%Y")
+    base_header = f"Обращения клиентов: контроль ответов за {date_text}"
+    if not entries:
+        return [
+            "\n".join(
+                [
+                    base_header,
+                    "",
+                    "Проверка выполнена.",
+                    "Просроченных ответов нет.",
+                ]
+            )
+        ]
+
+    site_count = sum(entry.source_kind == "site_ticket" for entry in entries)
+    mail_count = sum(entry.source_kind == "bitrix_mail" for entry in entries)
+    overdue_count = sum(
+        _site_service_request_daily_entry_is_overdue(entry, now=now) for entry in entries
+    )
+    blocks = [
+        _site_service_request_daily_entry_block(
+            entry,
+            number=number,
+            settings=settings,
+            now=now,
+        )
+        for number, entry in enumerate(entries, start=1)
+    ]
+    groups: list[list[str]] = []
+    current_group: list[str] = []
+    current_length = 0
+    for block in blocks:
+        block_length = len(block) + 2
+        if current_group and current_length + block_length > _DAILY_REPORT_ENTRY_CHUNK_LENGTH:
+            groups.append(current_group)
+            current_group = []
+            current_length = 0
+        current_group.append(block)
+        current_length += block_length
+    if current_group:
+        groups.append(current_group)
+
+    messages: list[str] = []
+    part_count = len(groups)
+    for part_number, group in enumerate(groups, start=1):
+        header = (
+            base_header
+            if part_count == 1
+            else f"{base_header} — часть {part_number} из {part_count}"
+        )
+        lines = [header, ""]
+        if part_number == 1:
+            lines.extend(
+                [
+                    "Остаются без ответа:",
+                    f"— обращения с сайта: {site_count};",
+                    f"— письма: {mail_count};",
+                    f"— из них срок ответа истёк: {overdue_count}.",
+                    "",
+                    "Требуют проверки и ответа:",
+                ]
+            )
+        else:
+            lines.extend(["Продолжение списка обращений без ответа:"])
+        lines.extend(group)
+        messages.append("\n".join(lines))
+    return messages
+
+
+def _site_service_request_daily_entry_block(
+    entry: SiteServiceRequestDailyReportEntry,
+    *,
+    number: int,
+    settings: Settings,
+    now: datetime,
+) -> str:
+    if entry.source_kind == "site_ticket":
+        label = f"Обращение с сайта №{entry.source_ticket_id}"
+    else:
+        label = "Письмо клиента"
+    if _site_service_request_daily_entry_is_overdue(entry, now=now):
+        status = "срок ответа истёк"
+    elif entry.first_response_due_at is not None:
+        due_local = entry.first_response_due_at.astimezone(
+            ZoneInfo(settings.site_service_requests_timezone)
+        )
+        status = f"ответить до {due_local.strftime('%d.%m.%Y %H:%M')}"
+    else:
+        status = "срок ответа ещё не определён"
+    if entry.bitrix_item_id is None:
+        status = f"{status}; карточка обращения ещё не создана"
+    lines = [f"{number}. {label} — {status}."]
+    if entry.bitrix_item_id is not None:
+        try:
+            item_url = site_service_request_item_url(settings, entry.bitrix_item_id)
+        except SiteServiceRequestConfigurationError:
+            item_url = None
+        if item_url is not None:
+            lines.append(f"[URL={item_url}]Открыть карточку обращения[/URL]")
+    if entry.source_kind == "site_ticket":
+        ticket_url = (
+            f"{settings.site_service_requests_site_base_url.rstrip('/')}"
+            f"/personal/tickets/?ID={entry.source_ticket_id}"
+        )
+        lines.append(f"[URL={ticket_url}]Открыть обращение на сайте[/URL]")
+    elif entry.primary_activity_id is not None:
+        try:
+            activity_url = site_service_request_activity_url(
+                settings,
+                entry.primary_activity_id,
+            )
+        except SiteServiceRequestConfigurationError:
+            activity_url = None
+        if activity_url is not None:
+            lines.append(f"[URL={activity_url}]Открыть письмо[/URL]")
+    return "\n".join(lines)
+
+
+def _site_service_request_daily_entry_is_overdue(
+    entry: SiteServiceRequestDailyReportEntry,
+    *,
+    now: datetime,
+) -> bool:
+    return entry.escalated_at is not None or (
+        entry.first_response_due_at is not None and entry.first_response_due_at <= _as_utc(now)
+    )
 
 
 def reconcile_site_service_request_assignments(

@@ -7,6 +7,8 @@ existing stage outbox, including live Bitrix readback and timeline audit.
 refund before moving an order to ``LOSE``.
 Pickup return modes require an explicit bounded order list and distinguish a
 payment received before the customer return from a payment created afterwards.
+``--stale-execution`` never replays an old 1C decision directly: it requires a
+compatible later pickup event and repeats CRM, 1C, inventory and event readback.
 """
 
 from __future__ import annotations
@@ -27,12 +29,14 @@ from app.core.config import get_settings
 from app.infrastructure.db import session_scope
 from app.infrastructure.db.engines import build_engine
 from app.models import (
+    BitrixChatMessage,
     LogisticsManualReview,
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
     SiteOrderStageOutbox,
 )
 from app.services import pickup_history
+from app.services import site_order_execution_reconciliation as execution_reconciliation
 from app.services import site_order_fulfillment as fulfillment
 from app.services import site_order_stage_outbox as stage_outbox
 from infra.cron import order_fulfillment_sync as sync
@@ -54,6 +58,14 @@ PICKUP_RETURNED_LATE_PAYMENT_TARGET_STAGE = "DISMANTLING"
 PICKUP_ISSUED_RETURN_EVENT_TYPE = "execution_historical_pickup_issued_then_returned"
 PICKUP_ISSUED_RETURN_REASON = "pickup_partial_issue_confirms_sale"
 PICKUP_ISSUED_RETURN_TARGET_STAGE = "WON"
+STALE_EXECUTION_WON_EVENT_TYPE = "execution_historical_stale_composite_won"
+STALE_EXECUTION_LOSE_EVENT_TYPE = "execution_historical_stale_composite_lose"
+STALE_EXECUTION_SOURCE = "reconciliation"
+STALE_EXECUTION_CHAT_SOURCES = {fulfillment.SOURCE_BITRIX_CHAT, "manual"}
+STALE_EXECUTION_EVENT_TYPES = {
+    STALE_EXECUTION_WON_EVENT_TYPE,
+    STALE_EXECUTION_LOSE_EVENT_TYPE,
+}
 BATCH_SIZE = 20
 QTY_TOLERANCE = Decimal("0.0001")
 MONEY_TOLERANCE = Decimal("0.05")
@@ -137,6 +149,23 @@ class PickupIssuedReturnEvidence:
     returned_after_issue_rtu_count: int
     qualifying_rtu_numbers: tuple[str, ...]
     latest_qualifying_issue_at: datetime
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class StaleExecutionCompositeEvidence:
+    order_number: str
+    deal_id: int
+    onec_event_at: datetime
+    onec_decision_reason: str
+    onec_target_stage: str
+    chat_event_id: int
+    chat_event_type: str
+    chat_event_at: datetime
+    chat_event_source: str
+    chat_event_confidence: str
+    target_stage: str
+    composite_reason: str
     fingerprint: str
 
 
@@ -2160,6 +2189,458 @@ def _run_pickup_issued_returns(
     return 0
 
 
+def _snapshot_evidence_at(
+    snapshot: execution_reconciliation.ExecutionEvidenceSnapshot,
+) -> datetime | None:
+    return max(
+        (
+            value
+            for value in (
+                snapshot.latest_rtu_at,
+                snapshot.latest_assembled_at,
+                snapshot.latest_issued_at,
+                snapshot.latest_return_at,
+            )
+            if value is not None
+        ),
+        default=None,
+    )
+
+
+def _classify_stale_execution_composite(
+    *,
+    snapshot: execution_reconciliation.ExecutionEvidenceSnapshot,
+    decision: execution_reconciliation.ExecutionDecision,
+    chat_event_type: str,
+    chat_event_at: datetime | None,
+    chat_event_source: str,
+    chat_event_confidence: str,
+) -> tuple[str | None, str]:
+    """Return a strict target for compatible 1C and later chat evidence."""
+
+    if not snapshot.historical:
+        return None, "onec_evidence_not_historical"
+    onec_event_at = _snapshot_evidence_at(snapshot)
+    if onec_event_at is None:
+        return None, "onec_evidence_time_missing"
+    if chat_event_at is None:
+        return None, "chat_event_time_missing"
+    if chat_event_at <= onec_event_at:
+        return None, "chat_event_not_later"
+    if chat_event_source not in STALE_EXECUTION_CHAT_SOURCES:
+        return None, "latest_event_not_chat_confirmation"
+    if decision.action != execution_reconciliation.ACTION_UPDATE_STAGE:
+        return None, f"onec_decision_not_stage_update:{decision.reason}"
+
+    if chat_event_type == fulfillment.EVENT_PICKUP_RECEIVED:
+        if chat_event_confidence != "strong":
+            return None, "pickup_received_not_strong"
+        if decision.target_stage == "WON" and decision.reason == "pickup_printed_and_scanned":
+            return "WON", "onec_issued_and_later_pickup_received"
+        if (
+            decision.target_stage == "FINAL_INVOICE"
+            and decision.reason == "assembled_without_return"
+        ):
+            return "WON", "onec_assembled_and_later_pickup_received"
+        return None, f"pickup_received_conflicts_with_onec:{decision.target_stage or '-'}"
+
+    if chat_event_type in {
+        fulfillment.EVENT_PICKUP_DISMANTLING,
+        fulfillment.EVENT_PICKUP_UNCLAIMED,
+    }:
+        if decision.target_stage == "LOSE" and decision.reason == "full_unpaid_return":
+            return "LOSE", "onec_full_unpaid_return_and_later_nonreceipt"
+        return None, f"pickup_nonreceipt_conflicts_with_onec:{decision.target_stage or '-'}"
+
+    return None, f"unsupported_latest_chat_event:{chat_event_type or '-'}"
+
+
+def _fetch_stale_execution_deals(
+    client: fulfillment.BitrixChatClient,
+    order_numbers: list[str],
+) -> dict[str, list[fulfillment.BitrixDealSnapshot]]:
+    result: dict[str, list[fulfillment.BitrixDealSnapshot]] = defaultdict(list)
+    for start in range(0, len(order_numbers), 40):
+        batch = order_numbers[start : start + 40]
+        offset: int | None = 0
+        while offset is not None:
+            response = client.call(
+                "crm.deal.list",
+                {
+                    "filter": {f"@{fulfillment.CRM_ORDER_NUMBER_FIELD}": batch},
+                    "select": [
+                        *fulfillment.CRM_REVIEW_SELECT_FIELDS,
+                        sync.CRM_ASSEMBLED_FIELD,
+                    ],
+                    "order": {"ID": "ASC"},
+                    "start": offset,
+                },
+            )
+            rows = response.get("result") or []
+            if not isinstance(rows, list):
+                raise RuntimeError("crm.deal.list returned invalid result")
+            for raw in rows:
+                deal = fulfillment.bitrix_deal_from_payload(raw)
+                if deal is None:
+                    continue
+                order_number = fulfillment._clean_string(  # noqa: SLF001
+                    (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+                )
+                if order_number:
+                    result[order_number].append(deal)
+            next_value = response.get("next")
+            offset = int(next_value) if next_value is not None else None
+    return result
+
+
+def _latest_execution_event(
+    session: Any,
+    *,
+    case_id: int,
+) -> SiteOrderExecutionEvent | None:
+    return session.scalar(
+        select(SiteOrderExecutionEvent)
+        .where(SiteOrderExecutionEvent.case_id == case_id)
+        .order_by(
+            SiteOrderExecutionEvent.event_at.desc().nullslast(),
+            SiteOrderExecutionEvent.id.desc(),
+        )
+        .limit(1)
+    )
+
+
+def _stale_execution_ready_batch(
+    order_numbers: list[str],
+    *,
+    client: fulfillment.BitrixChatClient,
+) -> tuple[list[StaleExecutionCompositeEvidence], Counter[str]]:
+    live = _fetch_stale_execution_deals(client, order_numbers)
+    blocked: Counter[str] = Counter()
+    unique_deals: list[fulfillment.BitrixDealSnapshot] = []
+    for order_number in order_numbers:
+        deals = live.get(order_number, [])
+        if len(deals) != 1:
+            blocked["deal_not_unique"] += 1
+            continue
+        deal = deals[0]
+        stage = fulfillment._clean_string(deal.stage_id)  # noqa: SLF001
+        if stage != "EXECUTING":
+            blocked[f"unexpected_stage:{stage or '-'}"] += 1
+            continue
+        unique_deals.append(deal)
+
+    if not unique_deals:
+        return [], blocked
+
+    selected_orders = [
+        fulfillment._clean_string(  # noqa: SLF001
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        for deal in unique_deals
+    ]
+    settings = get_settings()
+    if not settings.onec_database_url:
+        blocked["onec_not_configured"] += len(unique_deals)
+        return [], blocked
+
+    rtu_signals = sync.query_rtu_signal_by_orders(selected_orders)
+    order_states = sync.query_onec_order_states_by_orders(selected_orders)
+    for order_number, order_state in order_states.items():
+        rtu_signals.setdefault(order_number, {}).update(order_state)
+    settlements = sync.fetch_onec_order_settlements(selected_orders, strict=True)
+    snapshots = sync.build_execution_snapshots(
+        unique_deals,
+        order_statuses={},
+        onec_settlements=settlements,
+        rtu_signals=rtu_signals,
+        cutover_at=settings.order_fulfillment_execution_cutover_at,
+        onec_evidence_available=True,
+    )
+
+    ready: list[StaleExecutionCompositeEvidence] = []
+    with session_scope(read_only=True) as session:
+        for snapshot in snapshots:
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase).where(
+                    SiteOrderExecutionCase.site_order_number == snapshot.site_order_number
+                )
+            )
+            if case_row is None:
+                blocked["execution_case_missing"] += 1
+                continue
+            if case_row.bitrix_deal_id not in (None, snapshot.bitrix_deal_id):
+                blocked["case_deal_changed"] += 1
+                continue
+            event = _latest_execution_event(session, case_id=case_row.id)
+            if event is None:
+                blocked["latest_event_missing"] += 1
+                continue
+            if event.source == fulfillment.SOURCE_BITRIX_CHAT and event.raw_message_id:
+                message = session.get(BitrixChatMessage, event.raw_message_id)
+                if message is not None and message.parse_status == "edited_manual_review":
+                    blocked["latest_chat_message_edited"] += 1
+                    continue
+            warehouses = pickup_history._current_inventory_warehouse_ids(  # noqa: SLF001
+                session,
+                site_order_number=snapshot.site_order_number,
+            )
+            if warehouses:
+                blocked["current_inventory"] += 1
+                continue
+            decision = execution_reconciliation.decide_execution_stage(snapshot)
+            target_stage, composite_reason = _classify_stale_execution_composite(
+                snapshot=snapshot,
+                decision=decision,
+                chat_event_type=event.event_type,
+                chat_event_at=event.event_at,
+                chat_event_source=event.source,
+                chat_event_confidence=event.confidence,
+            )
+            if target_stage is None:
+                blocked[composite_reason] += 1
+                continue
+            onec_event_at = _snapshot_evidence_at(snapshot)
+            if onec_event_at is None or event.event_at is None:
+                blocked["composite_time_missing"] += 1
+                continue
+            fingerprint_payload = {
+                "snapshot": execution_reconciliation.snapshot_fingerprint(snapshot),
+                "onec_decision_reason": decision.reason,
+                "onec_target_stage": decision.target_stage,
+                "chat_event_id": event.id,
+                "chat_event_type": event.event_type,
+                "chat_event_at": event.event_at.isoformat(),
+                "chat_event_source": event.source,
+                "chat_event_confidence": event.confidence,
+                "target_stage": target_stage,
+                "composite_reason": composite_reason,
+            }
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    fingerprint_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            ready.append(
+                StaleExecutionCompositeEvidence(
+                    order_number=snapshot.site_order_number,
+                    deal_id=snapshot.bitrix_deal_id,
+                    onec_event_at=onec_event_at,
+                    onec_decision_reason=decision.reason,
+                    onec_target_stage=decision.target_stage or "",
+                    chat_event_id=event.id,
+                    chat_event_type=event.event_type,
+                    chat_event_at=event.event_at,
+                    chat_event_source=event.source,
+                    chat_event_confidence=event.confidence,
+                    target_stage=target_stage,
+                    composite_reason=composite_reason,
+                    fingerprint=fingerprint,
+                )
+            )
+    return ready, blocked
+
+
+def _enqueue_stale_execution_composites(
+    ready: list[StaleExecutionCompositeEvidence],
+) -> list[int]:
+    outbox_ids: list[int] = []
+    now = datetime.now()
+    with session_scope() as session:
+        for evidence in ready:
+            case_row = session.scalar(
+                select(SiteOrderExecutionCase)
+                .where(SiteOrderExecutionCase.site_order_number == evidence.order_number)
+                .with_for_update()
+            )
+            if case_row is None:
+                continue
+            if case_row.bitrix_deal_id not in (None, evidence.deal_id):
+                continue
+            latest_event = _latest_execution_event(session, case_id=case_row.id)
+            if latest_event is None or latest_event.id != evidence.chat_event_id:
+                continue
+
+            event_type = (
+                STALE_EXECUTION_WON_EVENT_TYPE
+                if evidence.target_stage == "WON"
+                else STALE_EXECUTION_LOSE_EVENT_TYPE
+            )
+            idempotency_key = (
+                f"execution-stage|{evidence.order_number}|{evidence.fingerprint}|"
+                f"{evidence.target_stage}"
+            )
+            payload = {
+                "pipeline": execution_reconciliation.EXECUTION_PIPELINE,
+                "historical": True,
+                "composite_reconciliation": True,
+                "sms_allowed": False,
+                "evidence_fingerprint": evidence.fingerprint,
+                "decision": {
+                    "action": execution_reconciliation.ACTION_UPDATE_STAGE,
+                    "reason": evidence.composite_reason,
+                    "target_stage": evidence.target_stage,
+                },
+                "onec": {
+                    "evidence_at": evidence.onec_event_at.isoformat(),
+                    "decision_reason": evidence.onec_decision_reason,
+                    "target_stage": evidence.onec_target_stage,
+                },
+                "chat": {
+                    "event_id": evidence.chat_event_id,
+                    "event_type": evidence.chat_event_type,
+                    "event_at": evidence.chat_event_at.isoformat(),
+                    "source": evidence.chat_event_source,
+                    "confidence": evidence.chat_event_confidence,
+                },
+            }
+            event = fulfillment.upsert_execution_event(
+                session,
+                site_order_number=evidence.order_number,
+                event_type=event_type,
+                event_at=evidence.chat_event_at,
+                source=STALE_EXECUTION_SOURCE,
+                source_ref=f"historical-stale-composite:{evidence.fingerprint}",
+                confidence="strong",
+                raw_message_id=None,
+                payload=payload,
+            )
+            if event is None:
+                existing = session.scalar(
+                    select(SiteOrderStageOutbox).where(
+                        SiteOrderStageOutbox.idempotency_key == idempotency_key
+                    )
+                )
+                if existing is not None and existing.status in {
+                    stage_outbox.STATUS_PENDING,
+                    stage_outbox.STATUS_RETRY,
+                }:
+                    outbox_ids.append(existing.id)
+                continue
+
+            case_row.bitrix_deal_id = evidence.deal_id
+            case_row.current_derived_status = event_type
+            case_row.current_crm_stage = "EXECUTING"
+            case_row.confidence = "strong"
+            case_row.last_evidence_event_id = event.id
+            case_row.updated_at = now
+            outbox = SiteOrderStageOutbox(
+                case_id=case_row.id,
+                event_id=event.id,
+                idempotency_key=idempotency_key,
+                site_order_number=evidence.order_number,
+                bitrix_deal_id=evidence.deal_id,
+                source_event_type=event_type,
+                target_stage=evidence.target_stage,
+                payload=payload,
+            )
+            session.add(outbox)
+            session.flush()
+            outbox_ids.append(outbox.id)
+        session.commit()
+    return outbox_ids
+
+
+def _recover_stale_execution_pending(
+    *,
+    order_numbers: list[str],
+    client: fulfillment.BitrixChatClient,
+) -> list[stage_outbox.StageOutboxResult]:
+    with session_scope(read_only=True) as session:
+        rows = session.scalars(
+            select(SiteOrderStageOutbox)
+            .where(
+                SiteOrderStageOutbox.site_order_number.in_(order_numbers),
+                SiteOrderStageOutbox.source_event_type.in_(STALE_EXECUTION_EVENT_TYPES),
+                SiteOrderStageOutbox.status.in_(
+                    [stage_outbox.STATUS_PENDING, stage_outbox.STATUS_RETRY]
+                ),
+            )
+            .order_by(SiteOrderStageOutbox.id.asc())
+        ).all()
+    results: list[stage_outbox.StageOutboxResult] = []
+    for target_stage in ("WON", "LOSE"):
+        ids = [row.id for row in rows if row.target_stage == target_stage]
+        target_results = _apply_outbox(ids, client=client, target_stage=target_stage)
+        _record_case_stages(target_results, target_stage=target_stage)
+        results.extend(target_results)
+    return results
+
+
+def _run_stale_execution(
+    *,
+    apply: bool,
+    order_numbers: list[str] | None,
+    recover_pending: bool,
+    client: fulfillment.BitrixChatClient,
+) -> int:
+    if not order_numbers:
+        raise SystemExit("stale-execution requires an explicit --orders selection")
+    order_numbers = list(dict.fromkeys(order_numbers))
+    if len(order_numbers) > BATCH_SIZE:
+        raise SystemExit(f"stale-execution is capped at {BATCH_SIZE} explicit orders")
+    if recover_pending:
+        results = _recover_stale_execution_pending(
+            order_numbers=order_numbers,
+            client=client,
+        )
+        print(
+            json.dumps(
+                {
+                    "mode": "stale-execution-recover",
+                    "selected": len(order_numbers),
+                    "applied": sum(1 for item in results if item.applied),
+                    "result_counts": dict(Counter(item.result for item in results)),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    ready, blocked = _stale_execution_ready_batch(order_numbers, client=client)
+    results: list[stage_outbox.StageOutboxResult] = []
+    if apply and ready:
+        outbox_ids = _enqueue_stale_execution_composites(ready)
+        with session_scope(read_only=True) as session:
+            outbox_targets = {
+                row.id: row.target_stage
+                for row in session.scalars(
+                    select(SiteOrderStageOutbox).where(SiteOrderStageOutbox.id.in_(outbox_ids))
+                ).all()
+            }
+        for target_stage in ("WON", "LOSE"):
+            target_ids = [
+                outbox_id
+                for outbox_id in outbox_ids
+                if outbox_targets.get(outbox_id) == target_stage
+            ]
+            target_results = _apply_outbox(
+                target_ids,
+                client=client,
+                target_stage=target_stage,
+            )
+            _record_case_stages(target_results, target_stage=target_stage)
+            results.extend(target_results)
+    print(
+        json.dumps(
+            {
+                "mode": "stale-execution-apply" if apply else "stale-execution-dry-run",
+                "selected": len(order_numbers),
+                "ready": len(ready),
+                "ready_orders": [item.order_number for item in ready],
+                "ready_targets": dict(Counter(item.target_stage for item in ready)),
+                "blocked": dict(blocked),
+                "applied": sum(1 for item in results if item.applied),
+                "result_counts": dict(Counter(item.result for item in results)),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def run(
     *,
     apply: bool,
@@ -2169,6 +2650,7 @@ def run(
     pickup_paid_then_returned: bool = False,
     pickup_returned_without_prior_payment: bool = False,
     pickup_issued_then_returned: bool = False,
+    stale_execution: bool = False,
     order_numbers: list[str] | None = None,
 ) -> int:
     settings = get_settings()
@@ -2191,6 +2673,7 @@ def run(
             pickup_paid_then_returned,
             pickup_returned_without_prior_payment,
             pickup_issued_then_returned,
+            stale_execution,
         )
     )
     if selected_modes > 1:
@@ -2199,8 +2682,16 @@ def run(
         pickup_paid_then_returned
         or pickup_returned_without_prior_payment
         or pickup_issued_then_returned
+        or stale_execution
     ):
-        raise SystemExit("pickup return modes require --orders and do not accept --batch")
+        raise SystemExit("explicit historical modes require --orders and do not accept --batch")
+    if stale_execution:
+        return _run_stale_execution(
+            apply=apply,
+            order_numbers=order_numbers,
+            recover_pending=recover_pending,
+            client=client,
+        )
     if pickup_issued_then_returned:
         return _run_pickup_issued_returns(
             apply=apply,
@@ -2319,6 +2810,14 @@ def main() -> int:
         help="Apply explicit historical pickups with at least one qualifying issued RTU to WON",
     )
     parser.add_argument(
+        "--stale-execution",
+        action="store_true",
+        help=(
+            "Reconcile explicit stale 1C execution decisions with a compatible "
+            "later pickup chat event"
+        ),
+    )
+    parser.add_argument(
         "--orders",
         default=None,
         help="Comma-separated stable order selection",
@@ -2337,6 +2836,7 @@ def main() -> int:
         pickup_paid_then_returned=args.pickup_paid_then_returned,
         pickup_returned_without_prior_payment=args.pickup_returned_without_prior_payment,
         pickup_issued_then_returned=args.pickup_issued_then_returned,
+        stale_execution=args.stale_execution,
         order_numbers=order_numbers,
     )
 

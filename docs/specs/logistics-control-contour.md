@@ -155,8 +155,10 @@ External carrier:
 
 Пользовательский Bitrix BFF, не раскрывающий internal token браузеру:
 
-- `POST /api/bitrix/logistics/session`, `GET /bootstrap`; bootstrap возвращает
-  собственный открытый draft для безопасного продолжения после перезагрузки;
+- `POST /api/bitrix/logistics/session`, `GET /session/resume`, `GET /bootstrap`;
+  scoped BFF-сессия дублируется в `HttpOnly` cookie только для безопасного
+  восстановления Bearer-токена после reload Bitrix WebView, а bootstrap возвращает
+  собственный открытый draft для продолжения операции;
 - `/handoffs/draft/*`, `/receipts/draft/*`;
 - `GET /expected-deliveries`, `/monitor`, `/errors`;
 - `GET /transfers/{id}/history`;
@@ -319,6 +321,8 @@ Manual review создается для:
   пишет обратно в `1С`;
 - web fallback работает без Telegram и без internal token в браузере;
 - Bitrix OAuth-сессия проверяет allowlist портала и привязку пользователя;
+- Bitrix WebView восстанавливает BFF-сессию после потери `sessionStorage`, а
+  зависший callback `BX24.init` завершается явной ошибкой по таймауту;
 - `sender/receiver` не могут работать с чужим складом или операцией другой роли;
 - открытый draft с уже отсканированными документами восстанавливается после
   перезагрузки Bitrix UI и web fallback;
@@ -348,6 +352,9 @@ Manual review создается для:
 
 # Changelog
 
+- 2026-08-28 — Bitrix WebView получил восстановление scoped BFF-сессии через
+  защищённую cookie и ограниченный таймаут `BX24.init`, чтобы reload не оставлял
+  приложение на бесконечной загрузке или белой странице.
 - 2026-08-28 — после зелёного CI разрешены merge PR №87 и production release;
   значения логистических feature flags оставлены без изменения.
 - 2026-08-28 — draft-операции ограничены ролями `sender/receiver`, internal API

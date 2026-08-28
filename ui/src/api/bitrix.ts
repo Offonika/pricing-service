@@ -1,6 +1,8 @@
 import { api, clearApiAuthToken, setApiAuthToken } from "./client";
 
 const BITRIX_SDK_URL = "https://api.bitrix24.com/api/v1/";
+const BITRIX_SDK_TIMEOUT_MS = 10_000;
+const LOGISTICS_SESSION_RESUME_TIMEOUT_MS = 4_000;
 const SESSION_STORAGE_KEY = "mm_matching_bitrix_session";
 const LEFT_MENU_STORAGE_KEY = "mm_matching_bitrix_left_menu_bound";
 const RECEIVABLES_SESSION_STORAGE_KEY = "mm_receivables_bitrix_session";
@@ -341,23 +343,40 @@ function loadBitrixSdk() {
 
   return new Promise<void>((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${BITRIX_SDK_URL}"]`);
-    if (existing) {
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error("Не удалось загрузить Bitrix24 SDK")), {
-        once: true,
-      });
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = BITRIX_SDK_URL;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => {
+    const script = existing || document.createElement("script");
+    let settled = false;
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      script.removeEventListener("load", handleLoad);
+      script.removeEventListener("error", handleError);
+    };
+    const handleLoad = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       script.remove();
       reject(new Error("Не удалось загрузить Bitrix24 SDK"));
     };
-    document.head.appendChild(script);
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      script.remove();
+      reject(new Error("Bitrix24 SDK не загрузился за 10 секунд"));
+    }, BITRIX_SDK_TIMEOUT_MS);
+    script.addEventListener("load", handleLoad, { once: true });
+    script.addEventListener("error", handleError, { once: true });
+    if (!existing) {
+      script.src = BITRIX_SDK_URL;
+      script.async = true;
+      document.head.appendChild(script);
+    }
   });
 }
 
@@ -394,19 +413,34 @@ export function resolveBitrixPortalUrl(value?: string | null) {
 
 function initBitrix() {
   return new Promise<BitrixAuthPayload>((resolve, reject) => {
-    if (!window.BX24) {
+    const sdk = window.BX24;
+    if (!sdk) {
       reject(new Error("Bitrix24 SDK недоступен"));
       return;
     }
-
-    window.BX24.init(() => {
-      const auth = window.BX24?.getAuth();
-      if (!auth) {
-        reject(new Error("Bitrix24 не вернул OAuth-сессию"));
-        return;
-      }
-      resolve(auth);
-    });
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Bitrix24 SDK не ответил за 10 секунд"));
+    }, BITRIX_SDK_TIMEOUT_MS);
+    try {
+      sdk.init(() => {
+        if (settled) return;
+        const auth = sdk.getAuth();
+        settled = true;
+        window.clearTimeout(timeoutId);
+        if (!auth) {
+          reject(new Error("Bitrix24 не вернул OAuth-сессию"));
+          return;
+        }
+        resolve(auth);
+      });
+    } catch {
+      settled = true;
+      window.clearTimeout(timeoutId);
+      reject(new Error("Не удалось инициализировать Bitrix24 SDK"));
+    }
   });
 }
 
@@ -1082,6 +1116,20 @@ function clearCachedBitrixLogisticsSession() {
   }
 }
 
+async function resumeBitrixLogisticsSession() {
+  try {
+    const { data } = await api.get<BitrixLogisticsSessionResponse>(
+      "/bitrix/logistics/session/resume",
+      { timeout: LOGISTICS_SESSION_RESUME_TIMEOUT_MS }
+    );
+    setApiAuthToken(data.session_token);
+    cacheBitrixLogisticsSession(data);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 async function ensureBitrixLogisticsLeftMenuPlacement() {
   try {
     if (window.sessionStorage.getItem(LOGISTICS_LEFT_MENU_STORAGE_KEY) === "1") return;
@@ -1139,6 +1187,10 @@ async function requestBitrixLogisticsSession(forceRefresh: boolean) {
     auth = await refreshBitrixAuth();
   } else {
     auth = getLaunchAuth();
+    if (!auth) {
+      const resumed = await resumeBitrixLogisticsSession();
+      if (resumed) return resumed;
+    }
   }
   if (!auth) {
     await loadBitrixSdk();
@@ -1170,7 +1222,8 @@ export async function refreshBitrixLogisticsSession(
 }
 
 export async function initializeBitrixLogisticsSession() {
+  const shouldEnsurePlacement = Boolean(getLaunchAuth() || window.BX24);
   const data = await requestBitrixLogisticsSession(false);
-  ensureBitrixLogisticsLeftMenuPlacementInBackground();
+  if (shouldEnsurePlacement) ensureBitrixLogisticsLeftMenuPlacementInBackground();
   return data;
 }

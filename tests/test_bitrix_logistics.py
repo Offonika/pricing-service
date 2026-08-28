@@ -132,7 +132,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "logistics_bitrix_allowed_member_ids", ["member-1"])
     monkeypatch.setattr(settings, "logistics_bitrix_session_secret", "test-secret-long-enough")
     monkeypatch.setattr(settings, "logistics_web_session_secret", "fallback-secret-long-enough")
-    monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr(settings, "debug", False)
     monkeypatch.setattr(
         bitrix_api,
         "load_bitrix_current_user",
@@ -140,7 +140,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     )
     app.dependency_overrides[get_db] = _override_db(engine)
     try:
-        client = TestClient(app)
+        client = TestClient(app, base_url="https://testserver")
         response = client.post(
             "/api/bitrix/logistics/session",
             json={
@@ -151,6 +151,24 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         )
         assert response.status_code == 200
         token = response.json()["session_token"]
+        cookie = response.headers["set-cookie"]
+        assert f"{bitrix_api.BITRIX_SESSION_COOKIE_NAME}=" in cookie
+        assert "HttpOnly" in cookie
+        assert "Secure" in cookie
+        assert "SameSite=none" in cookie
+        assert "Path=/api/bitrix/logistics" in cookie
+
+        resumed = client.get("/api/bitrix/logistics/session/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["session_token"] == token
+        assert resumed.json()["profile"]["full_name"] == "Отправитель"
+        assert resumed.json()["expires_in"] > 0
+
+        without_cookie = TestClient(app, base_url="https://testserver").get(
+            "/api/bitrix/logistics/session/resume"
+        )
+        assert without_cookie.status_code == 401
+        assert without_cookie.json()["detail"] == "logistics session cookie is missing"
         headers = {"Authorization": f"Bearer {token}"}
 
         bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)

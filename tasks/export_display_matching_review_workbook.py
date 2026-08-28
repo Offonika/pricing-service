@@ -15,8 +15,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import CompetitorItem, Product
 from app.services.product_display_modification import display_frame_conflict
 from tasks.match_competitor_items_embeddings import (
@@ -492,9 +491,7 @@ def main() -> None:
     parser.add_argument("--safe-gap", type=float, default=0.02)
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         stats = export_workbook(
             session,
             input_report=Path(args.input),

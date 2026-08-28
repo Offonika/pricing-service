@@ -879,7 +879,7 @@ documents:
     related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_rtu_cron.py]
     keywords: [logistics, 1c, rtu, site-orders, local-pickup, ready-for-pickup, contract]
   - path: docs/Onepage.LogisticsTelegramMVP.md
-    title: Logistics Telegram Onepage
+    title: Bitrix Logistics App Onepage
     doc_type: onepager
     domain: logistics
     status: active
@@ -887,7 +887,7 @@ documents:
     source_of_truth: false
     related_code: [app/api/logistics.py]
     related_tests: [tests/]
-    keywords: [logistics, telegram, onepager]
+    keywords: [logistics, bitrix24, telegram, onepager, external-carrier]
   - path: docs/Onepage.ExpertiseCaseMVP.md
     title: Expertise Case MVP Onepage
     doc_type: onepager

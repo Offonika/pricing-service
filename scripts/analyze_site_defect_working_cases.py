@@ -8,14 +8,12 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
-from app.infrastructure.db.engines import build_engine  # noqa: E402
+from app.infrastructure.db import session_scope  # noqa: E402
 from app.services.site_defect_workflow import analyze_bitrix_working_reclamations  # noqa: E402
 
 
@@ -36,8 +34,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         summary = analyze_bitrix_working_reclamations(
             session,
             settings=settings,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
@@ -12,7 +13,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.api.dependencies import get_db
 from app.api.logistics_web import COOKIE_NAME, _create_session_token, _profile
-from app.api.procurement_labels import _bitrix_launch_payload, _inject_launch_payload, _read_index
+from app.api.procurement_labels import (
+    _bitrix_launch_payload,
+    _inject_launch_payload,
+    _read_index,
+    _rewrite_index_asset_paths,
+)
 from app.core.config import get_settings
 from app.models import (
     LogisticsDraft,
@@ -54,6 +60,17 @@ router = APIRouter(prefix="/bitrix/logistics")
 page_router = APIRouter()
 ALLOWED_LOGISTICS_ROLES = {"sender", "receiver", "logist", "admin"}
 BITRIX_SESSION_COOKIE_NAME = "mm_logistics_bitrix_session"
+_LOGISTICS_INDEX_PATHS = (
+    Path(__file__).resolve().parents[2] / "ui" / "dist" / "logistics.html",
+    Path("/var/www/pricing-service/logistics.html"),
+)
+
+
+def _read_logistics_index() -> str:
+    for path in _LOGISTICS_INDEX_PATHS:
+        if path.exists():
+            return _rewrite_index_asset_paths(path.read_text(encoding="utf-8"))
+    return _read_index()
 
 
 @page_router.api_route(
@@ -76,7 +93,10 @@ BITRIX_SESSION_COOKIE_NAME = "mm_logistics_bitrix_session"
 )
 async def bitrix_logistics_page(request: Request) -> HTMLResponse:
     payload = await _bitrix_launch_payload(request)
-    return HTMLResponse(_inject_launch_payload(_read_index(), payload))
+    response = HTMLResponse(_inject_launch_payload(_read_logistics_index(), payload))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["X-MM-Logistics-Entry"] = "fast-launch-v1"
+    return response
 
 
 def _load_actor_from_session(

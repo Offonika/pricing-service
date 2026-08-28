@@ -16,7 +16,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.models import Product, ProductCompatibility
 from tasks.sync_onec_product_catalog import (
     detect_item_folder_value,
@@ -87,19 +87,18 @@ def load_site_compatibility_json(path: str | Path) -> dict[str, list[str]]:
 
 
 def _pricing_models_by_article(
-    engine_app: Engine,
+    session: Session,
     *,
     articles: set[str] | None = None,
 ) -> dict[str, list[str]]:
-    with Session(engine_app) as session:
-        query = (
-            select(Product.article, ProductCompatibility.value)
-            .join(ProductCompatibility, ProductCompatibility.product_id == Product.id)
-            .where(ProductCompatibility.source == "onec")
-        )
-        if articles:
-            query = query.where(Product.article.in_(articles))
-        rows = session.execute(query).all()
+    query = (
+        select(Product.article, ProductCompatibility.value)
+        .join(ProductCompatibility, ProductCompatibility.product_id == Product.id)
+        .where(ProductCompatibility.source == "onec")
+    )
+    if articles:
+        query = query.where(Product.article.in_(articles))
+    rows = session.execute(query).all()
     values: dict[str, list[str]] = {}
     for article, model in rows:
         if article and model:
@@ -121,7 +120,7 @@ def _onec_models_by_article(
 
 
 def build_report(
-    engine_app: Engine,
+    session: Session,
     engine_onec: Engine,
     *,
     articles: set[str] | None = None,
@@ -130,7 +129,7 @@ def build_report(
     limit: int | None = None,
 ) -> list[CompatibilitySyncRow]:
     onec_values = _onec_models_by_article(engine_onec, articles=articles)
-    pricing_values = _pricing_models_by_article(engine_app, articles=articles)
+    pricing_values = _pricing_models_by_article(session, articles=articles)
     site_values = {article: _dedupe(values) for article, values in (site_values or {}).items()}
     site_provided = bool(site_values)
 
@@ -221,20 +220,29 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    app_url = os.environ.get("DATABASE_URL") or settings.database_url
+    app_url = os.environ.get("DATABASE_URL") or None
     onec_url = os.environ.get("ONEC_DATABASE_URL") or settings.onec_database_url
-    if not app_url or not onec_url:
+    if not (app_url or settings.database_url) or not onec_url:
         raise SystemExit("DATABASE_URL and ONEC_DATABASE_URL must be set")
 
     site_values = load_site_compatibility_json(args.site_json) if args.site_json else None
-    rows = build_report(
-        build_engine(app_url),
-        build_engine(onec_url),
-        articles=set(args.article or []) or None,
-        site_values=site_values,
-        only_mismatches=args.only_mismatches,
-        limit=args.limit,
+    onec_engine = build_onec_engine(
+        onec_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
     )
+    try:
+        with session_scope(read_only=True, database_url=app_url) as session:
+            rows = build_report(
+                session,
+                onec_engine,
+                articles=set(args.article or []) or None,
+                site_values=site_values,
+                only_mismatches=args.only_mismatches,
+                limit=args.limit,
+            )
+    finally:
+        onec_engine.dispose()
     if args.format == "csv":
         _write_csv(rows, args.output)
     else:

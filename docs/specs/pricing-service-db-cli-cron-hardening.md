@@ -27,6 +27,7 @@ related_tests:
   - tests/test_product_classification.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
+  - tests/test_report_product_compatibility_sync_task.py
 contracts: []
 depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
@@ -144,6 +145,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `compare_receivable_current_report.py` на central read-only session
   scope и role-specific 1С factory с сохранением аргументов, входного файла и
   JSON-контракта.
+- [x] Перевести `report_product_compatibility_sync.py` на central read-only session
+  scope и role-specific 1С factory с сохранением аргументов, site JSON и
+  JSON/CSV-контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -237,9 +241,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельных подтверждений.
 30. После зелёного CI разрешён merge PR №92. Production migration, deploy и cutover
     в это решение не входят.
+31. Для `report_product_compatibility_sync.py` разрешены реализация в отдельной
+    ветке, push и создание отдельного PR после локальных проверок. Merge и
+    production release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-28 — `report_product_compatibility_sync.py` переведён на central read-only
+  session scope и role-specific 1С factory, зарегистрирован как
+  `application_read_only`; аргументы, site JSON и JSON/CSV-контракты сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `report_product_compatibility_sync.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №92; production release оставлен отдельным
   решением.
 - 2026-08-28 — `compare_receivable_current_report.py` переведён на central read-only

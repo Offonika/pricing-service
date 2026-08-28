@@ -146,7 +146,6 @@ type LogisticsDraft = {
   status: string;
   warehouse_id: number;
   driver_id: number | null;
-  default_dropoff_warehouse_id?: number | null;
   item_count: number;
   items: Array<{
     id: number;
@@ -228,7 +227,6 @@ export function LogisticsFallbackApp() {
   const [mode, setMode] = useState<"handoff" | "receipt">("receipt");
   const [warehouseId, setWarehouseId] = useState("");
   const [driverId, setDriverId] = useState("");
-  const [dropoffWarehouseId, setDropoffWarehouseId] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [comment, setComment] = useState("");
   const [draft, setDraft] = useState<LogisticsDraft | null>(null);
@@ -281,18 +279,12 @@ export function LogisticsFallbackApp() {
             (profileData.role === "admin" ? warehouseData[0]?.id : "") ||
             ""
         );
-        const firstDropoff = warehouseData.find(
-          (warehouse) => String(warehouse.id) !== initialWarehouse
-        );
         if (openDraft) setMode(openDraft.draft_type as "handoff" | "receipt");
         else if (profileData.role === "sender") setMode("handoff");
         else if (profileData.role === "receiver") setMode("receipt");
         else if (profileData.role === "admin") setMode("handoff");
         setDraft(openDraft);
         setWarehouseId(initialWarehouse);
-        setDropoffWarehouseId(
-          String(openDraft?.default_dropoff_warehouse_id || firstDropoff?.id || "")
-        );
         setDriverId(String(openDraft?.driver_id || driverData[0]?.id || ""));
         setMessage(
           openDraft
@@ -332,16 +324,12 @@ export function LogisticsFallbackApp() {
       }
       if (!warehouseId) throw new Error("Для профиля не назначен склад");
       if (mode === "handoff" && !driverId) throw new Error("Нет активного водителя");
-      if (mode === "handoff" && !dropoffWarehouseId) {
-        throw new Error("Нет доступного склада назначения");
-      }
       const path = mode === "handoff" ? "/handoffs/draft" : "/receipts/draft";
       const payload =
         mode === "handoff"
           ? {
               warehouse_id: Number(warehouseId),
               driver_id: driverId ? Number(driverId) : null,
-              default_dropoff_warehouse_id: dropoffWarehouseId ? Number(dropoffWarehouseId) : null,
               comment,
             }
           : { warehouse_id: Number(warehouseId), comment };
@@ -360,13 +348,7 @@ export function LogisticsFallbackApp() {
       const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
       const data = await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/scan`, {
         method: "POST",
-        body: JSON.stringify({
-          lookup_code: code,
-          dropoff_warehouse_id:
-            draft.draft_type === "handoff" && dropoffWarehouseId
-              ? Number(dropoffWarehouseId)
-              : null,
-        }),
+        body: JSON.stringify({ lookup_code: code }),
       });
       setDraft(data);
       setScanCode("");
@@ -458,16 +440,7 @@ export function LogisticsFallbackApp() {
                   className="app__select"
                   aria-label="Склад операции"
                   value={warehouseId}
-                  onChange={(e) => {
-                    const nextWarehouseId = e.target.value;
-                    setWarehouseId(nextWarehouseId);
-                    if (dropoffWarehouseId === nextWarehouseId) {
-                      const replacement = warehouses.find(
-                        (warehouse) => String(warehouse.id) !== nextWarehouseId
-                      );
-                      setDropoffWarehouseId(String(replacement?.id || ""));
-                    }
-                  }}
+                  onChange={(e) => setWarehouseId(e.target.value)}
                 >
                   {warehouses.map((warehouse) => (
                     <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
@@ -494,20 +467,10 @@ export function LogisticsFallbackApp() {
                     </option>
                   ))}
                 </select>
-                <select
-                  className="app__select"
-                  aria-label="Склад назначения"
-                  value={dropoffWarehouseId}
-                  onChange={(e) => setDropoffWarehouseId(e.target.value)}
-                >
-                  {warehouses
-                    .filter((warehouse) => String(warehouse.id) !== warehouseId)
-                    .map((warehouse) => (
-                      <option key={warehouse.id} value={warehouse.id}>
-                        {warehouse.name}
-                      </option>
-                    ))}
-                </select>
+                <div className="logistics-field logistics-field--fixed">
+                  <span>Направление</span>
+                  <strong>Определится автоматически после сканирования документа</strong>
+                </div>
               </>
             )}
             <input
@@ -523,7 +486,7 @@ export function LogisticsFallbackApp() {
                 disabled={
                   busy ||
                   !warehouseId ||
-                  (mode === "handoff" && (!driverId || !dropoffWarehouseId))
+                  (mode === "handoff" && !driverId)
                 }
                 onClick={createDraft}
               >
@@ -574,7 +537,10 @@ export function LogisticsFallbackApp() {
                 <ul>
                   {draft.items.map((item) => (
                     <li key={item.id}>
-                      <span>{item.document_number} · {item.lookup_code || item.barcode}</span>{" "}
+                      <span>
+                        {item.document_number} · {item.lookup_code || item.barcode} ·{" "}
+                        {item.dropoff_warehouse_name || "направление требует проверки"}
+                      </span>{" "}
                       <button
                         className="btn btn--ghost"
                         disabled={busy}

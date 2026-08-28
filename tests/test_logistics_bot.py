@@ -160,7 +160,7 @@ def test_logistics_telegram_bot_flow() -> None:
     bot = LogisticsTelegramBot(fake_api, engine)
 
     bot.handle_update(_message(101, "sender_user", "/start"))
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
     bot.handle_update(
         {
@@ -207,7 +207,7 @@ def test_logistics_telegram_bot_restores_session_after_restart() -> None:
 
     fake_api_1 = FakeBotApi()
     bot_1 = LogisticsTelegramBot(fake_api_1, engine)
-    bot_1.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot_1.handle_update(_message(101, "sender_user", "/handoff 1"))
     bot_1.handle_update(
         {
             "message": {
@@ -254,7 +254,7 @@ def test_logistics_telegram_bot_cleans_stale_session_after_confirmed_draft(
     fake_api = FakeBotApi()
     bot = LogisticsTelegramBot(fake_api, engine)
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
     with Session(engine) as session:
         bot_session = session.query(LogisticsBotSession).one()
@@ -299,7 +299,7 @@ def test_logistics_telegram_bot_does_not_carry_photos_into_replacement_draft() -
     fake_api = FakeBotApi()
     bot = LogisticsTelegramBot(fake_api, engine)
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
     bot.handle_update(
         {
@@ -324,7 +324,7 @@ def test_logistics_telegram_bot_does_not_carry_photos_into_replacement_draft() -
             source_channel="telegram",
         )
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
 
     with Session(engine) as session:
         replacement_session = session.query(LogisticsBotSession).one()
@@ -364,7 +364,7 @@ def test_logistics_telegram_bot_denies_draft_operations_for_logist() -> None:
     assert "menu:handoff" not in callbacks
     assert "menu:receive" not in callbacks
 
-    bot.handle_update(_message(303, "logist_user", "/handoff 1 2"))
+    bot.handle_update(_message(303, "logist_user", "/handoff 1"))
     bot.handle_update(_message(303, "logist_user", "/receive"))
     bot.handle_update(
         {
@@ -421,7 +421,7 @@ def test_logistics_telegram_bot_falls_back_to_new_status_message_when_edit_fails
     fake_api = FakeBotApi()
     bot = LogisticsTelegramBot(fake_api, engine)
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
     fake_api.fail_edit_status_codes.append(400)
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
 
@@ -473,23 +473,6 @@ def test_logistics_telegram_bot_callback_menu_flow() -> None:
             }
         }
     )
-    dropoff_markup = fake_api.messages[-1][2]
-    assert any(
-        button["callback_data"] == "handoff_dropoff:1:2"
-        for row in dropoff_markup["inline_keyboard"]
-        for button in row
-    )
-
-    bot.handle_update(
-        {
-            "callback_query": {
-                "id": "cb-3",
-                "data": "handoff_dropoff:1:2",
-                "from": {"id": 101, "username": "sender_user"},
-                "message": {"chat": {"id": 101}},
-            }
-        }
-    )
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
     bot.handle_update(
         {
@@ -535,7 +518,7 @@ def test_logistics_telegram_bot_aggregates_scan_errors_and_ui_events() -> None:
     fake_api = FakeBotApi()
     bot = LogisticsTelegramBot(fake_api, engine)
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
     bot.handle_update(_message(101, "sender_user", "UNKNOWN-BARCODE"))
     bot.handle_update(_message(101, "sender_user", "BC-0001"))
     bot.handle_update(
@@ -607,8 +590,8 @@ def test_logistics_telegram_bot_reuses_existing_open_draft_instead_of_creating_n
     fake_api = FakeBotApi()
     bot = LogisticsTelegramBot(fake_api, engine)
 
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
-    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1"))
 
     texts = _all_texts(fake_api)
     assert any("У вас уже есть открытый черновик." in text for text in texts)

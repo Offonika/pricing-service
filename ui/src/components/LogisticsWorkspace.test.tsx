@@ -168,6 +168,30 @@ describe("LogisticsWorkspace", () => {
     expect(screen.queryByText("Permission denied by system")).not.toBeInTheDocument();
   });
 
+  it("всегда показывает выход из камеры и останавливает поток без потери контекста", async () => {
+    const onClose = vi.fn();
+    render(<CameraScanner onCode={vi.fn()} onClose={onClose} />);
+
+    expect(screen.getByRole("button", { name: "Назад" })).toBeVisible();
+    const cancel = screen.getByRole("button", { name: "Отменить сканирование" });
+    expect(cancel).toBeVisible();
+    await waitFor(() => expect(zxing.decodeFromConstraints).toHaveBeenCalled());
+
+    fireEvent.click(cancel);
+
+    expect(zxing.stop).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("закрывает камеру по Escape", () => {
+    const onClose = vi.fn();
+    render(<CameraScanner onCode={vi.fn()} onClose={onClose} />);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("останавливает поток камеры, полученный после закрытия сканера", async () => {
     let resolveStream!: (stream: MediaStream) => void;
     const delayedStream = new Promise<MediaStream>((resolve) => {
@@ -286,13 +310,14 @@ describe("LogisticsWorkspace", () => {
           warehouse_id: 10,
           driver_id: 30,
           item_count: 1,
-          items: [
-            {
-              id: 51,
-              document_number: "РТУ-000051",
-              lookup_code: "MMLOG1|rtu|51|216951",
-              barcode: "BC-51",
-            },
+              items: [
+                {
+                  id: 51,
+                  document_number: "РТУ-000051",
+                  lookup_code: "MMLOG1|rtu|51|216951",
+                  barcode: "BC-51",
+                  dropoff_warehouse_name: "Тёплый Стан",
+                },
           ],
         },
       })
@@ -305,7 +330,14 @@ describe("LogisticsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
 
     expect(await screen.findByText("РТУ-000051")).toBeVisible();
+    expect(screen.getByText("Куда: Тёплый Стан")).toBeVisible();
     expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
+    expect(api.post).toHaveBeenNthCalledWith(
+      2,
+      "/bitrix/logistics/handoffs/draft/41/scan",
+      { lookup_code: "MMLOG1|rtu|51|216951" },
+      undefined
+    );
 
     fireEvent.change(input, { target: { value: "BAD-CODE" } });
     fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
@@ -482,7 +514,7 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeDisabled();
   });
 
-  it("не начинает передачу без магазина назначения", async () => {
+  it("не требует выбирать магазин назначения и не отправляет его в draft", async () => {
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === "/bitrix/logistics/bootstrap") {
         return { data: { ...bootstrap, warehouses: [bootstrap.warehouses[0]] } };
@@ -490,12 +522,31 @@ describe("LogisticsWorkspace", () => {
       if (path === "/bitrix/logistics/monitor") return { data: [] };
       throw new Error(`unexpected GET ${path}`);
     });
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        id: 45,
+        draft_type: "handoff",
+        status: "open",
+        warehouse_id: 10,
+        driver_id: 30,
+        item_count: 0,
+        items: [],
+      },
+    });
 
     render(<LogisticsWorkspace />);
 
-    expect(await screen.findByText("Нет доступного магазина назначения")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeDisabled();
-    expect(api.post).not.toHaveBeenCalled();
+    expect(await screen.findByText("Определится автоматически после сканирования документа")).toBeVisible();
+    expect(screen.queryByText("Магазин назначения")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Начать сканирование" }));
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        "/bitrix/logistics/handoffs/draft",
+        { warehouse_id: 10, driver_id: 30, comment: null },
+        undefined
+      )
+    );
   });
 
   it("открывает понятную историю только после выбора перемещения", async () => {

@@ -206,10 +206,11 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             json={
                 "warehouse_id": source_id,
                 "driver_id": driver_id,
-                "default_dropoff_warehouse_id": target_id,
+                "default_dropoff_warehouse_id": 999999,
             },
         )
         assert handoff_draft.status_code == 200
+        assert handoff_draft.json()["default_dropoff_warehouse_id"] is None
         restored_bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
         assert restored_bootstrap.status_code == 200
         assert restored_bootstrap.json()["open_draft"]["id"] == handoff_draft.json()["id"]
@@ -218,9 +219,13 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         bitrix_scan = client.post(
             f"/api/bitrix/logistics/handoffs/draft/{draft_id}/scan",
             headers=headers,
-            json={"lookup_code": "MMLOG1|rtu|bitrix-removable-transfer|220028"},
+            json={
+                "lookup_code": "MMLOG1|rtu|bitrix-removable-transfer|220028",
+                "dropoff_warehouse_id": source_id,
+            },
         )
         assert bitrix_scan.status_code == 200
+        assert bitrix_scan.json()["items"][0]["dropoff_warehouse_id"] == target_id
         bitrix_item_id = bitrix_scan.json()["items"][0]["id"]
         bitrix_remove = client.post(
             f"/api/bitrix/logistics/handoffs/draft/{draft_id}/items/{bitrix_item_id}/remove",

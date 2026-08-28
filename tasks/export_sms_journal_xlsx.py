@@ -14,10 +14,9 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.sms_journal import SmsJournalCipher
 from app.services.sms_journal_export import SmsJournalExportRow, load_sms_journal_export_rows
 
@@ -320,8 +319,7 @@ def main() -> None:
         settings.sms_journal_encryption_key,
         settings.sms_journal_phone_hash_key,
     )
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         rows = load_sms_journal_export_rows(
             session,
             cipher,

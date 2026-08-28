@@ -20,6 +20,7 @@ related_tests:
   - tests/test_export_display_matching_review_workbook_task.py
   - tests/test_export_display_quality_review_workbook_task.py
   - tests/test_export_receivable_work_report_task.py
+  - tests/test_export_sms_journal_xlsx.py
   - tests/test_product_classification.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
@@ -130,6 +131,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   session scope с сохранением `--output` и XLSX-контракта.
 - [x] Перевести `export_display_matching_review_workbook.py` на central read-only
   session scope с сохранением `--input`, `--output`, score/gap и XLSX-контракта.
+- [x] Перевести `export_sms_journal_xlsx.py` на central read-only session scope с
+  сохранением allowlist, явного подтверждения, шифрования, XLSX и audit-контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -203,9 +206,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     и production release требуют отдельных подтверждений.
 22. После зелёного CI разрешён merge PR №85. Production migration, deploy и cutover
     в это решение не входят.
+23. Для `export_sms_journal_xlsx.py` разрешены реализация в отдельной ветке, push и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-28 — `export_sms_journal_xlsx.py` переведён на central read-only session
+  scope и зарегистрирован как `application_read_only`; защитные проверки, XLSX и
+  audit-контракты сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `export_sms_journal_xlsx.py` с push и отдельным PR; merge и production оставлены
+  отдельными решениями.
 - 2026-08-28 — разрешён merge PR №85; production release оставлен отдельным
   решением.
 - 2026-08-28 — `export_display_matching_review_workbook.py` переведён на central

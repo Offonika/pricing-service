@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import csv
+import json
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.models import Base, ReceivableBalanceSnapshot, ReceivableLedgerEvent
 from app.services import bi as bi_service
+from tasks import compare_receivable_current_report as compare_receivable_current_report_task
 from tasks.compare_receivable_current_report import compare_receivable_current_report
 
 
@@ -81,6 +85,106 @@ def _event(
         source_layer="regular_receivables",
         amount_delta=Decimal(amount_delta),
     )
+
+
+def test_compare_receivable_current_report_cli_uses_role_specific_read_only_db_access(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    report_path = tmp_path / "current.csv"
+    report_path.write_text("placeholder", encoding="utf-8")
+    session = object()
+    result = {"status": "compared", "snapshot_date": "2026-08-28"}
+    scope_calls: list[bool] = []
+    engine_calls: list[tuple[str, int, int]] = []
+    compare_calls: list[tuple[object, Path, str, object, int]] = []
+
+    class FakeOnecEngine:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    onec_engine = FakeOnecEngine()
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        scope_calls.append(read_only)
+        yield session
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int,
+        login_timeout_seconds: int,
+    ) -> FakeOnecEngine:
+        engine_calls.append((database_url, query_timeout_seconds, login_timeout_seconds))
+        return onec_engine
+
+    def fake_compare(
+        current_session: object,
+        current_report_path: Path,
+        *,
+        counterparty_filter_mode: str,
+        onec_engine: object,
+        top: int,
+    ) -> dict[str, str]:
+        compare_calls.append(
+            (
+                current_session,
+                current_report_path,
+                counterparty_filter_mode,
+                onec_engine,
+                top,
+            )
+        )
+        return result
+
+    monkeypatch.setattr(
+        compare_receivable_current_report_task,
+        "get_settings",
+        lambda: SimpleNamespace(
+            onec_database_url="mssql+pyodbc://onec",
+            onec_query_timeout_seconds=45,
+            onec_login_timeout_seconds=7,
+        ),
+    )
+    monkeypatch.setattr(
+        compare_receivable_current_report_task,
+        "session_scope",
+        fake_session_scope,
+    )
+    monkeypatch.setattr(
+        compare_receivable_current_report_task,
+        "build_onec_engine",
+        fake_build_onec_engine,
+    )
+    monkeypatch.setattr(
+        compare_receivable_current_report_task,
+        "compare_receivable_current_report",
+        fake_compare,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "compare_receivable_current_report",
+            str(report_path),
+            "--top",
+            "11",
+            "--compare-onec-canonical",
+            "--counterparty-filter-mode",
+            "all",
+        ],
+    )
+
+    compare_receivable_current_report_task.main()
+
+    assert scope_calls == [True]
+    assert engine_calls == [("mssql+pyodbc://onec", 45, 7)]
+    assert compare_calls == [(session, report_path, "all", onec_engine, 11)]
+    assert onec_engine.disposed is True
+    assert json.loads(capsys.readouterr().out) == result
 
 
 def test_compare_receivable_current_report_matches_direct_month_end_snapshot(

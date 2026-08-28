@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.models import ReceivableBalanceSnapshot
 from app.services.bi import _buyers_snapshot_total, get_receivables_contract_balances
 from app.services.receivables import (
@@ -316,27 +316,28 @@ def main() -> None:
     if not args.report_path.exists():
         raise SystemExit(f"Файл не найден: {args.report_path}")
 
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
     onec_engine = None
     if args.compare_onec_canonical:
+        settings = get_settings()
         if not settings.onec_database_url:
             raise SystemExit("ONEC_DATABASE_URL is not configured")
-        onec_engine = build_engine(
+        onec_engine = build_onec_engine(
             settings.onec_database_url,
-            connect_args={
-                "timeout": float(settings.onec_query_timeout_seconds),
-                "login_timeout": float(settings.onec_login_timeout_seconds),
-            },
+            query_timeout_seconds=settings.onec_query_timeout_seconds,
+            login_timeout_seconds=settings.onec_login_timeout_seconds,
         )
-    with Session(engine) as session:
-        result = compare_receivable_current_report(
-            session,
-            args.report_path,
-            counterparty_filter_mode=args.counterparty_filter_mode,
-            onec_engine=onec_engine,
-            top=args.top,
-        )
+    try:
+        with session_scope(read_only=True) as session:
+            result = compare_receivable_current_report(
+                session,
+                args.report_path,
+                counterparty_filter_mode=args.counterparty_filter_mode,
+                onec_engine=onec_engine,
+                top=args.top,
+            )
+    finally:
+        if onec_engine is not None:
+            onec_engine.dispose()
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
 

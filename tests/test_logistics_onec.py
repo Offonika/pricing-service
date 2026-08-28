@@ -4,6 +4,8 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -49,6 +51,277 @@ def _rtu_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def test_printed_decimal_uuid_normalizes_to_onec_idrref() -> None:
+    assert (
+        logistics.normalize_mm_log_document_ref("83491597397407213546269390744020073903")
+        == "0xb4fc002590803daf11f19eca3ecfe591"
+    )
+    assert (
+        logistics.normalize_mm_log_document_ref("0xB4FC002590803DAF11F19ECA3ECFE591")
+        == "0xb4fc002590803daf11f19eca3ecfe591"
+    )
+    assert logistics.normalize_mm_log_document_ref("0") is None
+    assert logistics.normalize_mm_log_document_ref(str(1 << 128)) is None
+    assert logistics.normalize_mm_log_document_ref("not-a-uuid") is None
+
+
+def test_short_printed_qr_resolves_rtu_and_transfer_by_source_type() -> None:
+    engine, path = setup_db()
+    printed_code = "MMLOG1|rtu|83491597397407213546269390744020073903"
+    try:
+        with Session(engine) as session:
+            source = LogisticsWarehouse(
+                external_id="source",
+                name="Источник",
+                kind="warehouse",
+            )
+            target = LogisticsWarehouse(
+                external_id="target",
+                name="Получатель",
+                kind="store",
+            )
+            session.add_all([source, target])
+            session.flush()
+            session.add_all(
+                [
+                    LogisticsTransfer(
+                        source_document_type="rtu",
+                        external_id="0xb4fc002590803daf11f19eca3ecfe591",
+                        document_number="РБГУ0401217",
+                        document_date=datetime(2026, 8, 23, tzinfo=timezone.utc),
+                        source_warehouse_id=source.id,
+                        target_warehouse_id=target.id,
+                        barcode="RTU-FULL",
+                        lookup_code=("MMLOG1|rtu|0xb4fc002590803daf11f19eca3ecfe591|241666"),
+                        site_order_number="241666",
+                    ),
+                    LogisticsTransfer(
+                        source_document_type="transfer",
+                        external_id="0xb4fc002590803daf11f19eca3ecfe591",
+                        document_number="ПТ-0401217",
+                        document_date=datetime(2026, 8, 23, tzinfo=timezone.utc),
+                        source_warehouse_id=source.id,
+                        target_warehouse_id=target.id,
+                        barcode="TRANSFER-FULL",
+                        lookup_code=("MMLOG1|transfer|0xb4fc002590803daf11f19eca3ecfe591|401217"),
+                    ),
+                ]
+            )
+            session.commit()
+
+            assert logistics.lookup_unit(session, printed_code)["document_number"] == (
+                "РБГУ0401217"
+            )
+            assert (
+                logistics.lookup_unit(
+                    session,
+                    "MMLOG1|transfer|83491597397407213546269390744020073903",
+                )["document_number"]
+                == "ПТ-0401217"
+            )
+            assert (
+                logistics.lookup_unit(
+                    session,
+                    "MMLOG1|rtu|0xB4FC002590803DAF11F19ECA3ECFE591",
+                )["site_order_number"]
+                == "241666"
+            )
+            assert (
+                logistics.lookup_unit(
+                    session,
+                    "MMLOG1|rtu|0xB4FC002590803DAF11F19ECA3ECFE591|241666",
+                )["document_number"]
+                == "РБГУ0401217"
+            )
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_unknown_printed_qr_review_is_deduplicated_and_auto_resolved() -> None:
+    engine, path = setup_db()
+    code = "MMLOG1|rtu|83491597397407213546269390744020073903"
+    try:
+        with Session(engine) as session:
+            for _ in range(2):
+                with pytest.raises(HTTPException) as exc_info:
+                    logistics.lookup_unit(session, code)
+                assert exc_info.value.status_code == 404
+            open_reviews = session.scalars(
+                select(LogisticsManualReview).where(
+                    LogisticsManualReview.review_type == "unknown_qr",
+                    LogisticsManualReview.status == "open",
+                )
+            ).all()
+            assert len(open_reviews) == 1
+            assert open_reviews[0].payload["attempt_count"] == 2
+
+            source = LogisticsWarehouse(
+                external_id="source",
+                name="Источник",
+                kind="warehouse",
+            )
+            target = LogisticsWarehouse(
+                external_id="target",
+                name="Получатель",
+                kind="store",
+            )
+            session.add_all([source, target])
+            session.flush()
+            session.add(
+                LogisticsTransfer(
+                    source_document_type="rtu",
+                    external_id="0xb4fc002590803daf11f19eca3ecfe591",
+                    document_number="РБГУ0401217",
+                    document_date=datetime(2026, 8, 23, tzinfo=timezone.utc),
+                    source_warehouse_id=source.id,
+                    target_warehouse_id=target.id,
+                    barcode="RTU-FULL",
+                    lookup_code=("MMLOG1|rtu|0xb4fc002590803daf11f19eca3ecfe591|241666"),
+                    site_order_number="241666",
+                )
+            )
+            session.commit()
+
+            result = logistics.lookup_unit(session, code)
+            session.commit()
+            assert result["document_number"] == "РБГУ0401217"
+            review = session.scalar(select(LogisticsManualReview))
+            assert review.status == "resolved"
+            assert review.transfer_id == result["transfer_id"]
+            assert review.payload["auto_resolved_by"] == "successful_lookup"
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_unknown_qr_deduplication_does_not_merge_long_codes_with_same_prefix() -> None:
+    engine, path = setup_db()
+    first_code = "X" * 64 + "-first"
+    second_code = "X" * 64 + "-second"
+    try:
+        with Session(engine) as session:
+            for code in (first_code, second_code, first_code):
+                with pytest.raises(HTTPException) as exc_info:
+                    logistics.lookup_unit(session, code)
+                assert exc_info.value.status_code == 404
+
+            reviews = session.scalars(
+                select(LogisticsManualReview)
+                .where(
+                    LogisticsManualReview.review_type == "unknown_qr",
+                    LogisticsManualReview.status == "open",
+                )
+                .order_by(LogisticsManualReview.id)
+            ).all()
+            assert len(reviews) == 2
+            by_code = {review.payload["lookup_code"]: review for review in reviews}
+            assert by_code[first_code].payload["attempt_count"] == 2
+            assert by_code[second_code].payload["attempt_count"] == 1
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_short_qr_lookup_rejects_ambiguous_external_id() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            source = LogisticsWarehouse(
+                external_id="source",
+                name="Источник",
+                kind="warehouse",
+            )
+            target = LogisticsWarehouse(
+                external_id="target",
+                name="Получатель",
+                kind="store",
+            )
+            session.add_all([source, target])
+            session.flush()
+            for index, external_id in enumerate(
+                [
+                    "0xb4fc002590803daf11f19eca3ecfe591",
+                    "0xB4FC002590803DAF11F19ECA3ECFE591",
+                ],
+                start=1,
+            ):
+                session.add(
+                    LogisticsTransfer(
+                        source_document_type="rtu",
+                        external_id=external_id,
+                        document_number=f"РТУ-{index}",
+                        document_date=datetime(2026, 8, 23, tzinfo=timezone.utc),
+                        source_warehouse_id=source.id,
+                        target_warehouse_id=target.id,
+                        barcode=f"RTU-{index}",
+                        lookup_code=f"RTU-LOOKUP-{index}",
+                    )
+                )
+            session.commit()
+
+            with pytest.raises(HTTPException) as exc_info:
+                logistics.lookup_unit(
+                    session,
+                    "MMLOG1|rtu|83491597397407213546269390744020073903",
+                )
+            assert exc_info.value.status_code == 409
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_rtu_source_query_uses_stable_pagination_and_targeted_filters() -> None:
+    captured: dict = {}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _exc_type, _exc, _traceback):
+            return False
+
+        def execute(self, statement, params):
+            captured["statement"] = str(statement)
+            captured["params"] = params
+            return []
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    rows = logistics_onec._fetch_rtu_source_rows(
+        FakeEngine(),
+        date_from=datetime(2026, 8, 14, tzinfo=timezone.utc),
+        limit=500,
+        offset=500,
+        site_order_number="241666",
+        rtu_external_id="0xB4FC002590803DAF11F19ECA3ECFE591",
+    )
+
+    assert rows == []
+    assert "ROW_NUMBER() OVER" in captured["statement"]
+    assert "ORDER BY rtu._Date_Time DESC, rtu._IDRRef DESC" in captured["statement"]
+    assert "page_row_number > :page_offset" in captured["statement"]
+    assert "page_row_number <= :page_end" in captured["statement"]
+    assert "OFFSET" not in captured["statement"]
+    assert "FETCH NEXT" not in captured["statement"]
+    assert "print_event._Fld9449_TYPE = 0x08" in captured["statement"]
+    assert "print_event._Fld9449_RTRef = 0x000000CB" in captured["statement"]
+    assert "assembled_event._Fld9449_TYPE = 0x08" in captured["statement"]
+    assert "assembled_event._Fld9449_RTRef = 0x000000CB" in captured["statement"]
+    assert ":site_order_number" in captured["statement"]
+    assert ":rtu_external_id" in captured["statement"]
+    assert captured["params"]["page_offset"] == 500
+    assert captured["params"]["page_end"] == 1000
+    assert captured["params"]["site_order_number"] == "241666"
+    assert captured["params"]["rtu_external_id"] == ("0xb4fc002590803daf11f19eca3ecfe591")
 
 
 def test_normalize_rtu_source_rows_applies_readiness_gate() -> None:

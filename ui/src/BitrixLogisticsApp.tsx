@@ -31,7 +31,6 @@ export function BitrixLogisticsApp() {
 
   useEffect(() => {
     let cancelled = false;
-    setSlowConnection(false);
     const slowTimer = window.setTimeout(() => {
       if (!cancelled) setSlowConnection(true);
     }, 8000);
@@ -58,6 +57,9 @@ export function BitrixLogisticsApp() {
     const openedOutsideBitrix =
       authState.status === "error" &&
       (authState.message.includes("Bitrix24 SDK") || authState.message.includes("OAuth"));
+    const accessDenied =
+      authState.status === "error" &&
+      /(?:status code\s+(?:401|403)|\b(?:unauthorized|forbidden)\b)/i.test(authState.message);
     return (
       <div className="app app--center">
         <div className="app-state app-state--wide">
@@ -74,7 +76,9 @@ export function BitrixLogisticsApp() {
               <p>
                 {openedOutsideBitrix
                   ? "Откройте приложение из меню Bitrix24."
-                  : "Не удалось подключиться к логистике. Повторите запуск."}
+                  : accessDenied
+                    ? "Нет доступа к логистике. Проверьте роль и привязку склада."
+                    : "Не удалось подключиться к логистике. Повторите запуск."}
               </p>
               <small>{authState.message}</small>
             </>
@@ -86,10 +90,11 @@ export function BitrixLogisticsApp() {
                 type="button"
                 onClick={() => {
                   setAuthState({ status: "loading" });
+                  setSlowConnection(false);
                   setConnectionAttempt((attempt) => attempt + 1);
                 }}
               >
-                Повторить подключение
+                Повторить
               </button>
               <button className="btn btn--ghost" type="button" onClick={returnToBitrix}>
                 Вернуться в Bitrix24

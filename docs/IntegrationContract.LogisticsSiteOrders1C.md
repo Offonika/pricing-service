@@ -168,12 +168,12 @@ read-only синхронизацией РТУ из SQL `1С` через суще
 Практическое решение для пилота: 1С ради события `Сборка через РМ закончена` не
 дорабатываем, используем текущее событие `Собран` как source of truth для РТУ.
 
-## 7. Черновой SQL Для Текущей Базы
+## 7. SQL Для Текущей Базы
 
 SQL ниже использует согласованное для этой волны событие `Собран`.
-Перед production-кодом нужно подтвердить `_Fld9449_RTRef` для
-`Документ.РеализацияТоваровУслуг` и добавить его в оба `EXISTS`, как это
-сделано для `ПеремещениеТоваров`.
+На production-примере РТУ №401217 подтверждены `_Fld9449_TYPE = 0x08` и
+`_Fld9449_RTRef = 0x000000CB`; эти ведущие колонки составного индекса должны
+быть указаны в обоих `EXISTS`.
 
 ```sql
 SELECT
@@ -202,13 +202,17 @@ WHERE rtu._Marked = 0x00
   AND EXISTS (
       SELECT 1
       FROM dbo._InfoRg9448 AS print_event WITH (NOLOCK)
-      WHERE print_event._Fld9449_RRRef = rtu._IDRRef
+      WHERE print_event._Fld9449_TYPE = 0x08
+        AND print_event._Fld9449_RTRef = 0x000000CB
+        AND print_event._Fld9449_RRRef = rtu._IDRRef
         AND print_event._Fld9454 = N'Распечатан'
   )
   AND EXISTS (
       SELECT 1
       FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
-      WHERE assembled_event._Fld9449_RRRef = rtu._IDRRef
+      WHERE assembled_event._Fld9449_TYPE = 0x08
+        AND assembled_event._Fld9449_RTRef = 0x000000CB
+        AND assembled_event._Fld9449_RRRef = rtu._IDRRef
         AND assembled_event._Fld9454 = N'Собран'
   );
 ```
@@ -222,7 +226,8 @@ WHERE rtu._Marked = 0x00
 - `external_id = _Document203._IDRRef`;
 - `origin_order_external_id = _Document132._IDRRef`;
 - `site_order_number = _Document132._Fld2425`;
-- `lookup_code = MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
+- каноническое значение в БД:
+  `lookup_code = MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
 - `barcode = lookup_code` для совместимости старых scan endpoints;
 - `source_warehouse_id` берется из склада РТУ
   `_Document203._Fld4940RRef -> _Reference80`;
@@ -230,6 +235,11 @@ WHERE rtu._Marked = 0x00
   `logistics_warehouse`;
 - сканирование выполняется по печатному штрихкоду/QR на форме РТУ; значение,
   которое возвращает сканер, должно однозначно находить одну РТУ;
+- backend сохраняет совместимость с уже напечатанным коротким QR
+  `MMLOG1|rtu|<1c_document_ref>`: decimal UUID или hex `_IDRRef`
+  нормализуется и ищется по `(source_document_type, external_id)`;
+- scan endpoint не обращается напрямую в `1С`: документы заранее загружает
+  фоновая синхронизация;
 - движение дальше идет тем же state machine: передача водителю, транзит,
   внешняя служба доставки, приемка в подразделении.
 
@@ -246,6 +256,10 @@ WHERE rtu._Marked = 0x00
 - readiness `проведена + распечатана + собрана` является gate допуска: пока он
   не пройден, РТУ учитывается как `pending_readiness`, но не как ошибка;
 - запуск из cron/ручной проверки: `tasks/sync_logistics_rtu_from_onec.py`;
+- production cron запускается каждую минуту с `flock`, 14-дневным окном и
+  постраничным чтением всех подходящих строк; `--limit` задает размер страницы,
+  а не общий предел выборки;
+- для адресной проверки доступны `--site-order-number` и `--rtu-external-id`;
 - адресные aliases точек из `1С` подтягиваются командой
   `tasks/sync_logistics_warehouse_aliases_from_onec.py`;
 - без `--apply` команда делает dry-run и возвращает отчет `fetched`,
@@ -297,8 +311,15 @@ WHERE rtu._Marked = 0x00
   `manual_review`; логист выбирает подразделение вручную.
 - Отдельный barcode для РТУ-пакета на старте не создаем, используем печатный
   штрихкод/QR с расходной накладной.
-- QR/lookup в backend закреплен как
-  `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`.
+- QR/lookup в backend принимает одновременно канонический полный формат
+  `MMLOG1|rtu|<rtu_external_id>|<site_order_number>` и уже напечатанный короткий
+  `MMLOG1|rtu|<1c_document_ref>`; перепечатка действующих накладных не требуется.
 - Если generated lookup не уникален, документ отправляется в `manual_review`.
-- Для `_InfoRg9448` по РТУ нужно подтвердить и зафиксировать RTRef документа,
-  чтобы события других типов документов не попадали в gate по совпавшей ссылке.
+- Для `_InfoRg9448` по РТУ зафиксированы составные признаки ссылки
+  `_Fld9449_TYPE = 0x08` и `_Fld9449_RTRef = 0x000000CB`; оба предиката
+  обязательны для корректности gate и индексного поиска событий РТУ.
+
+## Changelog
+
+- 2026-08-28 — Зафиксирована совместимость backend с полным и уже напечатанным
+  коротким QR; scan endpoint не читает `1С`, RTU sync работает фоном каждую минуту.

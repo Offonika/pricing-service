@@ -353,8 +353,18 @@ def fetch_ready_rtu_units(
     *,
     date_from: date | datetime | None = None,
     limit: int | None = None,
+    offset: int = 0,
+    site_order_number: str | None = None,
+    rtu_external_id: str | None = None,
 ) -> list[RtuSourceRow]:
-    rows = _fetch_rtu_source_rows(onec_engine, date_from=date_from, limit=limit)
+    rows = _fetch_rtu_source_rows(
+        onec_engine,
+        date_from=date_from,
+        limit=limit,
+        offset=offset,
+        site_order_number=site_order_number,
+        rtu_external_id=rtu_external_id,
+    )
     return normalize_rtu_source_rows(rows).ready
 
 
@@ -364,6 +374,9 @@ def sync_ready_rtu_units(
     *,
     date_from: date | datetime | None = None,
     limit: int | None = None,
+    offset: int = 0,
+    site_order_number: str | None = None,
+    rtu_external_id: str | None = None,
     dry_run: bool = True,
     external_carrier_flow: bool = False,
     source_rows: Iterable[dict[str, Any] | Any] | None = None,
@@ -371,7 +384,14 @@ def sync_ready_rtu_units(
     raw_rows = (
         list(source_rows)
         if source_rows is not None
-        else _fetch_rtu_source_rows(onec_engine, date_from=date_from, limit=limit)
+        else _fetch_rtu_source_rows(
+            onec_engine,
+            date_from=date_from,
+            limit=limit,
+            offset=offset,
+            site_order_number=site_order_number,
+            rtu_external_id=rtu_external_id,
+        )
     )
     normalized = normalize_rtu_source_rows(raw_rows)
     report = RtuSyncReport(
@@ -390,15 +410,37 @@ def sync_ready_rtu_units(
         for row in normalized.ready
         if row.site_order_number
     )
+    lookup_codes = list(lookup_counts)
+    existing_lookup_owners = {
+        row.lookup_code: row
+        for row in (
+            session.scalars(
+                select(LogisticsTransfer).where(LogisticsTransfer.lookup_code.in_(lookup_codes))
+            ).all()
+            if lookup_codes
+            else []
+        )
+    }
+    warehouse_rows = session.scalars(
+        select(LogisticsWarehouse).order_by(LogisticsWarehouse.id.asc())
+    ).all()
+    warehouses_by_external_id = {row.external_id: row for row in warehouse_rows}
+    active_warehouses = [row for row in warehouse_rows if row.is_active]
     unit_payloads: list[dict[str, Any]] = []
     external_carrier_rows: dict[str, RtuSourceRow] = {}
     for row in normalized.ready:
-        skipped = _validate_ready_row(session, row, lookup_counts)
+        skipped = _validate_ready_row(row, lookup_counts, existing_lookup_owners)
         if skipped is not None:
             _record_skip(session, report, skipped, dry_run=dry_run)
             continue
 
-        source_warehouse = _ensure_source_warehouse(session, report, row, dry_run=dry_run)
+        source_warehouse = _ensure_source_warehouse(
+            session,
+            report,
+            row,
+            dry_run=dry_run,
+            warehouses_by_external_id=warehouses_by_external_id,
+        )
         if source_warehouse is None:
             _record_skip(
                 session,
@@ -413,6 +455,12 @@ def sync_ready_rtu_units(
                 dry_run=dry_run,
             )
             continue
+        if (
+            source_warehouse.id is not None
+            and source_warehouse.is_active
+            and source_warehouse not in active_warehouses
+        ):
+            active_warehouses.append(source_warehouse)
 
         if _is_external_delivery_method(row.site_delivery_method):
             if external_carrier_flow:
@@ -477,7 +525,11 @@ def sync_ready_rtu_units(
             )
             continue
 
-        resolution = resolve_target_warehouse(session, row.address_candidates)
+        resolution = resolve_target_warehouse(
+            session,
+            row.address_candidates,
+            warehouses=active_warehouses,
+        )
         if resolution.warehouse is None:
             _record_skip(
                 session,
@@ -613,6 +665,8 @@ def _is_site_order_candidate(row: dict[str, Any]) -> bool:
 def resolve_target_warehouse(
     session: Session,
     address_candidates: Iterable[str],
+    *,
+    warehouses: Iterable[LogisticsWarehouse] | None = None,
 ) -> WarehouseResolution:
     raw_candidates = [_clean_string(value) for value in address_candidates if _clean_string(value)]
     candidates = [_normalize_text(value) for value in raw_candidates]
@@ -621,12 +675,17 @@ def resolve_target_warehouse(
         return WarehouseResolution(None, "RTU has no address candidates", [])
 
     matches: dict[int, dict[str, Any]] = {}
-    warehouses = session.scalars(
-        select(LogisticsWarehouse)
-        .where(LogisticsWarehouse.is_active.is_(True))
-        .order_by(LogisticsWarehouse.id.asc())
-    ).all()
-    for warehouse in warehouses:
+    warehouse_rows = (
+        list(warehouses)
+        if warehouses is not None
+        else session.scalars(
+            select(LogisticsWarehouse)
+            .where(LogisticsWarehouse.is_active.is_(True))
+            .order_by(LogisticsWarehouse.id.asc())
+        ).all()
+    )
+    warehouses_by_id = {warehouse.id: warehouse for warehouse in warehouse_rows}
+    for warehouse in warehouse_rows:
         for alias in _warehouse_aliases(warehouse):
             normalized_alias = _normalize_text(alias)
             if len(normalized_alias) < 5:
@@ -658,9 +717,7 @@ def resolve_target_warehouse(
 
     if len(matches) == 1:
         warehouse_id = next(iter(matches))
-        return WarehouseResolution(
-            session.get(LogisticsWarehouse, warehouse_id), None, list(matches.values())
-        )
+        return WarehouseResolution(warehouses_by_id[warehouse_id], None, list(matches.values()))
     if len(matches) > 1:
         return WarehouseResolution(
             None, "RTU address matched multiple warehouses", list(matches.values())
@@ -810,11 +867,31 @@ def _fetch_rtu_source_rows(
     *,
     date_from: date | datetime | None,
     limit: int | None,
+    offset: int = 0,
+    site_order_number: str | None = None,
+    rtu_external_id: str | None = None,
 ) -> list[Any]:
-    limit_clause = f"TOP ({max(1, int(limit))})" if limit else ""
+    page_size = max(1, int(limit)) if limit else None
+    page_offset = max(0, int(offset))
+    page_filter = ""
+    if page_size is not None:
+        page_filter = "WHERE page_row_number > :page_offset " "AND page_row_number <= :page_end"
+    elif page_offset:
+        page_filter = "WHERE page_row_number > :page_offset"
     date_filter = "AND rtu._Date_Time >= :date_from" if date_from else ""
+    site_order_filter = (
+        "AND NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') = :site_order_number"
+        if site_order_number
+        else ""
+    )
+    rtu_external_filter = (
+        "AND LOWER(CONVERT(varchar(34), rtu._IDRRef, 1)) = :rtu_external_id"
+        if rtu_external_id
+        else ""
+    )
     statement = text(f"""
-        SELECT {limit_clause}
+        ;WITH paged_rtu AS (
+        SELECT
             CONVERT(varchar(34), rtu._IDRRef, 1) AS rtu_external_id,
             LTRIM(RTRIM(rtu._Number)) AS rtu_number,
             rtu._Date_Time AS rtu_date,
@@ -834,15 +911,22 @@ def _fetch_rtu_source_rows(
             CASE WHEN EXISTS (
                 SELECT 1
                 FROM dbo._InfoRg9448 AS print_event WITH (NOLOCK)
-                WHERE print_event._Fld9449_RRRef = rtu._IDRRef
+                WHERE print_event._Fld9449_TYPE = 0x08
+                  AND print_event._Fld9449_RTRef = 0x000000CB
+                  AND print_event._Fld9449_RRRef = rtu._IDRRef
                   AND print_event._Fld9454 = N'Распечатан'
             ) THEN 1 ELSE 0 END AS has_printed,
             CASE WHEN EXISTS (
                 SELECT 1
                 FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
-                WHERE assembled_event._Fld9449_RRRef = rtu._IDRRef
+                WHERE assembled_event._Fld9449_TYPE = 0x08
+                  AND assembled_event._Fld9449_RTRef = 0x000000CB
+                  AND assembled_event._Fld9449_RRRef = rtu._IDRRef
                   AND assembled_event._Fld9454 = N'Собран'
-            ) THEN 1 ELSE 0 END AS has_assembled
+            ) THEN 1 ELSE 0 END AS has_assembled,
+            ROW_NUMBER() OVER (
+                ORDER BY rtu._Date_Time DESC, rtu._IDRRef DESC
+            ) AS page_row_number
         FROM dbo._Document203 AS rtu WITH (NOLOCK)
         JOIN dbo._Document132 AS ord WITH (NOLOCK)
             ON ord._IDRRef = rtu._Fld4939_RRRef
@@ -854,9 +938,44 @@ def _fetch_rtu_source_rows(
               OR NULLIF(LTRIM(RTRIM(ord._Fld9266)), N'') IS NOT NULL
           )
           {date_filter}
-        ORDER BY rtu._Date_Time DESC
+          {site_order_filter}
+          {rtu_external_filter}
+        )
+        SELECT
+            rtu_external_id,
+            rtu_number,
+            rtu_date,
+            site_order_external_id,
+            onec_order_number,
+            site_order_number,
+            site_delivery_method,
+            site_delivery_addition,
+            site_delivery_address,
+            rtu_delivery_addition,
+            rtu_delivery_address,
+            source_warehouse_external_id,
+            source_warehouse_code,
+            source_warehouse_name,
+            is_marked,
+            is_posted,
+            has_printed,
+            has_assembled
+        FROM paged_rtu
+        {page_filter}
+        ORDER BY page_row_number
         """)
-    params = {"date_from": date_from} if date_from else {}
+    params: dict[str, Any] = {}
+    if page_size is not None:
+        params["page_offset"] = page_offset
+        params["page_end"] = page_offset + page_size
+    elif page_offset:
+        params["page_offset"] = page_offset
+    if date_from:
+        params["date_from"] = date_from
+    if site_order_number:
+        params["site_order_number"] = site_order_number.strip()
+    if rtu_external_id:
+        params["rtu_external_id"] = _clean_ref(rtu_external_id)
     with onec_engine.connect() as connection:
         return list(connection.execute(statement, params))
 
@@ -887,9 +1006,9 @@ def _fetch_warehouse_alias_source_rows(onec_engine, *, limit: int | None) -> lis
 
 
 def _validate_ready_row(
-    session: Session,
     row: RtuSourceRow,
     lookup_counts: Counter[str],
+    existing_lookup_owners: dict[str, LogisticsTransfer],
 ) -> RtuSkippedRow | None:
     if not row.site_order_number:
         return RtuSkippedRow(
@@ -908,16 +1027,11 @@ def _validate_ready_row(
             site_order_number=row.site_order_number,
             payload={**row.raw, "lookup_code": lookup_code},
         )
-    existing = session.scalar(
-        select(LogisticsTransfer).where(
-            LogisticsTransfer.lookup_code == lookup_code,
-            (
-                (LogisticsTransfer.source_document_type != logistics.SOURCE_RTU)
-                | (LogisticsTransfer.external_id != row.rtu_external_id)
-            ),
-        )
-    )
-    if existing is not None:
+    existing = existing_lookup_owners.get(lookup_code)
+    if existing is not None and (
+        existing.source_document_type != logistics.SOURCE_RTU
+        or existing.external_id != row.rtu_external_id
+    ):
         return RtuSkippedRow(
             review_type=REVIEW_RTU_LOOKUP_NOT_UNIQUE,
             reason="Generated RTU lookup_code already belongs to another logistics unit",
@@ -938,19 +1052,16 @@ def _ensure_source_warehouse(
     row: RtuSourceRow,
     *,
     dry_run: bool,
+    warehouses_by_external_id: dict[str, LogisticsWarehouse],
 ) -> LogisticsWarehouse | None:
     if not row.source_warehouse_external_id:
         return None
-    warehouse = session.scalar(
-        select(LogisticsWarehouse).where(
-            LogisticsWarehouse.external_id == row.source_warehouse_external_id
-        )
-    )
+    warehouse = warehouses_by_external_id.get(row.source_warehouse_external_id)
     if warehouse is not None:
         return warehouse
     if dry_run:
         report.warehouses_planned += 1
-        return LogisticsWarehouse(
+        warehouse = LogisticsWarehouse(
             external_id=row.source_warehouse_external_id,
             name=row.source_warehouse_name
             or row.source_warehouse_code
@@ -961,6 +1072,8 @@ def _ensure_source_warehouse(
                 "code": row.source_warehouse_code,
             },
         )
+        warehouses_by_external_id[warehouse.external_id] = warehouse
+        return warehouse
     warehouse = LogisticsWarehouse(
         external_id=row.source_warehouse_external_id,
         name=row.source_warehouse_name
@@ -974,6 +1087,7 @@ def _ensure_source_warehouse(
     )
     session.add(warehouse)
     session.flush()
+    warehouses_by_external_id[warehouse.external_id] = warehouse
     report.warehouses_created += 1
     return warehouse
 

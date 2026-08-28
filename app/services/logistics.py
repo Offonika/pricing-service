@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -54,6 +55,9 @@ DRAFT_TYPE_RECEIPT = "receipt"
 
 BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES = ("ambiguous_qr", "unknown_qr")
 EVENT_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+MMLOG_LOOKUP_RE = re.compile(r"^MMLOG1\|(rtu|transfer)\|([^|]+)(?:\|([^|]+))?$")
+ONEC_IDRREF_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
+UUID_INTEGER_LIMIT = 1 << 128
 
 
 def utcnow() -> datetime:
@@ -181,14 +185,37 @@ def _get_transfer_by_barcode(session: Session, barcode: str) -> LogisticsTransfe
     return _get_unit_by_lookup(session, barcode)
 
 
-def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
-    code = code.strip()
-    if not code:
-        raise _http_error(422, "lookup code is empty")
-    rows = (
+def normalize_mm_log_document_ref(value: str) -> str | None:
+    """Normalize a printed 1C document reference to the SQL _IDRRef form."""
+
+    normalized = value.strip()
+    if ONEC_IDRREF_RE.fullmatch(normalized):
+        return normalized.lower()
+    if not normalized.isdecimal():
+        return None
+    integer_value = int(normalized)
+    if integer_value <= 0 or integer_value >= UUID_INTEGER_LIMIT:
+        return None
+    uuid_bytes = integer_value.to_bytes(16, byteorder="big")
+    idrref_bytes = uuid_bytes[8:16] + uuid_bytes[6:8] + uuid_bytes[4:6] + uuid_bytes[0:4]
+    return f"0x{idrref_bytes.hex()}"
+
+
+def _mm_log_lookup(code: str) -> tuple[str, str] | None:
+    match = MMLOG_LOOKUP_RE.fullmatch(code)
+    if match is None:
+        return None
+    external_id = normalize_mm_log_document_ref(match.group(2))
+    if external_id is None:
+        return None
+    return match.group(1), external_id
+
+
+def _lookup_rows(session: Session, condition) -> list[LogisticsTransfer]:
+    return (
         session.scalars(
             select(LogisticsTransfer)
-            .where((LogisticsTransfer.lookup_code == code) | (LogisticsTransfer.barcode == code))
+            .where(condition)
             .options(
                 joinedload(LogisticsTransfer.source_warehouse),
                 joinedload(LogisticsTransfer.target_warehouse),
@@ -198,6 +225,134 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
         .unique()
         .all()
     )
+
+
+def _review_matches_lookup_code(review: LogisticsManualReview, code: str) -> bool:
+    payload = review.payload if isinstance(review.payload, dict) else {}
+    stored_code = payload.get("lookup_code")
+    if isinstance(stored_code, str):
+        return stored_code == code
+    return review.source_external_id == code
+
+
+def _resolve_unknown_qr_reviews(
+    session: Session,
+    *,
+    code: str,
+    transfer: LogisticsTransfer,
+) -> None:
+    lookup_key = _clip(code, 64)
+    candidates = session.scalars(
+        select(LogisticsManualReview).where(
+            LogisticsManualReview.review_type == "unknown_qr",
+            LogisticsManualReview.status == "open",
+            LogisticsManualReview.source_external_id == lookup_key,
+        )
+    ).all()
+    reviews = [review for review in candidates if _review_matches_lookup_code(review, code)]
+    if not reviews:
+        return
+    resolved_at = utcnow()
+    for review in reviews:
+        payload = dict(review.payload) if isinstance(review.payload, dict) else {}
+        payload.update(
+            {
+                "lookup_code": code,
+                "auto_resolved_by": "successful_lookup",
+                "auto_resolved_at": resolved_at.isoformat(),
+                "transfer_id": transfer.id,
+            }
+        )
+        review.payload = payload
+        review.transfer_id = transfer.id
+        review.status = "resolved"
+        review.resolved_at = resolved_at
+        review.updated_at = resolved_at
+
+
+def _record_unknown_qr(session: Session, *, code: str) -> None:
+    lookup_key = _clip(code, 64)
+    candidates = session.scalars(
+        select(LogisticsManualReview)
+        .where(
+            LogisticsManualReview.review_type == "unknown_qr",
+            LogisticsManualReview.status == "open",
+            LogisticsManualReview.source_external_id == lookup_key,
+        )
+        .order_by(LogisticsManualReview.id)
+    ).all()
+    reviews = [review for review in candidates if _review_matches_lookup_code(review, code)]
+    now = utcnow()
+    source_document_type = None
+    parts = code.split("|", 2)
+    if len(parts) == 3 and parts[0] == "MMLOG1" and parts[1] in {SOURCE_RTU, SOURCE_TRANSFER}:
+        source_document_type = parts[1]
+
+    if not reviews:
+        _create_manual_review(
+            session,
+            review_type="unknown_qr",
+            reason="lookup code was not found",
+            source_document_type=source_document_type,
+            source_external_id=code,
+            payload={
+                "lookup_code": code,
+                "attempt_count": 1,
+                "last_seen_at": now.isoformat(),
+            },
+            commit=True,
+        )
+        return
+
+    primary = reviews[0]
+    attempt_count = 1
+    for review in reviews:
+        payload = review.payload if isinstance(review.payload, dict) else {}
+        attempt_count += max(1, int(payload.get("attempt_count") or 1))
+    primary_payload = dict(primary.payload) if isinstance(primary.payload, dict) else {}
+    primary_payload.update(
+        {
+            "lookup_code": code,
+            "attempt_count": attempt_count,
+            "last_seen_at": now.isoformat(),
+        }
+    )
+    primary.payload = primary_payload
+    primary.source_document_type = source_document_type or primary.source_document_type
+    primary.updated_at = now
+    for duplicate in reviews[1:]:
+        duplicate_payload = dict(duplicate.payload) if isinstance(duplicate.payload, dict) else {}
+        duplicate_payload.update(
+            {
+                "auto_resolved_by": "unknown_qr_deduplication",
+                "auto_resolved_at": now.isoformat(),
+                "merged_into_review_id": primary.id,
+            }
+        )
+        duplicate.payload = duplicate_payload
+        duplicate.status = "resolved"
+        duplicate.resolved_at = now
+        duplicate.updated_at = now
+    session.commit()
+
+
+def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
+    code = code.strip()
+    if not code:
+        raise _http_error(422, "lookup code is empty")
+    rows = _lookup_rows(
+        session,
+        (LogisticsTransfer.lookup_code == code) | (LogisticsTransfer.barcode == code),
+    )
+    if not rows:
+        mm_log_lookup = _mm_log_lookup(code)
+        if mm_log_lookup is not None:
+            source_document_type, external_id = mm_log_lookup
+            rows = _lookup_rows(
+                session,
+                (LogisticsTransfer.source_document_type == source_document_type)
+                & (func.lower(LogisticsTransfer.external_id) == external_id),
+            )
     if len(rows) > 1:
         _create_manual_review(
             session,
@@ -209,16 +364,14 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
         )
         raise _http_error(409, "lookup code is ambiguous")
     if not rows:
-        _create_manual_review(
-            session,
-            review_type="unknown_qr",
-            reason="lookup code was not found",
-            source_external_id=code,
-            payload={"lookup_code": code},
-            commit=True,
+        _record_unknown_qr(session, code=code)
+        raise _http_error(
+            404,
+            "QR распознан, но документ ещё не загружен. Повторите через минуту",
         )
-        raise _http_error(404, "transfer not found by lookup code")
-    return rows[0]
+    transfer = rows[0]
+    _resolve_unknown_qr_reviews(session, code=code, transfer=transfer)
+    return transfer
 
 
 def lookup_unit(session: Session, code: str) -> dict:
@@ -785,7 +938,17 @@ def add_scan_to_draft(
         target_dropoff = _resolve_handoff_dropoff(session, transfer)
     else:
         if state.status != STATUS_IN_TRANSIT:
-            raise _http_error(409, "transfer is already accepted earlier")
+            if (
+                state.status == STATUS_AT_WAREHOUSE
+                and state.current_warehouse_id == draft.warehouse_id
+            ):
+                raise _http_error(409, "Документ уже принят в этом магазине")
+            if state.status == STATUS_AT_WAREHOUSE:
+                raise _http_error(
+                    409,
+                    "Сначала выполните передачу водителю на складе отправления",
+                )
+            raise _http_error(409, "Документ недоступен для приёмки")
         if state.dropoff_warehouse_id != draft.warehouse_id:
             expected = (
                 state.dropoff_warehouse.name
@@ -1446,8 +1609,23 @@ def sync_units(session: Session, items: list[dict]) -> dict:
     warehouses = {
         row.external_id: row.id for row in session.scalars(select(LogisticsWarehouse)).all()
     }
-    for item in items:
-        source_document_type = _normalize_source_document_type(item.get("source_document_type"))
+    source_document_types = [
+        _normalize_source_document_type(item.get("source_document_type")) for item in items
+    ]
+    external_ids = [item["external_id"] for item in items]
+    existing_rows = (
+        session.scalars(
+            select(LogisticsTransfer)
+            .where(LogisticsTransfer.external_id.in_(external_ids))
+            .options(joinedload(LogisticsTransfer.state))
+        )
+        .unique()
+        .all()
+        if external_ids
+        else []
+    )
+    existing_by_source = {(row.source_document_type, row.external_id): row for row in existing_rows}
+    for item, source_document_type in zip(items, source_document_types, strict=True):
         source_id = warehouses.get(item["source_warehouse_external_id"])
         target_id = warehouses.get(item["target_warehouse_external_id"])
         if source_id is None or target_id is None:
@@ -1459,11 +1637,8 @@ def sync_units(session: Session, items: list[dict]) -> dict:
                 raise _http_error(422, "unit references unknown document target warehouse")
         lookup_code = _lookup_code_for(item)
         barcode = item.get("barcode") or lookup_code
-        row = session.scalar(
-            _logistics_unit_selector(source_document_type, item["external_id"]).options(
-                joinedload(LogisticsTransfer.state)
-            )
-        )
+        source_key = (source_document_type, item["external_id"])
+        row = existing_by_source.get(source_key)
         created = False
         if row is None:
             row = LogisticsTransfer(
@@ -1484,6 +1659,7 @@ def sync_units(session: Session, items: list[dict]) -> dict:
                 payload=item.get("payload"),
             )
             session.add(row)
+            existing_by_source[source_key] = row
             counters.created += 1
             created = True
         else:

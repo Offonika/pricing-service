@@ -11,13 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.infrastructure.db.engines import get_application_engine, get_onec_engine  # noqa: E402
+from app.infrastructure.db import get_onec_engine, session_scope  # noqa: E402
 from app.models import Product  # noqa: E402
 from tasks.sync_onec_product_catalog import (  # noqa: E402
     _clean_str,
@@ -71,7 +70,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     onec_engine = get_onec_engine()
-    app_engine = get_application_engine()
     folder_value = detect_item_folder_value(onec_engine)
     allowed_ids = fetch_general_catalog_item_ids(onec_engine, folder_value)
     rows = fetch_onec_products(onec_engine, folder_value, sorted(allowed_ids))
@@ -82,11 +80,10 @@ def main() -> int:
         and (name := _clean_str(row.get("name")))
         and not has_duplicate_marker(name)
     }
-    with Session(app_engine) as session:
+    with session_scope(read_only=True) as session:
         active_articles = set(
             session.scalars(select(Product.article).where(Product.is_active.is_(True))).all()
         )
-        session.rollback()
     result = evaluate_catalog_scope(
         source_articles,
         active_articles,

@@ -19,6 +19,7 @@ related_tests:
   - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
+  - tests/test_check_onec_catalog_scope_script.py
   - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
   - tests/test_compare_receivable_current_report.py
@@ -160,6 +161,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `scripts/analyze_site_defect_working_cases.py` на central read-only
   session scope с сохранением аргументов, JSON-контракта и опционального Bitrix
   `--apply`.
+- [x] Перевести `scripts/check_onec_catalog_scope.py` на central read-only session
+  scope с сохранением role-specific 1С engine, аргументов, JSON-контракта и exit
+  codes.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -273,9 +277,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     и production release требуют отдельных подтверждений.
 38. После зелёного CI разрешён merge PR №99. Production migration, deploy и cutover
     в это решение не входят.
+39. Для `scripts/check_onec_catalog_scope.py` разрешены реализация в отдельной
+    ветке, push и создание отдельного PR после локальных проверок. Merge и
+    production release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-28 — `scripts/check_onec_catalog_scope.py` переведён на central read-only
+  session scope; role-specific 1С engine, аргументы, JSON-контракт и exit codes
+  сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `scripts/check_onec_catalog_scope.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №99; production release оставлен отдельным
   решением.
 - 2026-08-28 — `scripts/analyze_site_defect_working_cases.py` переведён на central

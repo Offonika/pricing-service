@@ -15,6 +15,7 @@ related_code:
 related_tests:
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
+  - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
   - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
@@ -148,6 +149,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `report_product_compatibility_sync.py` на central read-only session
   scope и role-specific 1С factory с сохранением аргументов, site JSON и
   JSON/CSV-контрактов.
+- [x] Перевести `scripts/build_order_fulfillment_review_csv.py` на central read-only
+  session scope и role-specific 1С factory с сохранением аргументов, read-only
+  Bitrix enrichment и CSV-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -246,9 +250,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельных подтверждений.
 32. После зелёного CI разрешён merge PR №94. Production migration, deploy и cutover
     в это решение не входят.
+33. Для `scripts/build_order_fulfillment_review_csv.py` разрешены реализация в
+    отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
+    и production release требуют отдельных подтверждений.
+34. После зелёного CI разрешён merge PR №97. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №97; production release оставлен отдельным
+  решением.
+- 2026-08-28 — `scripts/build_order_fulfillment_review_csv.py` переведён на central
+  read-only session scope и role-specific 1С factory; аргументы, read-only Bitrix
+  enrichment и CSV-контракт сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `scripts/build_order_fulfillment_review_csv.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №94; production release оставлен отдельным
   решением.
 - 2026-08-28 — `report_product_compatibility_sync.py` переведён на central read-only

@@ -15,6 +15,7 @@ related_code:
 related_tests:
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
+  - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
   - tests/test_database_infrastructure.py
   - tests/test_export_display_matching_review_workbook_task.py
@@ -133,6 +134,8 @@ JSON/CSV/XLSX артефактов сохраняются.
   session scope с сохранением `--input`, `--output`, score/gap и XLSX-контракта.
 - [x] Перевести `export_sms_journal_xlsx.py` на central read-only session scope с
   сохранением allowlist, явного подтверждения, шифрования, XLSX и audit-контрактов.
+- [x] Перевести `check_receivable_authoritative_snapshot.py` на central read-only
+  session scope с сохранением `--snapshot-date`, `--control-name` и JSON-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -211,9 +214,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 24. После зелёного CI разрешён merge PR №86. Production migration, deploy и cutover
     в это решение не входят.
+25. Для `check_receivable_authoritative_snapshot.py` разрешены реализация в
+    отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
+    и production release требуют отдельных подтверждений.
+26. После зелёного CI разрешён merge PR №88. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №88; production release оставлен отдельным
+  решением.
+- 2026-08-28 — `check_receivable_authoritative_snapshot.py` переведён на central
+  read-only session scope и зарегистрирован как `application_read_only`; аргументы
+  и JSON-контракт сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `check_receivable_authoritative_snapshot.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №86; production release оставлен отдельным
   решением.
 - 2026-08-28 — `export_sms_journal_xlsx.py` переведён на central read-only session

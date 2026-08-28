@@ -68,6 +68,17 @@ def test_cli_apply_check_requires_flags_and_mapping(capsys) -> None:
     assert _cli_exit_code({"mode": "check", "ready": True}) == 0
 
 
+def test_cli_apply_check_requires_daily_report_dialog_when_enabled() -> None:
+    settings = _settings(
+        site_service_requests_bitrix_writes_enabled=True,
+        site_service_requests_daily_report_enabled=True,
+    )
+
+    checked = main(["--check", "--compact"], settings_override=settings)
+
+    assert "daily_report_dialog_missing" in checked["errors"]
+
+
 def test_apply_worker_heartbeat_records_failure_and_recovers(monkeypatch, tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'worker-heartbeat.db'}")
     Base.metadata.create_all(engine)

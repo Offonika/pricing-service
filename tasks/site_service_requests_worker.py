@@ -33,6 +33,7 @@ from app.services.site_service_requests_worker import (
     build_site_service_request_worker_plans,
     cleanup_uploaded_site_service_request_files,
     collect_site_service_request_outbound_commands,
+    deliver_site_service_request_daily_report,
     preflight_site_service_request_users,
     reconcile_site_service_request_assignments,
     resolved_site_service_request_field_map,
@@ -199,6 +200,11 @@ def _run_worker(
                 cipher=cipher,
                 limit=args.limit,
             )
+            daily_report = deliver_site_service_request_daily_report(
+                session,
+                settings=settings,
+                writer=SiteServiceRequestBitrixWriter(resolved_api),
+            )
             result = {
                 "mode": mode,
                 "count": len(results),
@@ -215,6 +221,7 @@ def _run_worker(
                 "assignments": assignments,
                 "files": files,
                 "commands": commands,
+                "dailyReport": daily_report,
                 "userPreflight": user_preflight,
             }
         else:
@@ -254,6 +261,11 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
             errors.append("escalation_user_missing")
         if settings.site_service_requests_finance_user_id is None:
             errors.append("finance_user_missing")
+        if (
+            settings.site_service_requests_daily_report_enabled
+            and not str(settings.site_service_requests_daily_report_dialog_id or "").strip()
+        ):
+            errors.append("daily_report_dialog_missing")
         if settings.site_service_requests_bitrix_root_folder_id is None:
             errors.append("bitrix_root_folder_missing")
         configured_user_ids = {
@@ -320,6 +332,7 @@ def _configuration_check(settings: Settings, *, apply: bool) -> dict[str, Any]:
         "bitrixWritesEnabled": settings.site_service_requests_bitrix_writes_enabled,
         "emailIngestEnabled": settings.site_service_requests_email_ingest_enabled,
         "outboundRepliesEnabled": settings.site_service_requests_outbound_replies_enabled,
+        "dailyReportEnabled": settings.site_service_requests_daily_report_enabled,
     }
 
 

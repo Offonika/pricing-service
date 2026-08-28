@@ -183,6 +183,9 @@ class Settings(BaseSettings):
     site_service_requests_first_line_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_escalation_user_id: int | None = None
     site_service_requests_finance_user_id: int | None = None
+    site_service_requests_daily_report_enabled: bool = False
+    site_service_requests_daily_report_dialog_id: str | None = None
+    site_service_requests_daily_report_hour: int = Field(default=11, ge=0, le=23)
     site_service_requests_expected_user_names: dict[str, str] = Field(default_factory=dict)
     site_service_requests_timezone: str = "Europe/Moscow"
     site_service_requests_first_response_hours: int = Field(default=4, ge=1, le=24)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -386,6 +387,15 @@ class SiteServiceRequestWorkerState(Base):
         nullable=False,
         default=0,
         server_default="0",
+    )
+    last_daily_report_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    last_daily_report_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    last_daily_report_delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

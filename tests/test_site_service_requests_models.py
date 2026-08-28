@@ -131,6 +131,18 @@ def _load_file_attach_baseline_migration():
     return migration
 
 
+def _load_daily_report_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/b8d0f2a4c6e8_add_site_service_daily_report_state.py"
+    )
+    spec = importlib.util.spec_from_file_location("site_service_request_daily_report", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
+
+
 def test_models_persist_encrypted_delivery_state_and_relationships() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -252,6 +264,40 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
 
 def test_migration_extends_current_production_head() -> None:
     assert _load_migration().down_revision == "1b9d3f5a7c21"
+
+
+def test_daily_report_migration_is_reversible_and_extends_current_head(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'site-service-daily-report.db'}")
+    migration = _load_daily_report_migration()
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE site_service_request_worker_state "
+            "(id INTEGER PRIMARY KEY, consecutive_failures INTEGER NOT NULL DEFAULT 0)"
+        )
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_worker_state")
+        }
+        assert {
+            "last_daily_report_date",
+            "last_daily_report_message_id",
+            "last_daily_report_delivered_at",
+        } <= columns
+
+        migration.downgrade()
+        columns = {
+            column["name"]
+            for column in inspect(connection).get_columns("site_service_request_worker_state")
+        }
+        assert "last_daily_report_date" not in columns
+
+    assert migration.down_revision == "a7c9e1f3b5d7"
+    engine.dispose()
 
 
 def test_open_stage_migration_is_reversible_and_extends_site_request_head(tmp_path: Path) -> None:

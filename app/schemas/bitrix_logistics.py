@@ -60,14 +60,12 @@ class BitrixLogisticsDraftCreateRequest(BaseModel):
     warehouse_id: int
     driver_id: int | None = None
     route_run_id: int | None = None
-    default_dropoff_warehouse_id: int | None = None
     comment: str | None = Field(default=None, max_length=1000)
 
 
 class BitrixLogisticsDraftScanRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=255)
     lookup_code: str | None = Field(default=None, max_length=255)
-    dropoff_warehouse_id: int | None = None
 
 
 class BitrixLogisticsDraftConfirmRequest(BaseModel):

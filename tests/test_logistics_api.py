@@ -190,7 +190,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
             "actor_user_id": ids["users"]["Отправитель"],
             "warehouse_id": ids["warehouses"]["store-1"],
             "driver_id": ids["drivers"]["Иван Водитель"],
-            "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+            "default_dropoff_warehouse_id": ids["warehouses"]["store-2"],
             "comment": "Передача на ЦС",
         },
         headers=headers,
@@ -236,11 +236,14 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         json={
             "actor_user_id": ids["users"]["Отправитель"],
             "barcode": "BC-0001",
+            "dropoff_warehouse_id": ids["warehouses"]["store-2"],
         },
         headers=headers,
     )
     assert scanned.status_code == 200
     assert scanned.json()["item_count"] == 1
+    assert scanned.json()["items"][0]["dropoff_warehouse_id"] == ids["warehouses"]["central"]
+    assert scanned.json()["items"][0]["dropoff_warehouse_name"] == "ЦС"
 
     repeated_scan = client.post(
         f"/api/logistics/handoffs/draft/{draft_id}/scan",
@@ -410,6 +413,107 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         assert unknown_review is not None
         assert unknown_review.source_external_id == long_unknown_code[:64]
         assert unknown_review.payload["lookup_code"] == long_unknown_code
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_handoff_destination_comes_from_document_without_draft_default(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+    with Session(engine) as session:
+        transfer = session.get(LogisticsTransfer, ids["transfer_id"])
+        assert transfer is not None
+        transfer.document_target_warehouse_id = ids["warehouses"]["store-2"]
+        session.commit()
+
+    draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+        },
+        headers=headers,
+    )
+    assert draft.status_code == 200
+    assert draft.json()["default_dropoff_warehouse_id"] is None
+
+    scanned = client.post(
+        f"/api/logistics/handoffs/draft/{draft.json()['id']}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "barcode": "BC-0001",
+            "dropoff_warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert scanned.status_code == 200
+    assert scanned.json()["items"][0]["dropoff_warehouse_id"] == ids["warehouses"]["store-2"]
+    assert scanned.json()["items"][0]["dropoff_warehouse_name"] == "Магазин 2"
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_handoff_unavailable_document_destination_creates_one_manual_review(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+    with Session(engine) as session:
+        destination = session.get(LogisticsWarehouse, ids["warehouses"]["central"])
+        assert destination is not None
+        destination.is_active = False
+        session.commit()
+
+    draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+        },
+        headers=headers,
+    )
+    assert draft.status_code == 200
+
+    for _ in range(2):
+        scanned = client.post(
+            f"/api/logistics/handoffs/draft/{draft.json()['id']}/scan",
+            json={
+                "actor_user_id": ids["users"]["Отправитель"],
+                "barcode": "BC-0001",
+            },
+            headers=headers,
+        )
+        assert scanned.status_code == 409
+        assert scanned.json()["detail"] == "handoff destination requires manual review"
+
+    with Session(engine) as session:
+        reviews = session.scalars(
+            select(LogisticsManualReview).where(
+                LogisticsManualReview.review_type == "handoff_destination_unresolved"
+            )
+        ).all()
+        assert len(reviews) == 1
+        assert reviews[0].transfer_id == ids["transfer_id"]
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

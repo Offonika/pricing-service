@@ -296,7 +296,7 @@ def create_handoff_draft(
         warehouse_id=_effective_warehouse_id(actor, payload.warehouse_id),
         driver_id=payload.driver_id,
         route_run_id=payload.route_run_id,
-        default_dropoff_warehouse_id=payload.default_dropoff_warehouse_id,
+        default_dropoff_warehouse_id=None,
         comment=payload.comment,
     )
 
@@ -316,7 +316,7 @@ def scan_handoff_draft(
         actor_user_id=actor.id,
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
-        dropoff_warehouse_id=payload.dropoff_warehouse_id,
+        dropoff_warehouse_id=None,
     )
 
 

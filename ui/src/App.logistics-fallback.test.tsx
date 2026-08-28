@@ -88,7 +88,8 @@ afterEach(() => {
 
 describe("LogisticsFallbackApp", () => {
   it("показывает отправителю только передачу с фиксированным исходным складом", async () => {
-    vi.stubGlobal("fetch", mockFallbackApi("sender"));
+    const fallbackApi = mockFallbackApi("sender");
+    vi.stubGlobal("fetch", fallbackApi);
 
     render(<LogisticsFallbackApp />);
 
@@ -96,8 +97,8 @@ describe("LogisticsFallbackApp", () => {
     expect(screen.queryByRole("button", { name: "Приемка" })).not.toBeInTheDocument();
     expect(screen.getByText("Центральный склад")).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Водитель" })).toBeVisible();
-    const destination = screen.getByRole("combobox", { name: "Склад назначения" });
-    expect(destination).toHaveValue("20");
+    expect(screen.queryByRole("combobox", { name: "Склад назначения" })).not.toBeInTheDocument();
+    expect(screen.getByText("Определится автоматически после сканирования документа")).toBeVisible();
     const openDraft = screen.getByRole("button", { name: "Открыть" });
     expect(openDraft).toBeEnabled();
     fireEvent.click(openDraft);
@@ -106,6 +107,13 @@ describe("LogisticsFallbackApp", () => {
     expect(screen.getByRole("button", { name: "Скан" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Подтвердить" })).toBeDisabled();
     expect(document.title).toBe("Логистика — браузер");
+    const createCall = fallbackApi.mock.calls.find(([input]) =>
+      String(input).endsWith("/handoffs/draft")
+    );
+    expect(createCall?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ warehouse_id: 10, driver_id: 30, comment: "" }),
+    });
   });
 
   it("показывает получателю только приёмку", async () => {
@@ -151,7 +159,6 @@ describe("LogisticsFallbackApp", () => {
         status: "open",
         warehouse_id: 10,
         driver_id: 30,
-        default_dropoff_warehouse_id: 20,
         item_count: 1,
         items: [
           {

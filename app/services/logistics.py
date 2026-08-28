@@ -473,6 +473,42 @@ def _seed_state(session: Session, transfer: LogisticsTransfer) -> LogisticsTrans
     return state
 
 
+def _resolve_handoff_dropoff(
+    session: Session,
+    transfer: LogisticsTransfer,
+) -> int:
+    if isinstance(transfer.payload, dict) and transfer.payload.get("external_carrier_flow"):
+        raise _http_error(409, "external carrier unit must use the external carrier flow")
+
+    warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
+    warehouse = session.get(LogisticsWarehouse, warehouse_id) if warehouse_id is not None else None
+    if warehouse is not None and warehouse.is_active:
+        return warehouse.id
+
+    existing_review = session.scalar(
+        select(LogisticsManualReview.id).where(
+            LogisticsManualReview.transfer_id == transfer.id,
+            LogisticsManualReview.review_type == "handoff_destination_unresolved",
+            LogisticsManualReview.status == "open",
+        )
+    )
+    if existing_review is None:
+        _create_manual_review(
+            session,
+            review_type="handoff_destination_unresolved",
+            reason="handoff destination cannot be resolved from the logistics document",
+            source_document_type=transfer.source_document_type,
+            source_external_id=transfer.external_id,
+            transfer_id=transfer.id,
+            payload={
+                "document_target_warehouse_id": transfer.document_target_warehouse_id,
+                "target_warehouse_id": transfer.target_warehouse_id,
+            },
+            commit=True,
+        )
+    raise _http_error(409, "handoff destination requires manual review")
+
+
 def _serialize_draft(draft: LogisticsDraft) -> dict:
     items = []
     for item in draft.items:
@@ -744,10 +780,9 @@ def add_scan_to_draft(
                     "transfer is already in transit",
                 )
             raise _http_error(409, "transfer is not available on sender warehouse")
-        target_dropoff = dropoff_warehouse_id or draft.default_dropoff_warehouse_id
-        if target_dropoff is None:
-            raise _http_error(422, "dropoff warehouse is required for handoff item")
-        _get_warehouse(session, target_dropoff)
+        # The document is the source of truth. Legacy clients may still send
+        # dropoff_warehouse_id, but it must never override the 1C direction.
+        target_dropoff = _resolve_handoff_dropoff(session, transfer)
     else:
         if state.status != STATUS_IN_TRANSIT:
             raise _http_error(409, "transfer is already accepted earlier")

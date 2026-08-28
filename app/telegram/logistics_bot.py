@@ -36,7 +36,7 @@ HELP_TEXT = """
 Быстрые команды:
 /start
 /help
-/handoff <driver_id> <dropoff_warehouse_id>
+/handoff <driver_id>
 /receive
 /confirm
 /cancel
@@ -613,7 +613,6 @@ class LogisticsTelegramBot:
             .options(
                 joinedload(LogisticsDraft.warehouse),
                 joinedload(LogisticsDraft.driver),
-                joinedload(LogisticsDraft.default_dropoff_warehouse),
                 joinedload(LogisticsDraft.items).joinedload(LogisticsDraftItem.transfer),
                 joinedload(LogisticsDraft.items).joinedload(LogisticsDraftItem.dropoff_warehouse),
             )
@@ -662,13 +661,18 @@ class LogisticsTelegramBot:
         )
         if draft.driver is not None:
             lines.append(f"👤 Водитель: {draft.driver.full_name}")
-        if draft.default_dropoff_warehouse is not None:
-            lines.append(f"📍 Точка выгрузки: {draft.default_dropoff_warehouse.name}")
         if draft.items:
             lines.append("")
             lines.append("🧾 Последние сканы:")
             for item in sorted(draft.items, key=lambda row: row.scan_at, reverse=True)[:5]:
-                lines.append(f"- {item.transfer.document_number} | {item.barcode}")
+                destination = (
+                    item.dropoff_warehouse.name
+                    if item.dropoff_warehouse is not None
+                    else "требует проверки"
+                )
+                lines.append(
+                    f"- {item.transfer.document_number} | {item.barcode} | 📍 {destination}"
+                )
         if bot_session.recent_errors:
             lines.append("")
             lines.append("🚨 Последние ошибки:")
@@ -742,8 +746,8 @@ class LogisticsTelegramBot:
         if command == "/handoff":
             if profile["role"] != "sender":
                 return "Передача доступна только отправителю."
-            if len(parts) < 3:
-                return "Использование: /handoff <driver_id> <dropoff_warehouse_id>"
+            if len(parts) < 2:
+                return "Использование: /handoff <driver_id>"
             try:
                 payload = logistics_service.create_draft(
                     session,
@@ -751,7 +755,6 @@ class LogisticsTelegramBot:
                     actor_user_id=profile["id"],
                     warehouse_id=profile["default_warehouse_id"],
                     driver_id=int(parts[1]),
-                    default_dropoff_warehouse_id=int(parts[2]),
                 )
             except HTTPException as exc:
                 return self._handle_create_draft_conflict(session, profile, chat_id, exc)
@@ -898,20 +901,10 @@ class LogisticsTelegramBot:
             rows.append([("⬅️ Назад", "menu:main")])
             return "📦 Выберите водителя:", _inline_keyboard(rows)
 
-        if data.startswith("handoff_driver:"):
-            driver_id = int(data.split(":", 1)[1])
-            warehouses = session.scalars(
-                select(LogisticsWarehouse).where(LogisticsWarehouse.is_active.is_(True))
-            ).all()
-            rows = [
-                [(warehouse.name, f"handoff_dropoff:{driver_id}:{warehouse.id}")]
-                for warehouse in warehouses[:20]
-            ]
-            rows.append([("⬅️ Назад", "menu:main")])
-            return "📍 Выберите точку выгрузки:", _inline_keyboard(rows)
-
-        if data.startswith("handoff_dropoff:"):
-            _, driver_id, warehouse_id = data.split(":")
+        if data.startswith("handoff_driver:") or data.startswith("handoff_dropoff:"):
+            # handoff_dropoff remains accepted for buttons sent by older bot versions;
+            # the warehouse part is intentionally ignored because the document owns direction.
+            driver_id = data.split(":", 2)[1]
             try:
                 payload = logistics_service.create_draft(
                     session,
@@ -919,7 +912,6 @@ class LogisticsTelegramBot:
                     actor_user_id=profile["id"],
                     warehouse_id=profile["default_warehouse_id"],
                     driver_id=int(driver_id),
-                    default_dropoff_warehouse_id=int(warehouse_id),
                 )
             except HTTPException as exc:
                 return self._handle_create_draft_conflict(session, profile, chat_id, exc)

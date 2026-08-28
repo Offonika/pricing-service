@@ -46,14 +46,12 @@ class LogisticsWebDraftCreateRequest(BaseModel):
     warehouse_id: int
     driver_id: int | None = None
     route_run_id: int | None = None
-    default_dropoff_warehouse_id: int | None = None
     comment: str | None = Field(default=None, max_length=1000)
 
 
 class LogisticsWebDraftScanRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=255)
     lookup_code: str | None = Field(default=None, max_length=255)
-    dropoff_warehouse_id: int | None = None
 
 
 class LogisticsWebDraftConfirmRequest(BaseModel):
@@ -267,7 +265,7 @@ def web_create_handoff_draft(
         warehouse_id=payload.warehouse_id,
         driver_id=payload.driver_id,
         route_run_id=payload.route_run_id,
-        default_dropoff_warehouse_id=payload.default_dropoff_warehouse_id,
+        default_dropoff_warehouse_id=None,
         comment=payload.comment,
     )
 
@@ -287,7 +285,7 @@ def web_scan_handoff(
         actor_user_id=actor.id,
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
-        dropoff_warehouse_id=payload.dropoff_warehouse_id,
+        dropoff_warehouse_id=None,
     )
 
 

@@ -19,7 +19,6 @@ type Draft = {
   status: string;
   warehouse_id: number;
   driver_id: number | null;
-  default_dropoff_warehouse_id?: number | null;
   item_count: number;
   items: Array<{
     id: number;
@@ -303,8 +302,18 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
   const onCloseRef = useRef(onClose);
   const mountedRef = useRef(true);
   const decodeRequestRef = useRef(0);
+  const stopCameraRef = useRef<() => void>(() => undefined);
+  const closedRef = useRef(false);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
+
+  const closeScanner = useCallback(() => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    decodeRequestRef.current += 1;
+    stopCameraRef.current();
+    onCloseRef.current();
+  }, []);
 
   useEffect(() => {
     onCodeRef.current = onCode;
@@ -327,12 +336,23 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
     const video = videoRef.current;
     if (!video) return;
 
+    const stopCamera = () => {
+      active = false;
+      if (intervalId !== null) window.clearInterval(intervalId);
+      intervalId = null;
+      controls?.stop();
+      controls = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      video.srcObject = null;
+    };
+    stopCameraRef.current = stopCamera;
+
     const finish = (rawValue: string) => {
       const normalized = rawValue.trim();
       if (!active || !normalized) return;
-      active = false;
       onCodeRef.current(normalized);
-      onCloseRef.current();
+      closeScanner();
     };
 
     const start = async () => {
@@ -398,13 +418,20 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
     };
     void start();
     return () => {
-      active = false;
-      if (intervalId !== null) window.clearInterval(intervalId);
-      controls?.stop();
-      stream?.getTracks().forEach((track) => track.stop());
-      if (video) video.srcObject = null;
+      stopCamera();
+      if (stopCameraRef.current === stopCamera) {
+        stopCameraRef.current = () => undefined;
+      }
     };
-  }, []);
+  }, [closeScanner]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeScanner();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeScanner]);
 
   const decodeFile = async (file: File | undefined) => {
     if (!file) return;
@@ -416,7 +443,7 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
       const result = await new BrowserMultiFormatReader().decodeFromImageUrl(url);
       if (!mountedRef.current || requestId !== decodeRequestRef.current) return;
       onCodeRef.current(result.getText());
-      onCloseRef.current();
+      closeScanner();
     } catch (decodeError) {
       if (mountedRef.current && requestId === decodeRequestRef.current) {
         setError(`Код на фото не распознан: ${apiError(decodeError)}`);
@@ -431,22 +458,27 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
       <div className="logistics-camera__sheet">
         <div className="logistics-camera__header">
           <strong>Наведите камеру на код</strong>
-          <button className="btn btn--ghost" type="button" onClick={onClose}>
-            Закрыть
+          <button className="btn btn--ghost" type="button" onClick={closeScanner}>
+            Назад
           </button>
         </div>
         <video ref={videoRef} className="logistics-camera__video" muted playsInline />
         {starting && <p className="logistics__message">Запускаем камеру…</p>}
         {error && <p className="logistics__message logistics__message--error">{error}</p>}
-        <label className="btn btn--ghost logistics-camera__file">
-          Распознать код с фото
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={(event) => void decodeFile(event.target.files?.[0])}
-          />
-        </label>
+        <div className="logistics-camera__actions">
+          <label className="btn btn--ghost logistics-camera__file">
+            Распознать код с фото
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={(event) => void decodeFile(event.target.files?.[0])}
+            />
+          </label>
+          <button className="btn btn--ghost" type="button" onClick={closeScanner}>
+            Отменить сканирование
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -457,7 +489,6 @@ export function LogisticsWorkspace() {
   const [screen, setScreen] = useState<Screen>("operation");
   const [operation, setOperation] = useState<Operation>("receipt");
   const [driverId, setDriverId] = useState("");
-  const [dropoffWarehouseId, setDropoffWarehouseId] = useState("");
   const [scanCode, setScanCode] = useState("");
   const [comment, setComment] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -483,10 +514,6 @@ export function LogisticsWorkspace() {
   );
   const warehouseId = selectedWarehouseId ? Number(selectedWarehouseId) : null;
   const listWarehouseId = bootstrap?.profile.default_warehouse_id ?? null;
-  const dropoffWarehouses = useMemo(
-    () => bootstrap?.warehouses.filter((warehouse) => warehouse.id !== warehouseId) || [],
-    [bootstrap?.warehouses, warehouseId]
-  );
 
   const loadReviews = useCallback(
     async (offset = 0, append = false) => {
@@ -563,10 +590,6 @@ export function LogisticsWorkspace() {
         setDraft(data.open_draft || null);
         setConfirmKey(data.open_draft ? newIdempotencyKey() : "");
         setDriverId(String(data.open_draft?.driver_id || data.drivers[0]?.id || ""));
-        const firstDropoff = data.warehouses.find((item) => item.id !== data.profile.default_warehouse_id);
-        setDropoffWarehouseId(
-          String(data.open_draft?.default_dropoff_warehouse_id || firstDropoff?.id || "")
-        );
         setMessage(data.open_draft ? `Черновик №${data.open_draft.id} восстановлен` : "");
       })
       .catch((error: unknown) => {
@@ -601,15 +624,11 @@ export function LogisticsWorkspace() {
       if (operation === "handoff" && !driverId) {
         throw new Error("Нет активного водителя для передачи");
       }
-      if (operation === "handoff" && !dropoffWarehouseId) {
-        throw new Error("Нет доступного магазина назначения");
-      }
       const payload =
         operation === "handoff"
           ? {
               warehouse_id: warehouseId,
               driver_id: Number(driverId),
-              default_dropoff_warehouse_id: Number(dropoffWarehouseId),
               comment: comment || null,
             }
           : { warehouse_id: warehouseId, comment: comment || null };
@@ -629,11 +648,7 @@ export function LogisticsWorkspace() {
       const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
       const { data } = await api.post<Draft>(
         `/bitrix/logistics/${base}/draft/${draft.id}/scan`,
-        {
-          lookup_code: code,
-          dropoff_warehouse_id:
-            draft.draft_type === "handoff" ? Number(dropoffWarehouseId) : null,
-        }
+        { lookup_code: code }
       );
       setDraft(data);
       setScanCode("");
@@ -803,16 +818,7 @@ export function LogisticsWorkspace() {
                     <select
                       aria-label="Склад операции"
                       value={selectedWarehouseId}
-                      onChange={(event) => {
-                        const nextWarehouseId = event.target.value;
-                        setSelectedWarehouseId(nextWarehouseId);
-                        if (dropoffWarehouseId === nextWarehouseId) {
-                          const replacement = bootstrap.warehouses.find(
-                            (warehouse) => String(warehouse.id) !== nextWarehouseId
-                          );
-                          setDropoffWarehouseId(String(replacement?.id || ""));
-                        }
-                      }}
+                      onChange={(event) => setSelectedWarehouseId(event.target.value)}
                     >
                       {bootstrap.warehouses.map((warehouse) => (
                         <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
@@ -838,15 +844,10 @@ export function LogisticsWorkspace() {
                       </select>
                       {!bootstrap.drivers.length && <small>Нет активных водителей</small>}
                     </label>
-                    <label className="logistics-field">
-                      <span>Магазин назначения</span>
-                      <select value={dropoffWarehouseId} onChange={(event) => setDropoffWarehouseId(event.target.value)}>
-                        {dropoffWarehouses.map((warehouse) => (
-                          <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
-                        ))}
-                      </select>
-                      {!dropoffWarehouses.length && <small>Нет доступного магазина назначения</small>}
-                    </label>
+                    <div className="logistics-field logistics-field--fixed">
+                      <span>Направление</span>
+                      <strong>Определится автоматически после сканирования документа</strong>
+                    </div>
                   </>
                 )}
                 <label className="logistics-field">
@@ -864,7 +865,7 @@ export function LogisticsWorkspace() {
                   disabled={
                     busy ||
                     !warehouseId ||
-                    (operation === "handoff" && (!driverId || !dropoffWarehouseId))
+                    (operation === "handoff" && !driverId)
                   }
                   onClick={createDraft}
                 >
@@ -904,6 +905,11 @@ export function LogisticsWorkspace() {
                       <div>
                         <strong>{item.document_number}</strong>
                         <small>{item.lookup_code || item.barcode}</small>
+                        <small>
+                          {item.dropoff_warehouse_name
+                            ? `Куда: ${item.dropoff_warehouse_name}`
+                            : "Направление требует проверки"}
+                        </small>
                       </div>
                       <button
                         className="btn btn--ghost"

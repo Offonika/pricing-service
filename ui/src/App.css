@@ -4508,9 +4508,14 @@
   position: fixed;
   z-index: 100;
   inset: 0;
-  display: grid;
-  align-items: end;
-  padding: 12px;
+  display: flex;
+  align-items: flex-end;
+  padding:
+    max(12px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right))
+    max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  overflow: hidden;
   background: rgb(12 22 33 / 72%);
 }
 
@@ -4518,8 +4523,12 @@
   display: grid;
   gap: 10px;
   width: min(100%, 540px);
+  max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   margin: 0 auto;
   padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 14px;
   background: #ffffff;
 }
@@ -4529,15 +4538,35 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  position: sticky;
+  top: -14px;
+  z-index: 2;
+  padding: 14px 0 10px;
+  background: #ffffff;
 }
 
 .logistics-camera__video {
   width: 100%;
-  min-height: 260px;
-  max-height: 62dvh;
+  min-height: min(260px, 42dvh);
+  max-height: 52dvh;
   border-radius: 10px;
   background: #101820;
   object-fit: cover;
+}
+
+.logistics-camera__actions {
+  position: sticky;
+  bottom: -14px;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  padding: 10px 0 14px;
+  background: #ffffff;
+}
+
+.logistics-camera__actions .btn {
+  width: 100%;
+  min-height: 44px;
 }
 
 .logistics-camera__file {

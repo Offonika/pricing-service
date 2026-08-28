@@ -12031,11 +12031,6 @@ components:
           - type: integer
           - type: 'null'
           title: Route Run Id
-        default_dropoff_warehouse_id:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Default Dropoff Warehouse Id
         comment:
           anyOf:
           - type: string
@@ -12060,11 +12055,6 @@ components:
             maxLength: 255
           - type: 'null'
           title: Lookup Code
-        dropoff_warehouse_id:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Dropoff Warehouse Id
       type: object
       title: BitrixLogisticsDraftScanRequest
     BitrixLogisticsFallbackLinkResponse:
@@ -22892,11 +22882,6 @@ components:
           - type: integer
           - type: 'null'
           title: Route Run Id
-        default_dropoff_warehouse_id:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Default Dropoff Warehouse Id
         comment:
           anyOf:
           - type: string
@@ -22921,11 +22906,6 @@ components:
             maxLength: 255
           - type: 'null'
           title: Lookup Code
-        dropoff_warehouse_id:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Dropoff Warehouse Id
       type: object
       title: LogisticsWebDraftScanRequest
     LogisticsWebSessionRequest:

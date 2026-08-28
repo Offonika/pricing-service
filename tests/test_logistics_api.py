@@ -221,6 +221,15 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         headers=headers,
     )
     assert unknown_scan.status_code == 404
+    repeated_unknown_scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": long_unknown_code,
+        },
+        headers=headers,
+    )
+    assert repeated_unknown_scan.status_code == 404
     oversized_scan = client.post(
         f"/api/logistics/handoffs/draft/{draft_id}/scan",
         json={
@@ -395,7 +404,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         headers=headers,
     )
     assert duplicate_scan.status_code == 409
-    assert "already accepted" in duplicate_scan.json()["detail"]
+    assert duplicate_scan.json()["detail"] == "Документ уже принят в этом магазине"
 
     with Session(engine) as session:
         events_count = session.query(LogisticsTransferEvent).count()
@@ -413,6 +422,13 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         assert unknown_review is not None
         assert unknown_review.source_external_id == long_unknown_code[:64]
         assert unknown_review.payload["lookup_code"] == long_unknown_code
+        assert unknown_review.payload["attempt_count"] == 2
+        assert (
+            session.query(LogisticsManualReview)
+            .filter_by(review_type="unknown_qr", status="open")
+            .count()
+            == 1
+        )
 
     app.dependency_overrides = {}
     get_settings.cache_clear()
@@ -678,7 +694,7 @@ def test_logistics_route_run_lookup_and_external_carrier(monkeypatch) -> None:
         os.remove(path)
 
 
-def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None:
+def test_logistics_printed_rtu_qr_handoff_and_receipt_bridge(monkeypatch) -> None:
     engine, path = setup_db()
     headers = _configure_logistics_auth(monkeypatch)
     app.dependency_overrides = {get_db: override_db(engine)}
@@ -692,23 +708,46 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
         json=[
             {
                 "source_document_type": "rtu",
-                "external_id": "rtu-1",
-                "document_number": "РТУ-000001",
+                "external_id": "0xb4fc002590803daf11f19eca3ecfe591",
+                "document_number": "РБГУ0401217",
                 "document_date": "2026-03-28T11:00:00Z",
                 "source_warehouse_external_id": "store-1",
                 "target_warehouse_external_id": "central",
                 "document_target_warehouse_external_id": "central",
-                "final_recipient_name": "Заказ 216951",
+                "final_recipient_name": "Заказ 241666",
                 "barcode": "RTU-BC-1",
-                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+                "lookup_code": ("MMLOG1|rtu|0xb4fc002590803daf11f19eca3ecfe591|241666"),
                 "origin_order_external_id": "order-1c-1",
-                "site_order_number": "216951",
+                "site_order_number": "241666",
                 "status": "posted",
             }
         ],
         headers=headers,
     )
     assert rtu_sync.status_code == 200
+
+    receipt_draft = client.post(
+        "/api/logistics/receipts/draft",
+        json={
+            "actor_user_id": ids["users"]["Получатель"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert receipt_draft.status_code == 200
+    receipt_id = receipt_draft.json()["id"]
+    receipt_before_handoff = client.post(
+        f"/api/logistics/receipts/draft/{receipt_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Получатель"],
+            "lookup_code": "MMLOG1|rtu|83491597397407213546269390744020073903",
+        },
+        headers=headers,
+    )
+    assert receipt_before_handoff.status_code == 409
+    assert receipt_before_handoff.json()["detail"] == (
+        "Сначала выполните передачу водителю на складе отправления"
+    )
 
     handoff_draft = client.post(
         "/api/logistics/handoffs/draft",
@@ -727,12 +766,22 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
             f"/api/logistics/handoffs/draft/{draft_id}/scan",
             json={
                 "actor_user_id": ids["users"]["Отправитель"],
-                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+                "lookup_code": "MMLOG1|rtu|83491597397407213546269390744020073903",
             },
             headers=headers,
         ).status_code
         == 200
     )
+    repeated_handoff_scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": "MMLOG1|rtu|83491597397407213546269390744020073903",
+        },
+        headers=headers,
+    )
+    assert repeated_handoff_scan.status_code == 200
+    assert repeated_handoff_scan.json()["item_count"] == 1
     assert (
         client.post(
             f"/api/logistics/handoffs/draft/{draft_id}/confirm",
@@ -742,22 +791,12 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
         == 200
     )
 
-    receipt_draft = client.post(
-        "/api/logistics/receipts/draft",
-        json={
-            "actor_user_id": ids["users"]["Получатель"],
-            "warehouse_id": ids["warehouses"]["central"],
-        },
-        headers=headers,
-    )
-    assert receipt_draft.status_code == 200
-    receipt_id = receipt_draft.json()["id"]
     assert (
         client.post(
             f"/api/logistics/receipts/draft/{receipt_id}/scan",
             json={
                 "actor_user_id": ids["users"]["Получатель"],
-                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+                "lookup_code": ("MMLOG1|rtu|0xb4fc002590803daf11f19eca3ecfe591|241666"),
             },
             headers=headers,
         ).status_code
@@ -775,7 +814,7 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
     with Session(engine) as session:
         case = session.scalar(select(SiteOrderExecutionCase))
         assert case is not None
-        assert case.site_order_number == "216951"
+        assert case.site_order_number == "241666"
         assert case.current_derived_status == "pickup_stored_at_point"
         assert case.current_crm_stage == "PICKUP_WAITING"
         event = session.scalar(select(SiteOrderExecutionEvent))

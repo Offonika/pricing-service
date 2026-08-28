@@ -240,10 +240,16 @@ function reviewCopy(reviewType: string) {
   };
 }
 
+const API_ERROR_COPY: Record<string, string> = {
+  "transfer not found by lookup code":
+    "QR распознан, но документ ещё не загружен. Повторите через минуту",
+  "transfer is already accepted earlier": "Документ уже принят в этом магазине",
+};
+
 function apiError(error: unknown) {
   if (isAxiosError(error)) {
     const detail = error.response?.data?.detail;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return API_ERROR_COPY[detail] || detail;
     if (detail && typeof detail.message === "string") return detail.message;
   }
   return error instanceof Error ? error.message : "Неизвестная ошибка";

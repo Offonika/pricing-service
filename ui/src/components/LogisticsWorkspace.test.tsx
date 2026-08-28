@@ -346,6 +346,39 @@ describe("LogisticsWorkspace", () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledTimes(3));
   });
 
+  it("объясняет, что QR считан, но РТУ ещё не загружена", async () => {
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({
+        data: {
+          id: 42,
+          draft_type: "handoff",
+          status: "open",
+          warehouse_id: 10,
+          driver_id: 30,
+          item_count: 0,
+          items: [],
+        },
+      })
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { data: { detail: "transfer not found by lookup code" } },
+      });
+
+    render(<LogisticsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Начать сканирование" }));
+    const input = await screen.findByPlaceholderText("QR, штрихкод или номер");
+    fireEvent.change(input, { target: { value: "MMLOG1|rtu|123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить код" }));
+
+    expect(
+      await screen.findByText(
+        "QR распознан, но документ ещё не загружен. Повторите через минуту"
+      )
+    ).toBeVisible();
+    expect(screen.getByText("Черновик №42")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Подтвердить" })).toBeDisabled();
+  });
+
   it("повторяет загрузку рабочего места после ошибки bootstrap", async () => {
     vi.mocked(api.get)
       .mockRejectedValueOnce(new Error("Сервис временно недоступен"))

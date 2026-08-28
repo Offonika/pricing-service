@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+* * * * * root PYTHONPATH=/opt/MM/pricing-service-task43-current REPO_DIR=/opt/MM/pricing-service-task43-current LOGISTICS_RTU_SYNC_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/logistics_rtu_sync.sh >> /var/log/pricing/logistics_rtu_sync.cron.log 2>&1
+* * * * * root /opt/MM/pricing-service-task43-current/infra/cron/logistics_rtu_sync_watchdog.sh >> /var/log/pricing/logistics_rtu_sync_watchdog.log 2>&1

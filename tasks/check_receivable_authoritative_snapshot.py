@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.receivables import _get_app_engine
+from app.infrastructure.db import session_scope
 
 DEFAULT_CONTROL_NAMES = (
     "Байрамов Эльвин Эйваз Оглы",
@@ -42,16 +42,15 @@ def _decimal_to_float(value: Any) -> float | None:
     return None
 
 
-def main() -> None:
-    args = _parse_args()
-    snapshot_date = date.fromisoformat(args.snapshot_date)
-    control_names = tuple(args.control_name) or DEFAULT_CONTROL_NAMES
-    app_engine = _get_app_engine()
-
-    with Session(app_engine) as session:
-        snapshot_row = (
-            session.execute(
-                text("""
+def build_authoritative_snapshot_report(
+    session: Session,
+    *,
+    snapshot_date: date,
+    control_names: tuple[str, ...],
+) -> dict[str, Any]:
+    snapshot_row = (
+        session.execute(
+            text("""
                 select
                     snapshot_date::text as snapshot_date,
                     max(updated_at)::text as updated_at,
@@ -60,15 +59,15 @@ def main() -> None:
                 where snapshot_date = :snapshot_date
                 group by snapshot_date
                 """),
-                {"snapshot_date": snapshot_date},
-            )
-            .mappings()
-            .first()
+            {"snapshot_date": snapshot_date},
         )
+        .mappings()
+        .first()
+    )
 
-        case_rows = (
-            session.execute(
-                text("""
+    case_rows = (
+        session.execute(
+            text("""
                 select
                     segment,
                     count(*) as row_count,
@@ -78,15 +77,15 @@ def main() -> None:
                 group by segment
                 order by segment
                 """),
-                {"snapshot_date": snapshot_date},
-            )
-            .mappings()
-            .all()
+            {"snapshot_date": snapshot_date},
         )
+        .mappings()
+        .all()
+    )
 
-        synthetic_row = (
-            session.execute(
-                text("""
+    synthetic_row = (
+        session.execute(
+            text("""
                 select
                     (select count(*)
                      from receivable_balance_snapshot
@@ -101,15 +100,15 @@ def main() -> None:
                      where snapshot_date = :snapshot_date
                        and counterparty_ref like 'synthetic:%') as case_rows
                 """),
-                {"snapshot_date": snapshot_date},
-            )
-            .mappings()
-            .one()
+            {"snapshot_date": snapshot_date},
         )
+        .mappings()
+        .one()
+    )
 
-        controls = (
-            session.execute(
-                text("""
+    controls = (
+        session.execute(
+            text("""
                 select
                     counterparty_name,
                     current_balance,
@@ -122,13 +121,13 @@ def main() -> None:
                   and counterparty_name = any(:control_names)
                 order by counterparty_name
                 """),
-                {"snapshot_date": snapshot_date, "control_names": list(control_names)},
-            )
-            .mappings()
-            .all()
+            {"snapshot_date": snapshot_date, "control_names": list(control_names)},
         )
+        .mappings()
+        .all()
+    )
 
-    result = {
+    return {
         "snapshot": dict(snapshot_row) if snapshot_row is not None else None,
         "synthetic": dict(synthetic_row),
         "case_segments": [
@@ -151,6 +150,18 @@ def main() -> None:
             for row in controls
         ],
     }
+
+
+def main() -> None:
+    args = _parse_args()
+    snapshot_date = date.fromisoformat(args.snapshot_date)
+    control_names = tuple(args.control_name) or DEFAULT_CONTROL_NAMES
+    with session_scope(read_only=True) as session:
+        result = build_authoritative_snapshot_report(
+            session,
+            snapshot_date=snapshot_date,
+            control_names=control_names,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

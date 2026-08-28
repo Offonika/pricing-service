@@ -54,6 +54,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "check_receivable_authoritative_snapshot.py": {
+      "owner": "receivables",
+      "kind": "maintenance",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "read_only",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "manual_matching_control.py": {
       "owner": "matching",
       "kind": "permanent_cli",

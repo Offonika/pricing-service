@@ -7462,6 +7462,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/rtu/ready-for-pickup:
+    get:
+      summary: List Rtu Ready For Pickup
+      operationId: list_rtu_ready_for_pickup_api_logistics_rtu_ready_for_pickup_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: warehouse_code
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Warehouse Code
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - json
+          - xml
+          type: string
+          default: json
+          title: Format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsRtuReadyForPickupResponse'
+                title: Response List Rtu Ready For Pickup Api Logistics Rtu Ready For Pickup Get
+            application/xml:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/monitor:
     get:
       summary: List Monitor
@@ -21553,6 +21605,29 @@ components:
       - status
       - items
       title: LogisticsRouteRunResponse
+    LogisticsRtuReadyForPickupResponse:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        document_number:
+          type: string
+          title: Document Number
+        document_date:
+          type: string
+          format: date-time
+          title: Document Date
+        accepted_at:
+          type: string
+          format: date-time
+          title: Accepted At
+      type: object
+      required:
+      - external_id
+      - document_number
+      - document_date
+      - accepted_at
+      title: LogisticsRtuReadyForPickupResponse
     LogisticsSyncResponse:
       properties:
         created:

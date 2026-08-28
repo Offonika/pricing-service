@@ -124,6 +124,7 @@ class RtuSyncReport:
     external_carrier_handoff_created: int = 0
     external_carrier_handoff_existing: int = 0
     external_carrier_state_conflicts: int = 0
+    local_pickup_skipped: int = 0
     by_reason: Counter[str] = field(default_factory=Counter)
 
     def as_dict(self) -> dict[str, Any]:
@@ -144,6 +145,7 @@ class RtuSyncReport:
             "external_carrier_handoff_created": self.external_carrier_handoff_created,
             "external_carrier_handoff_existing": self.external_carrier_handoff_existing,
             "external_carrier_state_conflicts": self.external_carrier_state_conflicts,
+            "local_pickup_skipped": self.local_pickup_skipped,
             "by_reason": dict(self.by_reason),
         }
 
@@ -379,6 +381,7 @@ def sync_ready_rtu_units(
     )
     unit_payloads: list[dict[str, Any]] = []
     external_carrier_rows: dict[str, RtuSourceRow] = {}
+    local_pickup_external_ids: set[str] = set()
     for row in normalized.ready:
         skipped = _validate_ready_row(session, row, lookup_counts)
         if skipped is not None:
@@ -443,25 +446,9 @@ def sync_ready_rtu_units(
             continue
 
         if _use_source_warehouse_for_empty_pickup_address(row):
-            lookup_code = make_rtu_lookup_code(row.rtu_external_id, row.site_order_number or "")
-            unit_payloads.append(
-                _rtu_unit_payload(
-                    row,
-                    source_warehouse=source_warehouse,
-                    target_warehouse=source_warehouse,
-                    lookup_code=lookup_code,
-                    target_resolution=[
-                        {
-                            "warehouse_id": source_warehouse.id,
-                            "warehouse_external_id": source_warehouse.external_id,
-                            "warehouse_name": source_warehouse.name,
-                            "match_type": "empty_pickup_address_target_source",
-                            "reason": "Самовывоз без адреса: target warehouse взят из склада РТУ",
-                        }
-                    ],
-                    empty_pickup_address_target_source=True,
-                )
-            )
+            report.local_pickup_skipped += 1
+            report.by_reason["local_pickup"] += 1
+            local_pickup_external_ids.add(row.rtu_external_id)
             continue
 
         resolution = resolve_target_warehouse(session, row.address_candidates)
@@ -478,6 +465,12 @@ def sync_ready_rtu_units(
                 ),
                 dry_run=dry_run,
             )
+            continue
+
+        if resolution.warehouse.external_id == source_warehouse.external_id:
+            report.local_pickup_skipped += 1
+            report.by_reason["local_pickup"] += 1
+            local_pickup_external_ids.add(row.rtu_external_id)
             continue
 
         lookup_code = make_rtu_lookup_code(row.rtu_external_id, row.site_order_number or "")
@@ -516,8 +509,11 @@ def sync_ready_rtu_units(
             session,
             resolvable_payloads,
         )
-    else:
-        session.commit()
+    report.manual_review_resolved += _resolve_manual_reviews_for_source_external_ids(
+        session,
+        local_pickup_external_ids,
+    )
+    session.commit()
     return report.as_dict()
 
 
@@ -630,7 +626,6 @@ def _rtu_unit_payload(
     lookup_code: str,
     target_resolution: list[dict[str, Any]],
     external_carrier_flow: bool = False,
-    empty_pickup_address_target_source: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "source": "1c_rtu_sync",
@@ -647,13 +642,6 @@ def _rtu_unit_payload(
                 "external_carrier_flow": True,
                 "external_carrier_name": _external_carrier_name(row.site_delivery_method),
                 "external_carrier_terminal": _first_address_candidate(row),
-            }
-        )
-    if empty_pickup_address_target_source:
-        payload.update(
-            {
-                "empty_pickup_address_target_source": True,
-                "business_rule": "pickup_empty_address_target_source",
             }
         )
     return {
@@ -973,6 +961,14 @@ def _resolve_manual_reviews_for_unit_payloads(
             and payload.get("external_id")
         }
     )
+    return _resolve_manual_reviews_for_source_external_ids(session, source_external_ids)
+
+
+def _resolve_manual_reviews_for_source_external_ids(
+    session: Session,
+    source_external_ids: Iterable[str],
+) -> int:
+    source_external_ids = sorted({value for value in source_external_ids if value})
     if not source_external_ids:
         return 0
     reviews = session.scalars(

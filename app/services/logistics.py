@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import Select, select
@@ -897,6 +897,79 @@ def list_expected_deliveries(
             }
         )
     return payload
+
+
+def list_rtu_ready_for_pickup(
+    session: Session,
+    *,
+    warehouse_code: str,
+    date_from: date | None = None,
+) -> list[dict]:
+    normalized_code = warehouse_code.strip().casefold()
+    if not normalized_code:
+        raise _http_error(422, "warehouse_code is required")
+
+    warehouses = [
+        warehouse
+        for warehouse in session.scalars(
+            select(LogisticsWarehouse)
+            .where(LogisticsWarehouse.is_active.is_(True))
+            .order_by(LogisticsWarehouse.id.asc())
+        ).all()
+        if normalized_code in _warehouse_lookup_codes(warehouse)
+    ]
+    if not warehouses:
+        raise _http_error(404, "warehouse not found")
+    if len(warehouses) > 1:
+        raise _http_error(409, "warehouse_code matched multiple warehouses")
+
+    warehouse = warehouses[0]
+    stmt: Select[tuple[LogisticsTransferState]] = (
+        select(LogisticsTransferState)
+        .join(LogisticsTransfer, LogisticsTransfer.id == LogisticsTransferState.transfer_id)
+        .where(
+            LogisticsTransfer.source_document_type == SOURCE_RTU,
+            LogisticsTransfer.target_warehouse_id == warehouse.id,
+            LogisticsTransfer.source_warehouse_id != warehouse.id,
+            LogisticsTransferState.status == STATUS_AT_WAREHOUSE,
+            LogisticsTransferState.current_warehouse_id == warehouse.id,
+            LogisticsTransferState.last_event_type == EVENT_ACCEPTED_AT_POINT,
+        )
+        .options(joinedload(LogisticsTransferState.transfer))
+        .order_by(
+            LogisticsTransfer.document_date.asc(),
+            LogisticsTransfer.document_number.asc(),
+        )
+    )
+    if date_from is not None:
+        stmt = stmt.where(LogisticsTransfer.document_date >= datetime.combine(date_from, time.min))
+
+    return [
+        {
+            "external_id": state.transfer.external_id,
+            "document_number": state.transfer.document_number,
+            "document_date": state.transfer.document_date,
+            "accepted_at": state.last_event_at,
+        }
+        for state in session.scalars(stmt).all()
+    ]
+
+
+def _warehouse_lookup_codes(warehouse: LogisticsWarehouse) -> set[str]:
+    values: set[str] = {warehouse.external_id.strip().casefold()}
+    payload = warehouse.payload if isinstance(warehouse.payload, dict) else {}
+    direct_code = payload.get("code")
+    if direct_code:
+        values.add(str(direct_code).strip().casefold())
+    departments = payload.get("onec_departments")
+    if isinstance(departments, list):
+        for department in departments:
+            if not isinstance(department, dict):
+                continue
+            code = department.get("code")
+            if code:
+                values.add(str(code).strip().casefold())
+    return {value for value in values if value}
 
 
 def list_monitor(

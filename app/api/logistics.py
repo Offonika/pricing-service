@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
+from xml.etree import ElementTree
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_logistics_internal_token
@@ -24,6 +26,7 @@ from app.schemas.logistics import (
     LogisticsMonitorResponse,
     LogisticsRouteRunCreateRequest,
     LogisticsRouteRunResponse,
+    LogisticsRtuReadyForPickupResponse,
     LogisticsSyncResponse,
     LogisticsTelegramAuthRequest,
     LogisticsTransferAssistantCandidateResponse,
@@ -189,6 +192,45 @@ def list_expected_deliveries(
         warehouse_id=warehouse_id,
         driver_id=driver_id,
     )
+
+
+@router.get(
+    "/rtu/ready-for-pickup",
+    response_model=list[LogisticsRtuReadyForPickupResponse],
+    responses={
+        200: {
+            "content": {
+                "application/xml": {
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+def list_rtu_ready_for_pickup(
+    warehouse_code: str = Query(min_length=1),
+    date_from: date | None = Query(default=None),
+    response_format: Literal["json", "xml"] = Query(default="json", alias="format"),
+    db: Session = Depends(get_db),
+):
+    rows = logistics_service.list_rtu_ready_for_pickup(
+        db,
+        warehouse_code=warehouse_code,
+        date_from=date_from,
+    )
+    if response_format == "xml":
+        root = ElementTree.Element("rtu_ready_for_pickup")
+        for row in rows:
+            item = ElementTree.SubElement(root, "rtu")
+            for field in ("external_id", "document_number", "document_date", "accepted_at"):
+                value = row[field]
+                child = ElementTree.SubElement(item, field)
+                child.text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+        return Response(
+            ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
+            media_type="application/xml",
+        )
+    return rows
 
 
 @router.get("/monitor", response_model=list[LogisticsMonitorResponse])

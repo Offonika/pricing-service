@@ -343,7 +343,7 @@ def test_sync_ready_rtu_units_routes_bad_rows_to_manual_review() -> None:
             os.remove(path)
 
 
-def test_sync_ready_rtu_units_uses_source_for_empty_pickup_address() -> None:
+def test_sync_ready_rtu_units_skips_local_empty_address_pickup() -> None:
     engine, path = setup_db()
     try:
         with Session(engine) as session:
@@ -373,24 +373,91 @@ def test_sync_ready_rtu_units_uses_source_for_empty_pickup_address() -> None:
                 dry_run=False,
             )
 
-            assert report["synced_created"] == 1
+            assert report["synced_created"] == 0
+            assert report["local_pickup_skipped"] == 1
             assert report["manual_review_created"] == 0
             assert report["manual_review_resolved"] == 1
 
             transfer = session.scalar(select(LogisticsTransfer))
-            assert transfer is not None
-            assert transfer.source_warehouse.external_id == "0xSOURCE1"
-            assert transfer.target_warehouse.external_id == "0xSOURCE1"
-            assert transfer.document_target_warehouse.external_id == "0xSOURCE1"
-            assert transfer.payload["empty_pickup_address_target_source"] is True
-            assert transfer.payload["business_rule"] == "pickup_empty_address_target_source"
-            assert transfer.payload["target_resolution"][0]["match_type"] == (
-                "empty_pickup_address_target_source"
-            )
+            assert transfer is None
 
             review = session.scalar(select(LogisticsManualReview))
             assert review is not None
             assert review.status == "resolved"
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_ready_rtu_units_skips_resolved_local_pickup() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add(
+                LogisticsWarehouse(
+                    external_id="0xSOURCE1",
+                    name="Савеловский",
+                    kind="store",
+                    payload={"address_aliases": ["Савеловский Мобильный пав. Т-103 | Т-105"]},
+                )
+            )
+            session.commit()
+
+            dry_run = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[_rtu_row()],
+                dry_run=True,
+            )
+            assert dry_run["local_pickup_skipped"] == 1
+            assert dry_run["synced_planned"] == 0
+
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[_rtu_row()],
+                dry_run=False,
+            )
+            assert report["local_pickup_skipped"] == 1
+            assert report["synced_created"] == 0
+            assert session.query(LogisticsTransfer).count() == 0
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_ready_rtu_units_commits_new_source_warehouse_for_local_pickup() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        site_delivery_method="Самовывоз",
+                        site_delivery_addition=None,
+                        site_delivery_address=None,
+                        rtu_delivery_addition=None,
+                        rtu_delivery_address=None,
+                    )
+                ],
+                dry_run=False,
+            )
+
+            assert report["warehouses_created"] == 1
+            assert report["local_pickup_skipped"] == 1
+            assert report["synced_created"] == 0
+
+        with Session(engine) as session:
+            warehouse = session.scalar(
+                select(LogisticsWarehouse).where(LogisticsWarehouse.external_id == "0xSOURCE1")
+            )
+            assert warehouse is not None
+            assert session.query(LogisticsTransfer).count() == 0
+            assert session.query(LogisticsManualReview).count() == 0
     finally:
         engine.dispose()
         if os.path.exists(path):

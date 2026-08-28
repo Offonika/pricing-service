@@ -19,6 +19,8 @@ related_code:
   - tasks/report_logistics_rtu_manual_review.py
   - tasks/sync_logistics_warehouse_aliases_from_onec.py
   - tasks/sync_logistics_rtu_from_onec.py
+  - infra/cron/logistics_rtu_sync.sh
+  - infra/cron/logistics_rtu_sync.cron
   - app/telegram/logistics_bot.py
 related_tests:
   - tests/test_logistics_api.py
@@ -27,6 +29,7 @@ related_tests:
   - tests/test_logistics_bot_webhook_api.py
   - tests/test_bitrix_logistics.py
   - tests/test_order_fulfillment_api.py
+  - tests/test_logistics_rtu_cron.py
 contracts:
   - docs/TechDesign.LogisticsTelegramMVP.md
   - docs/IntegrationContract.Logistics1C.md
@@ -35,7 +38,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-26"
+updated_at: "2026-08-28"
 ---
 
 # Назначение
@@ -125,6 +128,9 @@ RTU sync из SQL `1С`:
 - если после уточнения правил РТУ успешно синхронизировалась, старые открытые
   `manual_review` по этой РТУ закрываются как `resolved` с отметкой
   `auto_resolved_by = rtu_sync`;
+- локальная РТУ (пустой адрес внутреннего самовывоза либо совпавшие исходный и
+  целевой склады) не создает logistics unit, остается в ТЗП своего подразделения
+  и учитывается счетчиком `local_pickup_skipped`;
 - спорные РТУ не попадают в активную логистику и уходят в `manual_review`.
 
 External carrier:
@@ -140,10 +146,8 @@ External carrier:
   применяет внешний carrier flow: создает logistics unit, пишет событие
   `handed_to_external_carrier` с `source = 1c_sync`, переводит единицу в
   `with_external_carrier` и не создает финальный факт выдачи клиенту.
-- для внутреннего `Самовывоз` с пустыми адресными полями target warehouse
-  берется из склада РТУ; sync помечает payload флагами
-  `business_rule = pickup_empty_address_target_source` и
-  `empty_pickup_address_target_source = true`.
+- для внутреннего `Самовывоз` с пустыми адресными полями отдельная логистическая
+  единица не создается: РТУ остается в локальной ТЗП.
 
 # API / Data Contracts
 
@@ -185,6 +189,7 @@ QR v1:
 - `POST /api/logistics/transfers/{id}/external-carrier/handoff`;
 - `POST /api/logistics/transfers/{id}/external-carrier/accept`;
 - `POST /api/logistics/manual-ready-overrides`;
+- `GET /api/logistics/rtu/ready-for-pickup?warehouse_code=...&format=json|xml`;
 - web-safe `/api/logistics/web/*` с signed cookie.
 
 RTU sync запускается не публичным API, а CLI:
@@ -200,6 +205,8 @@ RTU sync запускается не публичным API, а CLI:
 - `python tasks/apply_logistics_warehouse_alias_overrides.py aliases.json` делает
   dry-run подтвержденных aliases, а `--apply` добавляет их в
   `logistics_warehouse.payload.address_aliases` с историей подтверждения.
+- `infra/cron/logistics_rtu_sync.sh` запускает тот же CLI под `flock`; по
+  умолчанию dry-run, запись включается только `LOGISTICS_RTU_SYNC_APPLY=true`.
 
 # Invariants
 
@@ -211,6 +218,8 @@ RTU sync запускается не публичным API, а CLI:
   событие `manual_ready_override`.
 - РТУ на точке переводит заказ в `pickup_stored_at_point`, но не закрывает
   сделку в `WON`.
+- Локальная РТУ не создаёт logistics unit; межточечная возвращается в ТЗП
+  получателя только после `accepted_at_point` на конечном складе.
 - Повторный confirm черновика идемпотентен на уровне закрытого draft.
 
 # Решение 2026-07-01: следующий шаг без доработки 1С
@@ -268,6 +277,9 @@ Manual review создается для:
 - РТУ после приемки создает `pickup_stored_at_point`, но не `WON`;
 - RTU sync использует `ONEC_DATABASE_URL`, генерирует `MMLOG1|rtu|...` и не
   пишет обратно в `1С`;
+- local-skip не создаёт logistics unit и идемпотентно закрывает старый review;
+- read-only endpoint отдает только принятую межточечную РТУ целевого склада в
+  JSON/XML;
 - web fallback работает без Telegram и без internal token в браузере;
 - Bitrix OAuth-сессия проверяет allowlist портала и привязку пользователя;
 - `sender/receiver` не могут работать с чужим складом или операцией другой роли;
@@ -290,6 +302,7 @@ Manual review создается для:
 
 # Changelog
 
+- 2026-08-28 — локальные РТУ исключены из logistics units; добавлены cron-кандидат sync и read-only endpoint возврата принятой межточечной РТУ в ТЗП получателя.
 - 2026-08-26 — добавлен контракт встроенного приложения Bitrix24, BFF-сессий,
   складских ролей и одноразового web fallback; основной UX перенесен в Bitrix24,
   Telegram и web остаются резервом общей state machine.

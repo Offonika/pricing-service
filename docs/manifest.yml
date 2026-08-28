@@ -473,9 +473,9 @@ documents:
     status: draft
     owner: operations
     source_of_truth: true
-    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
-    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
-    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
+    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, infra/cron/logistics_rtu_sync.sh, infra/cron/logistics_rtu_sync.cron, app/telegram/logistics_bot.py]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_rtu_cron.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
+    keywords: [logistics, route-run, rtu, local-pickup, ready-for-pickup, external-carrier, manual-review, web-fallback]
   - path: docs/specs/transfer-assistant-readonly-v1.md
     title: Transfer Assistant Readonly V1
     doc_type: spec
@@ -855,9 +855,9 @@ documents:
     status: active
     owner: engineering
     source_of_truth: true
-    related_code: [app/api/logistics.py, app/telegram/logistics_bot.py]
-    related_tests: [tests/]
-    keywords: [logistics, telegram, transfer, логистика, телеграм, бот, курьер]
+    related_code: [app/api/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, app/telegram/logistics_bot.py, infra/cron/logistics_rtu_sync.sh, infra/cron/logistics_rtu_sync.cron]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_rtu_cron.py]
+    keywords: [logistics, telegram, transfer, rtu, ready-for-pickup, логистика, телеграм, бот, курьер]
   - path: docs/IntegrationContract.Logistics1C.md
     title: Logistics 1C Integration Contract
     doc_type: integration_contract
@@ -875,9 +875,9 @@ documents:
     status: active
     owner: engineering
     source_of_truth: true
-    related_code: [app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py]
-    related_tests: [tests/test_logistics_onec.py]
-    keywords: [logistics, 1c, rtu, site-orders, contract]
+    related_code: [app/api/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, app/schemas/logistics.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, infra/cron/logistics_rtu_sync.sh, infra/cron/logistics_rtu_sync.cron]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_rtu_cron.py]
+    keywords: [logistics, 1c, rtu, site-orders, local-pickup, ready-for-pickup, contract]
   - path: docs/Onepage.LogisticsTelegramMVP.md
     title: Logistics Telegram Onepage
     doc_type: onepager

@@ -224,6 +224,13 @@ Readiness gate для РТУ в следующей волне пилота:
 - если адрес не сопоставился однозначно, задача попадает в `manual_review`, где
   логист вручную выбирает подразделение-получатель.
 
+Локальная выдача не создает логистическую единицу: если найденный склад
+получателя совпадает со складом РТУ либо адрес пуст при внутреннем самовывозе,
+РТУ остается в ТЗП своего подразделения. Межточечная РТУ создается как
+`source_document_type = rtu`, после `handed_to_driver` видна получателю в
+`/expected`, а после `accepted_at_point` на конечной точке возвращается в
+«Готов к выдаче» ТЗП получателя через read-only API.
+
 Для сканирования РТУ используем печатный штрихкод/QR с расходной накладной. В
 коде синхронизации нужно зафиксировать, какое значение приходит со сканера
 после чтения этого кода: номер РТУ, ссылка 1С, номер заказа сайта или отдельная
@@ -873,7 +880,25 @@ Future endpoint для следующей волны:
   или lookup;
 - позволяет логисту выбрать подразделение-получатель и продолжить sync.
 
-### 7.4. Export API для 1С
+### 7.4. Read-only API возврата принятой РТУ в ТЗП
+
+#### `GET /api/logistics/rtu/ready-for-pickup`
+
+Параметры:
+
+- `warehouse_code` — обязательный код склада/подразделения 1С;
+- `date_from` — опциональная нижняя граница даты РТУ;
+- `format=json|xml` — формат ответа, по умолчанию JSON.
+
+Назначение:
+
+- вернуть только межточечные РТУ, принятые событием `accepted_at_point` на
+  конечном складе;
+- предоставить ТЗП получателя безопасный read-only список без записи логистики
+  обратно в production 1С;
+- XML используется старой платформой 1С 8.2, JSON — тестами и другими клиентами.
+
+### 7.5. Export API для 1С
 
 #### `GET /api/logistics/export/events`
 
@@ -1111,7 +1136,7 @@ Web fallback нужен как обязательный резерв на слу
 - добавить Telegram-слой без отдельного сервиса на старте;
 - позже, если нагрузка вырастет, вынести логистику в отдельный сервис без изменения пользовательского UX.
 
-## 14. Текущее Состояние Реализации На 2026-04-28
+## 14. Текущее Состояние Реализации На 2026-08-28
 
 В репозитории уже есть foundation логистики:
 
@@ -1120,15 +1145,19 @@ Web fallback нужен как обязательный резерв на слу
   draft/session таблицы Telegram-бота;
 - API для sync справочников/перемещений, handoff draft, receipt draft,
   expected deliveries, monitor, history, incident/returned;
+- единый `source_document_type` для перемещений и РТУ, состояния
+  `at_warehouse`, `in_transit`, `with_external_carrier`;
+- read-only sync готовых РТУ из 1С, `manual_review`, внешний carrier flow и
+  идемпотентное закрытие неактуальных review;
+- правило local-skip: локальная РТУ не создаёт logistics unit;
+- endpoint `GET /api/logistics/rtu/ready-for-pickup` для принятой межточечной РТУ;
+- cron-кандидат sync РТУ раз в минуту с `flock`, по умолчанию dry-run;
 - Telegram webhook endpoint и базовый бот;
-- текущая state machine покрывает `at_warehouse` и `in_transit`;
-- профильные тесты ранее проходили командой:
-  `./.venv/bin/python -m pytest tests/test_logistics_api.py tests/test_logistics_bot.py tests/test_logistics_bot_webhook_api.py`.
+- web fallback и Bitrix24-встраивание используют ту же state machine.
 
-Важно: разделы про `source_document_type`, РТУ, external carrier,
-`with_external_carrier`, `manual_ready_override` и `manual_review` описывают
-следующую волну. В текущем foundation они еще не реализованы в моделях, API и
-Telegram UX.
+Важно: состояние репозитория не доказывает production deploy. Endpoint и cron
+задачи №107 пока являются локальным кандидатом; установка cron и production
+cutover требуют отдельного подтверждения и smoke/readback.
 
 Окружение:
 
@@ -1142,17 +1171,13 @@ Telegram UX.
 
 Следующая волна кода:
 
-- миграции и сервисные методы для `with_external_carrier` и
-  `handed_to_external_carrier` / `accepted_from_external_carrier`;
-- модель/синхронизация РТУ с `source_document_type = rtu` и совместимостью с
-  текущим `logistics_transfer.external_id`;
-- manual review для неоднозначного самовывоза;
-- manual ready override для сбоя флага печати;
 - закрепление barcode/QR lookup после проверки сканером;
 - web fallback для передачи/приемки как обязательный резерв перед
   production-пилотом;
 - условное обновление state по `version` для настоящего optimistic locking;
-- тесты API, сервиса, Telegram UX и web fallback для новых переходов.
+- runtime-приёмка ТЗП v3 и контроль порогов 5/10 секунд;
+- production deploy read-only endpoint и установка cron только после отдельного
+  решения.
 
 Операционный риск: старый лог `/var/log/pricing/logistics_bot.log` мог хранить
 полный Telegram bot token в ошибках. Перед production-пилотом нужно

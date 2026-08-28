@@ -18,6 +18,7 @@ related_tests:
   - tests/test_build_display_working_confirmation_overrides_task.py
   - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
+  - tests/test_compare_receivable_current_report.py
   - tests/test_database_infrastructure.py
   - tests/test_export_display_matching_review_workbook_task.py
   - tests/test_export_display_quality_review_workbook_task.py
@@ -140,6 +141,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `build_display_working_confirmation_overrides.py` на central
   read-only session scope с сохранением `--database-url`, аргументов отбора и
   JSON-контракта.
+- [x] Перевести `compare_receivable_current_report.py` на central read-only session
+  scope и role-specific 1С factory с сохранением аргументов, входного файла и
+  JSON-контракта.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -228,9 +232,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     и production release требуют отдельных подтверждений.
 28. После зелёного CI разрешён merge PR №90. Production migration, deploy и cutover
     в это решение не входят.
+29. Для `compare_receivable_current_report.py` разрешены реализация в отдельной
+    ветке, push и создание отдельного PR после локальных проверок. Merge и
+    production release требуют отдельных подтверждений.
+30. После зелёного CI разрешён merge PR №92. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №92; production release оставлен отдельным
+  решением.
+- 2026-08-28 — `compare_receivable_current_report.py` переведён на central read-only
+  session scope и role-specific 1С factory, зарегистрирован как
+  `application_read_only`; аргументы, входной файл и JSON-контракт сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `compare_receivable_current_report.py` с push и отдельным PR; merge и production
+  оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №90; production release оставлен отдельным
   решением.
 - 2026-08-28 — `build_display_working_confirmation_overrides.py` переведён на

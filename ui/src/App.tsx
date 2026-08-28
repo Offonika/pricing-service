@@ -351,12 +351,15 @@ export function LogisticsFallbackApp() {
     const code = (overrideCode || scanCode).trim();
     if (!draft || !code) return Promise.resolve();
     return runOperation(async () => {
-      const base = mode === "handoff" ? "/handoffs" : "/receipts";
+      const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
       const data = await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/scan`, {
         method: "POST",
         body: JSON.stringify({
           lookup_code: code,
-          dropoff_warehouse_id: mode === "handoff" && dropoffWarehouseId ? Number(dropoffWarehouseId) : null,
+          dropoff_warehouse_id:
+            draft.draft_type === "handoff" && dropoffWarehouseId
+              ? Number(dropoffWarehouseId)
+              : null,
         }),
       });
       setDraft(data);
@@ -368,7 +371,7 @@ export function LogisticsFallbackApp() {
   const confirmDraft = () => {
     if (!draft || !draft.item_count) return Promise.resolve();
     return runOperation(async () => {
-      const base = mode === "handoff" ? "/handoffs" : "/receipts";
+      const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
       const data = await logisticsFetch<{ processed_count: number }>(`${base}/draft/${draft.id}/confirm`, {
         method: "POST",
         body: JSON.stringify({ comment }),
@@ -377,6 +380,35 @@ export function LogisticsFallbackApp() {
       setMessage(`Подтверждено: ${data.processed_count}`);
       await refreshMonitor();
     }, "Ошибка подтверждения");
+  };
+
+  const removeDraftItem = (itemId: number) => {
+    if (!draft) return Promise.resolve();
+    return runOperation(async () => {
+      const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
+      const data = await logisticsFetch<LogisticsDraft>(
+        `${base}/draft/${draft.id}/items/${itemId}/remove`,
+        { method: "POST" }
+      );
+      setDraft(data);
+      setMessage("Ошибочный скан удалён");
+    }, "Ошибка удаления скана");
+  };
+
+  const cancelDraft = () => {
+    if (!draft || !window.confirm("Отменить этот черновик и начать заново?")) {
+      return Promise.resolve();
+    }
+    return runOperation(async () => {
+      const base = draft.draft_type === "handoff" ? "/handoffs" : "/receipts";
+      await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Отменено пользователем в web fallback" }),
+      });
+      setDraft(null);
+      setScanCode("");
+      setMessage("Черновик отменён. Можно начать заново.");
+    }, "Ошибка отмены черновика");
   };
 
   return (
@@ -497,11 +529,21 @@ export function LogisticsFallbackApp() {
                   >
                     Подтвердить
                   </button>
+                  <button className="btn btn--ghost" disabled={busy} onClick={cancelDraft}>
+                    Отменить черновик
+                  </button>
                 </div>
                 <ul>
                   {draft.items.map((item) => (
                     <li key={item.id}>
-                      {item.document_number} · {item.lookup_code || item.barcode}
+                      <span>{item.document_number} · {item.lookup_code || item.barcode}</span>{" "}
+                      <button
+                        className="btn btn--ghost"
+                        disabled={busy}
+                        onClick={() => void removeDraftItem(item.id)}
+                      >
+                        Удалить
+                      </button>
                     </li>
                   ))}
                 </ul>

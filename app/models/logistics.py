@@ -323,9 +323,16 @@ class LogisticsDraft(Base):
         DateTime, server_default=func.now(), nullable=False
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cancel_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     warehouse = relationship("LogisticsWarehouse", foreign_keys=[warehouse_id])
     actor_user = relationship("LogisticsUser", foreign_keys=[actor_user_id])
+    cancelled_by_user = relationship("LogisticsUser", foreign_keys=[cancelled_by_user_id])
     driver = relationship("LogisticsDriver", foreign_keys=[driver_id])
     route_run = relationship("LogisticsRouteRun", foreign_keys=[route_run_id])
     default_dropoff_warehouse = relationship(

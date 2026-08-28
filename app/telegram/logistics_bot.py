@@ -46,6 +46,8 @@ HELP_TEXT = """
 Фото, отправленное во время открытого черновика, прикрепится к ближайшему подтверждению.
 """.strip()
 
+REMOVE_SCAN_PAGE_SIZE = 20
+
 
 class TelegramApiError(RuntimeError):
     def __init__(self, api_method: str, status_code: int | None = None) -> None:
@@ -68,10 +70,12 @@ def _inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
 
 
 def _main_menu(profile: dict[str, Any]) -> dict[str, Any]:
-    rows: list[list[tuple[str, str]]] = [
-        [("📦 Передать", "menu:handoff"), ("📥 Принять", "menu:receive")],
-        [("🚚 Ожидается", "menu:expected"), ("📊 Монитор", "menu:monitor")],
-    ]
+    rows: list[list[tuple[str, str]]] = []
+    if profile["role"] == "sender":
+        rows.append([("📦 Передать", "menu:handoff")])
+    elif profile["role"] == "receiver":
+        rows.append([("📥 Принять", "menu:receive")])
+    rows.append([("🚚 Ожидается", "menu:expected"), ("📊 Монитор", "menu:monitor")])
     if profile["role"] in {"logist", "admin"}:
         rows.append([("🏬 Склады", "menu:warehouses"), ("👤 Водители", "menu:drivers")])
     return _inline_keyboard(rows)
@@ -81,9 +85,47 @@ def _draft_controls() -> dict[str, Any]:
     return _inline_keyboard(
         [
             [("✅ Подтвердить", "draft:confirm"), ("✖️ Отмена", "draft:cancel")],
-            [("🧾 Статус", "draft:status")],
+            [("🧾 Статус", "draft:status"), ("🗑 Удалить скан", "draft:remove_picker")],
             [("⚠️ Инцидент", "draft:incident_picker"), ("↩️ Возврат", "draft:return_picker")],
         ]
+    )
+
+
+def _remove_scan_picker(
+    draft: LogisticsDraft,
+    page: int,
+) -> tuple[str, dict[str, Any]]:
+    items = sorted(draft.items, key=lambda item: item.id)
+    page_count = max(1, (len(items) + REMOVE_SCAN_PAGE_SIZE - 1) // REMOVE_SCAN_PAGE_SIZE)
+    current_page = min(max(page, 0), page_count - 1)
+    page_start = current_page * REMOVE_SCAN_PAGE_SIZE
+    page_items = items[page_start : page_start + REMOVE_SCAN_PAGE_SIZE]
+
+    rows = [
+        [
+            (
+                f"{item.transfer.document_number} | {item.barcode}",
+                f"draft:remove:{item.id}",
+            )
+        ]
+        for item in page_items
+    ]
+    navigation: list[tuple[str, str]] = []
+    if current_page > 0:
+        navigation.append(("⬅️ Назад", f"draft:remove_picker:{current_page - 1}"))
+    navigation.append(
+        (
+            f"{current_page + 1}/{page_count}",
+            f"draft:remove_picker:{current_page}",
+        )
+    )
+    if current_page < page_count - 1:
+        navigation.append(("Далее ➡️", f"draft:remove_picker:{current_page + 1}"))
+    rows.append(navigation)
+    rows.append([("↩️ К статусу", "draft:status")])
+    return (
+        f"🗑 Выберите ошибочный скан. Страница {current_page + 1}/{page_count}:",
+        _inline_keyboard(rows),
     )
 
 
@@ -416,12 +458,16 @@ class LogisticsTelegramBot:
             )
             session.add(current)
         else:
+            draft_changed = current.draft_id != draft_id
             current.telegram_user_id = telegram_user_id
             current.actor_user_id = actor_user_id
             current.draft_id = draft_id
             current.draft_type = draft_type
             current.scan_error_count = 0
             current.recent_errors = []
+            if draft_changed:
+                current.photos.clear()
+                current.status_message_id = None
         session.commit()
         return self._get_session(session, chat_id)
 
@@ -432,6 +478,43 @@ class LogisticsTelegramBot:
         session.delete(current)
         session.commit()
         return current
+
+    def _cancel_current_draft_session(
+        self,
+        session: Session,
+        profile: dict[str, Any],
+        chat_id: int,
+    ) -> tuple[str, dict[str, Any] | None]:
+        current = self._get_session(session, chat_id)
+        if current is None:
+            return "Нет открытого draft.", _main_menu(profile)
+
+        draft_id = current.draft_id
+        already_closed = False
+        try:
+            logistics_service.cancel_draft(
+                session,
+                draft_id=draft_id,
+                actor_user_id=profile["id"],
+                reason="Отменено пользователем в Telegram",
+            )
+        except HTTPException as exc:
+            session.expire_all()
+            draft = session.get(LogisticsDraft, draft_id)
+            if exc.status_code != 409 or draft is None or draft.status == "open":
+                raise
+            already_closed = True
+
+        self._drop_session(session, chat_id)
+        if already_closed:
+            return (
+                f"Черновик #{draft_id} уже закрыт. Сессия Telegram очищена; можно начать заново.",
+                _main_menu(profile),
+            )
+        return (
+            f"✖️ Черновик #{draft_id} отменён. Можно начать заново.",
+            _main_menu(profile),
+        )
 
     def _send(
         self,
@@ -657,6 +740,8 @@ class LogisticsTelegramBot:
             )
 
         if command == "/handoff":
+            if profile["role"] != "sender":
+                return "Передача доступна только отправителю."
             if len(parts) < 3:
                 return "Использование: /handoff <driver_id> <dropoff_warehouse_id>"
             try:
@@ -685,6 +770,8 @@ class LogisticsTelegramBot:
             )
 
         if command == "/receive":
+            if profile["role"] != "receiver":
+                return "Приёмка доступна только получателю."
             try:
                 payload = logistics_service.create_draft(
                     session,
@@ -721,6 +808,7 @@ class LogisticsTelegramBot:
                     {"telegram_file_id": photo.telegram_file_id, "comment": photo.comment}
                     for photo in current.photos
                 ],
+                source_channel="telegram",
             )
             self._drop_session(session, chat_id)
             return (
@@ -731,10 +819,7 @@ class LogisticsTelegramBot:
             )
 
         if command == "/cancel":
-            current = self._drop_session(session, chat_id)
-            if current is None:
-                return "Нет открытого draft."
-            return f"✖️ Черновик #{current.draft_id} снят из текущей сессии бота."
+            return self._cancel_current_draft_session(session, profile, chat_id)
 
         if command == "/expected":
             rows = logistics_service.list_expected_deliveries(
@@ -794,6 +879,15 @@ class LogisticsTelegramBot:
         chat_id: int,
         data: str,
     ) -> tuple[str, dict[str, Any] | None]:
+        if (
+            data == "menu:handoff"
+            or data.startswith("handoff_driver:")
+            or data.startswith("handoff_dropoff:")
+        ) and profile["role"] != "sender":
+            return "Передача доступна только отправителю.", _main_menu(profile)
+        if data == "menu:receive" and profile["role"] != "receiver":
+            return "Приёмка доступна только получателю.", _main_menu(profile)
+
         if data == "menu:handoff":
             drivers = session.scalars(
                 select(LogisticsDriver).where(LogisticsDriver.is_active.is_(True))
@@ -884,6 +978,7 @@ class LogisticsTelegramBot:
                     {"telegram_file_id": photo.telegram_file_id, "comment": photo.comment}
                     for photo in current.photos
                 ],
+                source_channel="telegram",
             )
             self._drop_session(session, chat_id)
             return (
@@ -894,13 +989,38 @@ class LogisticsTelegramBot:
             )
 
         if data == "draft:cancel":
-            current = self._drop_session(session, chat_id)
-            if current is None:
-                return "Нет открытого draft.", _main_menu(profile)
-            return f"✖️ Черновик #{current.draft_id} снят.", _main_menu(profile)
+            return self._cancel_current_draft_session(session, profile, chat_id)
 
         if data == "draft:status":
             return self._render_draft_status(session, profile, chat_id)
+
+        if data == "draft:remove_picker" or data.startswith("draft:remove_picker:"):
+            current = self._get_session(session, chat_id)
+            if current is None:
+                return "Нет открытого draft.", _main_menu(profile)
+            draft = self._get_open_draft(session, current.draft_id)
+            if draft is None or not draft.items:
+                return "В draft пока нет позиций.", _draft_controls()
+            page = int(data.rsplit(":", 1)[1]) if data != "draft:remove_picker" else 0
+            return _remove_scan_picker(draft, page)
+
+        if data.startswith("draft:remove:"):
+            current = self._get_session(session, chat_id)
+            if current is None:
+                return "Нет открытого draft.", _main_menu(profile)
+            item_id = int(data.rsplit(":", 1)[1])
+            logistics_service.remove_scan_from_draft(
+                session,
+                draft_id=current.draft_id,
+                item_id=item_id,
+                actor_user_id=profile["id"],
+            )
+            return self._render_draft_status(
+                session,
+                profile,
+                chat_id,
+                headline="Ошибочный скан удалён.",
+            )
 
         if data == "draft:incident_picker":
             current = self._get_session(session, chat_id)

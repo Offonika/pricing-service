@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.schemas.bitrix_logistics import (
     BitrixLogisticsBootstrapResponse,
+    BitrixLogisticsDraftCancelRequest,
     BitrixLogisticsDraftConfirmRequest,
     BitrixLogisticsDraftCreateRequest,
     BitrixLogisticsDraftScanRequest,
@@ -260,6 +261,43 @@ def scan_handoff_draft(
     )
 
 
+@router.post(
+    "/handoffs/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def remove_handoff_draft_item(
+    draft_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, {"sender"})
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=actor.id,
+    )
+
+
+@router.post("/handoffs/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def cancel_handoff_draft(
+    draft_id: int,
+    payload: BitrixLogisticsDraftCancelRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, {"sender"})
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=actor.id,
+        reason=payload.reason,
+    )
+
+
 @router.post("/handoffs/draft/{draft_id}/confirm", response_model=LogisticsConfirmResponse)
 def confirm_handoff_draft(
     draft_id: int,
@@ -312,6 +350,43 @@ def scan_receipt_draft(
         actor_user_id=actor.id,
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
+    )
+
+
+@router.post(
+    "/receipts/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def remove_receipt_draft_item(
+    draft_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, {"receiver"})
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=actor.id,
+    )
+
+
+@router.post("/receipts/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def cancel_receipt_draft(
+    draft_id: int,
+    payload: BitrixLogisticsDraftCancelRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, {"receiver"})
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=actor.id,
+        reason=payload.reason,
     )
 
 

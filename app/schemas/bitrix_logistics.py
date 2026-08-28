@@ -75,6 +75,10 @@ class BitrixLogisticsDraftConfirmRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=255)
 
 
+class BitrixLogisticsDraftCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 class BitrixLogisticsFallbackLinkResponse(BaseModel):
     url: str
     expires_at: datetime

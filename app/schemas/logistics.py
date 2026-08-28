@@ -110,6 +110,15 @@ class LogisticsDraftConfirmRequest(BaseModel):
     photos: list[LogisticsPhotoInput] = Field(default_factory=list, max_length=20)
 
 
+class LogisticsDraftCancelRequest(BaseModel):
+    actor_user_id: int
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class LogisticsDraftItemRemoveRequest(BaseModel):
+    actor_user_id: int
+
+
 class LogisticsDraftItemResponse(BaseModel):
     id: int
     transfer_id: int
@@ -131,6 +140,9 @@ class LogisticsDraftResponse(BaseModel):
     driver_id: int | None = None
     route_run_id: int | None = None
     default_dropoff_warehouse_id: int | None = None
+    cancelled_at: datetime | None = None
+    cancelled_by_user_id: int | None = None
+    cancel_reason: str | None = None
     item_count: int
     items: list[LogisticsDraftItemResponse]
 

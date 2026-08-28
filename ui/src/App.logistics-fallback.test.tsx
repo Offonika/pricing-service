@@ -24,7 +24,8 @@ function mockFallbackApi(
   openDraft: Record<string, unknown> | null = null
 ) {
   const defaultWarehouseId = role === "logist" ? null : 10;
-  return vi.fn((input: string | URL | Request) => {
+  return vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    void init;
     const path = String(input);
     if (path.endsWith("/profile")) {
       return jsonResponse({
@@ -39,6 +40,21 @@ function mockFallbackApi(
     if (path.endsWith("/drivers")) return jsonResponse(drivers);
     if (path.endsWith("/draft/open")) return jsonResponse(openDraft);
     if (path.includes("/monitor?")) return jsonResponse([]);
+    if (path.endsWith("/handoffs/draft/61/items/62/remove")) {
+      return jsonResponse({
+        ...openDraft,
+        item_count: 0,
+        items: [],
+      });
+    }
+    if (path.endsWith("/handoffs/draft/61/cancel")) {
+      return jsonResponse({
+        ...openDraft,
+        status: "cancelled",
+        item_count: 0,
+        items: [],
+      });
+    }
     if (path.endsWith("/handoffs/draft")) {
       return jsonResponse({
         id: 41,
@@ -93,9 +109,7 @@ describe("LogisticsFallbackApp", () => {
   });
 
   it("восстанавливает открытый черновик в браузере", async () => {
-    vi.stubGlobal(
-      "fetch",
-      mockFallbackApi("sender", {
+    const fallbackApi = mockFallbackApi("sender", {
         id: 61,
         draft_type: "handoff",
         status: "open",
@@ -111,8 +125,9 @@ describe("LogisticsFallbackApp", () => {
             document_number: "РТУ-000061",
           },
         ],
-      })
-    );
+      });
+    vi.stubGlobal("fetch", fallbackApi);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     render(<LogisticsFallbackApp />);
 
@@ -121,6 +136,26 @@ describe("LogisticsFallbackApp", () => {
     expect(screen.getByText("Черновик #61 восстановлен")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Открыть" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Подтвердить" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+    expect(await screen.findByText("Ошибочный скан удалён")).toBeVisible();
+    expect(screen.queryByText(/РТУ-000061/)).not.toBeInTheDocument();
+    const removeCall = fallbackApi.mock.calls.find(([input]) =>
+      String(input).endsWith("/handoffs/draft/61/items/62/remove")
+    );
+    expect(removeCall?.[1]).toMatchObject({ method: "POST", credentials: "include" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Отменить черновик" }));
+    expect(await screen.findByText("Черновик отменён. Можно начать заново.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Открыть" })).toBeEnabled();
+    const cancelCall = fallbackApi.mock.calls.find(([input]) =>
+      String(input).endsWith("/handoffs/draft/61/cancel")
+    );
+    expect(cancelCall?.[1]).toMatchObject({
+      method: "POST",
+      credentials: "include",
+      body: JSON.stringify({ reason: "Отменено пользователем в web fallback" }),
+    });
   });
 
   it("не показывает логисту операции чужого склада", async () => {

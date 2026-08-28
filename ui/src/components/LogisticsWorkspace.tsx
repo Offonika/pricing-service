@@ -299,8 +299,25 @@ function formatReviewDate(value: string) {
 
 export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const onCodeRef = useRef(onCode);
+  const onCloseRef = useRef(onClose);
+  const mountedRef = useRef(true);
+  const decodeRequestRef = useRef(0);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(true);
+
+  useEffect(() => {
+    onCodeRef.current = onCode;
+    onCloseRef.current = onClose;
+  }, [onClose, onCode]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      decodeRequestRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -314,8 +331,8 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
       const normalized = rawValue.trim();
       if (!active || !normalized) return;
       active = false;
-      onCode(normalized);
-      onClose();
+      onCodeRef.current(normalized);
+      onCloseRef.current();
     };
 
     const start = async () => {
@@ -323,12 +340,21 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
         .BarcodeDetector;
       try {
         if (Detector && navigator.mediaDevices?.getUserMedia) {
-          stream = await navigator.mediaDevices.getUserMedia({
+          const requestedStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: { ideal: "environment" } },
             audio: false,
           });
+          if (!active) {
+            requestedStream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+          stream = requestedStream;
           video.srcObject = stream;
           await video.play();
+          if (!active) {
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
           const detector = new Detector({
             formats: ["qr_code", "code_128", "code_39", "ean_13", "ean_8"],
           });
@@ -347,7 +373,7 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
 
         const { BrowserMultiFormatReader } = await import("@zxing/browser");
         const reader = new BrowserMultiFormatReader();
-        controls = await reader.decodeFromConstraints(
+        const requestedControls = await reader.decodeFromConstraints(
           {
             video: { facingMode: { ideal: "environment" } },
             audio: false,
@@ -357,6 +383,11 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
             if (result?.getText()) finish(result.getText());
           }
         );
+        if (!active) {
+          requestedControls.stop();
+          return;
+        }
+        controls = requestedControls;
         setStarting(false);
       } catch (cameraError) {
         if (active) {
@@ -373,18 +404,23 @@ export function CameraScanner({ onCode, onClose }: { onCode: (code: string) => v
       stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
     };
-  }, [onClose, onCode]);
+  }, []);
 
   const decodeFile = async (file: File | undefined) => {
     if (!file) return;
+    const requestId = ++decodeRequestRef.current;
     const url = URL.createObjectURL(file);
     try {
       const { BrowserMultiFormatReader } = await import("@zxing/browser");
+      if (!mountedRef.current || requestId !== decodeRequestRef.current) return;
       const result = await new BrowserMultiFormatReader().decodeFromImageUrl(url);
-      onCode(result.getText());
-      onClose();
+      if (!mountedRef.current || requestId !== decodeRequestRef.current) return;
+      onCodeRef.current(result.getText());
+      onCloseRef.current();
     } catch (decodeError) {
-      setError(`Код на фото не распознан: ${apiError(decodeError)}`);
+      if (mountedRef.current && requestId === decodeRequestRef.current) {
+        setError(`Код на фото не распознан: ${apiError(decodeError)}`);
+      }
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -583,13 +619,13 @@ export function LogisticsWorkspace() {
     run(async () => {
       const code = (overrideCode || scanCode).trim();
       if (!draft || !code) return;
-      const base = operation === "handoff" ? "handoffs" : "receipts";
+      const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
       const { data } = await api.post<Draft>(
         `/bitrix/logistics/${base}/draft/${draft.id}/scan`,
         {
           lookup_code: code,
           dropoff_warehouse_id:
-            operation === "handoff" ? Number(dropoffWarehouseId) : null,
+            draft.draft_type === "handoff" ? Number(dropoffWarehouseId) : null,
         }
       );
       setDraft(data);
@@ -600,7 +636,7 @@ export function LogisticsWorkspace() {
   const confirm = () =>
     run(async () => {
       if (!draft) return;
-      const base = operation === "handoff" ? "handoffs" : "receipts";
+      const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
       const { data } = await api.post<{ processed_count: number }>(
         `/bitrix/logistics/${base}/draft/${draft.id}/confirm`,
         { comment: comment || null, idempotency_key: confirmKey }
@@ -610,6 +646,31 @@ export function LogisticsWorkspace() {
       setMessage(`Подтверждено: ${data.processed_count}`);
       await loadLists("transit");
     });
+
+  const removeDraftItem = (itemId: number) =>
+    run(async () => {
+      if (!draft) return;
+      const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
+      const { data } = await api.post<Draft>(
+        `/bitrix/logistics/${base}/draft/${draft.id}/items/${itemId}/remove`
+      );
+      setDraft(data);
+      setMessage("Ошибочный скан удалён");
+    });
+
+  const cancelDraft = () => {
+    if (!draft || !window.confirm("Отменить этот черновик и начать заново?")) return;
+    void run(async () => {
+      const base = draft.draft_type === "handoff" ? "handoffs" : "receipts";
+      await api.post(`/bitrix/logistics/${base}/draft/${draft.id}/cancel`, {
+        reason: "Отменено пользователем в Bitrix24",
+      });
+      setDraft(null);
+      setConfirmKey("");
+      setScanCode("");
+      setMessage("Черновик отменён. Можно начать заново.");
+    });
+  };
 
   const openHistory = (transferId: number, title: string) =>
     run(async () => {
@@ -808,12 +869,22 @@ export function LogisticsWorkspace() {
                         <strong>{item.document_number}</strong>
                         <small>{item.lookup_code || item.barcode}</small>
                       </div>
-                      <b>Принят</b>
+                      <button
+                        className="btn btn--ghost"
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void removeDraftItem(item.id)}
+                      >
+                        Удалить
+                      </button>
                     </article>
                   ))}
                 </div>
                 <button className="btn logistics-primary" type="button" disabled={!draft.item_count || busy} onClick={confirm}>
                   Подтвердить {draft.item_count ? `(${draft.item_count})` : ""}
+                </button>
+                <button className="btn btn--ghost" type="button" disabled={busy} onClick={cancelDraft}>
+                  Отменить черновик
                 </button>
               </div>
             )}

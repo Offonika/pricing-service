@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import case, exists, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import Settings, get_settings
 from app.models import LogisticsManualReview, LogisticsWarehouse, SiteOrderStageOutbox
@@ -600,6 +600,16 @@ def process_stage_outbox(
     settings = settings or get_settings()
     current_time = now or datetime.now()
     batch_size = min(limit or settings.logistics_stage_worker_batch_size, 500)
+    predecessor = aliased(SiteOrderStageOutbox)
+    has_blocking_predecessor = (
+        exists()
+        .where(
+            predecessor.case_id == SiteOrderStageOutbox.case_id,
+            predecessor.id < SiteOrderStageOutbox.id,
+            predecessor.status.in_([STATUS_PENDING, STATUS_RETRY]),
+        )
+        .correlate(SiteOrderStageOutbox)
+    )
     rows = session.scalars(
         select(SiteOrderStageOutbox)
         .where(
@@ -610,24 +620,22 @@ def process_stage_outbox(
             ),
         )
         .order_by(
+            case((has_blocking_predecessor, 1), else_=0),
             case(
                 (
                     SiteOrderStageOutbox.source_event_type.like("execution_historical_%"),
-                    2,
+                    1,
                 ),
-                (SiteOrderStageOutbox.source_event_type.like("execution_%"), 0),
-                else_=1,
+                else_=0,
             ),
-            SiteOrderStageOutbox.created_at.desc(),
-            SiteOrderStageOutbox.case_id,
             SiteOrderStageOutbox.id,
         )
-        .limit(max(batch_size, 500))
+        .limit(batch_size)
         .with_for_update(skip_locked=True)
     ).all()
     results: list[StageOutboxResult] = []
     historical_apply_attempts = 0
-    for row in rows[:batch_size]:
+    for row in rows:
         if apply:
             if _is_execution_reconciliation_row(row):
                 if not (

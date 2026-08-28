@@ -74,6 +74,18 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
                 LogisticsDriver(external_id="driver", full_name="Водитель"),
             ]
         )
+        session.add(
+            LogisticsTransfer(
+                external_id="bitrix-removable-transfer",
+                document_number="РТУ-BITRIX-1",
+                document_date=datetime(2026, 8, 28, 9, 0),
+                source_warehouse_id=source.id,
+                target_warehouse_id=target.id,
+                barcode="BC-BITRIX-1",
+                lookup_code="MMLOG1|rtu|bitrix-removable-transfer|220028",
+                onec_status="posted",
+            )
+        )
         session.add_all(
             [
                 LogisticsManualReview(
@@ -184,6 +196,41 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         assert restored_bootstrap.status_code == 200
         assert restored_bootstrap.json()["open_draft"]["id"] == handoff_draft.json()["id"]
 
+        draft_id = handoff_draft.json()["id"]
+        bitrix_scan = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{draft_id}/scan",
+            headers=headers,
+            json={"lookup_code": "MMLOG1|rtu|bitrix-removable-transfer|220028"},
+        )
+        assert bitrix_scan.status_code == 200
+        bitrix_item_id = bitrix_scan.json()["items"][0]["id"]
+        bitrix_remove = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{draft_id}/items/{bitrix_item_id}/remove",
+            headers=headers,
+        )
+        assert bitrix_remove.status_code == 200
+        assert bitrix_remove.json()["item_count"] == 0
+        bitrix_cancel = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{draft_id}/cancel",
+            headers=headers,
+            json={"reason": "Исправление ошибочного черновика Bitrix"},
+        )
+        assert bitrix_cancel.status_code == 200
+        assert bitrix_cancel.json()["status"] == "cancelled"
+
+        replacement_draft = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+            },
+        )
+        assert replacement_draft.status_code == 200
+        replacement_draft_id = replacement_draft.json()["id"]
+        assert replacement_draft_id != draft_id
+
         fallback = client.post("/api/bitrix/logistics/fallback-link", headers=headers)
         assert fallback.status_code == 200
         launch_token = parse_qs(urlparse(fallback.json()["url"]).query)["launch"][0]
@@ -198,6 +245,24 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
             json={"token": launch_token},
         )
         assert repeated.status_code == 401
+
+        web_scan = client.post(
+            f"/api/logistics/web/handoffs/draft/{replacement_draft_id}/scan",
+            json={"lookup_code": "BC-BITRIX-1"},
+        )
+        assert web_scan.status_code == 200
+        web_item_id = web_scan.json()["items"][0]["id"]
+        web_remove = client.post(
+            f"/api/logistics/web/handoffs/draft/{replacement_draft_id}/items/{web_item_id}/remove"
+        )
+        assert web_remove.status_code == 200
+        assert web_remove.json()["item_count"] == 0
+        web_cancel = client.post(
+            f"/api/logistics/web/handoffs/draft/{replacement_draft_id}/cancel",
+            json={"reason": "Исправление ошибочного fallback-черновика"},
+        )
+        assert web_cancel.status_code == 200
+        assert web_cancel.json()["status"] == "cancelled"
         with Session(engine) as audit_session:
             launch_audit = audit_session.scalar(
                 select(LogisticsWebLaunchToken).where(

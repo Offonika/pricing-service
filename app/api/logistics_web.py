@@ -62,6 +62,10 @@ class LogisticsWebDraftConfirmRequest(BaseModel):
     photos: list[LogisticsPhotoInput] = Field(default_factory=list, max_length=20)
 
 
+class LogisticsWebDraftCancelRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 def _read_index() -> str:
     for path in _INDEX_PATHS:
         if path.exists():
@@ -287,6 +291,43 @@ def web_scan_handoff(
     )
 
 
+@router.post(
+    "/handoffs/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def web_remove_handoff_item(
+    draft_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    _require_web_role(actor, "sender")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=actor.id,
+    )
+
+
+@router.post("/handoffs/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def web_cancel_handoff(
+    draft_id: int,
+    payload: LogisticsWebDraftCancelRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    _require_web_role(actor, "sender")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=actor.id,
+        reason=payload.reason,
+    )
+
+
 @router.post("/handoffs/draft/{draft_id}/confirm", response_model=LogisticsConfirmResponse)
 def web_confirm_handoff(
     draft_id: int,
@@ -339,6 +380,43 @@ def web_scan_receipt(
         actor_user_id=actor.id,
         barcode=payload.barcode,
         lookup_code=payload.lookup_code,
+    )
+
+
+@router.post(
+    "/receipts/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def web_remove_receipt_item(
+    draft_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    _require_web_role(actor, "receiver")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=actor.id,
+    )
+
+
+@router.post("/receipts/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def web_cancel_receipt(
+    draft_id: int,
+    payload: LogisticsWebDraftCancelRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
+):
+    _require_web_role(actor, "receiver")
+    _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=actor.id,
+        reason=payload.reason,
     )
 
 

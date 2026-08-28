@@ -473,6 +473,7 @@ export function LogisticsWorkspace() {
   const [busy, setBusy] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState("");
   const reviewRequestId = useRef(0);
   const operationInFlight = useRef(false);
 
@@ -480,7 +481,8 @@ export function LogisticsWorkspace() {
     () => new Set(bootstrap?.capabilities || []),
     [bootstrap?.capabilities]
   );
-  const warehouseId = bootstrap?.profile.default_warehouse_id ?? null;
+  const warehouseId = selectedWarehouseId ? Number(selectedWarehouseId) : null;
+  const listWarehouseId = bootstrap?.profile.default_warehouse_id ?? null;
   const dropoffWarehouses = useMemo(
     () => bootstrap?.warehouses.filter((warehouse) => warehouse.id !== warehouseId) || [],
     [bootstrap?.warehouses, warehouseId]
@@ -525,18 +527,18 @@ export function LogisticsWorkspace() {
     async (target: Screen) => {
       if (!bootstrap) return;
       if (target === "expected" && capabilities.has("expected")) {
-        const params = warehouseId ? { warehouse_id: warehouseId } : undefined;
+        const params = listWarehouseId ? { warehouse_id: listWarehouseId } : undefined;
         setExpected((await api.get<ExpectedItem[]>("/bitrix/logistics/expected-deliveries", { params })).data);
       }
       if (target === "transit") {
-        const params = { status: "in_transit", ...(warehouseId ? { warehouse_id: warehouseId } : {}) };
+        const params = { status: "in_transit", ...(listWarehouseId ? { warehouse_id: listWarehouseId } : {}) };
         setTransit((await api.get<MonitorItem[]>("/bitrix/logistics/monitor", { params })).data);
       }
       if (target === "errors" && capabilities.has("errors")) {
         await loadReviews();
       }
     },
-    [bootstrap, capabilities, loadReviews, warehouseId]
+    [bootstrap, capabilities, listWarehouseId, loadReviews]
   );
 
   useEffect(() => {
@@ -546,6 +548,11 @@ export function LogisticsWorkspace() {
       .then(({ data }) => {
         if (cancelled) return;
         setBootstrap(data);
+        const initialWarehouseId =
+          data.open_draft?.warehouse_id ||
+          data.profile.default_warehouse_id ||
+          (data.profile.role === "admin" ? data.warehouses[0]?.id : null);
+        setSelectedWarehouseId(String(initialWarehouseId || ""));
         const initialOperation =
           data.open_draft?.draft_type ||
           (data.capabilities.includes("handoff") ? "handoff" : "receipt");
@@ -733,10 +740,10 @@ export function LogisticsWorkspace() {
   }
 
   const nav: Array<{ id: Screen; label: string; show: boolean }> = [
-    { id: "operation", label: "Сканирование", show: capabilities.has("handoff") || capabilities.has("receipt") },
+    { id: "operation", label: "Сканер", show: capabilities.has("handoff") || capabilities.has("receipt") },
     { id: "expected", label: "Ожидаются", show: capabilities.has("expected") },
     { id: "transit", label: "В пути", show: capabilities.has("monitor") },
-    { id: "history", label: "История", show: capabilities.has("history") && Boolean(historyTitle) },
+    { id: "history", label: "История", show: capabilities.has("history") },
     { id: "errors", label: "Разбор", show: capabilities.has("errors") },
   ];
 
@@ -777,7 +784,11 @@ export function LogisticsWorkspace() {
                 <h2>{operation === "handoff" ? "Передать водителю" : "Принять в магазине"}</h2>
               </div>
               {!draft && capabilities.has("handoff") && capabilities.has("receipt") && (
-                <select value={operation} onChange={(event) => setOperation(event.target.value as Operation)}>
+                <select
+                  aria-label="Операция"
+                  value={operation}
+                  onChange={(event) => setOperation(event.target.value as Operation)}
+                >
                   <option value="handoff">Передача</option>
                   <option value="receipt">Приёмка</option>
                 </select>
@@ -788,7 +799,32 @@ export function LogisticsWorkspace() {
               <div className="logistics-form">
                 <div className="logistics-field logistics-field--fixed">
                   <span>Склад</span>
-                  <strong>{bootstrap.profile.default_warehouse_name || "Не назначен"}</strong>
+                  {bootstrap.profile.role === "admin" && !draft ? (
+                    <select
+                      aria-label="Склад операции"
+                      value={selectedWarehouseId}
+                      onChange={(event) => {
+                        const nextWarehouseId = event.target.value;
+                        setSelectedWarehouseId(nextWarehouseId);
+                        if (dropoffWarehouseId === nextWarehouseId) {
+                          const replacement = bootstrap.warehouses.find(
+                            (warehouse) => String(warehouse.id) !== nextWarehouseId
+                          );
+                          setDropoffWarehouseId(String(replacement?.id || ""));
+                        }
+                      }}
+                    >
+                      {bootstrap.warehouses.map((warehouse) => (
+                        <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <strong>
+                      {bootstrap.warehouses.find((warehouse) => warehouse.id === warehouseId)?.name ||
+                        bootstrap.profile.default_warehouse_name ||
+                        "Не назначен"}
+                    </strong>
+                  )}
                   {!warehouseId && <small>Обратитесь к логисту для привязки склада</small>}
                 </div>
                 {operation === "handoff" && (
@@ -922,7 +958,9 @@ export function LogisticsWorkspace() {
 
         {screen === "history" && (
           <section className="logistics-card">
-            <div className="logistics-card__heading"><h2>История {historyTitle}</h2></div>
+            <div className="logistics-card__heading">
+              <h2>{historyTitle ? `История ${historyTitle}` : "История перемещения"}</h2>
+            </div>
             {!history.length && <p className="logistics-empty">Выберите документ в списке, чтобы увидеть его историю.</p>}
             <div className="logistics-timeline">
               {history.map((event) => (

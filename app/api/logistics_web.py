@@ -162,7 +162,7 @@ def require_logistics_web_actor(
 
 
 def _require_web_role(actor: LogisticsUser, expected: str) -> None:
-    if actor.role != expected:
+    if actor.role not in {expected, "admin"}:
         raise HTTPException(status_code=403, detail="operation is not allowed for logistics role")
 
 

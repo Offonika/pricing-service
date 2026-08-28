@@ -268,7 +268,7 @@ def bootstrap(
         "sender": ["handoff", "monitor", "history"],
         "receiver": ["receipt", "expected", "monitor", "history"],
         "logist": ["expected", "monitor", "history", "errors"],
-        "admin": ["expected", "monitor", "history", "errors"],
+        "admin": ["handoff", "receipt", "expected", "monitor", "history", "errors"],
     }.get(actor.role, [])
     return BitrixLogisticsBootstrapResponse(
         profile=_profile(actor),
@@ -288,7 +288,7 @@ def create_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_HANDOFF,
@@ -308,7 +308,7 @@ def scan_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.add_scan_to_draft(
         db,
@@ -330,7 +330,7 @@ def remove_handoff_draft_item(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.remove_scan_from_draft(
         db,
@@ -347,7 +347,7 @@ def cancel_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.cancel_draft(
         db,
@@ -364,7 +364,7 @@ def confirm_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.confirm_draft(
         db,
@@ -383,7 +383,7 @@ def create_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_RECEIPT,
@@ -401,7 +401,7 @@ def scan_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.add_scan_to_draft(
         db,
@@ -422,7 +422,7 @@ def remove_receipt_draft_item(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.remove_scan_from_draft(
         db,
@@ -439,7 +439,7 @@ def cancel_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.cancel_draft(
         db,
@@ -456,7 +456,7 @@ def confirm_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.confirm_draft(
         db,

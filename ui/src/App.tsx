@@ -275,15 +275,21 @@ export function LogisticsFallbackApp() {
         setProfile(profileData);
         setWarehouses(warehouseData);
         setDrivers(driverData);
-        const defaultWarehouse = String(profileData.default_warehouse_id || "");
+        const initialWarehouse = String(
+          openDraft?.warehouse_id ||
+            profileData.default_warehouse_id ||
+            (profileData.role === "admin" ? warehouseData[0]?.id : "") ||
+            ""
+        );
         const firstDropoff = warehouseData.find(
-          (warehouse) => warehouse.id !== profileData.default_warehouse_id
+          (warehouse) => String(warehouse.id) !== initialWarehouse
         );
         if (openDraft) setMode(openDraft.draft_type as "handoff" | "receipt");
         else if (profileData.role === "sender") setMode("handoff");
         else if (profileData.role === "receiver") setMode("receipt");
+        else if (profileData.role === "admin") setMode("handoff");
         setDraft(openDraft);
-        setWarehouseId(defaultWarehouse);
+        setWarehouseId(initialWarehouse);
         setDropoffWarehouseId(
           String(openDraft?.default_dropoff_warehouse_id || firstDropoff?.id || "")
         );
@@ -291,11 +297,11 @@ export function LogisticsFallbackApp() {
         setMessage(
           openDraft
             ? `Черновик #${openDraft.id} восстановлен`
-            : ["sender", "receiver"].includes(profileData.role)
+            : ["sender", "receiver", "admin"].includes(profileData.role)
               ? ""
               : "Для этой роли доступны мониторинг и история в приложении Bitrix24"
         );
-        return refreshMonitorForWarehouse(defaultWarehouse);
+        return refreshMonitorForWarehouse(profileData.role === "admin" ? "" : initialWarehouse);
       })
       .catch((error: unknown) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "Нет web-сессии");
@@ -321,7 +327,7 @@ export function LogisticsFallbackApp() {
 
   const createDraft = () =>
     runOperation(async () => {
-      if (!profile || !["sender", "receiver"].includes(profile.role)) {
+      if (!profile || !["sender", "receiver", "admin"].includes(profile.role)) {
         throw new Error("Для этой роли доступны только мониторинг и история");
       }
       if (!warehouseId) throw new Error("Для профиля не назначен склад");
@@ -431,16 +437,48 @@ export function LogisticsFallbackApp() {
         )}
       </header>
       <main className="logistics__grid">
-        {profile && ["sender", "receiver"].includes(profile.role) && (
+        {profile && ["sender", "receiver", "admin"].includes(profile.role) && (
           <section className="logistics__panel">
-            <h2>{profile.role === "sender" ? "Передача" : "Приёмка"}</h2>
+            <h2>{mode === "handoff" ? "Передача" : "Приёмка"}</h2>
+            {profile.role === "admin" && !draft && (
+              <select
+                className="app__select"
+                aria-label="Операция"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as "handoff" | "receipt")}
+              >
+                <option value="handoff">Передача</option>
+                <option value="receipt">Приёмка</option>
+              </select>
+            )}
             <div className="logistics-field logistics-field--fixed">
               <span>Склад</span>
-              <strong>
-                {warehouses.find(
-                  (warehouse) => warehouse.id === profile.default_warehouse_id
-                )?.name || "Не назначен"}
-              </strong>
+              {profile.role === "admin" && !draft ? (
+                <select
+                  className="app__select"
+                  aria-label="Склад операции"
+                  value={warehouseId}
+                  onChange={(e) => {
+                    const nextWarehouseId = e.target.value;
+                    setWarehouseId(nextWarehouseId);
+                    if (dropoffWarehouseId === nextWarehouseId) {
+                      const replacement = warehouses.find(
+                        (warehouse) => String(warehouse.id) !== nextWarehouseId
+                      );
+                      setDropoffWarehouseId(String(replacement?.id || ""));
+                    }
+                  }}
+                >
+                  {warehouses.map((warehouse) => (
+                    <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <strong>
+                  {warehouses.find((warehouse) => String(warehouse.id) === warehouseId)?.name ||
+                    "Не назначен"}
+                </strong>
+              )}
             </div>
             {mode === "handoff" && (
               <>
@@ -463,7 +501,7 @@ export function LogisticsFallbackApp() {
                   onChange={(e) => setDropoffWarehouseId(e.target.value)}
                 >
                   {warehouses
-                    .filter((warehouse) => warehouse.id !== profile.default_warehouse_id)
+                    .filter((warehouse) => String(warehouse.id) !== warehouseId)
                     .map((warehouse) => (
                       <option key={warehouse.id} value={warehouse.id}>
                         {warehouse.name}

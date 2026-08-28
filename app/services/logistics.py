@@ -28,8 +28,8 @@ from app.services import site_order_fulfillment
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
 ROLE_LOGIST = {"logist", "admin"}
-DRAFT_SENDER_ROLES = {"sender"}
-DRAFT_RECEIVER_ROLES = {"receiver"}
+DRAFT_SENDER_ROLES = {"sender", "admin"}
+DRAFT_RECEIVER_ROLES = {"receiver", "admin"}
 SOURCE_CHANNELS = {"api", "bitrix", "telegram", "web_fallback"}
 
 SOURCE_TRANSFER = "transfer"

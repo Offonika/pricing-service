@@ -226,9 +226,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 27. Для `build_display_working_confirmation_overrides.py` разрешены реализация в
     отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
     и production release требуют отдельных подтверждений.
+28. После зелёного CI разрешён merge PR №90. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №90; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `build_display_working_confirmation_overrides.py` переведён на
   central read-only session scope и зарегистрирован как `application_read_only`;
   аргументы и JSON-контракт сохранены.

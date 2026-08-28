@@ -2889,6 +2889,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Remove Handoff Draft Item
+      operationId: remove_handoff_draft_item_api_bitrix_logistics_handoffs_draft__draft_id__items__item_id__remove_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/handoffs/draft/{draft_id}/cancel:
+    post:
+      summary: Cancel Handoff Draft
+      operationId: cancel_handoff_draft_api_bitrix_logistics_handoffs_draft__draft_id__cancel_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCancelRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/handoffs/draft/{draft_id}/confirm:
     post:
       summary: Confirm Handoff Draft
@@ -2965,6 +3029,70 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/BitrixLogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Remove Receipt Draft Item
+      operationId: remove_receipt_draft_item_api_bitrix_logistics_receipts_draft__draft_id__items__item_id__remove_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/receipts/draft/{draft_id}/cancel:
+    post:
+      summary: Cancel Receipt Draft
+      operationId: cancel_receipt_draft_api_bitrix_logistics_receipts_draft__draft_id__cancel_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixLogisticsDraftCancelRequest'
       responses:
         '200':
           description: Successful Response
@@ -7344,6 +7472,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/handoffs/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Remove Handoff Item
+      operationId: remove_handoff_item_api_logistics_handoffs_draft__draft_id__items__item_id__remove_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftItemRemoveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/handoffs/draft/{draft_id}/cancel:
+    post:
+      summary: Cancel Handoff Draft
+      operationId: cancel_handoff_draft_api_logistics_handoffs_draft__draft_id__cancel_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftCancelRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/handoffs/draft/{draft_id}/confirm:
     post:
       summary: Confirm Handoff
@@ -7420,6 +7618,76 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LogisticsDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/receipts/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Remove Receipt Item
+      operationId: remove_receipt_item_api_logistics_receipts_draft__draft_id__items__item_id__remove_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftItemRemoveRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/receipts/draft/{draft_id}/cancel:
+    post:
+      summary: Cancel Receipt Draft
+      operationId: cancel_receipt_draft_api_logistics_receipts_draft__draft_id__cancel_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsDraftCancelRequest'
       responses:
         '200':
           description: Successful Response
@@ -8376,6 +8644,82 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Web Remove Handoff Item
+      operationId: web_remove_handoff_item_api_logistics_web_handoffs_draft__draft_id__items__item_id__remove_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/cancel:
+    post:
+      summary: Web Cancel Handoff
+      operationId: web_cancel_handoff_api_logistics_web_handoffs_draft__draft_id__cancel_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftCancelRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/web/handoffs/draft/{draft_id}/confirm:
     post:
       summary: Web Confirm Handoff
@@ -8471,6 +8815,82 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LogisticsWebDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/receipts/draft/{draft_id}/items/{item_id}/remove:
+    post:
+      summary: Web Remove Receipt Item
+      operationId: web_remove_receipt_item_api_logistics_web_receipts_draft__draft_id__items__item_id__remove_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/receipts/draft/{draft_id}/cancel:
+    post:
+      summary: Web Cancel Receipt
+      operationId: web_cancel_receipt_api_logistics_web_receipts_draft__draft_id__cancel_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftCancelRequest'
       responses:
         '200':
           description: Successful Response
@@ -11544,6 +11964,16 @@ components:
       - drivers
       - capabilities
       title: BitrixLogisticsBootstrapResponse
+    BitrixLogisticsDraftCancelRequest:
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Reason
+      type: object
+      title: BitrixLogisticsDraftCancelRequest
     BitrixLogisticsDraftConfirmRequest:
       properties:
         comment:
@@ -20970,6 +21400,21 @@ components:
       - processed_count
       - event_type
       title: LogisticsConfirmResponse
+    LogisticsDraftCancelRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - actor_user_id
+      title: LogisticsDraftCancelRequest
     LogisticsDraftConfirmRequest:
       properties:
         actor_user_id:
@@ -21031,6 +21476,15 @@ components:
       - actor_user_id
       - warehouse_id
       title: LogisticsDraftCreateRequest
+    LogisticsDraftItemRemoveRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+      type: object
+      required:
+      - actor_user_id
+      title: LogisticsDraftItemRemoveRequest
     LogisticsDraftItemResponse:
       properties:
         id:
@@ -21110,6 +21564,22 @@ components:
           - type: integer
           - type: 'null'
           title: Default Dropoff Warehouse Id
+        cancelled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cancelled At
+        cancelled_by_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cancelled By User Id
+        cancel_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cancel Reason
         item_count:
           type: integer
           title: Item Count
@@ -22349,6 +22819,16 @@ components:
       - external_id
       - name
       title: LogisticsWarehouseSyncItem
+    LogisticsWebDraftCancelRequest:
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Reason
+      type: object
+      title: LogisticsWebDraftCancelRequest
     LogisticsWebDraftConfirmRequest:
       properties:
         comment:

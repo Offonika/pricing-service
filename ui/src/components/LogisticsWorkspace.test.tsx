@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
-import { LogisticsWorkspace } from "./LogisticsWorkspace";
+import { CameraScanner, LogisticsWorkspace } from "./LogisticsWorkspace";
 
 const zxing = vi.hoisted(() => ({
   decodeFromConstraints: vi.fn(),
@@ -113,6 +113,97 @@ describe("LogisticsWorkspace", () => {
     expect(screen.queryByText("Permission denied by system")).not.toBeInTheDocument();
   });
 
+  it("останавливает поток камеры, полученный после закрытия сканера", async () => {
+    let resolveStream!: (stream: MediaStream) => void;
+    const delayedStream = new Promise<MediaStream>((resolve) => {
+      resolveStream = resolve;
+    });
+    const stop = vi.fn();
+    const originalMediaDevices = navigator.mediaDevices;
+    const detectorWindow = window as unknown as { BarcodeDetector?: unknown };
+    const originalDetector = detectorWindow.BarcodeDetector;
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn(() => delayedStream) },
+    });
+    Object.defineProperty(window, "BarcodeDetector", {
+      configurable: true,
+      value: class {
+        detect = vi.fn();
+      },
+    });
+
+    try {
+      const view = render(<CameraScanner onCode={vi.fn()} onClose={vi.fn()} />);
+      view.unmount();
+      resolveStream({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+
+      await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    } finally {
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        value: originalMediaDevices,
+      });
+      Object.defineProperty(window, "BarcodeDetector", {
+        configurable: true,
+        value: originalDetector,
+      });
+    }
+  });
+
+  it("игнорирует позднее распознавание фото после закрытия сканера", async () => {
+    let resolveDecode!: (result: { getText: () => string }) => void;
+    zxing.decodeFromImageUrl.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDecode = resolve;
+      })
+    );
+    const createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
+    const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, "revokeObjectURL");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:test-photo"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const onCode = vi.fn();
+    const onClose = vi.fn();
+
+    try {
+      const view = render(<CameraScanner onCode={onCode} onClose={onClose} />);
+      await waitFor(() => expect(zxing.decodeFromConstraints).toHaveBeenCalled());
+      const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+      expect(fileInput).not.toBeNull();
+      fireEvent.change(fileInput!, {
+        target: { files: [new File(["barcode"], "barcode.png", { type: "image/png" })] },
+      });
+      await waitFor(() =>
+        expect(zxing.decodeFromImageUrl).toHaveBeenCalledWith("blob:test-photo")
+      );
+
+      view.unmount();
+      resolveDecode({ getText: () => "LATE-CODE" });
+
+      await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:test-photo"));
+      expect(onCode).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      if (createObjectUrlDescriptor) {
+        Object.defineProperty(URL, "createObjectURL", createObjectUrlDescriptor);
+      } else {
+        delete (URL as unknown as { createObjectURL?: unknown }).createObjectURL;
+      }
+      if (revokeObjectUrlDescriptor) {
+        Object.defineProperty(URL, "revokeObjectURL", revokeObjectUrlDescriptor);
+      } else {
+        delete (URL as unknown as { revokeObjectURL?: unknown }).revokeObjectURL;
+      }
+    }
+  });
+
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
@@ -212,6 +303,7 @@ describe("LogisticsWorkspace", () => {
   });
 
   it("восстанавливает собственный открытый черновик после перезагрузки", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(api.get).mockImplementation(async (path: string) => {
       if (path === "/bitrix/logistics/bootstrap") {
         return {
@@ -240,6 +332,31 @@ describe("LogisticsWorkspace", () => {
       if (path === "/bitrix/logistics/monitor") return { data: [] };
       throw new Error(`unexpected GET ${path}`);
     });
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({
+        data: {
+          id: 77,
+          draft_type: "handoff",
+          status: "open",
+          warehouse_id: 10,
+          driver_id: 30,
+          default_dropoff_warehouse_id: 20,
+          item_count: 0,
+          items: [],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          id: 77,
+          draft_type: "handoff",
+          status: "cancelled",
+          warehouse_id: 10,
+          driver_id: 30,
+          default_dropoff_warehouse_id: 20,
+          item_count: 0,
+          items: [],
+        },
+      });
 
     render(<LogisticsWorkspace />);
 
@@ -247,7 +364,26 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getByText("РТУ-000077")).toBeVisible();
     expect(screen.getByText("Черновик №77 восстановлен")).toBeVisible();
     expect(screen.getByRole("button", { name: "Подтвердить (1)" })).toBeEnabled();
-    expect(api.post).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+    expect(await screen.findByText("Ошибочный скан удалён")).toBeVisible();
+    expect(screen.queryByText("РТУ-000077")).not.toBeInTheDocument();
+    expect(api.post).toHaveBeenNthCalledWith(
+      1,
+      "/bitrix/logistics/handoffs/draft/77/items/78/remove",
+      undefined,
+      undefined
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Отменить черновик" }));
+    expect(await screen.findByText("Черновик отменён. Можно начать заново.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Начать сканирование" })).toBeEnabled();
+    expect(api.post).toHaveBeenNthCalledWith(
+      2,
+      "/bitrix/logistics/handoffs/draft/77/cancel",
+      { reason: "Отменено пользователем в Bitrix24" },
+      undefined
+    );
   });
 
   it("не начинает передачу без активного водителя", async () => {

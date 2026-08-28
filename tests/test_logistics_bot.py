@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import httpx
+import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
@@ -17,7 +19,7 @@ from app.models import (
     LogisticsUser,
 )
 from app.services import logistics as logistics_service
-from app.telegram.logistics_bot import LogisticsTelegramBot
+from app.telegram.logistics_bot import LogisticsTelegramBot, _remove_scan_picker
 
 
 class FakeBotApi:
@@ -243,6 +245,175 @@ def test_logistics_telegram_bot_restores_session_after_restart() -> None:
         os.remove(path)
 
 
+@pytest.mark.parametrize("cancel_via_callback", [False, True])
+def test_logistics_telegram_bot_cleans_stale_session_after_confirmed_draft(
+    cancel_via_callback: bool,
+) -> None:
+    engine, path = setup_db()
+    ids = seed_data(engine)
+    fake_api = FakeBotApi()
+    bot = LogisticsTelegramBot(fake_api, engine)
+
+    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "BC-0001"))
+    with Session(engine) as session:
+        bot_session = session.query(LogisticsBotSession).one()
+        logistics_service.confirm_draft(
+            session,
+            draft_id=bot_session.draft_id,
+            actor_user_id=ids["sender_id"],
+            comment=None,
+            idempotency_key="test-confirm-before-session-cleanup",
+            photos=[],
+            source_channel="telegram",
+        )
+
+    if cancel_via_callback:
+        bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "cb-stale-cancel",
+                    "data": "draft:cancel",
+                    "from": {"id": 101, "username": "sender_user"},
+                    "message": {"chat": {"id": 101}},
+                }
+            }
+        )
+        assert fake_api.callback_answers[-1] == ("cb-stale-cancel", None)
+    else:
+        bot.handle_update(_message(101, "sender_user", "/cancel"))
+
+    assert any("уже закрыт" in text for text in _all_texts(fake_api))
+    with Session(engine) as session:
+        assert session.query(LogisticsBotSession).count() == 0
+        assert session.query(LogisticsBotSessionPhoto).count() == 0
+
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_telegram_bot_does_not_carry_photos_into_replacement_draft() -> None:
+    engine, path = setup_db()
+    ids = seed_data(engine)
+    fake_api = FakeBotApi()
+    bot = LogisticsTelegramBot(fake_api, engine)
+
+    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+    bot.handle_update(_message(101, "sender_user", "BC-0001"))
+    bot.handle_update(
+        {
+            "message": {
+                "chat": {"id": 101},
+                "from": {"id": 101, "username": "sender_user"},
+                "photo": [{"file_id": "photo-from-closed-draft"}],
+            }
+        }
+    )
+    with Session(engine) as session:
+        bot_session = session.query(LogisticsBotSession).one()
+        closed_draft_id = bot_session.draft_id
+        old_status_message_id = bot_session.status_message_id
+        logistics_service.confirm_draft(
+            session,
+            draft_id=closed_draft_id,
+            actor_user_id=ids["sender_id"],
+            comment=None,
+            idempotency_key="test-confirm-before-replacement-draft",
+            photos=[],
+            source_channel="telegram",
+        )
+
+    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
+
+    with Session(engine) as session:
+        replacement_session = session.query(LogisticsBotSession).one()
+        assert replacement_session.draft_id != closed_draft_id
+        assert replacement_session.photos == []
+        assert replacement_session.status_message_id != old_status_message_id
+        assert session.query(LogisticsBotSessionPhoto).count() == 0
+
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_telegram_bot_denies_draft_operations_for_logist() -> None:
+    engine, path = setup_db()
+    seed_data(engine)
+    with Session(engine) as session:
+        logistics_service.sync_users(
+            session,
+            [
+                {
+                    "external_id": "logist",
+                    "telegram_user_id": 303,
+                    "username": "logist_user",
+                    "full_name": "Логист",
+                    "role": "logist",
+                    "default_warehouse_external_id": "store-1",
+                }
+            ],
+        )
+    fake_api = FakeBotApi()
+    bot = LogisticsTelegramBot(fake_api, engine)
+
+    bot.handle_update(_message(303, "logist_user", "/start"))
+    menu = fake_api.messages[-1][2]
+    callbacks = {button["callback_data"] for row in menu["inline_keyboard"] for button in row}
+    assert "menu:handoff" not in callbacks
+    assert "menu:receive" not in callbacks
+
+    bot.handle_update(_message(303, "logist_user", "/handoff 1 2"))
+    bot.handle_update(_message(303, "logist_user", "/receive"))
+    bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb-logist-handoff",
+                "data": "menu:handoff",
+                "from": {"id": 303, "username": "logist_user"},
+                "message": {"chat": {"id": 303}},
+            }
+        }
+    )
+
+    texts = _all_texts(fake_api)
+    assert any("только отправителю" in text for text in texts)
+    assert any("только получателю" in text for text in texts)
+    with Session(engine) as session:
+        assert session.query(LogisticsDraft).count() == 0
+        assert session.query(LogisticsBotSession).count() == 0
+
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_remove_scan_picker_paginates_more_than_twenty_items() -> None:
+    draft = SimpleNamespace(
+        items=[
+            SimpleNamespace(
+                id=item_id,
+                barcode=f"BC-{item_id:02d}",
+                transfer=SimpleNamespace(document_number=f"РТУ-{item_id:02d}"),
+            )
+            for item_id in range(21, 0, -1)
+        ]
+    )
+
+    first_text, first_markup = _remove_scan_picker(draft, 0)
+    first_buttons = [button for row in first_markup["inline_keyboard"] for button in row]
+    assert "Страница 1/2" in first_text
+    assert any(button["callback_data"] == "draft:remove_picker:1" for button in first_buttons)
+    assert not any(button["callback_data"] == "draft:remove:21" for button in first_buttons)
+
+    second_text, second_markup = _remove_scan_picker(draft, 1)
+    second_buttons = [button for row in second_markup["inline_keyboard"] for button in row]
+    assert "Страница 2/2" in second_text
+    assert any(button["callback_data"] == "draft:remove:21" for button in second_buttons)
+    assert any(button["callback_data"] == "draft:remove_picker:0" for button in second_buttons)
+
+
 def test_logistics_telegram_bot_falls_back_to_new_status_message_when_edit_fails() -> None:
     engine, path = setup_db()
     seed_data(engine)
@@ -437,7 +608,7 @@ def test_logistics_telegram_bot_reuses_existing_open_draft_instead_of_creating_n
     bot = LogisticsTelegramBot(fake_api, engine)
 
     bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
-    bot.handle_update(_message(101, "sender_user", "/receive"))
+    bot.handle_update(_message(101, "sender_user", "/handoff 1 2"))
 
     texts = _all_texts(fake_api)
     assert any("У вас уже есть открытый черновик." in text for text in texts)

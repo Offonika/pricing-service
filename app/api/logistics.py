@@ -10,8 +10,10 @@ from app.api.dependencies import get_db, require_logistics_internal_token
 from app.models import LogisticsDraft
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
+    LogisticsDraftCancelRequest,
     LogisticsDraftConfirmRequest,
     LogisticsDraftCreateRequest,
+    LogisticsDraftItemRemoveRequest,
     LogisticsDraftResponse,
     LogisticsDraftScanRequest,
     LogisticsDriverResponse,
@@ -129,6 +131,40 @@ def scan_handoff_item(
     )
 
 
+@router.post(
+    "/handoffs/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def remove_handoff_item(
+    draft_id: int,
+    item_id: int,
+    payload: LogisticsDraftItemRemoveRequest,
+    db: Session = Depends(get_db),
+):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=payload.actor_user_id,
+    )
+
+
+@router.post("/handoffs/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def cancel_handoff_draft(
+    draft_id: int,
+    payload: LogisticsDraftCancelRequest,
+    db: Session = Depends(get_db),
+):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=payload.actor_user_id,
+        reason=payload.reason,
+    )
+
+
 @router.post("/handoffs/draft/{draft_id}/confirm", response_model=LogisticsConfirmResponse)
 def confirm_handoff(
     draft_id: int,
@@ -143,6 +179,7 @@ def confirm_handoff(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=[photo.model_dump() for photo in payload.photos],
+        source_channel="api",
     )
 
 
@@ -175,6 +212,40 @@ def scan_receipt_item(
     )
 
 
+@router.post(
+    "/receipts/draft/{draft_id}/items/{item_id}/remove",
+    response_model=LogisticsDraftResponse,
+)
+def remove_receipt_item(
+    draft_id: int,
+    item_id: int,
+    payload: LogisticsDraftItemRemoveRequest,
+    db: Session = Depends(get_db),
+):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.remove_scan_from_draft(
+        db,
+        draft_id=draft_id,
+        item_id=item_id,
+        actor_user_id=payload.actor_user_id,
+    )
+
+
+@router.post("/receipts/draft/{draft_id}/cancel", response_model=LogisticsDraftResponse)
+def cancel_receipt_draft(
+    draft_id: int,
+    payload: LogisticsDraftCancelRequest,
+    db: Session = Depends(get_db),
+):
+    _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    return logistics_service.cancel_draft(
+        db,
+        draft_id=draft_id,
+        actor_user_id=payload.actor_user_id,
+        reason=payload.reason,
+    )
+
+
 @router.post("/receipts/draft/{draft_id}/confirm", response_model=LogisticsConfirmResponse)
 def confirm_receipt(
     draft_id: int,
@@ -189,6 +260,7 @@ def confirm_receipt(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=[photo.model_dump() for photo in payload.photos],
+        source_channel="api",
     )
 
 

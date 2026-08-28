@@ -202,6 +202,136 @@ def test_stage_outbox_applies_chain_in_order_and_is_idempotent(db_session) -> No
     )
 
 
+def test_stage_outbox_selects_predecessor_before_newer_receipt(db_session) -> None:
+    rows = _seed_order_chain(db_session)
+    rows[0].created_at = datetime(2026, 8, 26, 9, 1)
+    rows[1].created_at = datetime(2026, 8, 26, 9, 2)
+    db_session.commit()
+    client = FakeBitrixClient(_deal())
+
+    first_batch = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        limit=1,
+        settings=_settings(),
+        now=datetime(2026, 8, 26, 10, 0),
+    )
+
+    assert [result.outbox_id for result in first_batch] == [rows[0].id]
+    assert [result.result for result in first_batch] == ["applied"]
+    assert client.deal.stage_id == "PICKUP_TRANSIT"
+
+
+def test_stage_outbox_does_not_starve_logistics_predecessor_for_execution_row(
+    db_session,
+) -> None:
+    rows = _seed_order_chain(db_session)
+    case_row = db_session.get(SiteOrderExecutionCase, rows[0].case_id)
+    execution_event = SiteOrderExecutionEvent(
+        case_id=case_row.id,
+        event_type="execution_assembled",
+        event_at=datetime(2026, 8, 26, 9, 3),
+        source="onec",
+        source_ref="execution:later",
+        confidence="strong",
+        idempotency_key="execution-later",
+        payload={},
+    )
+    db_session.add(execution_event)
+    db_session.flush()
+    case_row.last_evidence_event_id = execution_event.id
+    execution_row = SiteOrderStageOutbox(
+        case_id=case_row.id,
+        event_id=execution_event.id,
+        idempotency_key="stage-execution-later",
+        site_order_number=case_row.site_order_number,
+        bitrix_deal_id=case_row.bitrix_deal_id,
+        source_event_type=execution_event.event_type,
+        target_stage="FINAL_INVOICE",
+        payload={},
+    )
+    db_session.add(execution_row)
+    db_session.commit()
+    client = FakeBitrixClient(_deal())
+    settings = _settings(
+        order_fulfillment_execution_master_enabled=True,
+        order_fulfillment_execution_stage_apply_enabled=True,
+    )
+
+    results = [
+        process_stage_outbox(
+            db_session,
+            client=client,
+            apply=True,
+            limit=1,
+            settings=settings,
+            now=datetime(2026, 8, 26, 10, 0),
+        )[0]
+        for _ in range(3)
+    ]
+
+    assert [result.outbox_id for result in results] == [
+        rows[0].id,
+        rows[1].id,
+        execution_row.id,
+    ]
+    assert [result.result for result in results] == ["applied", "applied", "superseded"]
+    assert db_session.scalars(
+        select(SiteOrderStageOutbox.status).order_by(SiteOrderStageOutbox.id)
+    ).all() == ["applied", "applied", "applied"]
+
+
+def test_stage_outbox_does_not_prioritize_new_execution_from_another_order(
+    db_session,
+) -> None:
+    rows = _seed_order_chain(db_session)
+    another_case = SiteOrderExecutionCase(
+        site_order_number="999999",
+        bitrix_deal_id=9999,
+        current_derived_status="execution_assembled",
+    )
+    db_session.add(another_case)
+    db_session.flush()
+    execution_event = SiteOrderExecutionEvent(
+        case_id=another_case.id,
+        event_type="execution_assembled",
+        event_at=datetime(2026, 8, 26, 9, 3),
+        source="onec",
+        source_ref="execution:another-order",
+        confidence="strong",
+        idempotency_key="execution-another-order",
+        payload={},
+    )
+    db_session.add(execution_event)
+    db_session.flush()
+    another_case.last_evidence_event_id = execution_event.id
+    execution_row = SiteOrderStageOutbox(
+        case_id=another_case.id,
+        event_id=execution_event.id,
+        idempotency_key="stage-execution-another-order",
+        site_order_number=another_case.site_order_number,
+        bitrix_deal_id=another_case.bitrix_deal_id,
+        source_event_type=execution_event.event_type,
+        target_stage="FINAL_INVOICE",
+        payload={},
+    )
+    db_session.add(execution_row)
+    db_session.commit()
+
+    first_batch = process_stage_outbox(
+        db_session,
+        client=FakeBitrixClient(_deal()),
+        apply=True,
+        limit=1,
+        settings=_settings(),
+        now=datetime(2026, 8, 26, 10, 0),
+    )
+
+    assert [result.outbox_id for result in first_batch] == [rows[0].id]
+    assert rows[0].id < execution_row.id
+
+
 def test_stage_outbox_retries_without_overtaking_next_event(db_session) -> None:
     rows = _seed_order_chain(db_session)
     client = FakeBitrixClient(_deal(), fail_updates=1)

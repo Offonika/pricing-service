@@ -28,7 +28,9 @@ from app.services import site_order_fulfillment
 ROLE_SENDER = {"sender", "logist", "admin"}
 ROLE_RECEIVER = {"receiver", "logist", "admin"}
 ROLE_LOGIST = {"logist", "admin"}
-SOURCE_CHANNELS = {"bitrix", "telegram", "web_fallback"}
+DRAFT_SENDER_ROLES = {"sender"}
+DRAFT_RECEIVER_ROLES = {"receiver"}
+SOURCE_CHANNELS = {"api", "bitrix", "telegram", "web_fallback"}
 
 SOURCE_TRANSFER = "transfer"
 SOURCE_RTU = "rtu"
@@ -498,6 +500,9 @@ def _serialize_draft(draft: LogisticsDraft) -> dict:
         "driver_id": draft.driver_id,
         "route_run_id": draft.route_run_id,
         "default_dropoff_warehouse_id": draft.default_dropoff_warehouse_id,
+        "cancelled_at": draft.cancelled_at,
+        "cancelled_by_user_id": draft.cancelled_by_user_id,
+        "cancel_reason": draft.cancel_reason,
         "item_count": len(items),
         "items": items,
     }
@@ -579,11 +584,11 @@ def create_draft(
         _raise_open_draft_conflict(open_drafts)
 
     if draft_type == DRAFT_TYPE_HANDOFF:
-        _require_role(actor, ROLE_SENDER)
+        _require_role(actor, DRAFT_SENDER_ROLES)
         if driver_id is None:
             raise _http_error(422, "driver_id is required for handoff draft")
     elif draft_type == DRAFT_TYPE_RECEIPT:
-        _require_role(actor, ROLE_RECEIVER)
+        _require_role(actor, DRAFT_RECEIVER_ROLES)
     else:
         raise _http_error(422, "unsupported draft type")
 
@@ -653,13 +658,33 @@ def _get_draft_for_update(session: Session, draft_id: int) -> LogisticsDraft:
     return _get_draft(session, draft_id)
 
 
+def _lock_draft_transfers_for_update(
+    session: Session,
+    draft: LogisticsDraft,
+) -> LogisticsDraft:
+    transfer_ids = sorted({item.transfer_id for item in draft.items})
+    if not transfer_ids:
+        return draft
+    locked_ids = session.scalars(
+        select(LogisticsTransfer.id)
+        .where(LogisticsTransfer.id.in_(transfer_ids))
+        .order_by(LogisticsTransfer.id)
+        .with_for_update()
+    ).all()
+    if len(locked_ids) != len(transfer_ids):
+        raise _http_error(409, "draft contains unavailable transfer")
+    # A different draft may have changed the state while this request waited.
+    session.expire_all()
+    return _get_draft(session, draft.id)
+
+
 def _require_draft_mutation_access(actor: LogisticsUser, draft: LogisticsDraft) -> None:
     if actor.id != draft.actor_user_id and actor.role not in ROLE_LOGIST:
         raise _http_error(403, "user cannot modify this draft")
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
-        _require_role(actor, ROLE_SENDER)
+        _require_role(actor, DRAFT_SENDER_ROLES)
     elif draft.draft_type == DRAFT_TYPE_RECEIPT:
-        _require_role(actor, ROLE_RECEIVER)
+        _require_role(actor, DRAFT_RECEIVER_ROLES)
     else:
         raise _http_error(422, "unsupported draft type")
     if actor.role in {"sender", "receiver"}:
@@ -723,14 +748,6 @@ def add_scan_to_draft(
         if target_dropoff is None:
             raise _http_error(422, "dropoff warehouse is required for handoff item")
         _get_warehouse(session, target_dropoff)
-        route_item = _get_or_create_route_item(
-            session,
-            route_run_id=draft.route_run_id,
-            transfer_id=transfer.id,
-            dropoff_warehouse_id=target_dropoff,
-        )
-        if route_item is not None:
-            route_item.status = "planned"
     else:
         if state.status != STATUS_IN_TRANSIT:
             raise _http_error(409, "transfer is already accepted earlier")
@@ -756,6 +773,53 @@ def add_scan_to_draft(
     return _serialize_draft(_get_draft(session, draft_id))
 
 
+def remove_scan_from_draft(
+    session: Session,
+    *,
+    draft_id: int,
+    item_id: int,
+    actor_user_id: int,
+) -> dict:
+    draft = _get_draft_for_update(session, draft_id)
+    if draft.status != "open":
+        raise _http_error(409, "draft is already closed")
+    actor = _get_actor(session, actor_user_id)
+    _require_draft_mutation_access(actor, draft)
+    item = session.scalar(
+        select(LogisticsDraftItem).where(
+            LogisticsDraftItem.id == item_id,
+            LogisticsDraftItem.draft_id == draft.id,
+        )
+    )
+    if item is None:
+        raise _http_error(404, "draft item not found")
+    session.delete(item)
+    session.commit()
+    return _serialize_draft(_get_draft(session, draft_id))
+
+
+def cancel_draft(
+    session: Session,
+    *,
+    draft_id: int,
+    actor_user_id: int,
+    reason: str | None = None,
+) -> dict:
+    draft = _get_draft_for_update(session, draft_id)
+    actor = _get_actor(session, actor_user_id)
+    _require_draft_mutation_access(actor, draft)
+    if draft.status == "cancelled":
+        return _serialize_draft(draft)
+    if draft.status != "open":
+        raise _http_error(409, "draft is already closed")
+    draft.status = "cancelled"
+    draft.cancelled_at = utcnow()
+    draft.cancelled_by_user_id = actor.id
+    draft.cancel_reason = _clip(reason, 1000)
+    session.commit()
+    return _serialize_draft(_get_draft(session, draft_id))
+
+
 def _attach_photos(event: LogisticsTransferEvent, photos: list[dict]) -> None:
     for photo in photos:
         event.photos.append(
@@ -774,7 +838,7 @@ def confirm_draft(
     comment: str | None,
     idempotency_key: str | None,
     photos: list[dict],
-    source_channel: str = "telegram",
+    source_channel: str,
 ) -> dict:
     if source_channel not in SOURCE_CHANNELS:
         raise _http_error(422, "unsupported logistics source channel")
@@ -792,8 +856,11 @@ def confirm_draft(
                 else EVENT_ACCEPTED_AT_POINT
             ),
         }
+    if draft.status != "open":
+        raise _http_error(409, "draft is already closed")
     if not draft.items:
         raise _http_error(422, "draft is empty")
+    draft = _lock_draft_transfers_for_update(session, draft)
 
     processed_count = 0
     for item in draft.items:

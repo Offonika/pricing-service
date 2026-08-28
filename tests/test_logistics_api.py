@@ -155,6 +155,26 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
 
     _seed_reference_data(client, headers)
     ids = _id_maps(engine)
+    forbidden_logist_handoff = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "warehouse_id": ids["warehouses"]["central"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "default_dropoff_warehouse_id": ids["warehouses"]["store-1"],
+        },
+        headers=headers,
+    )
+    assert forbidden_logist_handoff.status_code == 403
+    forbidden_logist_receipt = client.post(
+        "/api/logistics/receipts/draft",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert forbidden_logist_receipt.status_code == 403
 
     auth = client.post(
         "/api/logistics/auth/telegram",
@@ -352,7 +372,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         "accepted_at_point",
         "handed_to_driver",
     ]
-    assert events[2]["source"] == "telegram"
+    assert events[2]["source"] == "api"
     assert events[2]["photos"][0]["telegram_file_id"] == "photo-handoff"
 
     duplicate_receipt = client.post(
@@ -666,8 +686,8 @@ def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None
             "PICKUP_WAITING",
         ]
         assert [row.payload["source_channel"] for row in stage_rows] == [
-            "telegram",
-            "telegram",
+            "api",
+            "api",
         ]
 
     app.dependency_overrides = {}
@@ -944,6 +964,119 @@ def test_logistics_web_fallback_enforces_assigned_warehouse(monkeypatch) -> None
         json={"warehouse_id": ids["warehouses"]["central"]},
     )
     assert missing_assignment.status_code == 422
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_draft_item_can_be_removed_and_draft_cancelled(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+    route = client.post(
+        "/api/logistics/route-runs",
+        json={
+            "route_name": "Рейс из черновика",
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "items": [],
+        },
+        headers=headers,
+    )
+    assert route.status_code == 200
+    route_id = route.json()["id"]
+    create_payload = {
+        "actor_user_id": ids["users"]["Отправитель"],
+        "warehouse_id": ids["warehouses"]["store-1"],
+        "driver_id": ids["drivers"]["Иван Водитель"],
+        "route_run_id": route_id,
+        "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+    }
+    draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json=create_payload,
+        headers=headers,
+    )
+    assert draft.status_code == 200
+    draft_id = draft.json()["id"]
+    scanned = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": "BC-0001",
+        },
+        headers=headers,
+    )
+    assert scanned.status_code == 200
+    item_id = scanned.json()["items"][0]["id"]
+    route_after_scan = client.get("/api/logistics/route-runs", headers=headers)
+    assert route_after_scan.status_code == 200
+    assert route_after_scan.json()[0]["items"] == []
+
+    removed = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/items/{item_id}/remove",
+        json={"actor_user_id": ids["users"]["Отправитель"]},
+        headers=headers,
+    )
+    assert removed.status_code == 200
+    assert removed.json()["item_count"] == 0
+
+    cancelled = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/cancel",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "reason": "Неверно выбран водитель",
+        },
+        headers=headers,
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["cancel_reason"] == "Неверно выбран водитель"
+    assert cancelled.json()["cancelled_at"] is not None
+    route_after_cancel = client.get("/api/logistics/route-runs", headers=headers)
+    assert route_after_cancel.status_code == 200
+    assert route_after_cancel.json()[0]["items"] == []
+
+    confirm_cancelled = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/confirm",
+        json={"actor_user_id": ids["users"]["Отправитель"]},
+        headers=headers,
+    )
+    assert confirm_cancelled.status_code == 409
+
+    replacement = client.post(
+        "/api/logistics/handoffs/draft",
+        json=create_payload,
+        headers=headers,
+    )
+    assert replacement.status_code == 200
+    assert replacement.json()["id"] != draft_id
+    replacement_id = replacement.json()["id"]
+    replacement_scan = client.post(
+        f"/api/logistics/handoffs/draft/{replacement_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": "BC-0001",
+        },
+        headers=headers,
+    )
+    assert replacement_scan.status_code == 200
+    replacement_confirm = client.post(
+        f"/api/logistics/handoffs/draft/{replacement_id}/confirm",
+        json={"actor_user_id": ids["users"]["Отправитель"]},
+        headers=headers,
+    )
+    assert replacement_confirm.status_code == 200
+    route_after_confirm = client.get("/api/logistics/route-runs", headers=headers)
+    assert route_after_confirm.status_code == 200
+    assert route_after_confirm.json()[0]["items"][0]["status"] == "in_transit"
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

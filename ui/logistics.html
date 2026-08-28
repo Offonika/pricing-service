@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <title>Логистика — Bitrix24</title>
+    <style>
+      html, body { min-height: 100%; margin: 0; background: #f5f7fb; color: #172033; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .logistics-launch { box-sizing: border-box; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+      .logistics-launch__card { width: min(100%, 420px); box-sizing: border-box; padding: 28px 22px; border: 1px solid #e3e8f1; border-radius: 22px; background: #fff; box-shadow: 0 16px 44px rgba(31, 45, 74, .09); text-align: center; }
+      .logistics-launch__mark { width: 48px; height: 48px; margin: 0 auto 18px; border: 4px solid #dce7ff; border-top-color: #246bfd; border-radius: 50%; animation: logistics-spin .9s linear infinite; }
+      .logistics-launch h1 { margin: 0 0 10px; font-size: 24px; }
+      .logistics-launch p { margin: 0; color: #5b6475; line-height: 1.45; }
+      .logistics-launch__actions { display: none; gap: 10px; margin-top: 22px; }
+      .logistics-launch.is-slow .logistics-launch__actions,
+      .logistics-launch.is-error .logistics-launch__actions { display: grid; }
+      .logistics-launch.is-error .logistics-launch__mark { animation: none; border-color: #f3c7c7; }
+      .logistics-launch button { min-height: 46px; border: 0; border-radius: 12px; padding: 0 16px; background: #246bfd; color: #fff; font: inherit; font-weight: 650; }
+      .logistics-launch button + button { background: #eef3fb; color: #26344d; }
+      @keyframes logistics-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .logistics-launch__mark { animation: none; } }
+    </style>
+    <script>
+      window.mmLogisticsBack = function () {
+        var launch = window.__MM_BITRIX_LAUNCH__ || {};
+        if (launch.domain) {
+          window.top.location.href = "https://" + launch.domain + "/";
+          return;
+        }
+        window.history.back();
+      };
+      window.mmLogisticsModuleFailed = function () {
+        var shell = document.getElementById("logistics-launch");
+        var message = document.getElementById("logistics-launch-message");
+        if (shell) shell.className = "logistics-launch is-error";
+        if (message) message.textContent = "Не удалось загрузить интерфейс. Проверьте интернет и попробуйте ещё раз.";
+      };
+      window.addEventListener("error", function (event) {
+        var target = event.target;
+        if (target && (target.tagName === "SCRIPT" || target.tagName === "LINK")) {
+          window.mmLogisticsModuleFailed();
+        }
+      }, true);
+      window.setTimeout(function () {
+        if (document.documentElement.dataset.logisticsStarted === "1") return;
+        var shell = document.getElementById("logistics-launch");
+        var message = document.getElementById("logistics-launch-message");
+        if (shell) shell.className = "logistics-launch is-slow";
+        if (message) message.textContent = "Загрузка занимает больше обычного. Можно повторить или вернуться в Bitrix24.";
+      }, 8000);
+    </script>
+  </head>
+  <body>
+    <div id="root">
+      <main class="logistics-launch" id="logistics-launch">
+        <section class="logistics-launch__card" aria-live="polite">
+          <div class="logistics-launch__mark" aria-hidden="true"></div>
+          <h1>Логистика</h1>
+          <p id="logistics-launch-message">Подключаем приложение к Bitrix24…</p>
+          <div class="logistics-launch__actions">
+            <button type="button" onclick="window.location.reload()">Повторить загрузку</button>
+            <button type="button" onclick="window.mmLogisticsBack()">Вернуться в Bitrix24</button>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/logistics-main.tsx" onerror="window.mmLogisticsModuleFailed()"></script>
+  </body>
+</html>

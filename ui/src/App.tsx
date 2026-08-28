@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
-import { CameraScanner, LogisticsWorkspace } from "./components/LogisticsWorkspace";
+import { CameraScanner } from "./components/LogisticsWorkspace";
+import { BitrixLogisticsApp } from "./BitrixLogisticsApp";
 import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
 import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
 import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
@@ -18,7 +19,6 @@ import {
   initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
-  initializeBitrixLogisticsSession,
   initializeBitrixProcurementAssortmentSession,
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
@@ -613,76 +613,7 @@ export function LogisticsFallbackApp() {
   );
 }
 
-export function BitrixLogisticsApp() {
-  const [authState, setAuthState] = useState<
-    { status: "loading" } | { status: "ready" } | { status: "error"; message: string }
-  >({ status: "loading" });
-  const [connectionAttempt, setConnectionAttempt] = useState(0);
-
-  useEffect(() => {
-    const previousTitle = document.title;
-    document.title = "Логистика — Bitrix24";
-    return () => {
-      document.title = previousTitle;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    initializeBitrixLogisticsSession()
-      .then(() => {
-        if (!cancelled) setAuthState({ status: "ready" });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setAuthState({
-            status: "error",
-            message: error instanceof Error ? error.message : "Нет доступа к логистике",
-          });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [connectionAttempt]);
-
-  if (authState.status !== "ready") {
-    const openedOutsideBitrix =
-      authState.status === "error" &&
-      (authState.message.includes("Bitrix24 SDK") || authState.message.includes("OAuth"));
-    return (
-      <div className="app app--center">
-        <div className="app-state app-state--wide">
-          <h1>Логистика</h1>
-          {authState.status === "loading" && <p>Подключение к Bitrix24…</p>}
-          {authState.status === "error" && (
-            <>
-              <p>
-                {openedOutsideBitrix
-                  ? "Откройте приложение из меню Bitrix24."
-                  : "Нет доступа к логистике. Проверьте роль и привязку склада."}
-              </p>
-              <small>{authState.message}</small>
-              <div className="app-state__actions">
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => {
-                    setAuthState({ status: "loading" });
-                    setConnectionAttempt((attempt) => attempt + 1);
-                  }}
-                >
-                  Повторить
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  }
-  return <LogisticsWorkspace />;
-}
+export { BitrixLogisticsApp };
 
 function MatchingApp() {
   const bitrixMode = isBitrixMatchingRoute();

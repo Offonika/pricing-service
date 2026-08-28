@@ -280,9 +280,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 39. Для `scripts/check_onec_catalog_scope.py` разрешены реализация в отдельной
     ветке, push и создание отдельного PR после локальных проверок. Merge и
     production release требуют отдельных подтверждений.
+40. После зелёного CI разрешён merge PR №101. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №101; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `scripts/check_onec_catalog_scope.py` переведён на central read-only
   session scope; role-specific 1С engine, аргументы, JSON-контракт и exit codes
   сохранены.

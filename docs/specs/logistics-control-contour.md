@@ -43,10 +43,10 @@ updated_at: "2026-08-28"
 
 # Назначение
 
-Расширить текущий Logistics Telegram MVP до управляемого контура логистики внутри
-`pricing-service`: видеть не только факт "в пути", но источник документа, QR,
-рейс, ожидаемую точку сдачи, передачу внешнему перевозчику, ручной разбор и связь
-с исполнением интернет-заказа.
+Поддерживать управляемый контур логистики внутри `pricing-service` с основным
+интерфейсом во встроенном приложении Bitrix24: видеть факт «на складе / в пути»,
+источник документа, напечатанный QR/штрихкод, рейс, ожидаемую точку сдачи,
+ручной разбор и связь с исполнением интернет-заказа.
 
 Контур не заменяет учет в `1С`. Он хранит логистическое состояние, event log,
 аудит и операционные исключения, чтобы `Bitrix24` и Telegram/Web были рабочими
@@ -62,7 +62,8 @@ updated_at: "2026-08-28"
 - QR/lookup code, legacy `barcode` и backfill `lookup_code = barcode`;
 - рейсы `logistics_route_run` и состав рейса `logistics_route_run_item`;
 - очередь `logistics_manual_review`;
-- external carrier state `with_external_carrier`;
+- legacy state `with_external_carrier` только для иных маршрутов без действующей
+  CRM-интеграции; для СДЭК/Почты состояние не показывается и не зеркалируется;
 - web fallback `/logistics/fallback` через signed cookie;
 - встроенное приложение Bitrix24 `/bitrix/logistics/` с короткой BFF-сессией;
 - одноразовый fallback launch token на 5 минут с однократным обменом на cookie;
@@ -82,8 +83,8 @@ updated_at: "2026-08-28"
 | --- | --- |
 | `1С УТ 10.3` | учет документов, складов, заказов, РТУ, перемещений и удалений |
 | `pricing-service` | логистическое состояние, event log, рейсы, manual review, bridge событий |
-| `Bitrix24` | задачи, SLA, карточки разбора и операционный контроль |
-| Telegram/Web fallback | UX сканирования и подтверждения, без хранения состояния |
+| `Bitrix24` | основной UX сканирования, задачи, CRM-стадии, SLA и операционный контроль |
+| Telegram/Web fallback | резервный UX той же state machine, без хранения состояния |
 
 Инвариант: read-only sync из `1С` не перетирает активное логистическое состояние.
 Если документ изменен/удален в `1С`, а по нему уже есть handoff/receipt/external
@@ -94,8 +95,8 @@ carrier state, сервис создает `manual_review` и audit event
 
 Базовый поток:
 
-1. `1С` выгружает склады, водителей, пользователей и единицы через
-   `/api/logistics/sync/units`.
+1. Справочники и перемещения поступают через internal sync API, а готовые РТУ
+   читаются минутным read-only CLI/cron из существующего подключения к 1С.
 2. Сервис upsert-ит `logistics_transfer` с `source_document_type`.
 3. QR/штрихкод ищется через `/api/logistics/units/lookup` по `lookup_code`, затем
    по legacy `barcode`.
@@ -116,8 +117,9 @@ RTU sync из SQL `1С`:
   РТУ `_Reference80` и readiness-события `_InfoRg9448`;
 - SQL остается read-only и использует `WITH (NOLOCK)`, как в текущем контуре
   `site_order_fulfillment`;
-- готовая РТУ превращается в `source_document_type = rtu` с lookup
-  `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
+- готовая РТУ превращается в `source_document_type = rtu` с внутренним полным
+  lookup `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`; сканер также
+  принимает существующий короткий QR без номера сайта;
 - до установки отдельного реквизита 1С целевой склад выбирается по address
   aliases из `logistics_warehouse.payload`; aliases можно синхронизировать из
   `_Reference68._Fld9249` через
@@ -143,7 +145,8 @@ RTU sync из SQL `1С`:
   и учитывается счетчиком `local_pickup_skipped`;
 - спорные РТУ не попадают в активную логистику и уходят в `manual_review`.
 
-External carrier:
+Legacy external carrier model для иных маршрутов без действующей
+CRM-интеграции (не используется текущими потоками СДЭК/Почты):
 
 - `handed_to_external_carrier` переводит единицу из `in_transit` в
   `with_external_carrier` и фиксирует перевозчика/трек/терминал;
@@ -191,7 +194,7 @@ External carrier:
 Internal sync/admin endpoints `/api/logistics/*` сохраняют отдельный internal
 token. Все интерфейсы подтверждения используют общие drafts и state machine.
 
-QR v1:
+Зарезервированный будущий корпоративный QR:
 
 - `MMLOG1|transfer|<external_id>|<document_number>|<optional checksum>`;
 - `MMLOG1|rtu|<external_id>|<site_order_number>|<optional checksum>`.
@@ -203,7 +206,9 @@ QR v1:
 печати и рабочего регламента переносится на следующий этап. Существующие
 документы перепечатывать не требуется.
 
-`lookup_code` хранит весь сканируемый код. Для старых строк выполняется backfill:
+`lookup_code` хранит нормализованный внутренний ключ поиска. Текущий короткий QR
+РТУ может отличаться от полного значения в БД; backend нормализует decimal UUID
+и `_IDRRef` до поиска. Для старых строк выполняется backfill:
 `lookup_code = barcode`, `source_document_type = transfer`.
 
 Новые поля логистической единицы:
@@ -216,15 +221,16 @@ QR v1:
 - `logistics_warehouse.payload.address_aliases`: список строк для сопоставления
   адреса самовывоза/доставки РТУ с точкой приемки.
 
-Новые endpoints:
+Core/internal endpoints:
 
 - `POST /api/logistics/sync/units`;
 - `GET /api/logistics/units/lookup?code=...`;
 - `POST /api/logistics/route-runs`, `GET /api/logistics/route-runs`;
 - `GET /api/logistics/manual-review`;
-- `POST /api/logistics/transfers/{id}/external-carrier/handoff`;
-- `POST /api/logistics/transfers/{id}/external-carrier/accept`;
-- `POST /api/logistics/manual-ready-overrides`;
+- `POST /api/logistics/transfers/{id}/external-carrier/handoff` и `/accept` —
+  legacy для иных маршрутов, не для СДЭК/Почты текущего пилота;
+- `POST /api/logistics/manual-ready-overrides` — legacy/internal, не
+  публикуется пользовательским интерфейсам;
 - `GET /api/logistics/rtu/ready-for-pickup?warehouse_code=...&format=json|xml`;
 - web-safe `/api/logistics/web/*` с signed cookie.
 
@@ -233,7 +239,8 @@ RTU sync запускается не публичным API, а CLI:
 - `python tasks/sync_logistics_warehouse_aliases_from_onec.py`;
 - без `--apply` выполняется dry-run address aliases складов;
 - с `--apply` обновляет `logistics_warehouse.payload.address_aliases`;
-- `python tasks/sync_logistics_rtu_from_onec.py --date-from YYYY-MM-DD --limit 500`;
+- `python tasks/sync_logistics_rtu_from_onec.py --date-from YYYY-MM-DD --limit 500`,
+  где `--limit` задаёт размер страницы, а не предел всей синхронизации;
 - без `--apply` выполняется dry-run;
 - с `--apply` пишет logistics units и `manual_review`.
 - `python tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`
@@ -241,8 +248,9 @@ RTU sync запускается не публичным API, а CLI:
 - `python tasks/apply_logistics_warehouse_alias_overrides.py aliases.json` делает
   dry-run подтвержденных aliases, а `--apply` добавляет их в
   `logistics_warehouse.payload.address_aliases` с историей подтверждения.
-- `infra/cron/logistics_rtu_sync.sh` запускает тот же CLI под `flock`; по
-  умолчанию dry-run, запись включается только `LOGISTICS_RTU_SYNC_APPLY=true`.
+- `infra/cron/logistics_rtu_sync.sh` запускает тот же CLI под `flock`; production
+  cron активен раз в минуту с `LOGISTICS_RTU_SYNC_APPLY=true`, а ручной CLI без
+  `--apply` остаётся dry-run.
 
 # Invariants
 
@@ -297,13 +305,12 @@ Manual review создается для:
 - РТУ с неуникальным generated lookup;
 - РТУ, которая не прошла readiness gate `проведена + распечатана + собрана`;
 - изменения/удаления документа `1С` при активном logistics state;
-- ручного override готовности.
+- попытки использовать отменённый legacy override готовности.
 
 Операционный монитор должен уметь фильтровать:
 
 - по рейсу;
 - по источнику `transfer`/`rtu`;
-- по состоянию `with_external_carrier`;
 - по зависшим единицам;
 - по открытым `manual_review`;
 - по расхождениям с `1С`.
@@ -316,7 +323,8 @@ Manual review создается для:
 - lookup работает по `lookup_code`, legacy `barcode` остается совместимым;
 - неверная точка приемки, повторный scan и повторный confirm не создают неверных событий;
 - рейс показывает список единиц, точки и фактические приемки;
-- external carrier не считается финальной доставкой до приемки обратно;
+- СДЭК/Почта не создают второй внешний статус или CRM-переход в
+  `pricing-service`;
 - РТУ после приемки создает `pickup_stored_at_point`, но не `WON`;
 - RTU sync использует `ONEC_DATABASE_URL`, генерирует `MMLOG1|rtu|...` и не
   пишет обратно в `1С`;
@@ -331,27 +339,29 @@ Manual review создается для:
 
 # Rollout
 
-1. Применить миграцию: nullable-поля, backfill, уникальность
-   `(source_document_type, external_id)`, индекс `lookup_code`.
-2. Обновить `.env`: `LOGISTICS_WEB_SESSION_SECRET`.
-3. Выпустить backend с новыми endpoints, не отключая старый Telegram flow.
-4. Подключить read-only sync РТУ из `1С` через
-   `tasks/sync_logistics_rtu_from_onec.py` сначала в dry-run, затем с `--apply`.
-5. С выключенным `LOGISTICS_BITRIX_APP_ENABLED` настроить OAuth placement и связи
-   пользователей, затем включить приложение только для пилотных складов.
-6. Пилотировать центральный склад -> Тёплый Стан на 3–5 заказах; web и Telegram
+Уже выполнено: миграция модели, backend, web/Bitrix foundation и минутный
+read-only RTU sync с явным apply-режимом production cron.
+
+Оставшийся порядок пилота:
+
+1. Проверить OAuth placement и связи пользователей/складов только для пилотного
+   allowlist.
+2. Пилотировать центральный склад -> Тёплый Стан на 3–5 заказах; web и Telegram
    оставить резервом.
-7. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
+3. Перед расширением пилота ротировать старый рискованный лог с Telegram token.
+4. Отдельно проверить stage outbox и только после этого решать вопрос реальной
+   SMS; массовый backfill старых спорных сделок не выполнять.
 
 # Changelog
 
+- 2026-08-28 — `with_external_carrier` исключен из пользовательского монитора СДЭК/Почты и оставлен только legacy-состоянием для иных маршрутов без CRM-интеграции.
 - 2026-08-28 — отображение внешних статусов в логистическом мониторе отменено: СДЭК/Почта видны только по стадиям сделки Bitrix24; отдельная копия состояния в `pricing-service` не создается.
 - 2026-08-28 — ОТМЕНЕНО позднейшим решением того же дня: возможное read-only зеркало внешних статусов рассматривалось как технический вопрос; принято не показывать эти статусы в логистическом мониторе.
-- 2026-08-28 — приемка СДЭК/Почтой назначена API-событием перевозчика: внутреннее плечо сохраняет сделку в `Готов к отгрузке`, подтвержденная приемка переводит ее в `Передан в доставку`; для тестового `admin` временно открыты все логистические операции с аудитом и без обхода финальных стадий.
+- 2026-08-28 — сильное событие СДЭК/Почты обрабатывает существующая интеграция Bitrix24: внутреннее плечо сохраняет сделку в `Готов к отгрузке`, а `pricing-service` не повторяет внешний переход; для тестового `admin` временно открыты все логистические операции с аудитом и без обхода финальных стадий.
 - 2026-08-28 — связана задача Codex по отдельному реквизиту `осиТочкаСамовывоза`; до его production-развертывания сохраняется текущее адресное сопоставление.
 - 2026-08-28 — корпоративный процесс отдельного lookup-кода перенесен на следующий этап; текущий UX использует напечатанный QR/штрихкод документа, а `lookup_code` сохранен только как внутреннее техническое поле backend.
 - 2026-08-28 — РТУ СДЭК, Почты России и курьерской доставки включены во внутреннее водительское плечо; sync больше не подтверждает передачу внешнему перевозчику.
-- 2026-08-28 — локальные РТУ исключены из logistics units; добавлены cron-кандидат sync и read-only endpoint возврата принятой межточечной РТУ в ТЗП получателя.
+- 2026-08-28 — первоначальный cron-кандидат RTU sync переведен в активный минутный production cron; локальные РТУ исключены из logistics units, read-only endpoint возврата принятой межточечной РТУ в ТЗП сохранён.
 - 2026-08-26 — добавлен контракт встроенного приложения Bitrix24, BFF-сессий,
   складских ролей и одноразового web fallback; основной UX перенесен в Bitrix24,
   Telegram и web остаются резервом общей state machine.

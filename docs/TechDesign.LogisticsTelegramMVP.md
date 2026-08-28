@@ -65,12 +65,12 @@ Telegram не должен быть единственной точкой вып
 
 ## 3. Бизнес-правила MVP
 
-Раздел фиксирует целевую модель пилота. Уже реализованный foundation покрывает
-передачу/приемку, ожидаемые доставки, монитор и историю; РТУ, внешние службы и
-ручной допуск отмечены как следующая волна.
+Раздел фиксирует целевую модель пилота. Реализация покрывает передачу/приемку,
+ожидаемые доставки, монитор, историю и РТУ. Внешние службы и ручной допуск не
+входят в текущий внутренний пилот.
 
 - Для `ПеремещениеТоваров`: `1 документ = 1 пакет`.
-- Для РТУ в следующей волне пилота: `1 РТУ = 1 логистическая единица`.
+- Для РТУ пилота: `1 РТУ = 1 логистическая единица`.
 - Передачу водителю сканирует отправитель.
 - Приемку сканирует получатель.
 - Водитель не сканирует.
@@ -96,16 +96,14 @@ Telegram не должен быть единственной точкой вып
 - `Отправка подтверждена` не используется как отдельный gate: по текущему процессу без подтвержденной отправки документ не проводится.
 - `Проверен` в пилоте не обязателен; после появления отдельной роли сотрудников проверки этот флаг нужно добавить в readiness gate.
 - `Распечатан` обязателен для пилота. Известный риск: очень редко флаг печати не проставляется, примерно один случай на несколько тысяч документов; такие случаи разбираются как исключения.
-- если печать фактически была, но флаг не проставился, в следующей волне пилота
-  логист может выполнить ручной допуск в логистику с обязательным комментарием и
-  аудиторским событием `manual_ready_override`.
+- если печать фактически была, но флаг не проставился, документ остаётся вне
+  текущего пилота; ручной допуск отложен в отдельный backlog.
 
 Одного факта проведения документа недостаточно для запуска логистической передачи.
 
-`manual_ready_override` в следующей волне пилота обходит только сбой флага
-печати. Он не должен обходить пометку удаления, отсутствие проведения, неверный
-склад-получатель, отсутствие фактического склада-получателя или отсутствие
-подтвержденного lookup для сканирования.
+Существующий internal endpoint `manual_ready_override` не доступен в Bitrix24
+UX текущего пилота. Если его включение будет отдельно утверждено, он сможет
+обходить только сбой флага печати и не сможет обходить остальные проверки.
 
 Фактический склад-получатель для Telegram определяется через реквизит
 `Подразделение` документа. В справочнике `Подразделения` к подразделению
@@ -669,7 +667,7 @@ backend; клиентские UX-слои не хранят state и не пол
 
 #### Lookup логистической единицы по сканируемому коду
 
-В текущем foundation отдельного публичного `GET` endpoint для lookup нет:
+Отдельного публичного `GET` endpoint для lookup нет:
 поиск выполняется внутри endpoints сканирования draft:
 `POST /api/logistics/handoffs/draft/{draft_id}/scan` и
 `POST /api/logistics/receipts/draft/{draft_id}/scan`.
@@ -822,13 +820,13 @@ foundation API поддерживает `status`, `warehouse_id`, `driver_id`,
 #### `POST /api/logistics/sync/transfers`
 
 - импорт открытых перемещений и выбранного lookup-кода для сканирования;
-- в текущем foundation это legacy import без поля `source_document_type`;
-- после миграции каждая такая логистическая единица получает
-  `source_document_type = transfer`.
+- legacy alias выставляет `source_document_type = transfer`.
 
-#### `POST /api/logistics/sync/rtu`
+#### `POST /api/logistics/sync/units`
 
-Future endpoint для следующей волны:
+Generic internal endpoint принимает перемещения и РТУ. Штатный production flow
+РТУ не вызывает браузерный endpoint, а запускает фоновую задачу
+`tasks/sync_logistics_rtu_from_onec.py`, которая:
 
 - импорт готовых РТУ интернет-заказов;
 - применяет gate `не помечена на удаление` + `Проведена` + история
@@ -836,11 +834,11 @@ Future endpoint для следующей волны:
 - при неоднозначном адресе самовывоза создает запись `manual_review`, а не
   логистическую единицу для автоматической отправки.
 
-### 7.3. Операционные endpoints следующей волны
+### 7.3. Internal endpoints вне текущего пользовательского пилота
 
 #### `POST /api/logistics/transfers/{transfer_id}/external-carrier/handoff`
 
-Future endpoint для следующей волны:
+Endpoint реализован под internal token, но не включён в Bitrix24 UX пилота:
 
 - фиксирует `handed_to_external_carrier`;
 - требует `carrier_name`;
@@ -850,7 +848,7 @@ Future endpoint для следующей волны:
 
 #### `POST /api/logistics/transfers/{transfer_id}/external-carrier/accept`
 
-Future endpoint для следующей волны:
+Endpoint реализован под internal token, но не включён в Bitrix24 UX пилота:
 
 - фиксирует `accepted_from_external_carrier`;
 - доступен получателю финального склада;
@@ -858,7 +856,8 @@ Future endpoint для следующей волны:
 
 #### `POST /api/logistics/manual-ready-overrides`
 
-Future endpoint для следующей волны:
+Endpoint реализован под internal token, но ручной допуск запрещён правилами
+текущего пилота:
 
 - принимает ссылку на документ 1С или номер документа;
 - требует обязательную причину;
@@ -867,7 +866,8 @@ Future endpoint для следующей волны:
 
 #### `GET /api/logistics/manual-review`
 
-Future endpoint для следующей волны:
+Read-only endpoint реализован под internal token; Bitrix24 использует отдельный
+sanitized BFF `/api/bitrix/logistics/errors`:
 
 - показывает РТУ, которые не удалось автоматически сопоставить с подразделением
   или lookup;
@@ -989,21 +989,18 @@ Web fallback нужен как обязательный резерв на слу
 - для `ПеремещениеТоваров` `target_warehouse_external_id` должен указывать на
   фактический склад-получатель из `Подразделение.осиСклад`, а не на
   `СкладПолучатель` документа 1С;
-- `document_target_warehouse_external_id` нужен для аудита маршрутизации через
-  транзит; в текущем foundation его можно хранить внутри `payload`, пока нет
-  отдельной колонки;
+- `document_target_warehouse_external_id` хранится отдельной колонкой и нужен
+  для аудита маршрутизации через транзит;
 - выбранный lookup со сканера должен однозначно находить одну логистическую
   единицу: перемещение или РТУ;
 - справочники складов и логистических пользователей должны синхронизироваться
   раньше логистических единиц.
 
-Текущий foundation API пока принимает legacy payload без `source_document_type`
-и `document_target_warehouse_external_id`: `external_id`, `document_number`,
-`document_date`, `source_warehouse_external_id`, `target_warehouse_external_id`,
-`final_recipient_name`, `barcode`, `status`, `onec_deleted`, `payload`. При
-синхронизации перемещений в это поле `target_warehouse_external_id` уже нужно
-передавать фактического получателя, а транзитный склад документа класть в
-`payload`.
+Generic `/sync/units` принимает `source_document_type` и
+`document_target_warehouse_external_id`; legacy `/sync/transfers` сохраняет
+совместимость и выставляет тип `transfer`. `target_warehouse_external_id`
+указывает фактического получателя, а отдельное document target поле сохраняет
+учётный транзит.
 
 Поле `barcode` в текущем API - legacy-название. До отдельной миграции оно может
 содержать выбранный lookup-код, если сканер читает не `_Document178._Fld9256`, а
@@ -1028,8 +1025,9 @@ Web fallback нужен как обязательный резерв на слу
   нужен web fallback на `price.mm.offonika.ru` или другом внутреннем домене,
   использующий тот же backend API.
 
-Примечание: текущий foundation хранит и инкрементит `version`, но настоящее
-условное обновление state по версии относится к следующей волне реализации.
+`version` участвует в условном ORM update. Если между чтением и commit состояние
+изменилось, backend откатывает транзакцию и возвращает `409` с предложением
+обновить данные.
 
 ## 11. Этапы реализации
 
@@ -1111,50 +1109,37 @@ Web fallback нужен как обязательный резерв на слу
 - добавить Telegram-слой без отдельного сервиса на старте;
 - позже, если нагрузка вырастет, вынести логистику в отдельный сервис без изменения пользовательского UX.
 
-## 14. Текущее Состояние Реализации На 2026-04-28
+## 14. Текущее Состояние Реализации На 2026-08-28
 
-В репозитории уже есть foundation логистики:
+Production release из commit `28480e7` уже содержит модели и state machine,
+Bitrix24 BFF и мобильный UI, Telegram/web fallback, короткий и полный QR,
+фоновой постраничный RTU sync и транзакционный stage outbox.
 
-- модели `logistics_warehouse`, `logistics_driver`, `logistics_user`,
-  `logistics_transfer`, `logistics_transfer_state`, `logistics_transfer_event`,
-  draft/session таблицы Telegram-бота;
-- API для sync справочников/перемещений, handoff draft, receipt draft,
-  expected deliveries, monitor, history, incident/returned;
-- Telegram webhook endpoint и базовый бот;
-- текущая state machine покрывает `at_warehouse` и `in_transit`;
-- профильные тесты ранее проходили командой:
-  `./.venv/bin/python -m pytest tests/test_logistics_api.py tests/test_logistics_bot.py tests/test_logistics_bot_webhook_api.py`.
+Пилот ограничен маршрутом «Электроника на Пресне → Савёловский»:
 
-Важно: разделы про `source_document_type`, РТУ, external carrier,
-`with_external_carrier`, `manual_ready_override` и `manual_review` описывают
-следующую волну. В текущем foundation они еще не реализованы в моделях, API и
-Telegram UX.
+- `LOGISTICS_BITRIX_APP_ENABLED=true`;
+- `LOGISTICS_STAGE_AUTOMATION_ENABLED=true`;
+- `PICKUP_READY_SMS_ENABLED=false`;
+- Арсений Кештов и Андрей Платонов работают как `admin`;
+- RTU sync запускается каждую минуту с `flock`, 14-дневным окном и marker
+  свежести 180 секунд;
+- основной список ошибок фильтруется по pilot allowlist и скрывает legacy
+  `rtu_external_carrier_unmapped` без удаления аудита;
+- `logistics_transfer_state.version` используется как настоящий optimistic
+  lock; stale update возвращает `409`;
+- stage watchdog сообщает о `retry`/ручных конфликтах и падает при задержке
+  пилотной строки более 30 секунд.
 
-Окружение:
+Ручной допуск готовности, ручное подтверждение СДЭК/Почты и обязательные
+печатные формы исключены из ближайшей волны. После внутреннего пилота внешний
+flow должен фиксировать внутреннее плечо водителя и получать приемку терминалом
+из уже действующей интеграции Bitrix24, не создавая второй carrier adapter.
 
-- `pricing-service.service` работает на `127.0.0.1:18080`;
-- nginx проксирует `price.mm.offonika.ru`;
-- webhook health отвечает `200`, webhook без secret отвечает `401`;
-- отдельный `pricing-logistics-bot.service` может быть disabled/inactive при
-  работе через webhook;
-- в локальной БД логистики на момент проверки были справочники и тестовые
-  перемещения, все в состоянии `at_warehouse`.
+Операционный риск старого `/var/log/pricing/logistics_bot.log` закрывается
+ротацией без чтения или публикации потенциального токена.
 
-Следующая волна кода:
+## 15. Changelog
 
-- миграции и сервисные методы для `with_external_carrier` и
-  `handed_to_external_carrier` / `accepted_from_external_carrier`;
-- модель/синхронизация РТУ с `source_document_type = rtu` и совместимостью с
-  текущим `logistics_transfer.external_id`;
-- manual review для неоднозначного самовывоза;
-- manual ready override для сбоя флага печати;
-- закрепление barcode/QR lookup после проверки сканером;
-- web fallback для передачи/приемки как обязательный резерв перед
-  production-пилотом;
-- условное обновление state по `version` для настоящего optimistic locking;
-- тесты API, сервиса, Telegram UX и web fallback для новых переходов.
-
-Операционный риск: старый лог `/var/log/pricing/logistics_bot.log` мог хранить
-полный Telegram bot token в ошибках. Перед production-пилотом нужно
-ротировать/очистить этот лог и убедиться, что логирование Telegram ошибок
-маскирует token.
+- 2026-08-28 — технический статус актуализирован по production `28480e7` и
+  обновлённому плану пилота; зафиксированы минутный sync, pilot-only errors,
+  stage watchdog, optimistic locking и отложенный внешний carrier flow.

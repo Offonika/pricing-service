@@ -4,9 +4,11 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.dependencies import get_db, get_engine
 from app.core.config import get_settings
@@ -143,6 +145,58 @@ def _seed_reference_data(client: TestClient, headers: dict[str, str]) -> None:
         client.post("/api/logistics/sync/transfers", json=transfers, headers=headers).status_code
         == 200
     )
+
+
+def test_logistics_state_rejects_stale_version_update() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            warehouse = LogisticsWarehouse(
+                external_id="version-warehouse",
+                name="Склад",
+                kind="store",
+            )
+            session.add(warehouse)
+            session.flush()
+            transfer = LogisticsTransfer(
+                external_id="version-transfer",
+                document_number="РТУ-VERSION",
+                document_date=datetime(2026, 8, 28, 9, 0),
+                source_warehouse_id=warehouse.id,
+                target_warehouse_id=warehouse.id,
+                barcode="BC-VERSION",
+            )
+            session.add(transfer)
+            session.flush()
+            session.add(
+                LogisticsTransferState(
+                    transfer_id=transfer.id,
+                    status="at_warehouse",
+                    current_warehouse_id=warehouse.id,
+                    last_event_type="synced",
+                    last_event_at=datetime(2026, 8, 28, 9, 0),
+                    version=1,
+                )
+            )
+            session.commit()
+            transfer_id = transfer.id
+
+        with Session(engine) as first, Session(engine) as stale:
+            first_state = first.get(LogisticsTransferState, transfer_id)
+            stale_state = stale.get(LogisticsTransferState, transfer_id)
+            assert first_state is not None
+            assert stale_state is not None
+
+            first_state.last_document_ref = "first"
+            first.commit()
+            assert first_state.version == 2
+
+            stale_state.last_document_ref = "stale"
+            with pytest.raises(StaleDataError):
+                stale.commit()
+    finally:
+        engine.dispose()
+        os.remove(path)
 
 
 def test_logistics_mvp_flow(monkeypatch) -> None:

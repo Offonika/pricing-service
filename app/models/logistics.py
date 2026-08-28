@@ -206,6 +206,8 @@ class LogisticsTransferState(Base):
         DateTime, server_default=func.now(), nullable=False
     )
 
+    __mapper_args__ = {"version_id_col": version}
+
     transfer = relationship("LogisticsTransfer", back_populates="state")
     current_warehouse = relationship("LogisticsWarehouse", foreign_keys=[current_warehouse_id])
     dropoff_warehouse = relationship("LogisticsWarehouse", foreign_keys=[dropoff_warehouse_id])

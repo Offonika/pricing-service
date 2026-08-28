@@ -541,9 +541,11 @@ def errors(
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
     _require_role(actor, {"logist", "admin"})
+    settings = get_settings()
     return logistics_service.list_bitrix_manual_reviews(
         db,
         review_type=review_type,
+        pilot_warehouse_external_ids=settings.logistics_stage_pilot_warehouse_external_ids,
         limit=limit,
         offset=offset,
     )

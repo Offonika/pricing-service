@@ -262,9 +262,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 35. Для `scripts/build_order_fulfillment_stage_outbox.py` разрешены реализация в
     отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
     и production release требуют отдельных подтверждений.
+36. После зелёного CI разрешён merge PR №98. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №98; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `scripts/build_order_fulfillment_stage_outbox.py` переведён на
   central read-only session scope и role-specific 1С factory; аргументы, read-only
   Bitrix stage enrichment, фильтры, CSV-контракт и counters сохранены.

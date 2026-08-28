@@ -132,7 +132,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "logistics_bitrix_allowed_member_ids", ["member-1"])
     monkeypatch.setattr(settings, "logistics_bitrix_session_secret", "test-secret-long-enough")
     monkeypatch.setattr(settings, "logistics_web_session_secret", "fallback-secret-long-enough")
-    monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr(settings, "debug", False)
     monkeypatch.setattr(
         bitrix_api,
         "load_bitrix_current_user",
@@ -140,7 +140,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     )
     app.dependency_overrides[get_db] = _override_db(engine)
     try:
-        client = TestClient(app)
+        client = TestClient(app, base_url="https://testserver")
         response = client.post(
             "/api/bitrix/logistics/session",
             json={
@@ -151,6 +151,24 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         )
         assert response.status_code == 200
         token = response.json()["session_token"]
+        cookie = response.headers["set-cookie"]
+        assert f"{bitrix_api.BITRIX_SESSION_COOKIE_NAME}=" in cookie
+        assert "HttpOnly" in cookie
+        assert "Secure" in cookie
+        assert "SameSite=none" in cookie
+        assert "Path=/api/bitrix/logistics" in cookie
+
+        resumed = client.get("/api/bitrix/logistics/session/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["session_token"] == token
+        assert resumed.json()["profile"]["full_name"] == "Отправитель"
+        assert resumed.json()["expires_in"] > 0
+
+        without_cookie = TestClient(app, base_url="https://testserver").get(
+            "/api/bitrix/logistics/session/resume"
+        )
+        assert without_cookie.status_code == 401
+        assert without_cookie.json()["detail"] == "logistics session cookie is missing"
         headers = {"Authorization": f"Bearer {token}"}
 
         bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
@@ -352,6 +370,185 @@ def test_bitrix_logistics_session_expires_at_ttl_boundary() -> None:
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "logistics session expired"
+
+
+def test_admin_can_handoff_and_receive_at_selected_warehouses(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'bitrix-admin-logistics.db'}")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 28, 9, 0)
+    with Session(engine) as session:
+        source = LogisticsWarehouse(
+            external_id="central",
+            name="Центральный склад",
+            kind="central",
+        )
+        target = LogisticsWarehouse(
+            external_id="teply-stan",
+            name="Тёплый Стан",
+            kind="store",
+        )
+        admin = LogisticsUser(
+            external_id="admin",
+            bitrix_user_id="30",
+            full_name="Администратор",
+            role="admin",
+        )
+        driver = LogisticsDriver(external_id="driver", full_name="Водитель")
+        session.add_all([source, target, admin, driver])
+        session.flush()
+        transfer = LogisticsTransfer(
+            external_id="admin-transfer",
+            document_number="РТУ-ADMIN-1",
+            document_date=now,
+            source_warehouse_id=source.id,
+            target_warehouse_id=target.id,
+            barcode="BC-ADMIN-1",
+            lookup_code="MMLOG1|rtu|admin-transfer|220030",
+            onec_status="posted",
+        )
+        session.add(transfer)
+        session.flush()
+        session.add(
+            LogisticsTransferState(
+                transfer_id=transfer.id,
+                status="at_warehouse",
+                current_warehouse_id=source.id,
+                last_event_type="synced",
+                last_event_at=now,
+                version=1,
+            )
+        )
+        session.commit()
+        source_id = source.id
+        target_id = target.id
+        admin_id = admin.id
+        driver_id = driver.id
+        transfer_id = transfer.id
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "logistics_bitrix_app_enabled", True)
+    monkeypatch.setattr(settings, "logistics_bitrix_allowed_domains", ["portal.example"])
+    monkeypatch.setattr(settings, "logistics_bitrix_allowed_member_ids", ["member-1"])
+    monkeypatch.setattr(settings, "logistics_bitrix_session_secret", "test-secret-long-enough")
+    monkeypatch.setattr(settings, "logistics_web_session_secret", "fallback-secret-long-enough")
+    admin_token, _expires_at = create_logistics_bitrix_session_token(
+        actor_user_id=admin_id,
+        domain="portal.example",
+        member_id="member-1",
+        bitrix_user_id="30",
+        settings=settings,
+    )
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    app.dependency_overrides[get_db] = _override_db(engine)
+    try:
+        client = TestClient(app, base_url="https://testserver")
+        bootstrap = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
+        assert bootstrap.status_code == 200
+        assert bootstrap.json()["capabilities"] == [
+            "handoff",
+            "receipt",
+            "expected",
+            "monitor",
+            "history",
+            "errors",
+        ]
+
+        handoff = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={
+                "warehouse_id": source_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": target_id,
+            },
+        )
+        assert handoff.status_code == 200
+        handoff_id = handoff.json()["id"]
+        assert (
+            client.post(
+                f"/api/bitrix/logistics/handoffs/draft/{handoff_id}/scan",
+                headers=headers,
+                json={"lookup_code": "MMLOG1|rtu|admin-transfer|220030"},
+            ).status_code
+            == 200
+        )
+        handoff_confirm = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{handoff_id}/confirm",
+            headers=headers,
+            json={"idempotency_key": "admin-handoff-1"},
+        )
+        assert handoff_confirm.status_code == 200
+
+        receipt = client.post(
+            "/api/bitrix/logistics/receipts/draft",
+            headers=headers,
+            json={"warehouse_id": target_id},
+        )
+        assert receipt.status_code == 200
+        receipt_id = receipt.json()["id"]
+        assert (
+            client.post(
+                f"/api/bitrix/logistics/receipts/draft/{receipt_id}/scan",
+                headers=headers,
+                json={"lookup_code": "BC-ADMIN-1"},
+            ).status_code
+            == 200
+        )
+        receipt_confirm = client.post(
+            f"/api/bitrix/logistics/receipts/draft/{receipt_id}/confirm",
+            headers=headers,
+            json={"idempotency_key": "admin-receipt-1"},
+        )
+        assert receipt_confirm.status_code == 200
+
+        fallback = client.post("/api/bitrix/logistics/fallback-link", headers=headers)
+        launch_token = parse_qs(urlparse(fallback.json()["url"]).query)["launch"][0]
+        assert (
+            client.post(
+                "/api/bitrix/logistics/fallback-session",
+                json={"token": launch_token},
+            ).status_code
+            == 200
+        )
+        web_handoff = client.post(
+            "/api/logistics/web/handoffs/draft",
+            json={
+                "warehouse_id": target_id,
+                "driver_id": driver_id,
+                "default_dropoff_warehouse_id": source_id,
+            },
+        )
+        assert web_handoff.status_code == 200
+        assert (
+            client.post(
+                f"/api/logistics/web/handoffs/draft/{web_handoff.json()['id']}/cancel",
+                json={"reason": "admin fallback smoke"},
+            ).status_code
+            == 200
+        )
+
+        with Session(engine) as session:
+            state = session.get(LogisticsTransferState, transfer_id)
+            assert state is not None
+            assert state.status == "at_warehouse"
+            assert state.current_warehouse_id == target_id
+            events = session.scalars(
+                select(LogisticsTransferEvent)
+                .where(LogisticsTransferEvent.transfer_id == transfer_id)
+                .order_by(LogisticsTransferEvent.id)
+            ).all()
+            assert [event.event_type for event in events] == [
+                "handed_to_driver",
+                "accepted_at_point",
+            ]
+            assert {event.source for event in events} == {"bitrix"}
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_bitrix_logistics_fallback_link_rejects_expired_token(tmp_path) -> None:

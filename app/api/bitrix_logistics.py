@@ -5,7 +5,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, joinedload
@@ -47,11 +47,13 @@ from app.services.bitrix_logistics_auth import (
     ensure_logistics_bitrix_launch_allowed,
     load_bitrix_current_user,
     verify_logistics_bitrix_session,
+    verify_logistics_bitrix_session_token,
 )
 
 router = APIRouter(prefix="/bitrix/logistics")
 page_router = APIRouter()
 ALLOWED_LOGISTICS_ROLES = {"sender", "receiver", "logist", "admin"}
+BITRIX_SESSION_COOKIE_NAME = "mm_logistics_bitrix_session"
 
 
 @page_router.api_route(
@@ -77,9 +79,9 @@ async def bitrix_logistics_page(request: Request) -> HTMLResponse:
     return HTMLResponse(_inject_launch_payload(_read_index(), payload))
 
 
-def _actor_from_session(
-    bitrix_session: LogisticsBitrixSession = Depends(verify_logistics_bitrix_session),
-    db: Session = Depends(get_db),
+def _load_actor_from_session(
+    db: Session,
+    bitrix_session: LogisticsBitrixSession,
 ) -> LogisticsUser:
     actor = db.scalar(
         select(LogisticsUser)
@@ -95,6 +97,46 @@ def _actor_from_session(
     if actor.role not in ALLOWED_LOGISTICS_ROLES:
         raise HTTPException(status_code=403, detail="logistics profile role is not supported")
     return actor
+
+
+def _actor_from_session(
+    bitrix_session: LogisticsBitrixSession = Depends(verify_logistics_bitrix_session),
+    db: Session = Depends(get_db),
+) -> LogisticsUser:
+    return _load_actor_from_session(db, bitrix_session)
+
+
+def _session_response(
+    *,
+    token: str,
+    expires_at: datetime,
+    actor: LogisticsUser,
+) -> BitrixLogisticsSessionResponse:
+    expires_in = max(1, int((expires_at - datetime.now(UTC)).total_seconds()))
+    return BitrixLogisticsSessionResponse(
+        session_token=token,
+        expires_at=expires_at,
+        expires_in=expires_in,
+        profile=_profile(actor),
+    )
+
+
+def _set_bitrix_session_cookie(
+    response: Response,
+    *,
+    token: str,
+    max_age: int,
+) -> None:
+    settings = get_settings()
+    response.set_cookie(
+        BITRIX_SESSION_COOKIE_NAME,
+        token,
+        max_age=max_age,
+        path="/api/bitrix/logistics",
+        httponly=True,
+        secure=not settings.debug,
+        samesite="lax" if settings.debug else "none",
+    )
 
 
 def _effective_warehouse_id(actor: LogisticsUser, requested: int | None) -> int:
@@ -158,6 +200,7 @@ def _require_transfer_visible(db: Session, actor: LogisticsUser, transfer_id: in
 @router.post("/session", response_model=BitrixLogisticsSessionResponse)
 def create_bitrix_logistics_session(
     payload: BitrixLogisticsSessionRequest,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> BitrixLogisticsSessionResponse:
     settings = get_settings()
@@ -192,11 +235,27 @@ def create_bitrix_logistics_session(
         bitrix_user_id=bitrix_user.user_id,
         settings=settings,
     )
-    return BitrixLogisticsSessionResponse(
-        session_token=token,
-        expires_at=expires_at,
-        expires_in=settings.logistics_bitrix_session_ttl_seconds,
-        profile=_profile(actor),
+    _set_bitrix_session_cookie(
+        response,
+        token=token,
+        max_age=settings.logistics_bitrix_session_ttl_seconds,
+    )
+    return _session_response(token=token, expires_at=expires_at, actor=actor)
+
+
+@router.get("/session/resume", response_model=BitrixLogisticsSessionResponse)
+def resume_bitrix_logistics_session(
+    token: str | None = Cookie(default=None, alias=BITRIX_SESSION_COOKIE_NAME),
+    db: Session = Depends(get_db),
+) -> BitrixLogisticsSessionResponse:
+    if not token:
+        raise HTTPException(status_code=401, detail="logistics session cookie is missing")
+    bitrix_session = verify_logistics_bitrix_session_token(token)
+    actor = _load_actor_from_session(db, bitrix_session)
+    return _session_response(
+        token=token,
+        expires_at=bitrix_session.expires_at,
+        actor=actor,
     )
 
 
@@ -209,7 +268,7 @@ def bootstrap(
         "sender": ["handoff", "monitor", "history"],
         "receiver": ["receipt", "expected", "monitor", "history"],
         "logist": ["expected", "monitor", "history", "errors"],
-        "admin": ["expected", "monitor", "history", "errors"],
+        "admin": ["handoff", "receipt", "expected", "monitor", "history", "errors"],
     }.get(actor.role, [])
     return BitrixLogisticsBootstrapResponse(
         profile=_profile(actor),
@@ -229,7 +288,7 @@ def create_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_HANDOFF,
@@ -249,7 +308,7 @@ def scan_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.add_scan_to_draft(
         db,
@@ -271,7 +330,7 @@ def remove_handoff_draft_item(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.remove_scan_from_draft(
         db,
@@ -288,7 +347,7 @@ def cancel_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.cancel_draft(
         db,
@@ -305,7 +364,7 @@ def confirm_handoff_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"sender"})
+    _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
     return logistics_service.confirm_draft(
         db,
@@ -324,7 +383,7 @@ def create_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     return logistics_service.create_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_RECEIPT,
@@ -342,7 +401,7 @@ def scan_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.add_scan_to_draft(
         db,
@@ -363,7 +422,7 @@ def remove_receipt_draft_item(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.remove_scan_from_draft(
         db,
@@ -380,7 +439,7 @@ def cancel_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.cancel_draft(
         db,
@@ -397,7 +456,7 @@ def confirm_receipt_draft(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
-    _require_role(actor, {"receiver"})
+    _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
     return logistics_service.confirm_draft(
         db,

@@ -20,10 +20,10 @@ function jsonResponse(data: unknown) {
 }
 
 function mockFallbackApi(
-  role: "sender" | "receiver" | "logist",
+  role: "sender" | "receiver" | "logist" | "admin",
   openDraft: Record<string, unknown> | null = null
 ) {
-  const defaultWarehouseId = role === "logist" ? null : 10;
+  const defaultWarehouseId = ["logist", "admin"].includes(role) ? null : 10;
   return vi.fn((input: string | URL | Request, init?: RequestInit) => {
     void init;
     const path = String(input);
@@ -62,6 +62,17 @@ function mockFallbackApi(
         status: "open",
         warehouse_id: 10,
         driver_id: 30,
+        item_count: 0,
+        items: [],
+      });
+    }
+    if (path.endsWith("/receipts/draft")) {
+      return jsonResponse({
+        id: 42,
+        draft_type: "receipt",
+        status: "open",
+        warehouse_id: 20,
+        driver_id: null,
         item_count: 0,
         items: [],
       });
@@ -106,6 +117,31 @@ describe("LogisticsFallbackApp", () => {
     expect(screen.queryByRole("combobox", { name: "Водитель" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Склад назначения" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Открыть" })).toBeEnabled();
+  });
+
+  it("открывает администратору обе операции и выбор склада", async () => {
+    const fallbackApi = mockFallbackApi("admin");
+    vi.stubGlobal("fetch", fallbackApi);
+
+    render(<LogisticsFallbackApp />);
+
+    const operation = await screen.findByRole("combobox", { name: "Операция" });
+    const warehouse = screen.getByRole("combobox", { name: "Склад операции" });
+    expect(operation).toHaveValue("handoff");
+    expect(warehouse).toHaveValue("10");
+
+    fireEvent.change(operation, { target: { value: "receipt" } });
+    fireEvent.change(warehouse, { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть" }));
+
+    expect(await screen.findByText("Черновик #42")).toBeVisible();
+    const createCall = fallbackApi.mock.calls.find(([input]) =>
+      String(input).endsWith("/receipts/draft")
+    );
+    expect(createCall?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ warehouse_id: 20, comment: "" }),
+    });
   });
 
   it("восстанавливает открытый черновик в браузере", async () => {

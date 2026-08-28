@@ -4577,11 +4577,15 @@
   }
 
   .logistics-nav {
+    overflow-x: hidden;
     padding-inline: 5px;
   }
 
   .logistics-nav__item {
-    padding-inline: 10px;
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 3px;
+    font-size: 12px;
   }
 
   .logistics-mobile-list article {

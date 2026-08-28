@@ -50,6 +50,18 @@ const logistBootstrap = {
   capabilities: ["expected", "monitor", "history", "errors"],
 };
 
+const adminBootstrap = {
+  ...bootstrap,
+  profile: {
+    id: 3,
+    full_name: "Кештов Арсений Юрьевич",
+    role: "admin",
+    default_warehouse_id: null,
+    default_warehouse_name: null,
+  },
+  capabilities: ["handoff", "receipt", "expected", "monitor", "history", "errors"],
+};
+
 describe("LogisticsWorkspace", () => {
   beforeEach(() => {
     zxing.decodeFromConstraints.mockResolvedValue({ stop: zxing.stop });
@@ -58,6 +70,49 @@ describe("LogisticsWorkspace", () => {
       if (path === "/bitrix/logistics/monitor") return { data: [] };
       throw new Error(`unexpected GET ${path}`);
     });
+  });
+
+  it("открывает администратору все экраны, обе операции и выбор склада", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: adminBootstrap };
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.post).mockResolvedValueOnce({
+      data: {
+        id: 44,
+        draft_type: "receipt",
+        status: "open",
+        warehouse_id: 20,
+        driver_id: null,
+        item_count: 0,
+        items: [],
+      },
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Администратор")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Сканер" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Ожидаются" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "В пути" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "История" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Разбор" })).toBeVisible();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Операция" }), {
+      target: { value: "receipt" },
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Склад операции" }), {
+      target: { value: "20" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Начать сканирование" }));
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/bitrix/logistics/receipts/draft", {
+        warehouse_id: 20,
+        comment: null,
+      }, undefined)
+    );
   });
 
   it("просит заднюю камеру в запасном ZXing-сканере", async () => {
@@ -483,9 +538,11 @@ describe("LogisticsWorkspace", () => {
     render(<LogisticsWorkspace />);
 
     expect(await screen.findByRole("button", { name: "В пути" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "История" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "История" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "В пути" }));
-    fireEvent.click(await screen.findByRole("button", { name: "История" }));
+    await screen.findByText("РТУ-000091");
+    const historyButtons = screen.getAllByRole("button", { name: "История" });
+    fireEvent.click(historyButtons.at(-1)!);
 
     expect(await screen.findByText("Передано водителю")).toBeVisible();
     expect(screen.getByText("Центральный склад → Тёплый Стан")).toBeVisible();

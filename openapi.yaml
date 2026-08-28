@@ -2819,6 +2819,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/session/resume:
+    get:
+      summary: Resume Bitrix Logistics Session
+      operationId: resume_bitrix_logistics_session_api_bitrix_logistics_session_resume_get
+      parameters:
+      - name: mm_logistics_bitrix_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Bitrix Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixLogisticsSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/bootstrap:
     get:
       summary: Bootstrap

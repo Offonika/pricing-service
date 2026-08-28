@@ -342,9 +342,14 @@ Manual review создается для:
 6. Пилотировать центральный склад -> Тёплый Стан на 3–5 заказах; web и Telegram
    оставить резервом.
 7. Перед production-пилотом ротировать старый рискованный лог с Telegram token.
+8. 2026-08-28 разрешены merge PR №87 и production release проверенного коммита.
+   Текущие production-значения feature flags сохраняются; включение приложения,
+   автоматических стадий и SMS требует отдельного управляемого шага.
 
 # Changelog
 
+- 2026-08-28 — после зелёного CI разрешены merge PR №87 и production release;
+  значения логистических feature flags оставлены без изменения.
 - 2026-08-28 — draft-операции ограничены ролями `sender/receiver`, internal API
   получил отдельный source-channel `api`, а обычные `execution_*` и логистические
   строки outbox переведены в общий FIFO; historical execution остаётся фоновым.

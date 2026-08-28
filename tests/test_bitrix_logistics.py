@@ -97,6 +97,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
                         "rtu_number": "РБГУ0408001",
                         "onec_order_number": "РБГУ0067001",
                         "site_order_number": "220001",
+                        "source_warehouse_external_id": "source",
                         "source_warehouse_name": "Сайт",
                         "site_delivery_method": "Самовывоз",
                         "site_delivery_address": "secret customer address",
@@ -107,7 +108,10 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
                     source_document_type="rtu",
                     source_external_id="rtu-review-2",
                     reason="external carrier",
-                    payload={"rtu_number": "РБГУ0408002"},
+                    payload={
+                        "rtu_number": "РБГУ0408002",
+                        "source_warehouse_external_id": "source",
+                    },
                 ),
                 LogisticsManualReview(
                     review_type="site_order_execution_conflict",
@@ -132,6 +136,11 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     monkeypatch.setattr(settings, "logistics_bitrix_allowed_member_ids", ["member-1"])
     monkeypatch.setattr(settings, "logistics_bitrix_session_secret", "test-secret-long-enough")
     monkeypatch.setattr(settings, "logistics_web_session_secret", "fallback-secret-long-enough")
+    monkeypatch.setattr(
+        settings,
+        "logistics_stage_pilot_warehouse_external_ids",
+        ["source", "target"],
+    )
     monkeypatch.setattr(settings, "debug", False)
     monkeypatch.setattr(
         bitrix_api,
@@ -318,13 +327,10 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         )
         assert review_page.status_code == 200
         review_payload = review_page.json()
-        assert review_payload["total"] == 2
+        assert review_payload["total"] == 1
         assert review_payload["limit"] == 1
         assert len(review_payload["items"]) == 1
-        assert review_payload["counts"] == {
-            "rtu_external_carrier_unmapped": 1,
-            "rtu_target_warehouse_unresolved": 1,
-        }
+        assert review_payload["counts"] == {"rtu_target_warehouse_unresolved": 1}
         assert "site_order_execution_conflict" not in review_payload["counts"]
         assert "payload" not in review_payload["items"][0]
         assert "source_external_id" not in review_payload["items"][0]
@@ -339,6 +345,15 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
         assert filtered_reviews.status_code == 200
         assert filtered_reviews.json()["total"] == 1
         assert filtered_reviews.json()["items"][0]["document_number"] == "РБГУ0408001"
+
+        external_reviews = client.get(
+            "/api/bitrix/logistics/errors",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            params={"review_type": "rtu_external_carrier_unmapped"},
+        )
+        assert external_reviews.status_code == 200
+        assert external_reviews.json()["total"] == 1
+        assert external_reviews.json()["items"][0]["document_number"] == "РБГУ0408002"
 
         foreign_reviews = client.get(
             "/api/bitrix/logistics/errors",

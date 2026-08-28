@@ -26,6 +26,7 @@ from app.services.site_order_stage_outbox import (
     STORAGE_DEADLINE_FIELD,
     process_stage_outbox,
 )
+from tasks.check_logistics_stage_outbox_health import build_health_report
 
 
 class FakeBitrixClient:
@@ -135,6 +136,29 @@ def _settings(**overrides):
     }
     values.update(overrides)
     return Settings(**values)
+
+
+def test_logistics_stage_outbox_health_reports_pilot_delay_and_reviews(db_session) -> None:
+    rows = _seed_order_chain(db_session)
+    rows[0].status = "retry"
+    rows[0].created_at = datetime(2026, 8, 28, 9, 0, 0)
+    rows[1].status = "manual_review"
+    rows[1].created_at = datetime(2026, 8, 28, 9, 0, 5)
+    db_session.commit()
+
+    report = build_health_report(
+        db_session,
+        pilot_warehouse_external_ids=["central"],
+        now=datetime(2026, 8, 28, 9, 0, 31),
+        max_delay_seconds=30,
+    )
+
+    assert report["status"] == "critical"
+    assert report["retry"] == 1
+    assert report["manual_review"] == 1
+    assert report["delayed"] == 1
+    assert report["oldest_active_age_seconds"] == 31
+    assert report["delayed_outbox_ids"] == [rows[0].id]
 
 
 def _deal(stage: str = "FINAL_INVOICE"):

@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.models import (
     LogisticsDraft,
@@ -54,6 +55,7 @@ DRAFT_TYPE_HANDOFF = "handoff"
 DRAFT_TYPE_RECEIPT = "receipt"
 
 BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES = ("ambiguous_qr", "unknown_qr")
+BITRIX_DEFAULT_HIDDEN_REVIEW_TYPES = ("rtu_external_carrier_unmapped",)
 EVENT_IDEMPOTENCY_KEY_MAX_LENGTH = 255
 MMLOG_LOOKUP_RE = re.compile(r"^MMLOG1\|(rtu|transfer)\|([^|]+)(?:\|([^|]+))?$")
 ONEC_IDRREF_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
@@ -73,6 +75,17 @@ def _coerce_datetime(value: datetime | str) -> datetime:
 
 def _http_error(status: int, detail) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
+
+
+def _commit_state_change(session: Session) -> None:
+    try:
+        session.commit()
+    except StaleDataError as exc:
+        session.rollback()
+        raise _http_error(
+            409,
+            "Логистическое состояние уже изменилось. Обновите данные и повторите операцию",
+        ) from exc
 
 
 def _bounded_event_key(idempotency_key: str | None, *parts: object) -> str | None:
@@ -1150,13 +1163,12 @@ def confirm_draft(
         state.last_event_at = event.event_at
         state.last_user_id = actor.id
         state.last_document_ref = transfer.document_number
-        state.version += 1
         processed_count += 1
 
     draft.status = "confirmed"
     draft.confirmed_at = utcnow()
     draft.comment = _clip(comment or draft.comment, 1000)
-    session.commit()
+    _commit_state_change(session)
     return {
         "draft_id": draft.id,
         "status": draft.status,
@@ -1484,8 +1496,7 @@ def create_transfer_event(
     state.last_event_at = event.event_at
     state.last_user_id = actor.id
     state.last_document_ref = transfer.document_number
-    state.version += 1
-    session.commit()
+    _commit_state_change(session)
     return {"status": "ok"}
 
 
@@ -1954,13 +1965,22 @@ def list_bitrix_manual_reviews(
     session: Session,
     *,
     review_type: str | None = None,
+    pilot_warehouse_external_ids: list[str] | None = None,
     limit: int = 30,
     offset: int = 0,
 ) -> dict:
-    scope_condition = _bitrix_logistics_manual_review_scope_condition()
-    conditions = [LogisticsManualReview.status == "open", scope_condition]
+    scope_condition = _bitrix_logistics_manual_review_scope_condition(
+        pilot_warehouse_external_ids=pilot_warehouse_external_ids,
+    )
+    base_conditions = [LogisticsManualReview.status == "open", scope_condition]
+    conditions = list(base_conditions)
     if review_type is not None:
         conditions.append(LogisticsManualReview.review_type == review_type)
+    else:
+        base_conditions.append(
+            LogisticsManualReview.review_type.not_in(BITRIX_DEFAULT_HIDDEN_REVIEW_TYPES)
+        )
+        conditions = list(base_conditions)
 
     total = int(
         session.scalar(select(func.count()).select_from(LogisticsManualReview).where(*conditions))
@@ -1968,7 +1988,7 @@ def list_bitrix_manual_reviews(
     )
     count_rows = session.execute(
         select(LogisticsManualReview.review_type, func.count())
-        .where(LogisticsManualReview.status == "open", scope_condition)
+        .where(*base_conditions)
         .group_by(LogisticsManualReview.review_type)
         .order_by(LogisticsManualReview.review_type)
     ).all()
@@ -2011,12 +2031,47 @@ def list_bitrix_manual_reviews(
     }
 
 
-def _bitrix_logistics_manual_review_scope_condition():
-    return or_(
+def _bitrix_logistics_manual_review_scope_condition(
+    *,
+    pilot_warehouse_external_ids: list[str] | None = None,
+):
+    logistics_scope = or_(
         LogisticsManualReview.transfer_id.is_not(None),
         LogisticsManualReview.source_document_type.in_((SOURCE_TRANSFER, SOURCE_RTU)),
         LogisticsManualReview.review_type.in_(BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES),
     )
+    pilot_ids = tuple(
+        sorted(
+            {
+                str(external_id).strip().lower()
+                for external_id in (pilot_warehouse_external_ids or [])
+                if str(external_id).strip()
+            }
+        )
+    )
+    if not pilot_ids:
+        return logistics_scope
+
+    pilot_scope = or_(
+        LogisticsManualReview.review_type.in_(BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES),
+        LogisticsManualReview.transfer.has(
+            or_(
+                LogisticsTransfer.source_warehouse.has(
+                    func.lower(LogisticsWarehouse.external_id).in_(pilot_ids)
+                ),
+                LogisticsTransfer.target_warehouse.has(
+                    func.lower(LogisticsWarehouse.external_id).in_(pilot_ids)
+                ),
+            )
+        ),
+        func.lower(LogisticsManualReview.payload["source_warehouse_external_id"].as_string()).in_(
+            pilot_ids
+        ),
+        func.lower(LogisticsManualReview.payload["target_warehouse_external_id"].as_string()).in_(
+            pilot_ids
+        ),
+    )
+    return and_(logistics_scope, pilot_scope)
 
 
 def _optional_string(value) -> str | None:
@@ -2080,8 +2135,7 @@ def handoff_to_external_carrier(
     state.last_event_at = event.event_at
     state.last_user_id = actor.id
     state.last_document_ref = transfer.document_number
-    state.version += 1
-    session.commit()
+    _commit_state_change(session)
     return {"status": "ok"}
 
 
@@ -2156,8 +2210,7 @@ def handoff_to_external_carrier_from_sync(
     state.last_event_at = event.event_at
     state.last_user_id = None
     state.last_document_ref = transfer.document_number
-    state.version += 1
-    session.commit()
+    _commit_state_change(session)
     return {"status": "created"}
 
 
@@ -2224,8 +2277,7 @@ def accept_from_external_carrier(
     state.last_event_at = event.event_at
     state.last_user_id = actor.id
     state.last_document_ref = transfer.document_number
-    state.version += 1
-    session.commit()
+    _commit_state_change(session)
     return {"status": "ok"}
 
 
@@ -2288,6 +2340,5 @@ def manual_ready_override(
     state.last_event_at = event.event_at
     state.last_user_id = actor.id
     state.last_document_ref = transfer.document_number
-    state.version += 1
-    session.commit()
+    _commit_state_change(session)
     return {"status": "ok", "transfer_id": transfer.id}

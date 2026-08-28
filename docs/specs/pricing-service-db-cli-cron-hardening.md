@@ -244,9 +244,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 31. Для `report_product_compatibility_sync.py` разрешены реализация в отдельной
     ветке, push и создание отдельного PR после локальных проверок. Merge и
     production release требуют отдельных подтверждений.
+32. После зелёного CI разрешён merge PR №94. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №94; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `report_product_compatibility_sync.py` переведён на central read-only
   session scope и role-specific 1С factory, зарегистрирован как
   `application_read_only`; аргументы, site JSON и JSON/CSV-контракты сохранены.

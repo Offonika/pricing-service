@@ -235,9 +235,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 29. Для `compare_receivable_current_report.py` разрешены реализация в отдельной
     ветке, push и создание отдельного PR после локальных проверок. Merge и
     production release требуют отдельных подтверждений.
+30. После зелёного CI разрешён merge PR №92. Production migration, deploy и cutover
+    в это решение не входят.
 
 # Changelog
 
+- 2026-08-28 — разрешён merge PR №92; production release оставлен отдельным
+  решением.
 - 2026-08-28 — `compare_receivable_current_report.py` переведён на central read-only
   session scope и role-specific 1С factory, зарегистрирован как
   `application_read_only`; аргументы, входной файл и JSON-контракт сохранены.

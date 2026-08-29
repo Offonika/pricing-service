@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -20,6 +22,111 @@ from app.services.receivable_decision_portrait import (
 )
 
 SNAPSHOT_DATE = date(2026, 7, 4)
+
+
+def test_task_uses_role_specific_read_only_db_lifecycle(monkeypatch, tmp_path) -> None:
+    class FakeOnecEngine:
+        def __init__(self) -> None:
+            self.disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    app_session = object()
+    session_scope_calls: list[dict[str, object]] = []
+    onec_factory_calls: list[dict[str, object]] = []
+    onec_engines: list[FakeOnecEngine] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool, database_url: str | None):
+        session_scope_calls.append({"read_only": read_only, "database_url": database_url})
+        yield app_session
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int | float,
+        login_timeout_seconds: int | float,
+    ) -> FakeOnecEngine:
+        onec_factory_calls.append(
+            {
+                "database_url": database_url,
+                "query_timeout_seconds": query_timeout_seconds,
+                "login_timeout_seconds": login_timeout_seconds,
+            }
+        )
+        engine = FakeOnecEngine()
+        onec_engines.append(engine)
+        return engine
+
+    args = SimpleNamespace(
+        snapshot_date=SNAPSHOT_DATE,
+        limit=None,
+        counterparty_ref=[],
+        output_dir=tmp_path,
+        database_url="sqlite:///override.db",
+        onec_folder="Покупатели",
+        folder_filter_source="onec",
+        onec_database_url="mssql://override",
+        with_onec_profitability=True,
+        allow_missing_folder_filter=False,
+        json=True,
+    )
+    settings = SimpleNamespace(
+        database_url="postgresql://settings",
+        onec_database_url="mssql://settings",
+        onec_query_timeout_seconds=37,
+        onec_login_timeout_seconds=11,
+    )
+    portraits = [SimpleNamespace(counterparty_ref="cp-lifecycle")]
+    monkeypatch.setattr(portrait_task, "_parse_args", lambda _argv: args)
+    monkeypatch.setattr(portrait_task, "get_settings", lambda: settings)
+    monkeypatch.setattr(portrait_task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(portrait_task, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(
+        portrait_task,
+        "fetch_counterparty_refs_from_onec_group",
+        lambda _engine, **_kwargs: {"cp-lifecycle"},
+    )
+    monkeypatch.setattr(
+        portrait_task,
+        "build_receivable_decision_portraits",
+        lambda *_args, **_kwargs: portraits,
+    )
+    monkeypatch.setattr(
+        portrait_task,
+        "fetch_counterparty_profitability_metrics_from_onec",
+        lambda _engine, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        portrait_task,
+        "fetch_counterparty_payment_form_metrics_from_onec",
+        lambda _engine, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        portrait_task,
+        "build_payload",
+        lambda **_kwargs: {"summary": {}, "folder_filter": {}},
+    )
+    monkeypatch.setattr(portrait_task, "write_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(portrait_task, "write_csv", lambda *_args, **_kwargs: None)
+
+    assert portrait_task.main() == 0
+    assert session_scope_calls == [{"read_only": True, "database_url": "sqlite:///override.db"}]
+    assert onec_factory_calls == [
+        {
+            "database_url": "mssql://override",
+            "query_timeout_seconds": 37,
+            "login_timeout_seconds": 11,
+        },
+        {
+            "database_url": "mssql://override",
+            "query_timeout_seconds": 37,
+            "login_timeout_seconds": 11,
+        },
+    ]
+    assert len(onec_engines) == 2
+    assert all(engine.disposed for engine in onec_engines)
 
 
 def test_compute_trend_coefficient_caps_growth_and_decline() -> None:

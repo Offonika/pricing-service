@@ -20,6 +20,7 @@ related_tests:
   - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
+  - tests/test_receivable_decision_portrait.py
   - tests/test_check_onec_catalog_scope_script.py
   - tests/test_check_receivable_authoritative_snapshot_task.py
   - tests/test_cli_registry.py
@@ -180,6 +181,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/report_display_auto_order_adaptive_lead_time_comparison.py`
   на central read-only session scope с сохранением аргументов, fail-closed family
   registry overlay и CSV/JSON-контрактов.
+- [x] Перевести `tasks/build_receivable_decision_portraits.py` на central read-only
+  session scope и role-specific 1С factory с bounded timeout и гарантированным
+  dispose, сохранив аргументы, folder filter и JSON/CSV-контракты.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -321,6 +325,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-29 — `tasks/build_receivable_decision_portraits.py` переведён на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; аргументы, folder filter и JSON/CSV-контракты сохранены.
 - 2026-08-29 — разрешён merge PR №111; production release оставлен отдельным
   решением.
 - 2026-08-29 — разрешена подготовка adaptive lead-time comparison read-only slice

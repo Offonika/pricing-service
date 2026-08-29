@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import Counter, defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -17,9 +19,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine
 
 MSK_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_OUTPUT_DIR = Path(".local/order-fulfillment-pilot")
@@ -112,6 +115,23 @@ def _same_ref(left: bytes | None, right: bytes | None) -> bool:
     return bool(left and right and left == right)
 
 
+@contextmanager
+def _onec_connection() -> Iterator[Connection]:
+    settings = get_settings()
+    if not settings.onec_database_url:
+        raise RuntimeError("ONEC_DATABASE_URL is not configured")
+    engine = build_onec_engine(
+        settings.onec_database_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
+    )
+    try:
+        with engine.connect() as connection:
+            yield connection
+    finally:
+        engine.dispose()
+
+
 def _parse_as_of(raw: str | None) -> datetime:
     if raw:
         value = datetime.fromisoformat(raw)
@@ -136,9 +156,6 @@ def _load_candidates(path: Path, reconcile_group: str) -> list[dict[str, str]]:
 def _fetch_contract_balances(order_numbers: list[str]) -> dict[str, dict[str, Any]]:
     if not order_numbers:
         return {}
-    settings = get_settings()
-    if not settings.onec_database_url:
-        raise RuntimeError("ONEC_DATABASE_URL is not configured")
 
     params: dict[str, Any] = {}
     params.update({f"order_{index}": order for index, order in enumerate(order_numbers)})
@@ -201,8 +218,7 @@ def _fetch_contract_balances(order_numbers: list[str]) -> dict[str, dict[str, An
         )
         """)
 
-    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
-    with engine.connect() as connection:
+    with _onec_connection() as connection:
         sale_rows = [dict(row) for row in connection.execute(base_statement, params).mappings()]
         contract_balances: defaultdict[tuple[bytes, bytes, bytes], Decimal] = defaultdict(
             lambda: Decimal("0.00")
@@ -309,10 +325,6 @@ def _fetch_nearby_payment_rows(
     window_start: datetime,
     window_end: datetime,
 ) -> list[PaymentCandidate]:
-    settings = get_settings()
-    if not settings.onec_database_url:
-        raise RuntimeError("ONEC_DATABASE_URL is not configured")
-
     pko_statement = text("""
         SELECT
             N'ПКО' AS kind,
@@ -418,9 +430,8 @@ def _fetch_nearby_payment_rows(
           AND (doc186._IDRRef IS NULL OR (doc186._Posted = 0x01 AND doc186._Marked <> 0x01))
         """)
 
-    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     rows: list[PaymentCandidate] = []
-    with engine.connect() as connection:
+    with _onec_connection() as connection:
         params = {"window_start": window_start, "window_end": window_end}
         for statement in (pko_statement, register_statement):
             source = list(connection.execute(statement, params).mappings())

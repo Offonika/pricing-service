@@ -313,9 +313,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 46. После зелёного CI разрешён merge PR №110. Production migration, deploy и
     cutover в это решение не входят.
+47. Для `tasks/report_display_auto_order_adaptive_lead_time_comparison.py`
+    разрешены push ветки и создание отдельного PR после локальных проверок. Merge
+    и production release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-29 — разрешена подготовка adaptive lead-time comparison read-only slice
+  с push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/report_display_auto_order_adaptive_lead_time_comparison.py`
   переведён на central read-only session scope; аргументы, fail-closed family
   registry overlay и CSV/JSON-контракты сохранены.

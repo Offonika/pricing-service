@@ -21,6 +21,7 @@ related_tests:
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
   - tests/test_build_missing_display_quality_updates_task.py
+  - tests/test_build_missing_onec_subject_updates_task.py
   - tests/test_receivable_credit_profile.py
   - tests/test_receivable_decision_portrait.py
   - tests/test_check_onec_catalog_scope_script.py
@@ -44,7 +45,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-29"
+updated_at: "2026-08-30"
 ---
 
 # Назначение
@@ -193,6 +194,9 @@ JSON/CSV/XLSX артефактов сохраняются.
   read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose, сохранив правила качества, аргументы и
   CSV/JSON/XML-контракты.
+- [x] Перевести `tasks/build_missing_onec_subject_updates.py` на central read-only
+  session scope и role-specific 1С factory с bounded timeout и гарантированным
+  dispose, сохранив классификацию предметов, аргументы и JSON/XML-контракты.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -349,6 +353,10 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-30 — `tasks/build_missing_onec_subject_updates.py` переведён на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; классификация предметов, аргументы и JSON/XML-контракты
+  сохранены.
 - 2026-08-29 — разрешён merge PR №116; production release оставлен отдельным
   решением.
 - 2026-08-29 — разрешена подготовка display quality updates read-only slice с

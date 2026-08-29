@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+from contextlib import contextmanager
 from datetime import date
+from types import SimpleNamespace
 
+from tasks import build_missing_onec_subject_updates as task
 from tasks.build_missing_onec_subject_updates import build_missing_subject_update_rows
 
 
@@ -13,6 +17,114 @@ class FakeClassifier:
     def classify(self, name: str | None) -> str | None:
         self.calls.append(name or "")
         return self.mapping.get(name or "")
+
+
+def test_main_uses_central_read_only_scope_and_role_specific_onec_engine(
+    monkeypatch,
+    capsys,
+) -> None:
+    session = object()
+    scope_calls: list[bool] = []
+    engine_calls: list[tuple[str, int, int]] = []
+
+    class FakeOnecEngine:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    class RuntimeClassifier:
+        llm_calls = 0
+        llm_failed = 0
+        closed = False
+
+        def classify(self, _name: str | None) -> str | None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    onec_engine = FakeOnecEngine()
+    classifier = RuntimeClassifier()
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        scope_calls.append(read_only)
+        yield session
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int,
+        login_timeout_seconds: int,
+    ) -> FakeOnecEngine:
+        engine_calls.append((database_url, query_timeout_seconds, login_timeout_seconds))
+        return onec_engine
+
+    candidates = [
+        {
+            "article": "A1",
+            "nomenclature_code": "РБ0000001",
+            "name": "Дисплей iPhone 12",
+        }
+    ]
+
+    monkeypatch.setattr(task, "load_ut103_env_file", lambda: None)
+    monkeypatch.setattr(
+        task,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database_url="postgresql://settings-app",
+            onec_database_url="mssql+pyodbc://onec-snapshot",
+            onec_query_timeout_seconds=55,
+            onec_login_timeout_seconds=9,
+        ),
+    )
+    monkeypatch.setattr(task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(task, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(
+        task,
+        "load_missing_onec_subject_candidates",
+        lambda engine: candidates if engine is onec_engine else [],
+    )
+    monkeypatch.setattr(
+        task,
+        "load_onec_subject_catalog_values",
+        lambda engine: {"дисплей"} if engine is onec_engine else set(),
+    )
+
+    def fake_load_generated_subjects(
+        current_session: object,
+        articles,
+    ) -> dict[str, str]:
+        assert current_session is session
+        assert list(articles) == ["A1"]
+        return {"A1": "дисплей"}
+
+    monkeypatch.setattr(task, "load_generated_subjects", fake_load_generated_subjects)
+    monkeypatch.setattr(
+        task.CategoryClassifier,
+        "from_env",
+        lambda **_kwargs: classifier,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "build_missing_onec_subject_updates",
+            "--message-id",
+            "missing-onec-subject-test",
+            "--json",
+        ],
+    )
+
+    assert task.main() == 0
+    assert scope_calls == [True]
+    assert engine_calls == [("mssql+pyodbc://onec-snapshot", 55, 9)]
+    assert onec_engine.disposed is True
+    assert classifier.closed is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["message_id"] == "missing-onec-subject-test"
+    assert payload["rows"] == 1
 
 
 def test_build_missing_subject_update_rows_reuses_generated_subject_and_classifies_gaps() -> None:

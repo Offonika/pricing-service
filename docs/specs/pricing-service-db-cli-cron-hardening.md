@@ -341,9 +341,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 52. После зелёного CI разрешён merge PR №115. Production migration, deploy и
     cutover в это решение не входят.
+53. Для `tasks/build_missing_display_quality_updates.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-29 — разрешена подготовка display quality updates read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/build_missing_display_quality_updates.py` переведён на
   central read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose; правила качества, аргументы и CSV/JSON/XML-контракты

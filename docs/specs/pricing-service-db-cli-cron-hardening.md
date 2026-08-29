@@ -304,9 +304,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 44. После зелёного CI разрешён merge PR №108. Production migration, deploy и
     cutover в это решение не входят.
+45. Для `tasks/report_display_supplier_lead_time_history.py` разрешены push ветки
+    и создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-29 — разрешена подготовка supplier lead-time read-only slice с push и
+  отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/report_display_supplier_lead_time_history.py` переведён на
   role-specific read-only 1С factory с bounded timeout и гарантированным dispose;
   SQL, аргументы и CSV/JSON-контракты сохранены.

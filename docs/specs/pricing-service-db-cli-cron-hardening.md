@@ -331,9 +331,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 50. После зелёного CI разрешён merge PR №114. Production migration, deploy и
     cutover в это решение не входят.
+51. Для `tasks/build_receivable_credit_profiles.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-29 — разрешена подготовка receivable credit profiles read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/build_receivable_credit_profiles.py` переведён на central
   read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose; аргументы, folder filter и JSON/CSV-контракты сохранены.

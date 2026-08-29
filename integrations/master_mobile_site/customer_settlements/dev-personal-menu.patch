@@ -1,0 +1,34 @@
+--- a/local/include/personal/personal_menu.php
++++ b/local/include/personal/personal_menu.php
+@@ -1,4 +1,6 @@
+-<?$APPLICATION->IncludeComponent(
++<?php
++include($_SERVER['DOCUMENT_ROOT'] . '/local/include/personal/customer_settlements_menu_visibility.php');
++$APPLICATION->IncludeComponent(
+     "plastilin:personal.menu",
+     "personal",
+     array(
+@@ -7,4 +9,6 @@
+         "ORDERS_LINK" => '/personal/orders/',
++        "SETTLEMENTS_LINK" => $mmCustomerSettlementsLink,
++        "SETTLEMENTS_VISIBLE" => $mmCustomerSettlementsVisible ? 'Y' : 'N',
+         "ORDERS_LINK_ARCHIVE" => '/personal/orders-archive/',
+         "REVIEWS_LINK" => '/personal/reviews/',
+         //"BONUSES_LINK" => '/personal/bonuses/',
+--- a/local/templates/new/components/plastilin/personal.menu/personal/template.php
++++ b/local/templates/new/components/plastilin/personal.menu/personal/template.php
+@@ -75,5 +75,14 @@
+         </a>
+     </li>
++    <?php if (($arParams["SETTLEMENTS_VISIBLE"] ?? 'N') === 'Y'): ?>
++        <li class="profile__list-item">
++            <a href="<?=htmlspecialchars($arParams["SETTLEMENTS_LINK"])?>"
++                class="profile__menu-link <?=($arParams["SETTLEMENTS_LINK"] == $curDir) ? "profile__menu-link--current" : ""?>">
++                <i class="fa-solid fa-scale-balanced" aria-hidden="true"></i>
++                Взаиморасчёты
++            </a>
++        </li>
++    <?php endif; ?>
+     <? /*
+     <li class="profile__list-item">
+         <a href="<?= $arParams["ORDERS_LINK_ARCHIVE"] ?>"

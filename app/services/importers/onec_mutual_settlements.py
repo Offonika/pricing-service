@@ -156,6 +156,38 @@ def _load_shared_strings(zf: zipfile.ZipFile) -> list[str]:
     return shared
 
 
+def onec_mutual_settlements_report_allows_implicit_zero_rows(content: bytes) -> bool:
+    """Confirm that a native 1C XLSX report has a printed unfiltered scope.
+
+    The standard statement suppresses counterparties with no movements and a zero
+    closing balance.  A missing zero row is safe to infer only when the exported
+    report prints its configuration summary and does not print any filters.
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as zf:
+            labels = tuple(_normalize_text(value) for value in _load_shared_strings(zf))
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        return False
+
+    normalized = tuple(value.casefold() for value in labels if value)
+    has_title = "ведомость по взаиморасчетам с контрагентами" in normalized
+    has_period = any(value.startswith("период:") for value in normalized)
+    has_indicators = any(value.startswith("показатели:") for value in normalized)
+    has_groupings = any(value.startswith("группировки строк:") for value in normalized)
+    has_filters = any(value.startswith("отборы:") for value in normalized)
+    return bool(has_title and has_period and has_indicators and has_groupings and not has_filters)
+
+
+def onec_mutual_settlements_report_file_allows_implicit_zero_rows(path: Path) -> bool:
+    if path.suffix.lower() != ".xlsx":
+        return False
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return False
+    return onec_mutual_settlements_report_allows_implicit_zero_rows(content)
+
+
 def _sheet_target(zf: zipfile.ZipFile) -> str:
     workbook = ET.fromstring(zf.read("xl/workbook.xml"))
     relationships = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, insert
+from sqlalchemy.orm import Session
 
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
     ASSORTMENT_LIFECYCLE_METADATA,
 )
+from tasks import build_missing_display_quality_updates as task
 from tasks.build_missing_display_quality_updates import (
     QUALITY_PROPERTY_NAME,
     build_missing_display_quality_update_rows,
@@ -19,6 +23,92 @@ from tasks.build_missing_display_quality_updates import (
     write_candidates_csv,
     write_rows_json,
 )
+
+
+def test_main_uses_central_read_only_scope_and_role_specific_onec_engine(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = object()
+    scope_calls: list[tuple[bool, str | None]] = []
+    engine_calls: list[tuple[str, int, int]] = []
+    candidate_calls: list[object] = []
+    reference_calls: list[object] = []
+
+    class FakeOnecEngine:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    onec_engine = FakeOnecEngine()
+
+    @contextmanager
+    def fake_session_scope(
+        *,
+        read_only: bool = False,
+        database_url: str | None = None,
+    ):
+        scope_calls.append((read_only, database_url))
+        yield session
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int,
+        login_timeout_seconds: int,
+    ) -> FakeOnecEngine:
+        engine_calls.append((database_url, query_timeout_seconds, login_timeout_seconds))
+        return onec_engine
+
+    def fake_load_candidates(current_session: object, **_kwargs) -> list[dict[str, object]]:
+        candidate_calls.append(current_session)
+        return []
+
+    def fake_load_reference_rows(
+        current_session: object,
+        **_kwargs,
+    ) -> list[dict[str, object]]:
+        reference_calls.append(current_session)
+        return []
+
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///app-snapshot.db")
+    monkeypatch.setenv("ONEC_DATABASE_URL", "mssql+pyodbc://onec-snapshot")
+    monkeypatch.setattr(task, "load_ut103_env_file", lambda: None)
+    monkeypatch.setattr(
+        task,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database_url="postgresql://settings-app",
+            onec_database_url="mssql+pyodbc://settings-onec",
+            onec_query_timeout_seconds=55,
+            onec_login_timeout_seconds=9,
+        ),
+    )
+    monkeypatch.setattr(task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(task, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(task, "load_missing_display_quality_candidates", fake_load_candidates)
+    monkeypatch.setattr(task, "load_display_quality_reference_rows", fake_load_reference_rows)
+    monkeypatch.setattr(task, "load_onec_quality_catalog_values", lambda engine: set())
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "build_missing_display_quality_updates",
+            "--validate-onec-catalog",
+            "--include-status-review-required",
+            "--output-csv",
+            str(tmp_path / "report.csv"),
+            "--output-rows-json",
+            str(tmp_path / "rows.json"),
+        ],
+    )
+
+    assert task.main() == 0
+    assert scope_calls == [(True, "sqlite:///app-snapshot.db")]
+    assert candidate_calls == [session]
+    assert reference_calls == [session]
+    assert engine_calls == [("mssql+pyodbc://onec-snapshot", 55, 9)]
+    assert onec_engine.disposed is True
 
 
 def test_build_missing_display_quality_update_rows_uses_manual_map() -> None:
@@ -247,8 +337,12 @@ def test_load_missing_display_quality_candidates_skips_do_not_order_by_default()
             ],
         )
 
-    rows = load_missing_display_quality_candidates(engine)
-    audit_rows = load_missing_display_quality_candidates(engine, include_do_not_order=True)
+    with Session(engine) as session:
+        rows = load_missing_display_quality_candidates(session)
+        audit_rows = load_missing_display_quality_candidates(
+            session,
+            include_do_not_order=True,
+        )
 
     assert [row["nomenclature_code"] for row in rows] == ["РБ0001"]
     assert [row["nomenclature_code"] for row in audit_rows] == ["РБ0001", "РБ0002"]
@@ -266,10 +360,11 @@ def test_load_missing_display_quality_candidates_skips_status_review_exclusions(
             ],
         )
 
-    rows = load_missing_display_quality_candidates(
-        engine,
-        excluded_status_review_codes={"РБ0001"},
-    )
+    with Session(engine) as session:
+        rows = load_missing_display_quality_candidates(
+            session,
+            excluded_status_review_codes={"РБ0001"},
+        )
 
     assert [row["nomenclature_code"] for row in rows] == ["РБ0002"]
 

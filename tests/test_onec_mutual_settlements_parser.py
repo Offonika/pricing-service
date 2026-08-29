@@ -7,6 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from app.services.importers.onec_mutual_settlements import (
     export_onec_mutual_settlements_opening_csv,
+    onec_mutual_settlements_report_allows_implicit_zero_rows,
     parse_onec_mutual_settlements_current_balances,
     parse_onec_mutual_settlements_opening,
 )
@@ -136,7 +137,7 @@ def _build_uppercase_shared_strings_xlsx() -> bytes:
     return buffer.getvalue()
 
 
-def _build_current_balances_xlsx_with_groups() -> bytes:
+def _build_current_balances_xlsx_with_groups(*, filters: str | None = None) -> bytes:
     shared_strings = [
         "Ведомость по взаиморасчетам с контрагентами",
         "Период: Январь 2025 г. - Февраль 2026 г.",
@@ -147,10 +148,14 @@ def _build_current_balances_xlsx_with_groups() -> bytes:
         "Основной договор с поставщиком, руб",
         "Клиент C",
         "Основной договор, руб",
+        "Показатели: Сумма (руб)(кон. остаток);",
+        "Группировки строк: Организация; Контрагент; Договор контрагента;",
     ]
+    if filters is not None:
+        shared_strings.append(f"Отборы: {filters}")
     shared_items = "".join(f"<si><t>{value}</t></si>" for value in shared_strings)
     shared_xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="9" uniqueCount="9">
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{len(shared_strings)}" uniqueCount="{len(shared_strings)}">
   {shared_items}
 </sst>
 """
@@ -308,6 +313,22 @@ def test_parse_current_balances_all_keeps_non_buyers():
         "Клиент C": Decimal("350"),
     }
     assert sum(by_name.values(), Decimal("0")) == Decimal("750")
+
+
+def test_implicit_zero_requires_native_unfiltered_report_scope():
+    unfiltered = _build_current_balances_xlsx_with_groups()
+    filtered = _build_current_balances_xlsx_with_groups(
+        filters="Контрагент В группе из списка (ПОКУПАТЕЛИ);"
+    )
+
+    assert onec_mutual_settlements_report_allows_implicit_zero_rows(unfiltered) is True
+    assert onec_mutual_settlements_report_allows_implicit_zero_rows(filtered) is False
+    assert (
+        onec_mutual_settlements_report_allows_implicit_zero_rows(
+            _build_uppercase_shared_strings_xlsx()
+        )
+        is False
+    )
 
 
 def test_inspect_onec_mutual_settlements_report_exports_full_mode(tmp_path: Path):

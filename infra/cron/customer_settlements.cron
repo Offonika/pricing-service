@@ -1,0 +1,13 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+# /etc/cron.d template: replace only with the exact immutable clean staging release.
+# The release must contain its own hash-locked .venv. The placeholder intentionally
+# fails closed until that release, secret file, and log directory exist.
+REPO_DIR=/opt/MM/releases/pricing-service/customer-settlements-shadow-release
+CUSTOMER_SETTLEMENTS_ENV_FILE=/etc/pricing-service/customer-settlements-shadow.env
+
+5 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_mapping_sync.sh >> /var/log/pricing-staging/customer_settlement_mapping_sync.log 2>&1
+17 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing-staging/customer_settlement_financial_sync.log 2>&1
+35 * * * * root ${REPO_DIR}/infra/cron/customer_settlement_health.sh >> /var/log/pricing-staging/customer_settlement_health.log 2>&1
+25 3 * * * root ${REPO_DIR}/infra/cron/customer_settlement_cleanup.sh >> /var/log/pricing-staging/customer_settlement_cleanup.log 2>&1

@@ -20,6 +20,7 @@ related_tests:
   - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
+  - tests/test_build_missing_display_quality_updates_task.py
   - tests/test_receivable_credit_profile.py
   - tests/test_receivable_decision_portrait.py
   - tests/test_check_onec_catalog_scope_script.py
@@ -188,6 +189,10 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/build_receivable_credit_profiles.py` на central read-only
   session scope и role-specific 1С factory с bounded timeout и гарантированным
   dispose, сохранив аргументы, folder filter и JSON/CSV-контракты.
+- [x] Перевести `tasks/build_missing_display_quality_updates.py` на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose, сохранив правила качества, аргументы и
+  CSV/JSON/XML-контракты.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -336,9 +341,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 52. После зелёного CI разрешён merge PR №115. Production migration, deploy и
     cutover в это решение не входят.
+53. Для `tasks/build_missing_display_quality_updates.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
+54. После зелёного CI разрешён merge PR №116. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-29 — разрешён merge PR №116; production release оставлен отдельным
+  решением.
+- 2026-08-29 — разрешена подготовка display quality updates read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
+- 2026-08-29 — `tasks/build_missing_display_quality_updates.py` переведён на
+  central read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; правила качества, аргументы и CSV/JSON/XML-контракты
+  сохранены.
 - 2026-08-29 — разрешён merge PR №115; production release оставлен отдельным
   решением.
 - 2026-08-29 — разрешена подготовка receivable credit profiles read-only slice с

@@ -1129,6 +1129,7 @@ def test_sync_warehouse_address_aliases_merges_payload() -> None:
                 "старый адрес",
                 "г. Москва, Сущевский вал, д. 5 стр 6, пав. Т-103/105",
             ]
+            assert sav.payload["code"] == "SAV"
             assert sav.payload["onec_departments"][0]["external_id"] == "0xaaaa"
 
             mit = session.scalar(
@@ -1137,6 +1138,20 @@ def test_sync_warehouse_address_aliases_merges_payload() -> None:
             assert mit is not None
             assert mit.kind == "store"
             assert mit.payload["address_aliases"] == ["г. Москва, Пятницкое шоссе, д.18, пав. 535"]
+            assert mit.payload["code"] == "MIT"
+
+            sav.payload = {key: value for key, value in sav.payload.items() if key != "code"}
+            session.commit()
+            code_only_report = logistics_onec.sync_warehouse_address_aliases(
+                session,
+                onec_engine=None,
+                source_rows=rows[:1],
+                dry_run=False,
+            )
+            assert code_only_report["aliases_added"] == 0
+            assert code_only_report["warehouses_updated"] == 1
+            session.refresh(sav)
+            assert sav.payload["code"] == "SAV"
     finally:
         engine.dispose()
         if os.path.exists(path):

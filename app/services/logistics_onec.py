@@ -288,7 +288,8 @@ def sync_warehouse_address_aliases(
             report.warehouses_created += 1
             continue
 
-        if added_alias_count <= 0:
+        payload_changed = desired_payload != (existing.payload or {})
+        if not payload_changed:
             continue
         report.aliases_added += added_alias_count
         if dry_run:
@@ -1349,6 +1350,10 @@ def _warehouse_alias_payload(
 ) -> dict[str, Any]:
     payload = dict(existing_payload or {})
     payload["source"] = payload.get("source") or "1c_department_alias_sync"
+
+    warehouse_codes = _unique_strings(row.warehouse_code for row in rows)
+    if len(warehouse_codes) == 1:
+        payload["code"] = warehouse_codes[0]
 
     aliases = _unique_strings(payload.get("address_aliases") or [])
     department_aliases = _unique_strings(payload.get("department_aliases") or [])

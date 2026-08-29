@@ -25,6 +25,16 @@ REVIEW_RTU_SOURCE_INVALID = "rtu_source_invalid"
 REVIEW_RTU_SOURCE_WAREHOUSE_UNRESOLVED = "rtu_source_warehouse_unresolved"
 REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED = "rtu_external_carrier_unmapped"
 REVIEW_RTU_EXTERNAL_CARRIER_STATE_CONFLICT = "rtu_external_carrier_state_conflict"
+RTU_SYNC_AUTO_RESOLVABLE_REVIEW_TYPES = (
+    REVIEW_RTU_WITHOUT_SITE_ORDER,
+    REVIEW_RTU_TARGET_WAREHOUSE_UNRESOLVED,
+    REVIEW_RTU_LOOKUP_NOT_UNIQUE,
+    REVIEW_RTU_READINESS_GATE_FAILED,
+    REVIEW_RTU_SOURCE_INVALID,
+    REVIEW_RTU_SOURCE_WAREHOUSE_UNRESOLVED,
+    REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED,
+    REVIEW_RTU_EXTERNAL_CARRIER_STATE_CONFLICT,
+)
 
 _TOKEN_RE = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
 _ADDRESS_STOP_TOKENS = {
@@ -1104,19 +1114,32 @@ def _record_skip(
     if dry_run:
         report.manual_review_planned += 1
         return
-    if _create_manual_review_once(session, skipped):
+    review, created = _get_or_create_manual_review(session, skipped)
+    if created:
         report.manual_review_created += 1
+    if skipped.review_type == REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED:
+        logistics.resolve_unknown_qr_reviews_for_source_document(
+            session,
+            source_document_type=logistics.SOURCE_RTU,
+            external_id=skipped.source_external_id or "",
+            auto_resolved_by="classified_external_carrier",
+            matched_review_id=review.id,
+        )
 
 
-def _create_manual_review_once(session: Session, skipped: RtuSkippedRow) -> bool:
+def _get_or_create_manual_review(
+    session: Session,
+    skipped: RtuSkippedRow,
+) -> tuple[LogisticsManualReview, bool]:
     existing = session.scalar(
         _manual_review_selector(
             skipped.source_external_id,
+            skipped.review_type,
         )
     )
     if existing is not None:
-        return False
-    logistics.create_manual_review(
+        return existing, False
+    review = logistics.create_manual_review(
         session,
         review_type=skipped.review_type,
         reason=skipped.reason,
@@ -1126,7 +1149,7 @@ def _create_manual_review_once(session: Session, skipped: RtuSkippedRow) -> bool
             {**skipped.payload, "site_order_number": skipped.site_order_number}
         ),
     )
-    return True
+    return review, True
 
 
 def _resolve_manual_reviews_for_unit_payloads(
@@ -1147,6 +1170,7 @@ def _resolve_manual_reviews_for_unit_payloads(
         select(LogisticsManualReview).where(
             LogisticsManualReview.source_document_type == logistics.SOURCE_RTU,
             LogisticsManualReview.source_external_id.in_(source_external_ids),
+            LogisticsManualReview.review_type.in_(RTU_SYNC_AUTO_RESOLVABLE_REVIEW_TYPES),
             LogisticsManualReview.status == "open",
         )
     ).all()
@@ -1166,10 +1190,12 @@ def _resolve_manual_reviews_for_unit_payloads(
 
 def _manual_review_selector(
     source_external_id: str | None,
+    review_type: str,
 ) -> Select[tuple[LogisticsManualReview]]:
     return select(LogisticsManualReview).where(
         LogisticsManualReview.source_document_type == logistics.SOURCE_RTU,
         LogisticsManualReview.source_external_id == source_external_id,
+        LogisticsManualReview.review_type == review_type,
         LogisticsManualReview.status == "open",
     )
 

@@ -257,6 +257,13 @@ export function LogisticsFallbackApp() {
     [refreshMonitorForWarehouse, warehouseId]
   );
 
+  const changeWarehouse = (value: string) => {
+    setWarehouseId(value);
+    void refreshMonitorForWarehouse(value).catch((error: unknown) =>
+      setMessage(error instanceof Error ? error.message : "Ошибка обновления")
+    );
+  };
+
   useEffect(() => {
     let cancelled = false;
     exchangeFallbackLaunchToken()
@@ -276,7 +283,7 @@ export function LogisticsFallbackApp() {
         const initialWarehouse = String(
           openDraft?.warehouse_id ||
             profileData.default_warehouse_id ||
-            (profileData.role === "admin" ? warehouseData[0]?.id : "") ||
+            (["admin", "logist"].includes(profileData.role) ? warehouseData[0]?.id : "") ||
             ""
         );
         if (openDraft) setMode(openDraft.draft_type as "handoff" | "receipt");
@@ -293,7 +300,7 @@ export function LogisticsFallbackApp() {
               ? ""
               : "Для этой роли доступны мониторинг и история в приложении Bitrix24"
         );
-        return refreshMonitorForWarehouse(profileData.role === "admin" ? "" : initialWarehouse);
+        return refreshMonitorForWarehouse(initialWarehouse);
       })
       .catch((error: unknown) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "Нет web-сессии");
@@ -440,7 +447,7 @@ export function LogisticsFallbackApp() {
                   className="app__select"
                   aria-label="Склад операции"
                   value={warehouseId}
-                  onChange={(e) => setWarehouseId(e.target.value)}
+                  onChange={(e) => changeWarehouse(e.target.value)}
                 >
                   {warehouses.map((warehouse) => (
                     <option key={warehouse.id} value={warehouse.id}>{warehouse.name}</option>
@@ -573,6 +580,23 @@ export function LogisticsFallbackApp() {
           </button>
         )}
         <section className="logistics__panel logistics__monitor">
+          {profile?.role === "logist" && warehouses.length > 1 && (
+            <label className="logistics-field">
+              <span>Склад мониторинга</span>
+              <select
+                className="app__select"
+                aria-label="Склад мониторинга"
+                value={warehouseId}
+                onChange={(event) => changeWarehouse(event.target.value)}
+              >
+                {warehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <table>
             <thead>
               <tr>

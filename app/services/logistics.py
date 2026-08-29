@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.exc import StaleDataError
@@ -67,10 +68,12 @@ def utcnow() -> datetime:
 
 
 def _coerce_datetime(value: datetime | str) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    normalized = value.replace("Z", "+00:00")
-    return datetime.fromisoformat(normalized)
+    parsed = value
+    if not isinstance(parsed, datetime):
+        parsed = datetime.fromisoformat(parsed.replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _http_error(status: int, detail) -> HTTPException:
@@ -103,6 +106,18 @@ def _clip(value: str | None, max_length: int) -> str | None:
     return value[:max_length] if value is not None else None
 
 
+def _jsonable_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable_payload(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
+
+
 def _get_actor(session: Session, actor_user_id: int) -> LogisticsUser:
     user = session.get(LogisticsUser, actor_user_id)
     if user is None or not user.is_active:
@@ -120,6 +135,86 @@ def _get_warehouse(session: Session, warehouse_id: int) -> LogisticsWarehouse:
     if warehouse is None or not warehouse.is_active:
         raise _http_error(404, "warehouse not found")
     return warehouse
+
+
+def require_warehouse_in_scope(
+    session: Session,
+    *,
+    warehouse_id: int,
+    allowed_external_ids: list[str] | None,
+) -> int:
+    warehouse = _get_warehouse(session, warehouse_id)
+    allowed = {
+        str(external_id).strip().lower()
+        for external_id in (allowed_external_ids or [])
+        if str(external_id).strip()
+    }
+    if allowed_external_ids is not None and warehouse.external_id.strip().lower() not in allowed:
+        raise _http_error(403, "warehouse is outside logistics pilot")
+    return warehouse.id
+
+
+def require_transfer_in_warehouse_scope(
+    session: Session,
+    *,
+    transfer_id: int,
+    allowed_external_ids: list[str] | None,
+) -> None:
+    transfer = session.scalar(
+        select(LogisticsTransfer)
+        .where(LogisticsTransfer.id == transfer_id)
+        .options(
+            joinedload(LogisticsTransfer.source_warehouse),
+            joinedload(LogisticsTransfer.target_warehouse),
+            joinedload(LogisticsTransfer.state).joinedload(
+                LogisticsTransferState.current_warehouse
+            ),
+            joinedload(LogisticsTransfer.state).joinedload(
+                LogisticsTransferState.dropoff_warehouse
+            ),
+        )
+    )
+    if transfer is None:
+        raise _http_error(404, "transfer not found")
+    if allowed_external_ids is None:
+        return
+    allowed = {
+        str(external_id).strip().lower()
+        for external_id in allowed_external_ids
+        if str(external_id).strip()
+    }
+    warehouses = [transfer.source_warehouse, transfer.target_warehouse]
+    if transfer.state is not None:
+        warehouses.extend([transfer.state.current_warehouse, transfer.state.dropoff_warehouse])
+    if not any(
+        warehouse is not None and warehouse.external_id.strip().lower() in allowed
+        for warehouse in warehouses
+    ):
+        raise _http_error(403, "transfer is outside logistics pilot")
+
+
+def warehouse_ids_in_scope(
+    session: Session,
+    *,
+    allowed_external_ids: list[str] | None,
+) -> list[int] | None:
+    if allowed_external_ids is None:
+        return None
+    allowed = {
+        str(external_id).strip().lower()
+        for external_id in allowed_external_ids
+        if str(external_id).strip()
+    }
+    if not allowed:
+        return []
+    return list(
+        session.scalars(
+            select(LogisticsWarehouse.id).where(
+                LogisticsWarehouse.is_active.is_(True),
+                func.lower(LogisticsWarehouse.external_id).in_(allowed),
+            )
+        ).all()
+    )
 
 
 def _get_driver(session: Session, driver_id: int | None) -> LogisticsDriver | None:
@@ -252,7 +347,9 @@ def _resolve_unknown_qr_reviews(
     session: Session,
     *,
     code: str,
-    transfer: LogisticsTransfer,
+    transfer: LogisticsTransfer | None = None,
+    auto_resolved_by: str = "successful_lookup",
+    matched_review_id: int | None = None,
 ) -> None:
     lookup_key = _clip(code, 64)
     candidates = session.scalars(
@@ -271,16 +368,56 @@ def _resolve_unknown_qr_reviews(
         payload.update(
             {
                 "lookup_code": code,
-                "auto_resolved_by": "successful_lookup",
+                "auto_resolved_by": auto_resolved_by,
                 "auto_resolved_at": resolved_at.isoformat(),
-                "transfer_id": transfer.id,
             }
         )
+        if transfer is not None:
+            payload["transfer_id"] = transfer.id
+        if matched_review_id is not None:
+            payload["matched_review_id"] = matched_review_id
         review.payload = payload
-        review.transfer_id = transfer.id
+        if transfer is not None:
+            review.transfer_id = transfer.id
         review.status = "resolved"
         review.resolved_at = resolved_at
         review.updated_at = resolved_at
+
+
+def resolve_unknown_qr_reviews_for_source_document(
+    session: Session,
+    *,
+    source_document_type: str,
+    external_id: str,
+    auto_resolved_by: str,
+    matched_review_id: int | None = None,
+) -> int:
+    normalized_external_id = normalize_mm_log_document_ref(external_id)
+    if normalized_external_id is None:
+        return 0
+    candidates = session.scalars(
+        select(LogisticsManualReview).where(
+            LogisticsManualReview.review_type == "unknown_qr",
+            LogisticsManualReview.status == "open",
+            LogisticsManualReview.source_document_type == source_document_type,
+        )
+    ).all()
+    resolved = 0
+    for review in candidates:
+        payload = review.payload if isinstance(review.payload, dict) else {}
+        code = payload.get("lookup_code")
+        if not isinstance(code, str):
+            continue
+        if _mm_log_lookup(code) != (source_document_type, normalized_external_id):
+            continue
+        _resolve_unknown_qr_reviews(
+            session,
+            code=code,
+            auto_resolved_by=auto_resolved_by,
+            matched_review_id=matched_review_id,
+        )
+        resolved += 1
+    return resolved
 
 
 def _record_unknown_qr(session: Session, *, code: str) -> None:
@@ -366,6 +503,29 @@ def _get_unit_by_lookup(session: Session, code: str) -> LogisticsTransfer:
                 (LogisticsTransfer.source_document_type == source_document_type)
                 & (func.lower(LogisticsTransfer.external_id) == external_id),
             )
+            if not rows and source_document_type == SOURCE_RTU:
+                external_carrier_review = session.scalar(
+                    select(LogisticsManualReview)
+                    .where(
+                        LogisticsManualReview.review_type == "rtu_external_carrier_unmapped",
+                        LogisticsManualReview.source_document_type == SOURCE_RTU,
+                        func.lower(LogisticsManualReview.source_external_id) == external_id,
+                        LogisticsManualReview.status == "open",
+                    )
+                    .order_by(LogisticsManualReview.id.desc())
+                )
+                if external_carrier_review is not None:
+                    _resolve_unknown_qr_reviews(
+                        session,
+                        code=code,
+                        auto_resolved_by="classified_external_carrier",
+                        matched_review_id=external_carrier_review.id,
+                    )
+                    session.commit()
+                    raise _http_error(
+                        409,
+                        "Документ относится к внешней службе доставки и пока не входит во внутренний пилот",
+                    )
     if len(rows) > 1:
         _create_manual_review(
             session,
@@ -582,24 +742,43 @@ def _manual_review_for_sync_conflict(
     row: LogisticsTransfer,
     item: dict,
     reason: str,
-) -> None:
-    _create_manual_review(
+) -> LogisticsManualReview:
+    payload = {
+        "incoming": _jsonable_payload(item),
+        "current_status": row.state.status if row.state is not None else None,
+        "current_warehouse_id": (row.state.current_warehouse_id if row.state is not None else None),
+        "dropoff_warehouse_id": (row.state.dropoff_warehouse_id if row.state is not None else None),
+    }
+    existing = session.scalar(
+        select(LogisticsManualReview).where(
+            LogisticsManualReview.review_type == "onec_reconciliation_conflict",
+            LogisticsManualReview.source_document_type == row.source_document_type,
+            LogisticsManualReview.source_external_id == row.external_id,
+            LogisticsManualReview.status == "open",
+        )
+    )
+    if existing is not None:
+        changed = False
+        if existing.reason != reason:
+            existing.reason = reason
+            changed = True
+        if existing.transfer_id != row.id:
+            existing.transfer_id = row.id
+            changed = True
+        if existing.payload != payload:
+            existing.payload = payload
+            changed = True
+        if changed:
+            existing.updated_at = utcnow()
+        return existing
+    return _create_manual_review(
         session,
         review_type="onec_reconciliation_conflict",
         reason=reason,
         source_document_type=row.source_document_type,
         source_external_id=row.external_id,
         transfer_id=row.id,
-        payload={
-            "incoming": item,
-            "current_status": row.state.status if row.state is not None else None,
-            "current_warehouse_id": (
-                row.state.current_warehouse_id if row.state is not None else None
-            ),
-            "dropoff_warehouse_id": (
-                row.state.dropoff_warehouse_id if row.state is not None else None
-            ),
-        },
+        payload=payload,
     )
 
 
@@ -644,7 +823,10 @@ def _resolve_handoff_dropoff(
     transfer: LogisticsTransfer,
 ) -> int:
     if isinstance(transfer.payload, dict) and transfer.payload.get("external_carrier_flow"):
-        raise _http_error(409, "external carrier unit must use the external carrier flow")
+        raise _http_error(
+            409,
+            "Документ относится к внешней службе доставки и пока не входит во внутренний пилот",
+        )
 
     warehouse_id = transfer.document_target_warehouse_id or transfer.target_warehouse_id
     warehouse = session.get(LogisticsWarehouse, warehouse_id) if warehouse_id is not None else None
@@ -672,7 +854,7 @@ def _resolve_handoff_dropoff(
             },
             commit=True,
         )
-    raise _http_error(409, "handoff destination requires manual review")
+    raise _http_error(409, "Не удалось определить направление. Документ отправлен на разбор")
 
 
 def _serialize_draft(draft: LogisticsDraft) -> dict:
@@ -943,9 +1125,9 @@ def add_scan_to_draft(
             if state.status == STATUS_IN_TRANSIT:
                 raise _http_error(
                     409,
-                    "transfer is already in transit",
+                    "Документ уже передан водителю и находится в пути",
                 )
-            raise _http_error(409, "transfer is not available on sender warehouse")
+            raise _http_error(409, "Документ недоступен на выбранном складе отправления")
         # The document is the source of truth. Legacy clients may still send
         # dropoff_warehouse_id, but it must never override the 1C direction.
         target_dropoff = _resolve_handoff_dropoff(session, transfer)
@@ -968,7 +1150,7 @@ def add_scan_to_draft(
                 if state.dropoff_warehouse is not None
                 else str(state.dropoff_warehouse_id)
             )
-            raise _http_error(409, f"expected dropoff warehouse: {expected}")
+            raise _http_error(409, f"Документ ожидается в другой точке: {expected}")
         target_dropoff = None
 
     item = LogisticsDraftItem(
@@ -1185,6 +1367,7 @@ def list_expected_deliveries(
     session: Session,
     *,
     warehouse_id: int | None,
+    warehouse_ids: list[int] | None = None,
     driver_id: int | None = None,
 ) -> list[dict]:
     stmt: Select[tuple[LogisticsTransferState]] = (
@@ -1206,6 +1389,8 @@ def list_expected_deliveries(
     )
     if warehouse_id is not None:
         stmt = stmt.where(LogisticsTransferState.dropoff_warehouse_id == warehouse_id)
+    elif warehouse_ids is not None:
+        stmt = stmt.where(LogisticsTransferState.dropoff_warehouse_id.in_(warehouse_ids))
     if driver_id is not None:
         stmt = stmt.where(LogisticsTransferState.driver_id == driver_id)
     rows = session.scalars(stmt).all()
@@ -1240,6 +1425,7 @@ def list_monitor(
     *,
     status: str | None = None,
     warehouse_id: int | None = None,
+    warehouse_ids: list[int] | None = None,
     driver_id: int | None = None,
     final_recipient: str | None = None,
     source_document_type: str | None = None,
@@ -1335,6 +1521,13 @@ def list_monitor(
             warehouse_id
             and current_warehouse_id != warehouse_id
             and dropoff_warehouse_id != warehouse_id
+        ):
+            continue
+        if (
+            warehouse_id is None
+            and warehouse_ids is not None
+            and current_warehouse_id not in warehouse_ids
+            and dropoff_warehouse_id not in warehouse_ids
         ):
             continue
         if driver_filter and state_driver_id != driver_filter:
@@ -1691,24 +1884,44 @@ def sync_units(session: Session, items: list[dict]) -> dict:
                     item=item,
                     reason="1C changed or deleted a unit that already has active logistics state",
                 )
-                session.add(
-                    LogisticsTransferEvent(
-                        transfer_id=row.id,
-                        event_type="onec_reconciliation_conflict",
-                        event_at=utcnow(),
-                        warehouse_id=state.current_warehouse_id if state is not None else None,
-                        dropoff_warehouse_id=(
-                            state.dropoff_warehouse_id if state is not None else None
-                        ),
-                        driver_id=state.driver_id if state is not None else None,
-                        user_id=None,
-                        comment="1C reconciliation conflict; routed to manual review",
-                        source="1c_sync",
-                        idempotency_key=None,
-                        document_ref=row.document_number,
-                        meta={"incoming": item},
+                conflict_event_key = _bounded_event_key(
+                    "onec-reconciliation-conflict",
+                    row.source_document_type,
+                    row.external_id,
+                    source_id,
+                    target_id,
+                    document_target_id,
+                    bool(item.get("onec_deleted", False)),
+                )
+                existing_conflict_event = session.scalar(
+                    select(LogisticsTransferEvent).where(
+                        LogisticsTransferEvent.idempotency_key == conflict_event_key
                     )
                 )
+                if existing_conflict_event is None:
+                    session.add(
+                        LogisticsTransferEvent(
+                            transfer_id=row.id,
+                            event_type="onec_reconciliation_conflict",
+                            event_at=utcnow(),
+                            warehouse_id=(
+                                state.current_warehouse_id if state is not None else None
+                            ),
+                            dropoff_warehouse_id=(
+                                state.dropoff_warehouse_id if state is not None else None
+                            ),
+                            driver_id=state.driver_id if state is not None else None,
+                            user_id=None,
+                            comment="1C reconciliation conflict; routed to manual review",
+                            source="1c_sync",
+                            idempotency_key=conflict_event_key,
+                            document_ref=row.document_number,
+                            meta={"incoming": _jsonable_payload(item)},
+                        )
+                    )
+                # Once physical movement has started, 1C remains read-only input:
+                # route-changing data is reviewed but must not rewrite the active unit.
+                continue
             row.document_number = item["document_number"]
             row.document_date = _coerce_datetime(item["document_date"])
             row.source_warehouse_id = source_id
@@ -1722,7 +1935,8 @@ def sync_units(session: Session, items: list[dict]) -> dict:
             row.onec_status = item.get("status")
             row.onec_deleted = item.get("onec_deleted", False)
             row.payload = item.get("payload")
-            counters.updated += 1
+            if session.is_modified(row, include_collections=False):
+                counters.updated += 1
         session.flush()
         if source_document_type == SOURCE_RTU and not row.site_order_number:
             _create_manual_review(
@@ -1770,10 +1984,24 @@ def sync_transfers(session: Session, items: list[dict]) -> dict:
     return sync_units(session, transfer_items)
 
 
-def list_warehouses(session: Session, *, active_only: bool = True) -> list[dict]:
+def list_warehouses(
+    session: Session,
+    *,
+    active_only: bool = True,
+    allowed_external_ids: list[str] | None = None,
+) -> list[dict]:
     stmt = select(LogisticsWarehouse).order_by(LogisticsWarehouse.name.asc())
     if active_only:
         stmt = stmt.where(LogisticsWarehouse.is_active.is_(True))
+    allowed = {
+        str(external_id).strip().lower()
+        for external_id in (allowed_external_ids or [])
+        if str(external_id).strip()
+    }
+    if allowed_external_ids is not None:
+        if not allowed:
+            return []
+        stmt = stmt.where(func.lower(LogisticsWarehouse.external_id).in_(allowed))
     return [
         {
             "id": row.id,
@@ -2049,8 +2277,10 @@ def _bitrix_logistics_manual_review_scope_condition(
             }
         )
     )
-    if not pilot_ids:
+    if pilot_warehouse_external_ids is None:
         return logistics_scope
+    if not pilot_ids:
+        return false()
 
     pilot_scope = or_(
         LogisticsManualReview.review_type.in_(BITRIX_SOURCELESS_LOGISTICS_REVIEW_TYPES),

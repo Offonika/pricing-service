@@ -16,6 +16,7 @@ from app.core.config import Settings, get_settings
 from app.main import app
 from app.models import (
     Base,
+    LogisticsDraft,
     LogisticsDriver,
     LogisticsManualReview,
     LogisticsTransfer,
@@ -139,7 +140,7 @@ def test_bitrix_logistics_session_roles_and_one_time_fallback(monkeypatch, tmp_p
     monkeypatch.setattr(
         settings,
         "logistics_stage_pilot_warehouse_external_ids",
-        ["source", "target"],
+        ["central", "teply-stan", "source", "target"],
     )
     monkeypatch.setattr(settings, "debug", False)
     monkeypatch.setattr(
@@ -410,6 +411,11 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             name="Тёплый Стан",
             kind="store",
         )
+        foreign = LogisticsWarehouse(
+            external_id="foreign-store",
+            name="Вне пилота",
+            kind="store",
+        )
         admin = LogisticsUser(
             external_id="admin",
             bitrix_user_id="30",
@@ -417,7 +423,7 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             role="admin",
         )
         driver = LogisticsDriver(external_id="driver", full_name="Водитель")
-        session.add_all([source, target, admin, driver])
+        session.add_all([source, target, foreign, admin, driver])
         session.flush()
         transfer = LogisticsTransfer(
             external_id="admin-transfer",
@@ -430,6 +436,17 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             onec_status="posted",
         )
         session.add(transfer)
+        outside_transfer = LogisticsTransfer(
+            external_id="outside-pilot-transfer",
+            document_number="РТУ-OUTSIDE-1",
+            document_date=datetime(2026, 8, 28, 8, 30),
+            source_warehouse_id=foreign.id,
+            target_warehouse_id=foreign.id,
+            barcode="BC-OUTSIDE-1",
+            lookup_code="MMLOG1|rtu|outside-pilot-transfer|220099",
+            onec_status="posted",
+        )
+        session.add(outside_transfer)
         session.flush()
         session.add(
             LogisticsTransferState(
@@ -444,9 +461,11 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
         session.commit()
         source_id = source.id
         target_id = target.id
+        foreign_id = foreign.id
         admin_id = admin.id
         driver_id = driver.id
         transfer_id = transfer.id
+        outside_transfer_id = outside_transfer.id
 
     settings = get_settings()
     monkeypatch.setattr(settings, "logistics_bitrix_app_enabled", True)
@@ -454,6 +473,11 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
     monkeypatch.setattr(settings, "logistics_bitrix_allowed_member_ids", ["member-1"])
     monkeypatch.setattr(settings, "logistics_bitrix_session_secret", "test-secret-long-enough")
     monkeypatch.setattr(settings, "logistics_web_session_secret", "fallback-secret-long-enough")
+    monkeypatch.setattr(
+        settings,
+        "logistics_stage_pilot_warehouse_external_ids",
+        ["central", "teply-stan"],
+    )
     admin_token, _expires_at = create_logistics_bitrix_session_token(
         actor_user_id=admin_id,
         domain="portal.example",
@@ -476,6 +500,28 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             "history",
             "errors",
         ]
+        assert {warehouse["external_id"] for warehouse in bootstrap.json()["warehouses"]} == {
+            "central",
+            "teply-stan",
+        }
+        pilot_monitor = client.get(
+            "/api/bitrix/logistics/monitor",
+            headers=headers,
+        )
+        assert pilot_monitor.status_code == 200
+        assert {item["transfer_id"] for item in pilot_monitor.json()} == {transfer_id}
+        outside_history = client.get(
+            f"/api/bitrix/logistics/transfers/{outside_transfer_id}/history",
+            headers=headers,
+        )
+        assert outside_history.status_code == 403
+        outside_pilot = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={"warehouse_id": foreign_id, "driver_id": driver_id},
+        )
+        assert outside_pilot.status_code == 403
+        assert outside_pilot.json()["detail"] == "warehouse is outside logistics pilot"
 
         handoff = client.post(
             "/api/bitrix/logistics/handoffs/draft",
@@ -534,6 +580,12 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             ).status_code
             == 200
         )
+        outside_fallback = client.post(
+            "/api/logistics/web/handoffs/draft",
+            json={"warehouse_id": foreign_id, "driver_id": driver_id},
+        )
+        assert outside_fallback.status_code == 403
+        assert outside_fallback.json()["detail"] == "warehouse is outside logistics pilot"
         web_handoff = client.post(
             "/api/logistics/web/handoffs/draft",
             json={
@@ -550,6 +602,44 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             ).status_code
             == 200
         )
+
+        with Session(engine) as session:
+            outside_draft = LogisticsDraft(
+                draft_type="handoff",
+                warehouse_id=foreign_id,
+                actor_user_id=admin_id,
+                driver_id=driver_id,
+            )
+            session.add(outside_draft)
+            session.commit()
+            outside_draft_id = outside_draft.id
+        blocked_old_draft = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{outside_draft_id}/scan",
+            headers=headers,
+            json={"lookup_code": "BC-OUTSIDE-1"},
+        )
+        assert blocked_old_draft.status_code == 403
+        cancellable_old_draft = client.post(
+            f"/api/bitrix/logistics/handoffs/draft/{outside_draft_id}/cancel",
+            headers=headers,
+            json={"reason": "Черновик вне текущего пилота"},
+        )
+        assert cancellable_old_draft.status_code == 200
+        assert cancellable_old_draft.json()["status"] == "cancelled"
+
+        monkeypatch.setattr(settings, "logistics_stage_pilot_warehouse_external_ids", [])
+        empty_pilot = client.get("/api/bitrix/logistics/bootstrap", headers=headers)
+        assert empty_pilot.status_code == 200
+        assert empty_pilot.json()["warehouses"] == []
+        empty_monitor = client.get("/api/bitrix/logistics/monitor", headers=headers)
+        assert empty_monitor.status_code == 200
+        assert empty_monitor.json() == []
+        fail_closed = client.post(
+            "/api/bitrix/logistics/handoffs/draft",
+            headers=headers,
+            json={"warehouse_id": source_id, "driver_id": driver_id},
+        )
+        assert fail_closed.status_code == 403
 
         with Session(engine) as session:
             state = session.get(LogisticsTransferState, transfer_id)

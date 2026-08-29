@@ -199,6 +199,55 @@ def test_unknown_printed_qr_review_is_deduplicated_and_auto_resolved() -> None:
             os.remove(path)
 
 
+def test_external_carrier_qr_is_classified_without_entering_internal_pilot() -> None:
+    engine, path = setup_db()
+    code = "MMLOG1|rtu|79830017320027395940666266732585827759"
+    external_id = "0xb4fc002590803daf11f1a1533c0eb3bb"
+    try:
+        with Session(engine) as session:
+            with pytest.raises(HTTPException) as unknown_error:
+                logistics.lookup_unit(session, code)
+            assert unknown_error.value.status_code == 404
+
+            sync_report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        rtu_external_id=external_id,
+                        site_delivery_method="СДЭК (Самовывоз)",
+                        site_delivery_addition="Пермь, ул. Серпуховская, 6 #SPRM12",
+                    )
+                ],
+                dry_run=False,
+            )
+            assert sync_report["manual_review_created"] == 1
+            assert sync_report["by_reason"] == {"rtu_external_carrier_unmapped": 1}
+
+            with pytest.raises(HTTPException) as classified_error:
+                logistics.lookup_unit(session, code)
+            assert classified_error.value.status_code == 409
+            assert classified_error.value.detail == (
+                "Документ относится к внешней службе доставки и пока не входит "
+                "во внутренний пилот"
+            )
+
+            unknown_review = session.scalar(
+                select(LogisticsManualReview).where(
+                    LogisticsManualReview.review_type == "unknown_qr"
+                )
+            )
+            assert unknown_review is not None
+            assert unknown_review.status == "resolved"
+            assert unknown_review.payload["auto_resolved_by"] == ("classified_external_carrier")
+            assert unknown_review.payload["matched_review_id"] is not None
+            assert session.query(LogisticsTransfer).count() == 0
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_unknown_qr_deduplication_does_not_merge_long_codes_with_same_prefix() -> None:
     engine, path = setup_db()
     first_code = "X" * 64 + "-first"
@@ -653,6 +702,14 @@ def test_sync_ready_rtu_units_creates_and_updates_logistics_unit() -> None:
             lookup = logistics.lookup_unit(session, transfer.lookup_code)
             assert lookup["transfer_id"] == transfer.id
 
+            unchanged_report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[_rtu_row()],
+                dry_run=False,
+            )
+            assert unchanged_report["synced_updated"] == 0
+
             second_report = logistics_onec.sync_ready_rtu_units(
                 session,
                 onec_engine=None,
@@ -661,6 +718,88 @@ def test_sync_ready_rtu_units_creates_and_updates_logistics_unit() -> None:
             )
             assert second_report["synced_updated"] == 1
             assert session.query(LogisticsTransfer).count() == 1
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_active_unit_sync_conflict_preserves_route_and_deduplicates_audit() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            first_target = LogisticsWarehouse(
+                external_id="target-1",
+                name="Савеловский",
+                kind="store",
+                payload={"address_aliases": ["Савеловский Мобильный пав. Т-103 | Т-105"]},
+            )
+            second_target = LogisticsWarehouse(
+                external_id="target-2",
+                name="Другой магазин",
+                kind="store",
+                payload={"address_aliases": ["Другой магазин, павильон 7"]},
+            )
+            session.add_all([first_target, second_target])
+            session.commit()
+
+            created = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[_rtu_row()],
+                dry_run=False,
+            )
+            assert created["synced_created"] == 1
+            transfer = session.scalar(select(LogisticsTransfer))
+            assert transfer is not None
+            original_target_id = transfer.target_warehouse_id
+            state = session.get(LogisticsTransferState, transfer.id)
+            assert state is not None
+            state.status = "in_transit"
+            state.last_event_type = "handed_to_driver"
+            state.dropoff_warehouse_id = original_target_id
+            session.commit()
+
+            conflicting_row = _rtu_row(site_delivery_addition="Другой магазин, павильон 7")
+            first_conflict = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[conflicting_row],
+                dry_run=False,
+            )
+            first_review = session.scalar(
+                select(LogisticsManualReview).where(
+                    LogisticsManualReview.review_type == "onec_reconciliation_conflict"
+                )
+            )
+            assert first_review is not None
+            first_review_updated_at = first_review.updated_at
+            second_conflict = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[conflicting_row],
+                dry_run=False,
+            )
+
+            session.refresh(transfer)
+            assert first_conflict["synced_updated"] == 0
+            assert second_conflict["synced_updated"] == 0
+            assert transfer.target_warehouse_id == original_target_id
+            assert transfer.document_target_warehouse_id == original_target_id
+            conflict_reviews = session.scalars(
+                select(LogisticsManualReview).where(
+                    LogisticsManualReview.review_type == "onec_reconciliation_conflict"
+                )
+            ).all()
+            conflict_events = session.scalars(
+                select(LogisticsTransferEvent).where(
+                    LogisticsTransferEvent.event_type == "onec_reconciliation_conflict"
+                )
+            ).all()
+            assert len(conflict_reviews) == 1
+            assert conflict_reviews[0].status == "open"
+            assert conflict_reviews[0].updated_at == first_review_updated_at
+            assert len(conflict_events) == 1
     finally:
         engine.dispose()
         if os.path.exists(path):
@@ -859,7 +998,7 @@ def test_sync_ready_rtu_units_can_apply_external_carrier_flow() -> None:
                 dry_run=False,
                 external_carrier_flow=True,
             )
-            assert repeat_report["synced_updated"] == 1
+            assert repeat_report["synced_updated"] == 0
             assert repeat_report["external_carrier_handoff_existing"] == 1
             assert session.query(LogisticsTransferEvent).count() == 1
 

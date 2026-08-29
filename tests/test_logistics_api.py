@@ -375,7 +375,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
         headers=headers,
     )
     assert wrong_scan.status_code == 409
-    assert "expected dropoff warehouse" in wrong_scan.json()["detail"]
+    assert wrong_scan.json()["detail"] == "Документ ожидается в другой точке: ЦС"
 
     receipt_draft = client.post(
         "/api/logistics/receipts/draft",
@@ -574,7 +574,9 @@ def test_handoff_unavailable_document_destination_creates_one_manual_review(monk
             headers=headers,
         )
         assert scanned.status_code == 409
-        assert scanned.json()["detail"] == "handoff destination requires manual review"
+        assert scanned.json()["detail"] == (
+            "Не удалось определить направление. Документ отправлен на разбор"
+        )
 
     with Session(engine) as session:
         reviews = session.scalars(
@@ -1028,6 +1030,10 @@ def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
     engine, path = setup_db()
     headers = _configure_logistics_auth(monkeypatch)
     monkeypatch.setenv("LOGISTICS_WEB_SESSION_SECRET", "test-web-session-secret")
+    monkeypatch.setenv(
+        "LOGISTICS_STAGE_PILOT_WAREHOUSE_EXTERNAL_IDS",
+        '["store-1", "central", "store-2"]',
+    )
     monkeypatch.setenv("DEBUG", "true")
     get_settings.cache_clear()
     app.dependency_overrides = {get_db: override_db(engine)}
@@ -1124,6 +1130,10 @@ def test_logistics_web_fallback_enforces_assigned_warehouse(monkeypatch) -> None
     engine, path = setup_db()
     headers = _configure_logistics_auth(monkeypatch)
     monkeypatch.setenv("LOGISTICS_WEB_SESSION_SECRET", "test-web-session-secret")
+    monkeypatch.setenv(
+        "LOGISTICS_STAGE_PILOT_WAREHOUSE_EXTERNAL_IDS",
+        '["store-1", "central", "store-2"]',
+    )
     monkeypatch.setenv("DEBUG", "true")
     get_settings.cache_clear()
     app.dependency_overrides = {get_db: override_db(engine)}

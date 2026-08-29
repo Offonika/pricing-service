@@ -159,20 +159,49 @@ def _set_bitrix_session_cookie(
     )
 
 
-def _effective_warehouse_id(actor: LogisticsUser, requested: int | None) -> int:
+def _effective_warehouse_id(
+    db: Session,
+    actor: LogisticsUser,
+    requested: int | None,
+) -> int:
     if actor.role in {"logist", "admin"} and requested is not None:
-        return requested
-    if actor.default_warehouse_id is None:
-        raise HTTPException(status_code=422, detail="default logistics warehouse is not configured")
-    if requested not in (None, actor.default_warehouse_id):
-        raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
-    return actor.default_warehouse_id
+        warehouse_id = requested
+    else:
+        if actor.default_warehouse_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="default logistics warehouse is not configured",
+            )
+        if requested not in (None, actor.default_warehouse_id):
+            raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
+        warehouse_id = actor.default_warehouse_id
+    return logistics_service.require_warehouse_in_scope(
+        db,
+        warehouse_id=warehouse_id,
+        allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+    )
 
 
-def _monitor_warehouse_id(actor: LogisticsUser, requested: int | None) -> int | None:
+def _monitor_warehouse_scope(
+    db: Session,
+    actor: LogisticsUser,
+    requested: int | None,
+) -> tuple[int | None, list[int] | None]:
     if actor.role in {"logist", "admin"}:
-        return requested
-    return _effective_warehouse_id(actor, requested)
+        if requested is None:
+            return None, logistics_service.warehouse_ids_in_scope(
+                db,
+                allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+            )
+        return (
+            logistics_service.require_warehouse_in_scope(
+                db,
+                warehouse_id=requested,
+                allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+            ),
+            None,
+        )
+    return _effective_warehouse_id(db, actor, requested), None
 
 
 def _require_role(actor: LogisticsUser, allowed: set[str]) -> None:
@@ -188,8 +217,26 @@ def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
         raise HTTPException(status_code=409, detail="draft type does not match endpoint")
 
 
+def _require_draft_in_pilot(db: Session, draft_id: int) -> None:
+    warehouse_id = db.scalar(
+        select(LogisticsDraft.warehouse_id).where(LogisticsDraft.id == draft_id)
+    )
+    if warehouse_id is None:
+        raise HTTPException(status_code=404, detail="draft not found")
+    logistics_service.require_warehouse_in_scope(
+        db,
+        warehouse_id=warehouse_id,
+        allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+    )
+
+
 def _require_transfer_visible(db: Session, actor: LogisticsUser, transfer_id: int) -> None:
     if actor.role in {"logist", "admin"}:
+        logistics_service.require_transfer_in_warehouse_scope(
+            db,
+            transfer_id=transfer_id,
+            allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+        )
         return
     if actor.default_warehouse_id is None:
         raise HTTPException(status_code=403, detail="default logistics warehouse is not configured")
@@ -290,9 +337,18 @@ def bootstrap(
         "logist": ["expected", "monitor", "history", "errors"],
         "admin": ["handoff", "receipt", "expected", "monitor", "history", "errors"],
     }.get(actor.role, [])
+    settings = get_settings()
+    warehouses = logistics_service.list_warehouses(
+        db,
+        allowed_external_ids=settings.logistics_stage_pilot_warehouse_external_ids,
+    )
+    if actor.role not in {"logist", "admin"}:
+        warehouses = [
+            warehouse for warehouse in warehouses if warehouse["id"] == actor.default_warehouse_id
+        ]
     return BitrixLogisticsBootstrapResponse(
         profile=_profile(actor),
-        warehouses=logistics_service.list_warehouses(db),
+        warehouses=warehouses,
         drivers=logistics_service.list_drivers(db),
         capabilities=capabilities,
         open_draft=logistics_service.get_open_draft_for_actor(
@@ -313,7 +369,7 @@ def create_handoff_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_HANDOFF,
         actor_user_id=actor.id,
-        warehouse_id=_effective_warehouse_id(actor, payload.warehouse_id),
+        warehouse_id=_effective_warehouse_id(db, actor, payload.warehouse_id),
         driver_id=payload.driver_id,
         route_run_id=payload.route_run_id,
         default_dropoff_warehouse_id=None,
@@ -330,6 +386,7 @@ def scan_handoff_draft(
 ):
     _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -352,6 +409,7 @@ def remove_handoff_draft_item(
 ):
     _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.remove_scan_from_draft(
         db,
         draft_id=draft_id,
@@ -386,6 +444,7 @@ def confirm_handoff_draft(
 ):
     _require_role(actor, {"sender", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -408,7 +467,7 @@ def create_receipt_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_RECEIPT,
         actor_user_id=actor.id,
-        warehouse_id=_effective_warehouse_id(actor, payload.warehouse_id),
+        warehouse_id=_effective_warehouse_id(db, actor, payload.warehouse_id),
         route_run_id=payload.route_run_id,
         comment=payload.comment,
     )
@@ -423,6 +482,7 @@ def scan_receipt_draft(
 ):
     _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -444,6 +504,7 @@ def remove_receipt_draft_item(
 ):
     _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.remove_scan_from_draft(
         db,
         draft_id=draft_id,
@@ -478,6 +539,7 @@ def confirm_receipt_draft(
 ):
     _require_role(actor, {"receiver", "admin"})
     _require_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_draft_in_pilot(db, draft_id)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -497,9 +559,11 @@ def expected_deliveries(
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
     _require_role(actor, {"receiver", "logist", "admin"})
+    selected_warehouse_id, pilot_warehouse_ids = _monitor_warehouse_scope(db, actor, warehouse_id)
     return logistics_service.list_expected_deliveries(
         db,
-        warehouse_id=_monitor_warehouse_id(actor, warehouse_id),
+        warehouse_id=selected_warehouse_id,
+        warehouse_ids=pilot_warehouse_ids,
         driver_id=driver_id,
     )
 
@@ -511,10 +575,12 @@ def monitor(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
+    selected_warehouse_id, pilot_warehouse_ids = _monitor_warehouse_scope(db, actor, warehouse_id)
     return logistics_service.list_monitor(
         db,
         status=status,
-        warehouse_id=_monitor_warehouse_id(actor, warehouse_id),
+        warehouse_id=selected_warehouse_id,
+        warehouse_ids=pilot_warehouse_ids,
     )
 
 

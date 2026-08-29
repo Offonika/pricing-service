@@ -385,6 +385,27 @@ def test_stage_outbox_retries_without_overtaking_next_event(db_session) -> None:
     assert [result.result for result in recovered] == ["applied", "applied"]
 
 
+def test_stage_outbox_manual_review_blocks_next_event(db_session) -> None:
+    rows = _seed_order_chain(db_session)
+    rows[0].status = "manual_review"
+    rows[0].last_error = "unexpected_live_stage:PREPARATION"
+    db_session.commit()
+    client = FakeBitrixClient(_deal())
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(),
+        now=datetime(2026, 8, 26, 10, 0),
+    )
+
+    assert [result.result for result in results] == ["waiting_for_predecessor"]
+    assert client.updates == []
+    db_session.refresh(rows[1])
+    assert rows[1].status == "pending"
+
+
 def test_stage_outbox_never_changes_terminal_deal(db_session) -> None:
     rows = _seed_order_chain(db_session)
     client = FakeBitrixClient(_deal("WON"))

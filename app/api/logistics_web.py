@@ -30,6 +30,7 @@ router = APIRouter()
 page_router = APIRouter()
 
 COOKIE_NAME = "mm_logistics_session"
+ALLOWED_WEB_ROLES = {"sender", "receiver", "logist", "admin"}
 # Сборка активного релиза имеет приоритет: легаси-каталог /var/www не обновляется
 # при выкладке и иначе месяцами подменяет свежий ui/dist старым билдом.
 _INDEX_PATHS = (
@@ -156,6 +157,8 @@ def require_logistics_web_actor(
     user = db.get(LogisticsUser, int(data["actor_user_id"]))
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="unauthorized")
+    if user.role not in ALLOWED_WEB_ROLES:
+        raise HTTPException(status_code=403, detail="logistics profile role is not supported")
     return user
 
 
@@ -172,14 +175,40 @@ def _require_web_draft_type(db: Session, draft_id: int, expected_type: str) -> N
         raise HTTPException(status_code=409, detail="draft type does not match endpoint")
 
 
-def _web_monitor_warehouse_id(actor: LogisticsUser, requested: int | None) -> int | None:
+def _require_web_draft_in_pilot(db: Session, draft_id: int) -> None:
+    warehouse_id = db.scalar(
+        select(LogisticsDraft.warehouse_id).where(LogisticsDraft.id == draft_id)
+    )
+    if warehouse_id is None:
+        raise HTTPException(status_code=404, detail="draft not found")
+    _web_pilot_warehouse_id(db, warehouse_id)
+
+
+def _web_pilot_warehouse_id(db: Session, warehouse_id: int) -> int:
+    return logistics_service.require_warehouse_in_scope(
+        db,
+        warehouse_id=warehouse_id,
+        allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+    )
+
+
+def _web_monitor_warehouse_scope(
+    db: Session,
+    actor: LogisticsUser,
+    requested: int | None,
+) -> tuple[int | None, list[int] | None]:
     if actor.role in {"logist", "admin"}:
-        return requested
+        if requested is None:
+            return None, logistics_service.warehouse_ids_in_scope(
+                db,
+                allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+            )
+        return _web_pilot_warehouse_id(db, requested), None
     if actor.default_warehouse_id is None:
         raise HTTPException(status_code=422, detail="default logistics warehouse is not configured")
     if requested not in (None, actor.default_warehouse_id):
         raise HTTPException(status_code=403, detail="warehouse is not allowed for user")
-    return actor.default_warehouse_id
+    return _web_pilot_warehouse_id(db, actor.default_warehouse_id), None
 
 
 @router.post(
@@ -216,9 +245,17 @@ def web_profile(actor: LogisticsUser = Depends(require_logistics_web_actor)):
 @router.get("/warehouses")
 def web_warehouses(
     db: Session = Depends(get_db),
-    _: LogisticsUser = Depends(require_logistics_web_actor),
+    actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
-    return logistics_service.list_warehouses(db)
+    warehouses = logistics_service.list_warehouses(
+        db,
+        allowed_external_ids=get_settings().logistics_stage_pilot_warehouse_external_ids,
+    )
+    if actor.role not in {"logist", "admin"}:
+        warehouses = [
+            warehouse for warehouse in warehouses if warehouse["id"] == actor.default_warehouse_id
+        ]
+    return warehouses
 
 
 @router.get("/drivers")
@@ -244,10 +281,14 @@ def web_monitor(
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(require_logistics_web_actor),
 ):
+    selected_warehouse_id, pilot_warehouse_ids = _web_monitor_warehouse_scope(
+        db, actor, warehouse_id
+    )
     return logistics_service.list_monitor(
         db,
         status=status,
-        warehouse_id=_web_monitor_warehouse_id(actor, warehouse_id),
+        warehouse_id=selected_warehouse_id,
+        warehouse_ids=pilot_warehouse_ids,
     )
 
 
@@ -262,7 +303,7 @@ def web_create_handoff_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_HANDOFF,
         actor_user_id=actor.id,
-        warehouse_id=payload.warehouse_id,
+        warehouse_id=_web_pilot_warehouse_id(db, payload.warehouse_id),
         driver_id=payload.driver_id,
         route_run_id=payload.route_run_id,
         default_dropoff_warehouse_id=None,
@@ -279,6 +320,7 @@ def web_scan_handoff(
 ):
     _require_web_role(actor, "sender")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -301,6 +343,7 @@ def web_remove_handoff_item(
 ):
     _require_web_role(actor, "sender")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.remove_scan_from_draft(
         db,
         draft_id=draft_id,
@@ -335,6 +378,7 @@ def web_confirm_handoff(
 ):
     _require_web_role(actor, "sender")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_HANDOFF)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,
@@ -357,7 +401,7 @@ def web_create_receipt_draft(
         db,
         draft_type=logistics_service.DRAFT_TYPE_RECEIPT,
         actor_user_id=actor.id,
-        warehouse_id=payload.warehouse_id,
+        warehouse_id=_web_pilot_warehouse_id(db, payload.warehouse_id),
         route_run_id=payload.route_run_id,
         comment=payload.comment,
     )
@@ -372,6 +416,7 @@ def web_scan_receipt(
 ):
     _require_web_role(actor, "receiver")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.add_scan_to_draft(
         db,
         draft_id=draft_id,
@@ -393,6 +438,7 @@ def web_remove_receipt_item(
 ):
     _require_web_role(actor, "receiver")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.remove_scan_from_draft(
         db,
         draft_id=draft_id,
@@ -427,6 +473,7 @@ def web_confirm_receipt(
 ):
     _require_web_role(actor, "receiver")
     _require_web_draft_type(db, draft_id, logistics_service.DRAFT_TYPE_RECEIPT)
+    _require_web_draft_in_pilot(db, draft_id)
     return logistics_service.confirm_draft(
         db,
         draft_id=draft_id,

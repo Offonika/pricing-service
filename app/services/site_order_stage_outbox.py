@@ -22,6 +22,7 @@ STATUS_RETRY = "retry"
 STATUS_APPLIED = "applied"
 STATUS_MANUAL_REVIEW = "manual_review"
 STATUS_TERMINAL = "terminal"
+BLOCKING_PREDECESSOR_STATUSES = (STATUS_PENDING, STATUS_RETRY, STATUS_MANUAL_REVIEW)
 
 CRM_STAGE_DELIVERY_REVIEW = "DELIVERY_REVIEW"
 SMS_EVENT_FIELD = "UF_CRM_MM_PICKUP_READY_EVENT_ID"
@@ -422,7 +423,7 @@ def _has_blocking_predecessor(session: Session, row: SiteOrderStageOutbox) -> bo
                 exists().where(
                     SiteOrderStageOutbox.case_id == row.case_id,
                     SiteOrderStageOutbox.id < row.id,
-                    SiteOrderStageOutbox.status.in_([STATUS_PENDING, STATUS_RETRY]),
+                    SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
                 )
             )
         )
@@ -606,7 +607,7 @@ def process_stage_outbox(
         .where(
             predecessor.case_id == SiteOrderStageOutbox.case_id,
             predecessor.id < SiteOrderStageOutbox.id,
-            predecessor.status.in_([STATUS_PENDING, STATUS_RETRY]),
+            predecessor.status.in_(BLOCKING_PREDECESSOR_STATUSES),
         )
         .correlate(SiteOrderStageOutbox)
     )

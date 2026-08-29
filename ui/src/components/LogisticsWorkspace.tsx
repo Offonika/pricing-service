@@ -519,7 +519,10 @@ export function LogisticsWorkspace() {
     [bootstrap?.capabilities]
   );
   const warehouseId = selectedWarehouseId ? Number(selectedWarehouseId) : null;
-  const listWarehouseId = bootstrap?.profile.default_warehouse_id ?? null;
+  const listWarehouseId = warehouseId;
+  const selectedWarehouse = bootstrap?.warehouses.find(
+    (warehouse) => warehouse.id === warehouseId
+  );
 
   const loadReviews = useCallback(
     async (offset = 0, append = false) => {
@@ -581,10 +584,21 @@ export function LogisticsWorkspace() {
       .then(({ data }) => {
         if (cancelled) return;
         setBootstrap(data);
+        const availableWarehouseIds = new Set(
+          data.warehouses.map((warehouse) => warehouse.id)
+        );
+        const draftWarehouseId = data.open_draft?.warehouse_id;
+        const defaultWarehouseId = data.profile.default_warehouse_id;
         const initialWarehouseId =
-          data.open_draft?.warehouse_id ||
-          data.profile.default_warehouse_id ||
-          (data.profile.role === "admin" ? data.warehouses[0]?.id : null);
+          (draftWarehouseId && availableWarehouseIds.has(draftWarehouseId)
+            ? draftWarehouseId
+            : null) ||
+          (defaultWarehouseId && availableWarehouseIds.has(defaultWarehouseId)
+            ? defaultWarehouseId
+            : null) ||
+          (["admin", "logist"].includes(data.profile.role)
+            ? data.warehouses[0]?.id
+            : null);
         setSelectedWarehouseId(String(initialWarehouseId || ""));
         const initialOperation =
           data.open_draft?.draft_type ||
@@ -774,7 +788,11 @@ export function LogisticsWorkspace() {
         <div>
           <span className="logistics-header__eyebrow">Внутренние перемещения</span>
           <h1>Логистика</h1>
-          <p>{bootstrap.profile.default_warehouse_name || "Все склады"}</p>
+          <p>
+            {selectedWarehouse?.name ||
+              bootstrap.profile.default_warehouse_name ||
+              "Склад не выбран"}
+          </p>
         </div>
         <div className="logistics-header__user">
           <strong>{bootstrap.profile.full_name}</strong>
@@ -797,6 +815,27 @@ export function LogisticsWorkspace() {
       </nav>
 
       <main className="logistics-mobile-content">
+        {["admin", "logist"].includes(bootstrap.profile.role) &&
+          !draft &&
+          ["expected", "transit"].includes(screen) &&
+          bootstrap.warehouses.length > 1 && (
+            <section className="logistics-card">
+              <label className="logistics-field">
+                <span>Склад просмотра</span>
+                <select
+                  aria-label="Склад просмотра"
+                  value={selectedWarehouseId}
+                  onChange={(event) => setSelectedWarehouseId(event.target.value)}
+                >
+                  {bootstrap.warehouses.map((warehouse) => (
+                    <option key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </section>
+          )}
         {screen === "operation" && (
           <section className="logistics-card">
             <div className="logistics-card__heading">

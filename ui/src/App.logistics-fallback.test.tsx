@@ -137,7 +137,12 @@ describe("LogisticsFallbackApp", () => {
     const warehouse = screen.getByRole("combobox", { name: "Склад операции" });
     expect(operation).toHaveValue("handoff");
     expect(warehouse).toHaveValue("10");
-
+    await waitFor(() =>
+      expect(fallbackApi).toHaveBeenCalledWith(
+        "/api/logistics/web/monitor?warehouse_id=10",
+        expect.any(Object)
+      )
+    );
     fireEvent.change(operation, { target: { value: "receipt" } });
     fireEvent.change(warehouse, { target: { value: "20" } });
     fireEvent.click(screen.getByRole("button", { name: "Открыть" }));
@@ -201,8 +206,9 @@ describe("LogisticsFallbackApp", () => {
     });
   });
 
-  it("не показывает логисту операции чужого склада", async () => {
-    vi.stubGlobal("fetch", mockFallbackApi("logist"));
+  it("не показывает логисту операции и ограничивает монитор складом пилота", async () => {
+    const fallbackApi = mockFallbackApi("logist");
+    vi.stubGlobal("fetch", fallbackApi);
 
     render(<LogisticsFallbackApp />);
 
@@ -210,6 +216,14 @@ describe("LogisticsFallbackApp", () => {
       await screen.findByText("Для этой роли доступны мониторинг и история в приложении Bitrix24")
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Открыть" })).not.toBeInTheDocument();
+    const warehouse = screen.getByRole("combobox", { name: "Склад мониторинга" });
+    fireEvent.change(warehouse, { target: { value: "20" } });
+    await waitFor(() =>
+      expect(fallbackApi).toHaveBeenCalledWith(
+        "/api/logistics/web/monitor?warehouse_id=20",
+        expect.any(Object)
+      )
+    );
     await waitFor(() => expect(screen.getByRole("heading", { name: "Логистика" })).toBeVisible());
   });
 

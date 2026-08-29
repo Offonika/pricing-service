@@ -115,6 +115,47 @@ describe("LogisticsWorkspace", () => {
     );
   });
 
+  it("фильтрует монитор администратора по выбранному складу пилота", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: adminBootstrap };
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+    await screen.findByText("Администратор");
+    fireEvent.change(screen.getByRole("combobox", { name: "Склад операции" }), {
+      target: { value: "20" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "В пути" }));
+
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith("/bitrix/logistics/monitor", {
+        params: { status: "in_transit", warehouse_id: 20 },
+      })
+    );
+  });
+
+  it("позволяет логисту переключить склад просмотра", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: logistBootstrap };
+      if (path === "/bitrix/logistics/monitor") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+    const warehouse = await screen.findByRole("combobox", { name: "Склад просмотра" });
+    expect(warehouse).toHaveValue("10");
+    fireEvent.change(warehouse, { target: { value: "20" } });
+
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith("/bitrix/logistics/monitor", {
+        params: { status: "in_transit", warehouse_id: 20 },
+      })
+    );
+    expect(warehouse).toHaveValue("20");
+  });
+
   it("просит заднюю камеру в запасном ZXing-сканере", async () => {
     vi.mocked(api.post).mockResolvedValueOnce({
       data: {

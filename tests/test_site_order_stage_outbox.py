@@ -184,6 +184,7 @@ def _seed_execution_outbox(db_session, *, historical: bool = False):
         duplicate_deal_ids=(9001,),
         rtu_count=1,
         assembled_rtu_count=1,
+        line_coverage_status="complete",
         latest_rtu_at=datetime(2026, 8, 26, 9, 0),
         latest_assembled_at=datetime(2026, 8, 26, 9, 5),
         historical=historical,
@@ -508,6 +509,36 @@ def test_execution_outbox_applies_without_logistics_pilot_gate(db_session) -> No
     assert row.status == "applied"
 
 
+def test_full_assembly_field_requires_exact_readback_before_stage(db_session) -> None:
+    row = _seed_execution_outbox(db_session)
+    client = FakeBitrixClient(_deal("EXECUTING"))
+    original_update = client.update_deal_fields
+
+    def ignore_full_assembly(deal_id: int, fields: dict):
+        if stage_outbox_service.FULL_ASSEMBLY_FIELD in fields:
+            client.updates.append(dict(fields))
+            return True
+        return original_update(deal_id, fields)
+
+    client.update_deal_fields = ignore_full_assembly
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+        ),
+    )
+
+    assert [item.result for item in results] == ["retry"]
+    assert results[0].reason == "full_assembly_field_readback_mismatch"
+    assert client.deal.stage_id == "EXECUTING"
+    db_session.refresh(row)
+    assert row.status == "retry"
+
+
 def test_execution_outbox_historical_apply_is_independently_disabled(db_session) -> None:
     row = _seed_execution_outbox(db_session, historical=True)
     client = FakeBitrixClient(_deal("EXECUTING"))
@@ -616,3 +647,118 @@ def test_execution_historical_apply_is_capped_at_twenty_per_run(
     assert len(applied_ids) == 20
     assert [item.result for item in results].count("applied") == 20
     assert [item.result for item in results].count("historical_batch_limit") == 5
+
+
+def _seed_shipment_stage_row(
+    db_session,
+    *,
+    case: SiteOrderExecutionCase | None = None,
+    target_stage: str,
+    suffix: str,
+):
+    if case is None:
+        case = SiteOrderExecutionCase(
+            site_order_number="216951",
+            bitrix_deal_id=9001,
+            current_derived_status="shipment_reconciliation",
+        )
+        db_session.add(case)
+        db_session.flush()
+    event = SiteOrderExecutionEvent(
+        case_id=case.id,
+        event_type=f"shipment_{suffix}",
+        event_at=datetime(2026, 8, 29, 12, 0),
+        source="onec",
+        source_ref=f"shipment:{suffix}",
+        confidence="strong",
+        idempotency_key=f"shipment-event:{suffix}",
+        payload={},
+    )
+    db_session.add(event)
+    db_session.flush()
+    case.last_evidence_event_id = event.id
+    row = SiteOrderStageOutbox(
+        case_id=case.id,
+        event_id=event.id,
+        idempotency_key=f"shipment-stage:{suffix}",
+        site_order_number=case.site_order_number,
+        bitrix_deal_id=case.bitrix_deal_id,
+        source_event_type=event.event_type,
+        target_stage=target_stage,
+        payload={
+            "pipeline": "shipment_reconciliation",
+            "coverage_status": "complete",
+            "event_at": event.event_at.isoformat(),
+        },
+    )
+    db_session.add(row)
+    db_session.commit()
+    return case, row
+
+
+def test_shipment_stage_outbox_applies_partial_then_full_dispatch(db_session) -> None:
+    case, partial_row = _seed_shipment_stage_row(
+        db_session,
+        target_stage="PARTIALLY_SHIPPED",
+        suffix="partial",
+    )
+    client = FakeBitrixClient(_deal("FINAL_INVOICE"))
+    settings = _settings(
+        order_fulfillment_shipments_master_enabled=True,
+        order_fulfillment_shipments_stage_apply_enabled=True,
+    )
+
+    partial = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=settings,
+    )
+
+    assert [item.result for item in partial] == ["applied"]
+    assert client.deal.stage_id == "PARTIALLY_SHIPPED"
+    db_session.refresh(partial_row)
+    assert partial_row.status == "applied"
+
+    _, delivered_row = _seed_shipment_stage_row(
+        db_session,
+        case=case,
+        target_stage="IN_DELIVERY",
+        suffix="complete",
+    )
+    delivered = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=settings,
+    )
+
+    assert [item.result for item in delivered] == ["applied"]
+    assert client.deal.stage_id == "IN_DELIVERY"
+    db_session.refresh(delivered_row)
+    assert delivered_row.status == "applied"
+
+
+def test_shipment_stage_outbox_is_fail_closed_when_disabled(db_session) -> None:
+    _, row = _seed_shipment_stage_row(
+        db_session,
+        target_stage="PARTIALLY_SHIPPED",
+        suffix="disabled",
+    )
+    client = FakeBitrixClient(_deal("FINAL_INVOICE"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_shipments_master_enabled=False,
+            order_fulfillment_shipments_stage_apply_enabled=False,
+        ),
+    )
+
+    assert [item.result for item in results] == ["shipment_automation_disabled"]
+    assert client.deal.stage_id == "FINAL_INVOICE"
+    assert client.updates == []
+    db_session.refresh(row)
+    assert row.status == "pending"

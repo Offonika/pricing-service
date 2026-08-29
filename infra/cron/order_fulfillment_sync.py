@@ -162,6 +162,11 @@ EXECUTING_RECONCILIATION_CSV_FIELDS = (
     "crm_assembled",
     "rtu_count",
     "assembled_rtu_count",
+    "line_coverage_status",
+    "expected_item_quantity",
+    "assembled_item_quantity",
+    "missing_item_count",
+    "excess_item_count",
     "issued_rtu_count",
     "returned_rtu_count",
     "posted_sale_amount",
@@ -1101,6 +1106,13 @@ def build_execution_snapshots(
                 ),
                 rtu_count=int(signal.get("rtu_count") or 0),
                 assembled_rtu_count=int(signal.get("assembled_rtu_count") or 0),
+                line_coverage_status=(
+                    fulfillment._clean_string(signal.get("line_coverage_status")) or None
+                ),
+                expected_item_quantity=_decimal_or_none(signal.get("expected_item_quantity")),
+                assembled_item_quantity=_decimal_or_none(signal.get("assembled_item_quantity")),
+                missing_item_count=int(signal.get("missing_item_count") or 0),
+                excess_item_count=int(signal.get("excess_item_count") or 0),
                 issued_rtu_count=int(signal.get("issued_rtu_count") or 0),
                 returned_rtu_count=int(signal.get("returned_rtu_count") or 0),
                 posted_sale_amount=_decimal_or_none(signal.get("posted_sale_amount")),
@@ -1180,6 +1192,11 @@ def write_execution_reconciliation_csv(
                 "crm_assembled": snapshot.crm_assembled,
                 "rtu_count": snapshot.rtu_count,
                 "assembled_rtu_count": snapshot.assembled_rtu_count,
+                "line_coverage_status": snapshot.line_coverage_status,
+                "expected_item_quantity": snapshot.expected_item_quantity,
+                "assembled_item_quantity": snapshot.assembled_item_quantity,
+                "missing_item_count": snapshot.missing_item_count,
+                "excess_item_count": snapshot.excess_item_count,
                 "issued_rtu_count": snapshot.issued_rtu_count,
                 "returned_rtu_count": snapshot.returned_rtu_count,
                 "posted_sale_amount": snapshot.posted_sale_amount,
@@ -1957,26 +1974,105 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
                 ) AS rn
             FROM rtu_source
             WHERE site_order_number IS NOT NULL
+        ),
+        order_line_totals AS (
+            SELECT
+                NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+                line._Fld2434RRef AS product_ref,
+                SUM(CAST(line._Fld2431 AS decimal(18, 4))) AS expected_quantity
+            FROM dbo._Document132 AS ord WITH (NOLOCK)
+            JOIN dbo._Document132_VT2427 AS line WITH (NOLOCK)
+              ON line._Document132_IDRRef = ord._IDRRef
+            WHERE LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+              AND ord._Marked = 0x00
+              AND line._Fld2434RRef <> 0x00000000000000000000000000000000
+              AND line._Fld2431 > 0
+            GROUP BY NULLIF(LTRIM(RTRIM(ord._Fld2425)), N''), line._Fld2434RRef
+        ),
+        assembled_line_totals AS (
+            SELECT
+                NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+                line._Fld4974RRef AS product_ref,
+                SUM(CAST(line._Fld4971 AS decimal(18, 4))) AS assembled_quantity
+            FROM dbo._Document203 AS rtu WITH (NOLOCK)
+            JOIN dbo._Document132 AS ord WITH (NOLOCK)
+              ON ord._IDRRef = rtu._Fld4939_RRRef
+            JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+              ON line._Document203_IDRRef = rtu._IDRRef
+            WHERE LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+              AND rtu._Posted = 0x01
+              AND rtu._Marked = 0x00
+              AND line._Fld4974RRef <> 0x00000000000000000000000000000000
+              AND line._Fld4971 > 0
+              AND EXISTS (
+                  SELECT 1
+                  FROM dbo._InfoRg9448 AS assembled_event WITH (NOLOCK)
+                  WHERE assembled_event._Fld9449_RRRef = rtu._IDRRef
+                    AND assembled_event._Fld9449_TYPE = 0x08
+                    AND assembled_event._Fld9449_RTRef = 0x000000CB
+                    AND assembled_event._Fld9454 = N'Собран'
+              )
+            GROUP BY NULLIF(LTRIM(RTRIM(ord._Fld2425)), N''), line._Fld4974RRef
+        ),
+        coverage_source AS (
+            SELECT
+                COALESCE(expected.site_order_number, assembled.site_order_number)
+                    AS site_order_number,
+                COALESCE(expected.expected_quantity, 0) AS expected_quantity,
+                COALESCE(assembled.assembled_quantity, 0) AS assembled_quantity
+            FROM order_line_totals AS expected
+            FULL OUTER JOIN assembled_line_totals AS assembled
+              ON assembled.site_order_number = expected.site_order_number
+             AND assembled.product_ref = expected.product_ref
+        ),
+        coverage_by_order AS (
+            SELECT
+                site_order_number,
+                CAST(SUM(expected_quantity) AS decimal(18, 4)) AS expected_item_quantity,
+                CAST(SUM(assembled_quantity) AS decimal(18, 4)) AS assembled_item_quantity,
+                SUM(CASE WHEN expected_quantity > assembled_quantity THEN 1 ELSE 0 END)
+                    AS missing_item_count,
+                SUM(CASE WHEN assembled_quantity > expected_quantity THEN 1 ELSE 0 END)
+                    AS excess_item_count
+            FROM coverage_source
+            GROUP BY site_order_number
+        ),
+        rtu_aggregate AS (
+            SELECT
+                site_order_number,
+                COUNT(*) AS rtu_count,
+                SUM(has_assembled) AS assembled_rtu_count,
+                SUM(has_print) AS printed_rtu_count,
+                SUM(has_scan) AS scanned_rtu_count,
+                SUM(CASE WHEN has_print = 1 AND has_scan = 1 THEN 1 ELSE 0 END)
+                    AS issued_rtu_count,
+                SUM(has_return) AS returned_rtu_count,
+                CAST(SUM(sale_amount) AS decimal(18, 2)) AS posted_sale_amount,
+                CAST(SUM(returned_amount) AS decimal(18, 2)) AS returned_amount,
+                MAX(assembled_at) AS latest_assembled_at,
+                MAX(CASE WHEN has_print = 1 AND has_scan = 1 THEN scanned_at END)
+                    AS latest_issued_at,
+                MAX(returned_at) AS latest_return_at,
+                MAX(CASE WHEN rn = 1 THEN rtu_number END) AS latest_rtu_number,
+                MAX(CASE WHEN rn = 1 THEN rtu_date END) AS latest_rtu_date
+            FROM ranked
+            GROUP BY site_order_number
         )
         SELECT
-            site_order_number,
-            COUNT(*) AS rtu_count,
-            SUM(has_assembled) AS assembled_rtu_count,
-            SUM(has_print) AS printed_rtu_count,
-            SUM(has_scan) AS scanned_rtu_count,
-            SUM(CASE WHEN has_print = 1 AND has_scan = 1 THEN 1 ELSE 0 END)
-                AS issued_rtu_count,
-            SUM(has_return) AS returned_rtu_count,
-            CAST(SUM(sale_amount) AS decimal(18, 2)) AS posted_sale_amount,
-            CAST(SUM(returned_amount) AS decimal(18, 2)) AS returned_amount,
-            MAX(assembled_at) AS latest_assembled_at,
-            MAX(CASE WHEN has_print = 1 AND has_scan = 1 THEN scanned_at END)
-                AS latest_issued_at,
-            MAX(returned_at) AS latest_return_at,
-            MAX(CASE WHEN rn = 1 THEN rtu_number END) AS latest_rtu_number,
-            MAX(CASE WHEN rn = 1 THEN rtu_date END) AS latest_rtu_date
-        FROM ranked
-        GROUP BY site_order_number
+            aggregate.*,
+            coverage.expected_item_quantity,
+            coverage.assembled_item_quantity,
+            COALESCE(coverage.missing_item_count, 0) AS missing_item_count,
+            COALESCE(coverage.excess_item_count, 0) AS excess_item_count,
+            CASE
+                WHEN coverage.site_order_number IS NULL THEN N'unavailable'
+                WHEN coverage.excess_item_count > 0 THEN N'conflict'
+                WHEN coverage.missing_item_count > 0 THEN N'partial'
+                ELSE N'complete'
+            END AS line_coverage_status
+        FROM rtu_aggregate AS aggregate
+        LEFT JOIN coverage_by_order AS coverage
+          ON coverage.site_order_number = aggregate.site_order_number
         """)
     engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     try:
@@ -2004,6 +2100,11 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             "latest_return_at": mapping.get("latest_return_at"),
             "latest_rtu_number": clean_csv_value(mapping["latest_rtu_number"]),
             "latest_rtu_date": mapping["latest_rtu_date"],
+            "line_coverage_status": clean_csv_value(mapping.get("line_coverage_status")),
+            "expected_item_quantity": _decimal_or_none(mapping.get("expected_item_quantity")),
+            "assembled_item_quantity": _decimal_or_none(mapping.get("assembled_item_quantity")),
+            "missing_item_count": int(mapping.get("missing_item_count") or 0),
+            "excess_item_count": int(mapping.get("excess_item_count") or 0),
         }
     return result
 

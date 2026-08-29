@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -63,6 +65,16 @@ class SiteOrderExecutionCase(Base):
         back_populates="case",
         cascade="all, delete-orphan",
         foreign_keys="SiteOrderExecutionEvent.case_id",
+    )
+    rtus = relationship(
+        "SiteOrderRtu",
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
+    shipments = relationship(
+        "SiteOrderShipment",
+        back_populates="case",
+        cascade="all, delete-orphan",
     )
 
 
@@ -207,6 +219,175 @@ class SiteOrderExecutionEvent(Base):
     )
     raw_message = relationship("BitrixChatMessage")
     warehouse = relationship("LogisticsWarehouse")
+
+
+class SiteOrderRtu(Base):
+    __tablename__ = "site_order_rtu"
+    __table_args__ = (
+        UniqueConstraint("case_id", "external_id", name="uq_site_order_rtu_case_external"),
+        Index("ix_site_order_rtu_case_assembled", "case_id", "assembled_at"),
+    )
+
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_execution_case.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    posted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    assembled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    case = relationship("SiteOrderExecutionCase", back_populates="rtus")
+    items = relationship(
+        "SiteOrderRtuItem",
+        back_populates="rtu",
+        cascade="all, delete-orphan",
+    )
+
+
+class SiteOrderRtuItem(Base):
+    __tablename__ = "site_order_rtu_item"
+    __table_args__ = (
+        UniqueConstraint("rtu_id", "product_ref", name="uq_site_order_rtu_item_product"),
+        Index("ix_site_order_rtu_item_product", "product_ref"),
+    )
+
+    rtu_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_rtu.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    rtu = relationship("SiteOrderRtu", back_populates="items")
+
+
+class SiteOrderShipment(Base):
+    __tablename__ = "site_order_shipment"
+    __table_args__ = (
+        UniqueConstraint(
+            "case_id",
+            "shipment_key",
+            name="uq_site_order_shipment_case_key",
+        ),
+        UniqueConstraint(
+            "bitrix_shipment_id",
+            name="uq_site_order_shipment_bitrix_id",
+        ),
+        Index("ix_site_order_shipment_case_status", "case_id", "status"),
+        Index("ix_site_order_shipment_tracking", "tracking_number"),
+    )
+
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_execution_case.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    shipment_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    bitrix_shipment_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    carrier: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracking_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="planned", server_default="planned"
+    )
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    case = relationship("SiteOrderExecutionCase", back_populates="shipments")
+    items = relationship(
+        "SiteOrderShipmentItem",
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+    )
+    notifications = relationship(
+        "SiteOrderShipmentNotification",
+        back_populates="shipment",
+        cascade="all, delete-orphan",
+    )
+
+
+class SiteOrderShipmentItem(Base):
+    __tablename__ = "site_order_shipment_item"
+    __table_args__ = (
+        UniqueConstraint(
+            "shipment_id",
+            "product_ref",
+            "rtu_external_id",
+            name="uq_site_order_shipment_item_allocation",
+        ),
+        Index("ix_site_order_shipment_item_product", "product_ref"),
+    )
+
+    shipment_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_shipment.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    bitrix_shipment_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    basket_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    product_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rtu_external_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    shipment = relationship("SiteOrderShipment", back_populates="items")
+
+
+class SiteOrderShipmentNotification(Base):
+    __tablename__ = "site_order_shipment_notification"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_site_order_shipment_notification_key"),
+        UniqueConstraint(
+            "shipment_id",
+            "channel",
+            "event_type",
+            "shipment_revision",
+            name="uq_site_order_shipment_notification_revision",
+        ),
+        Index("ix_site_order_shipment_notification_status", "status", "created_at"),
+    )
+
+    shipment_id: Mapped[int] = mapped_column(
+        ForeignKey("site_order_shipment.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    shipment_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    shipment = relationship("SiteOrderShipment", back_populates="notifications")
 
 
 class PickupInventoryRun(Base):

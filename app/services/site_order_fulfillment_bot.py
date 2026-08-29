@@ -27,9 +27,11 @@ from app.models.site_order_fulfillment import (
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
     SiteOrderFulfillmentOutbox,
+    SiteOrderShipmentNotification,
 )
 from app.services import pickup_inventory
 from app.services import site_order_fulfillment as fulfillment
+from app.services import site_order_shipments as shipment_service
 
 CHAT_PICKUP_READY = "pickup_ready"
 PARSER_VERSION = "pickup-bot-v1"
@@ -167,6 +169,8 @@ OP_REFRESH_INTERACTIVE_CARD = "refresh_interactive_card"
 OP_FINALIZE_STRUCTURED_ARRIVAL = "finalize_structured_arrival"
 OP_PUBLISH_MISSING_RECEIPT_PROMPT = "publish_missing_receipt_prompt"
 OP_CREATE_MISSING_RECEIPT_TASK = "create_missing_receipt_task"
+OP_UPDATE_SHIPMENT_CRM_FIELDS = shipment_service.OP_UPDATE_SHIPMENT_CRM_FIELDS
+OP_START_SHIPMENT_NOTIFICATION = shipment_service.OP_START_SHIPMENT_NOTIFICATION
 
 APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
     {
@@ -188,6 +192,7 @@ NON_RETRYABLE_EXTERNAL_OPERATIONS = {
     OP_FINALIZE_STRUCTURED_ARRIVAL,
     OP_PUBLISH_MISSING_RECEIPT_PROMPT,
     OP_CREATE_MISSING_RECEIPT_TASK,
+    OP_START_SHIPMENT_NOTIFICATION,
     OP_START_SMS_WORKFLOW,
     OP_CREATE_TASK,
 }
@@ -2560,6 +2565,18 @@ def _dispatch_outbox(
             _require_lost_orders_enabled(settings, apply_enabled_probe)
         else:
             _require_pickup_stage_apply_enabled(settings, apply_enabled_probe)
+    if row.operation == OP_UPDATE_SHIPMENT_CRM_FIELDS:
+        if not (
+            settings.order_fulfillment_shipments_master_enabled
+            and settings.order_fulfillment_shipments_crm_fields_enabled
+        ):
+            raise ApplyDisabledBeforeSideEffect("shipment_crm_fields_disabled")
+    if row.operation == OP_START_SHIPMENT_NOTIFICATION:
+        if not (
+            settings.order_fulfillment_shipments_master_enabled
+            and settings.order_fulfillment_shipments_notifications_enabled
+        ):
+            raise ApplyDisabledBeforeSideEffect("shipment_notifications_disabled")
     if row.operation == OP_PUBLISH_CARD:
         _publish_card(
             session,
@@ -2722,7 +2739,134 @@ def _dispatch_outbox(
     if row.operation == OP_FINALIZE_CASE_EVENT:
         _finalize_case_event(session, row=row, now=now)
         return
+    if row.operation == OP_UPDATE_SHIPMENT_CRM_FIELDS:
+        _update_shipment_crm_fields(row=row, client=client)
+        return
+    if row.operation == OP_START_SHIPMENT_NOTIFICATION:
+        _start_shipment_notification(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            now=now,
+        )
+        return
     raise RuntimeError(f"unsupported_outbox_operation:{row.operation}")
+
+
+def _update_shipment_crm_fields(
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+) -> None:
+    payload = row.payload or {}
+    deal_id = int(payload.get("deal_id") or row.target_id or 0)
+    order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+    if deal_id <= 0 or not order_number or not fields:
+        raise RuntimeError("invalid_shipment_crm_fields_payload")
+    try:
+        live = client.get_deal_by_id(deal_id)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if live is None:
+        raise RuntimeError("deal_not_found")
+    if (
+        fulfillment._clean_string((live.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))
+        != order_number
+    ):
+        raise RuntimeError("deal_order_changed")
+    client.update_deal_fields(deal_id, fields)
+    readback = client.get_deal_by_id(deal_id)
+    if readback is None:
+        raise RuntimeError("shipment_crm_fields_readback_missing")
+    for field_name, expected in fields.items():
+        actual = fulfillment._clean_string((readback.raw or {}).get(field_name))
+        if fulfillment._clean_string(expected) != actual:
+            raise RuntimeError(f"shipment_crm_field_readback_mismatch:{field_name}")
+
+
+def _start_shipment_notification(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    now: datetime,
+) -> None:
+    try:
+        notification_id = int(row.target_id or 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("invalid_shipment_notification_id") from exc
+    notification = session.get(SiteOrderShipmentNotification, notification_id)
+    if notification is None:
+        raise RuntimeError("shipment_notification_not_found")
+    if notification.status in {"submitted", "sent"}:
+        return
+    shipment = notification.shipment
+    case = shipment.case
+    if shipment.status not in {
+        shipment_service.STATUS_DISPATCHED,
+        shipment_service.STATUS_DELIVERED,
+    }:
+        raise RuntimeError("shipment_not_dispatched")
+    if not fulfillment._clean_string(shipment.tracking_number):
+        raise RuntimeError("shipment_tracking_missing")
+    deal_id = int(case.bitrix_deal_id or 0)
+    if deal_id <= 0:
+        raise RuntimeError("shipment_deal_missing")
+    try:
+        live = client.get_deal_by_id(deal_id)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if live is None:
+        raise RuntimeError("deal_not_found")
+    if (
+        fulfillment._clean_string((live.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))
+        != case.site_order_number
+    ):
+        raise RuntimeError("deal_order_changed")
+
+    if notification.channel == shipment_service.CHANNEL_EMAIL:
+        if not settings.order_fulfillment_shipments_email_enabled:
+            raise ApplyDisabledBeforeSideEffect("shipment_email_disabled")
+        template_id = settings.order_fulfillment_shipments_email_workflow_template_id
+    elif notification.channel == shipment_service.CHANNEL_SMS:
+        if not settings.order_fulfillment_shipments_sms_enabled:
+            raise ApplyDisabledBeforeSideEffect("shipment_sms_disabled")
+        template_id = settings.order_fulfillment_shipments_sms_workflow_template_id
+    else:
+        raise RuntimeError("shipment_notification_channel_unknown")
+    if template_id is None:
+        raise ApplyDisabledBeforeSideEffect("shipment_notification_workflow_not_configured")
+
+    payload = notification.payload or {}
+    items_text = ", ".join(
+        f"{item.get('product_code') or item.get('product_ref')} × {item.get('quantity')}"
+        for item in list(payload.get("items") or [])
+        if isinstance(item, dict)
+    )[:2000]
+    workflow_id = client.start_business_process(
+        template_id=template_id,
+        deal_id=deal_id,
+        parameters={
+            "ORDER_NUMBER": case.site_order_number,
+            "SHIPMENT_ID": str(shipment.bitrix_shipment_id or shipment.shipment_key),
+            "TRACKING_NUMBER": shipment.tracking_number,
+            "PART_NUMBER": str(payload.get("part_number") or ""),
+            "PART_COUNT": str(payload.get("part_count") or ""),
+            "ITEMS_TEXT": items_text,
+            "CHANNEL": notification.channel,
+            "IDEMPOTENCY_KEY": notification.idempotency_key,
+        },
+    )
+    if not workflow_id:
+        raise RuntimeError("shipment_notification_workflow_returned_empty_id")
+    notification.status = "submitted"
+    notification.external_ref = str(workflow_id)
+    notification.sent_at = now
+    notification.last_error = None
+    row.payload = {**(row.payload or {}), "workflow_id": str(workflow_id)}
 
 
 def _publish_missing_receipt_prompt(

@@ -50,6 +50,11 @@ class ExecutionEvidenceSnapshot:
     returned_rtu_count: int = 0
     posted_sale_amount: Decimal | None = None
     returned_amount: Decimal | None = None
+    line_coverage_status: str | None = None
+    expected_item_quantity: Decimal | None = None
+    assembled_item_quantity: Decimal | None = None
+    missing_item_count: int = 0
+    excess_item_count: int = 0
     onec_payment_confirmed: bool = False
     latest_rtu_at: datetime | None = None
     latest_assembled_at: datetime | None = None
@@ -66,6 +71,8 @@ class ExecutionEvidenceSnapshot:
 
     @property
     def assembled(self) -> bool:
+        if self.line_coverage_status:
+            return self.line_coverage_status == "complete"
         return self.crm_assembled or self.assembled_rtu_count > 0
 
     @property
@@ -74,6 +81,8 @@ class ExecutionEvidenceSnapshot:
 
     @property
     def partial_rtu_assembly(self) -> bool:
+        if self.line_coverage_status in {"partial", "conflict"}:
+            return True
         return self.rtu_count > 0 and 0 < self.assembled_rtu_count < self.rtu_count
 
     @property
@@ -149,6 +158,23 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         )
     ):
         return _manual("rtu_evidence_count_mismatch", "execution_rtu_count_conflict")
+    if snapshot.line_coverage_status == "unavailable":
+        return _manual(
+            "assembly_line_coverage_unavailable",
+            "execution_assembly_coverage_unavailable",
+            "weak",
+        )
+    if snapshot.line_coverage_status == "conflict" or snapshot.excess_item_count > 0:
+        return _manual(
+            "assembly_line_quantity_conflict",
+            "execution_assembly_quantity_conflict",
+        )
+    if snapshot.line_coverage_status == "partial" or snapshot.missing_item_count > 0:
+        return _noop(
+            "waiting_for_full_order_item_assembly",
+            "execution_waiting_for_full_item_assembly",
+            "medium",
+        )
 
     if snapshot.has_return:
         if snapshot.issued_rtu_count > 0:

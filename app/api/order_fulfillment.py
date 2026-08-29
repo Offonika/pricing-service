@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,10 +17,67 @@ from app.schemas.order_fulfillment import (
     OrderFulfillmentMentionResponse,
     OrderFulfillmentRecommendationsResponse,
     OrderFulfillmentReviewResponse,
+    OrderShipmentsSyncRequest,
+    OrderShipmentsSyncResponse,
 )
 from app.services import site_order_fulfillment as fulfillment
+from app.services import site_order_shipments
 
 router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+
+
+@router.post("/shipments/sync", response_model=OrderShipmentsSyncResponse)
+def sync_order_shipments(
+    payload: OrderShipmentsSyncRequest,
+    db: Session = Depends(get_db),
+) -> OrderShipmentsSyncResponse:
+    settings = get_settings()
+    if not payload.dry_run and not (
+        settings.order_fulfillment_shipments_master_enabled
+        and settings.order_fulfillment_shipments_ingest_enabled
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="shipment ingest is disabled",
+        )
+    shipment_snapshots = [item.model_dump(mode="python") for item in payload.shipments]
+    if not payload.dry_run and settings.order_fulfillment_shipments_gateway_apply_enabled:
+        if payload.bitrix_order_id is None:
+            raise HTTPException(status_code=409, detail="bitrix_order_id is required")
+        try:
+            gateway = site_order_shipments.BitrixSaleShipmentGatewayClient(
+                base_url=settings.order_fulfillment_shipments_gateway_url or "",
+                token=settings.order_fulfillment_shipments_gateway_token or "",
+            )
+            shipment_snapshots = site_order_shipments.ensure_missing_bitrix_shipments(
+                gateway,
+                order_id=payload.bitrix_order_id,
+                shipment_snapshots=shipment_snapshots,
+            )
+        except (ValueError, site_order_shipments.ShipmentGatewayError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result = site_order_shipments.sync_order_shipments(
+        db,
+        site_order_number=payload.site_order_number,
+        bitrix_deal_id=payload.bitrix_deal_id,
+        current_stage=payload.current_stage,
+        expected_items=[item.model_dump(mode="python") for item in payload.expected_items],
+        rtus=[item.model_dump(mode="python") for item in payload.rtus],
+        shipments=shipment_snapshots,
+        event_at=payload.event_at,
+        persist=not payload.dry_run,
+        enqueue_crm_fields=(
+            not payload.dry_run and settings.order_fulfillment_shipments_crm_fields_enabled
+        ),
+        enqueue_notifications=(
+            not payload.dry_run and settings.order_fulfillment_shipments_notifications_enabled
+        ),
+        email_enabled=settings.order_fulfillment_shipments_email_enabled,
+        sms_enabled=settings.order_fulfillment_shipments_sms_enabled,
+    )
+    if not payload.dry_run:
+        db.commit()
+    return OrderShipmentsSyncResponse(**asdict(result))
 
 
 @router.post("/bitrix/messages", response_model=BitrixChatMessageIngestResponse)

@@ -17,8 +17,9 @@ load_env_file_preserve_json() {
   fi
 
   local exports
-  exports="$("${py_bin}" - "${env_file}" <<'PY'
+  if ! exports="$("${py_bin}" - "${env_file}" <<'PY'
 import shlex
+import re
 import sys
 from pathlib import Path
 
@@ -29,12 +30,16 @@ for raw in env_path.read_text(encoding="utf-8").splitlines():
         continue
     key, value = line.split("=", 1)
     key = key.strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+        raise SystemExit("invalid environment variable name in env file")
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     print(f"export {key}={shlex.quote(value)}")
 PY
-)"
+)"; then
+    return 1
+  fi
 
   eval "${exports}"
 }

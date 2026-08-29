@@ -1,0 +1,7 @@
+{
+  "mode": "mock",
+  "mock_query_enabled": true,
+  "mock_user_hash_salt": "replace-outside-repository",
+  "mock_allowed_user_hashes": [],
+  "mock_variant": "debt"
+}

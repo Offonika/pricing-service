@@ -64,6 +64,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "build_missing_display_quality_updates.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "supported",
+      "idempotency": "not_idempotent_unique_message_per_run",
+      "side_effect_level": "external_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "build_receivable_credit_profiles.py": {
       "owner": "receivables",
       "kind": "report",

@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import bindparam, text
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine
 from app.services.assortment_lifecycle_facts import (
     RECEIPT_MAPPING_UNRESOLVED,
     SUPPLIER_ORDER_MAPPING_UNRESOLVED,
@@ -191,7 +191,11 @@ def main() -> int:
         error_code=RECEIPT_MAPPING_UNRESOLVED,
     )
 
-    engine = build_engine(onec_database_url, pool_pre_ping=True)
+    engine = build_onec_engine(
+        onec_database_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
+    )
     try:
         source_rows = fetch_display_supplier_lead_time_source_rows(
             engine,

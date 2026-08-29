@@ -171,6 +171,13 @@ class LogisticsExpectedDeliveryResponse(BaseModel):
     last_event_at: datetime
 
 
+class LogisticsRtuReadyForPickupResponse(BaseModel):
+    external_id: str
+    document_number: str
+    document_date: datetime
+    accepted_at: datetime
+
+
 class LogisticsMonitorResponse(BaseModel):
     transfer_id: int
     external_id: str

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.services.counterparty_folder_recommendations import fetch_counterparty_refs_from_onec_group
 from app.services.receivable_decision_onec_metrics import (
@@ -75,87 +75,85 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     settings = get_settings()
     database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = build_engine(database_url, pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            snapshot_date = args.snapshot_date or get_latest_snapshot_date(session)
-            if snapshot_date is None:
-                raise SystemExit("Нет снимков receivable_balance_snapshot для расчета")
-            folder_filter = resolve_folder_filter(
+    with session_scope(read_only=True, database_url=database_url) as session:
+        snapshot_date = args.snapshot_date or get_latest_snapshot_date(session)
+        if snapshot_date is None:
+            raise SystemExit("Нет снимков receivable_balance_snapshot для расчета")
+        folder_filter = resolve_folder_filter(
+            session,
+            snapshot_date=snapshot_date,
+            folder_name=args.onec_folder,
+            source=args.folder_filter_source,
+            onec_database_url=args.onec_database_url
+            or os.environ.get("ONEC_DATABASE_URL")
+            or settings.onec_database_url,
+        )
+        if (
+            folder_filter.status == "missing_folder_snapshot"
+            and not args.allow_missing_folder_filter
+        ):
+            raise SystemExit(
+                "Нет локального снимка папок counterparty_folder_snapshot: "
+                "нельзя безопасно ограничить расчет папкой "
+                f"`{args.onec_folder}`."
+            )
+        counterparty_refs = _effective_counterparty_refs(
+            explicit_refs=args.counterparty_ref,
+            folder_filter=folder_filter,
+        )
+        if counterparty_refs is not None and not counterparty_refs:
+            portraits = []
+        else:
+            portraits = build_receivable_decision_portraits(
                 session,
                 snapshot_date=snapshot_date,
-                folder_name=args.onec_folder,
-                source=args.folder_filter_source,
-                onec_database_url=args.onec_database_url
-                or os.environ.get("ONEC_DATABASE_URL")
-                or settings.onec_database_url,
+                limit=args.limit,
+                counterparty_refs=counterparty_refs or (),
             )
-            if (
-                folder_filter.status == "missing_folder_snapshot"
-                and not args.allow_missing_folder_filter
-            ):
-                raise SystemExit(
-                    "Нет локального снимка папок counterparty_folder_snapshot: "
-                    "нельзя безопасно ограничить расчет папкой "
-                    f"`{args.onec_folder}`."
+            if args.with_onec_profitability and portraits:
+                portrait_refs = [portrait.counterparty_ref for portrait in portraits]
+                onec_database_url = (
+                    args.onec_database_url
+                    or os.environ.get("ONEC_DATABASE_URL")
+                    or settings.onec_database_url
                 )
-            counterparty_refs = _effective_counterparty_refs(
-                explicit_refs=args.counterparty_ref,
-                folder_filter=folder_filter,
-            )
-            if counterparty_refs is not None and not counterparty_refs:
-                portraits = []
-            else:
+                if not onec_database_url:
+                    raise SystemExit("ONEC_DATABASE_URL is required for --with-onec-profitability")
+                onec_engine = build_onec_engine(
+                    onec_database_url,
+                    query_timeout_seconds=settings.onec_query_timeout_seconds,
+                    login_timeout_seconds=settings.onec_login_timeout_seconds,
+                )
+                try:
+                    profitability_by_ref = fetch_counterparty_profitability_metrics_from_onec(
+                        onec_engine,
+                        snapshot_date=snapshot_date,
+                        counterparty_refs=portrait_refs,
+                    )
+                    payment_form_by_ref = fetch_counterparty_payment_form_metrics_from_onec(
+                        onec_engine,
+                        snapshot_date=snapshot_date,
+                        counterparty_refs=portrait_refs,
+                    )
+                finally:
+                    onec_engine.dispose()
                 portraits = build_receivable_decision_portraits(
                     session,
                     snapshot_date=snapshot_date,
-                    limit=args.limit,
-                    counterparty_refs=counterparty_refs or (),
+                    counterparty_refs=portrait_refs,
+                    profitability_by_ref=profitability_by_ref,
+                    payment_form_by_ref=payment_form_by_ref,
                 )
-                if args.with_onec_profitability and portraits:
-                    portrait_refs = [portrait.counterparty_ref for portrait in portraits]
-                    onec_database_url = (
-                        args.onec_database_url
-                        or os.environ.get("ONEC_DATABASE_URL")
-                        or settings.onec_database_url
-                    )
-                    if not onec_database_url:
-                        raise SystemExit(
-                            "ONEC_DATABASE_URL is required for --with-onec-profitability"
-                        )
-                    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
-                    try:
-                        profitability_by_ref = fetch_counterparty_profitability_metrics_from_onec(
-                            onec_engine,
-                            snapshot_date=snapshot_date,
-                            counterparty_refs=portrait_refs,
-                        )
-                        payment_form_by_ref = fetch_counterparty_payment_form_metrics_from_onec(
-                            onec_engine,
-                            snapshot_date=snapshot_date,
-                            counterparty_refs=portrait_refs,
-                        )
-                    finally:
-                        onec_engine.dispose()
-                    portraits = build_receivable_decision_portraits(
-                        session,
-                        snapshot_date=snapshot_date,
-                        counterparty_refs=portrait_refs,
-                        profitability_by_ref=profitability_by_ref,
-                        payment_form_by_ref=payment_form_by_ref,
-                    )
-        output_dir = args.output_dir / snapshot_date.isoformat()
-        json_path = output_dir / "receivable-decision-portraits.json"
-        csv_path = output_dir / "receivable-decision-portraits.csv"
-        payload = build_payload(
-            snapshot_date=snapshot_date,
-            portraits=portraits,
-            folder_filter=folder_filter,
-        )
-        write_json(json_path, payload)
-        write_csv(csv_path, portraits)
-    finally:
-        engine.dispose()
+    output_dir = args.output_dir / snapshot_date.isoformat()
+    json_path = output_dir / "receivable-decision-portraits.json"
+    csv_path = output_dir / "receivable-decision-portraits.csv"
+    payload = build_payload(
+        snapshot_date=snapshot_date,
+        portraits=portraits,
+        folder_filter=folder_filter,
+    )
+    write_json(json_path, payload)
+    write_csv(csv_path, portraits)
 
     result = {
         "status": "ready",
@@ -248,7 +246,12 @@ def resolve_folder_filter(
         )
     if not onec_database_url:
         raise SystemExit("ONEC_DATABASE_URL is required for --folder-filter-source onec")
-    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
+    settings = get_settings()
+    onec_engine = build_onec_engine(
+        onec_database_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
+    )
     try:
         refs = fetch_counterparty_refs_from_onec_group(
             onec_engine,

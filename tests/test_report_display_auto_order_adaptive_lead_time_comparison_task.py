@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
+import tasks.report_display_auto_order_adaptive_lead_time_comparison as adaptive_report
 from app.services.display_family_registry import ActiveDisplayFamilyMemberContext
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     adaptive_reason,
@@ -12,6 +15,80 @@ from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     build_sync_ready_rows,
     refresh_sync_ready_family_recommendations,
 )
+
+
+def test_main_uses_central_read_only_session_scope(monkeypatch, tmp_path) -> None:
+    dry_run_csv = tmp_path / "dry-run.csv"
+    lead_time_csv = tmp_path / "lead-time.csv"
+    sync_ready_csv = tmp_path / "sync-ready.csv"
+    output_csv = tmp_path / "comparison.csv"
+    session = object()
+    session_scope_calls: list[dict[str, object]] = []
+    loaded_codes: list[str] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool):
+        session_scope_calls.append({"read_only": read_only})
+        yield session
+
+    def fake_read_csv(path):
+        if path == dry_run_csv:
+            return [{"nomenclature_code": "RB-LIFECYCLE"}]
+        if path == lead_time_csv:
+            return []
+        raise AssertionError(f"unexpected CSV path: {path}")
+
+    def fake_load_active_display_family_member_contexts(actual_session, *, nomenclature_codes):
+        assert actual_session is session
+        loaded_codes.extend(nomenclature_codes)
+        return {}
+
+    args = SimpleNamespace(
+        dry_run_csv=dry_run_csv,
+        lead_time_csv=lead_time_csv,
+        seasonality_csv=None,
+        auto_order_policy_json=tmp_path / "policy.json",
+        as_of=date(2026, 8, 29),
+        recent_seasonality_weeks=8,
+        output_csv=output_csv,
+        output_json=None,
+        sync_ready_csv=sync_ready_csv,
+        use_active_display_family_registry=True,
+        json=True,
+    )
+    sync_ready_rows = [
+        {
+            "nomenclature_code": "RB-LIFECYCLE",
+            "dry_run_decision": "order",
+            "recommended_order_qty": "1",
+        }
+    ]
+    monkeypatch.setattr(adaptive_report, "_parse_args", lambda: args)
+    monkeypatch.setattr(adaptive_report, "read_csv", fake_read_csv)
+    monkeypatch.setattr(adaptive_report, "load_policy", lambda _path: {})
+    monkeypatch.setattr(adaptive_report, "build_comparison_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        adaptive_report,
+        "build_sync_ready_rows",
+        lambda *_args, **_kwargs: sync_ready_rows,
+    )
+    monkeypatch.setattr(adaptive_report, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        adaptive_report,
+        "load_active_display_family_member_contexts",
+        fake_load_active_display_family_member_contexts,
+    )
+    monkeypatch.setattr(
+        adaptive_report,
+        "refresh_sync_ready_family_recommendations",
+        lambda *_args, **_kwargs: {"families": 0},
+    )
+    monkeypatch.setattr(adaptive_report, "build_summary", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(adaptive_report, "write_csv", lambda *_args, **_kwargs: None)
+
+    assert adaptive_report.main() == 0
+    assert session_scope_calls == [{"read_only": True}]
+    assert loaded_codes == ["RB-LIFECYCLE"]
 
 
 def _supplier_candidate(

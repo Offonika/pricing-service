@@ -64,6 +64,26 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "build_receivable_credit_profiles.py": {
+      "owner": "receivables",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_snapshot_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "build_receivable_decision_portraits.py": {
+      "owner": "receivables",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_snapshot_date",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "check_receivable_authoritative_snapshot.py": {
       "owner": "receivables",
       "kind": "maintenance",
@@ -284,6 +304,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "report_display_auto_order_adaptive_lead_time_comparison.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "report_display_auto_order_backtest.py": {
       "owner": "procurement",
       "kind": "report",
@@ -291,6 +321,16 @@
       "idempotency": "artifact_replace_by_requested_path",
       "side_effect_level": "artifact_write",
       "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "report_display_supplier_lead_time_history.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "onec_read_only",
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },

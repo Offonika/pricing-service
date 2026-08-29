@@ -298,9 +298,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 43. Для `tasks/report_display_auto_order_backtest.py` разрешены push ветки и
     создание отдельного PR после локальных проверок. Merge и production release
     требуют отдельных подтверждений.
+44. После зелёного CI разрешён merge PR №108. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-29 — разрешён merge PR №108; production release оставлен отдельным
+  решением.
 - 2026-08-29 — разрешена подготовка отдельного read-only slice для
   `tasks/report_display_auto_order_backtest.py` с push и отдельным PR; merge и
   production оставлены отдельными решениями.

@@ -283,6 +283,10 @@ WHERE rtu._Marked = 0x00
   без обоих интернет-признаков; повреждённый payload автоматически не закрывается;
 - отчет для логистов:
   `tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`.
+- read-only endpoint `GET /api/logistics/rtu/ready-for-pickup` под внутренним
+  Bearer token возвращает JSON или XML только для межточечных РТУ, которые
+  приняты событием `accepted_at_point` на запрошенном складе; склад определяется
+  по `external_id` либо коду подразделения из `payload.onec_departments`.
 - подтвержденные aliases применяются только явным JSON-файлом через
   `tasks/apply_logistics_warehouse_alias_overrides.py`; без `--apply` команда
   показывает dry-run, с `--apply` пишет `address_aliases` и историю
@@ -322,6 +326,9 @@ WHERE rtu._Marked = 0x00
 
 ## Changelog
 
+- 2026-08-29 — добавлен защищённый read-only endpoint возврата принятых
+  межточечных РТУ в ТЗП получателя: `GET /api/logistics/rtu/ready-for-pickup`
+  с JSON/XML и точным `external_id`.
 - 2026-08-28 — минутный production cron восстановлен из immutable release;
   watchdog контролирует marker не старше 180 секунд. Legacy-режим
   `--external-carriers` запрещён для пилота до реализации внутреннего плеча.

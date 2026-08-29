@@ -30,6 +30,7 @@ related_tests:
   - tests/test_export_receivable_work_report_task.py
   - tests/test_export_sms_journal_xlsx.py
   - tests/test_product_classification.py
+  - tests/test_report_display_auto_order_backtest.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
   - tests/test_report_product_compatibility_sync_task.py
@@ -168,6 +169,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `scripts/analyze_pickup_contract_settlements.py` на role-specific
   read-only 1С factory с bounded timeout и гарантированным dispose, сохранив SQL,
   аргументы и CSV/Markdown-контракты.
+- [x] Перевести `tasks/report_display_auto_order_backtest.py` на central read-only
+  session scope и role-specific 1С factory с bounded timeout и гарантированным
+  dispose, сохранив формулы, аргументы и CSV/JSON-контракты.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -294,6 +298,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-29 — `tasks/report_display_auto_order_backtest.py` переведён на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; формулы, аргументы и CSV/JSON-контракты сохранены.
 - 2026-08-29 — разрешён merge PR №102; production release оставлен отдельным
   решением.
 - 2026-08-28 — `scripts/analyze_pickup_contract_settlements.py` переведён на

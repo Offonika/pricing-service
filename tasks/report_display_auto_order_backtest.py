@@ -36,7 +36,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from tasks.build_display_auto_order_dry_run import (
     MIN_RELIABLE_AVAILABILITY_DAYS,
     fetch_days_in_sale_totals,
@@ -242,12 +242,10 @@ def build_backtest_rows(
     return out, summary
 
 
-def _fetch_coverage_start(engine: Any) -> date | None:
-    with engine.connect() as conn:
-        value = conn.execute(
-            text("SELECT MIN(available_from) FROM onec_stock_availability_interval")
-        ).scalar()
-    return value
+def _fetch_coverage_start(session: Any) -> date | None:
+    return session.execute(
+        text("SELECT MIN(available_from) FROM onec_stock_availability_interval")
+    ).scalar()
 
 
 def _run_past_dry_run(as_of_past: date, policy_json: Path, output_csv: Path) -> None:
@@ -319,7 +317,11 @@ def main() -> None:
     future_to = as_of_past + timedelta(days=horizon)
 
     onec_url = os.environ.get("ONEC_DATABASE_URL", "") or settings.onec_database_url or ""
-    onec_engine = build_engine(onec_url, pool_pre_ping=True)
+    onec_engine = build_onec_engine(
+        onec_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
+    )
     try:
         actual_sales = fetch_sales_totals(
             onec_engine,
@@ -331,19 +333,16 @@ def main() -> None:
     finally:
         onec_engine.dispose()
 
-    app_url = os.environ.get("DATABASE_URL", "") or settings.database_url or ""
-    app_engine = build_engine(app_url, pool_pre_ping=True)
-    try:
+    app_url = os.environ.get("DATABASE_URL") or None
+    with session_scope(read_only=True, database_url=app_url) as session:
         actual_days = fetch_days_in_sale_totals(
-            app_engine,
+            session.get_bind(),
             codes=codes,
             physical_sales_point_codes=policy.sellable_codes,
             date_to=future_to,
             windows_days=(horizon,),
         )
-        coverage_start = _fetch_coverage_start(app_engine)
-    finally:
-        app_engine.dispose()
+        coverage_start = _fetch_coverage_start(session)
 
     window_days = 180
     window_start = as_of_past - timedelta(days=window_days - 1)

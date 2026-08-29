@@ -9,10 +9,7 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy.orm import Session
-
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.services.display_family_order_recommendation import (
     FAMILY_RECOMMENDATION_COLUMNS,
     apply_display_family_order_recommendations,
@@ -138,10 +135,8 @@ def main() -> int:
     if sync_ready_rows and args.use_active_display_family_registry:
         registry_error = ""
         membership_by_code = {}
-        settings = get_settings()
-        engine = build_engine(settings.database_url, pool_pre_ping=True)
         try:
-            with Session(engine) as session:
+            with session_scope(read_only=True) as session:
                 membership_by_code = load_active_display_family_member_contexts(
                     session,
                     nomenclature_codes=[
@@ -150,8 +145,6 @@ def main() -> int:
                 )
         except Exception as exc:  # noqa: BLE001 - final shadow must fail closed.
             registry_error = f"{type(exc).__name__}: {exc}"
-        finally:
-            engine.dispose()
         sync_ready_family_summary = refresh_sync_ready_family_recommendations(
             sync_ready_rows,
             membership_by_code=membership_by_code,

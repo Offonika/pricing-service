@@ -1,7 +1,7 @@
 """harden multi shipment snapshots
 
 Revision ID: d2f4a6b8c0e2
-Revises: c1e3a5b7d9f1
+Revises: c1e3a5b7d9f1, c9e1f3a5b7d0
 Create Date: 2026-08-29
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "d2f4a6b8c0e2"
-down_revision = "c1e3a5b7d9f1"
+down_revision = ("c1e3a5b7d9f1", "c9e1f3a5b7d0")
 branch_labels = None
 depends_on = None
 

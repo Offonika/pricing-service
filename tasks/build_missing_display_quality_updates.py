@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import select, text
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -124,10 +125,9 @@ def main() -> int:
     settings = get_settings()
     database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
 
-    engine = build_engine(database_url, pool_pre_ping=True)
-    try:
+    with session_scope(read_only=True, database_url=database_url) as session:
         candidates = load_missing_display_quality_candidates(
-            engine,
+            session,
             folder=args.folder,
             limit=args.limit,
             include_do_not_order=args.include_do_not_order,
@@ -140,10 +140,8 @@ def main() -> int:
         reference_rows = (
             []
             if args.no_reference_suggestions
-            else load_display_quality_reference_rows(engine, folder=args.folder)
+            else load_display_quality_reference_rows(session, folder=args.folder)
         )
-    finally:
-        engine.dispose()
 
     quality_catalog_values: set[str] | None = None
     if args.quality_catalog_json:
@@ -157,7 +155,11 @@ def main() -> int:
         )
         if not onec_database_url:
             raise SystemExit("ONEC_DATABASE_URL is required for --validate-onec-catalog")
-        onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
+        onec_engine = build_onec_engine(
+            onec_database_url,
+            query_timeout_seconds=settings.onec_query_timeout_seconds,
+            login_timeout_seconds=settings.onec_login_timeout_seconds,
+        )
         try:
             quality_catalog_values = load_onec_quality_catalog_values(onec_engine)
         finally:
@@ -233,7 +235,7 @@ def main() -> int:
 
 
 def load_missing_display_quality_candidates(
-    engine,
+    session: Session,
     *,
     folder: str = "дисплеи",
     limit: int | None = None,
@@ -261,15 +263,14 @@ def load_missing_display_quality_candidates(
         query = query.where(table.c.nomenclature_code.not_in(excluded_codes))
     if limit:
         query = query.limit(limit)
-    with engine.connect() as conn:
-        rows = [dict(row) for row in conn.execute(query).mappings()]
+    rows = [dict(row) for row in session.execute(query).mappings()]
     return [
         row for row in rows if "quality_raw" in _json_list(row.get("missing_required_attributes"))
     ]
 
 
 def load_display_quality_reference_rows(
-    engine,
+    session: Session,
     *,
     folder: str = "дисплеи",
 ) -> list[dict[str, Any]]:
@@ -282,8 +283,7 @@ def load_display_quality_reference_rows(
     )
     if folder:
         query = query.where(table.c.folder.ilike(f"%{folder}%"))
-    with engine.connect() as conn:
-        return [dict(row) for row in conn.execute(query).mappings()]
+    return [dict(row) for row in session.execute(query).mappings()]
 
 
 def load_onec_quality_catalog_values(engine) -> set[str]:

@@ -295,9 +295,15 @@ JSON/CSV/XLSX артефактов сохраняются.
     и production release требуют отдельных подтверждений.
 42. После зелёного CI разрешён merge PR №102. Production migration, deploy и
     cutover в это решение не входят.
+43. Для `tasks/report_display_auto_order_backtest.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-29 — разрешена подготовка отдельного read-only slice для
+  `tasks/report_display_auto_order_backtest.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/report_display_auto_order_backtest.py` переведён на central
   read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose; формулы, аргументы и CSV/JSON-контракты сохранены.

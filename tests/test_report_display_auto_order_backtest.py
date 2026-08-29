@@ -1,6 +1,12 @@
+import csv
+import json
+import sys
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
+from tasks import report_display_auto_order_backtest as backtest
 from tasks.report_display_auto_order_backtest import build_backtest_rows
 
 AS_OF = date(2026, 6, 10)
@@ -114,3 +120,109 @@ def test_no_signal_rows_do_not_enter_score() -> None:
     assert rows[0]["verdict"] == "no_signal"
     assert summary.cards_scored == 0
     assert summary.verdict_no_signal == 1
+
+
+def test_main_uses_role_specific_read_only_db_lifecycle(tmp_path, monkeypatch) -> None:
+    dry_run_csv = tmp_path / "dry-run.csv"
+    output_csv = tmp_path / "backtest.csv"
+    output_json = tmp_path / "backtest.json"
+    predicted = _row(
+        "RB-LIFECYCLE",
+        avg_daily_sales_qty="0.1",
+        base_avg_daily_sales_qty="0.1",
+    )
+    with dry_run_csv.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(predicted))
+        writer.writeheader()
+        writer.writerow(predicted)
+
+    class FakeOnecEngine:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    onec_engine = FakeOnecEngine()
+    app_bind = object()
+    app_session = SimpleNamespace(get_bind=lambda: app_bind)
+    session_scope_calls: list[dict[str, object]] = []
+    onec_factory_calls: list[dict[str, object]] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool, database_url: str | None):
+        session_scope_calls.append({"read_only": read_only, "database_url": database_url})
+        yield app_session
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int | float,
+        login_timeout_seconds: int | float,
+    ) -> FakeOnecEngine:
+        onec_factory_calls.append(
+            {
+                "database_url": database_url,
+                "query_timeout_seconds": query_timeout_seconds,
+                "login_timeout_seconds": login_timeout_seconds,
+            }
+        )
+        return onec_engine
+
+    def fake_fetch_sales_totals(engine, **_kwargs):
+        assert engine is onec_engine
+        return {"RB-LIFECYCLE": {"sales_qty_window": Decimal("6")}}
+
+    def fake_fetch_days_in_sale_totals(engine, **_kwargs):
+        assert engine is app_bind
+        return {"RB-LIFECYCLE": {60: Decimal("60")}}
+
+    settings = SimpleNamespace(
+        database_url="postgresql://settings",
+        onec_database_url="mssql://settings",
+        onec_query_timeout_seconds=17,
+        onec_login_timeout_seconds=9,
+    )
+    monkeypatch.setattr(backtest, "get_settings", lambda: settings)
+    monkeypatch.setattr(backtest, "session_scope", fake_session_scope)
+    monkeypatch.setattr(backtest, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(backtest, "fetch_sales_totals", fake_fetch_sales_totals)
+    monkeypatch.setattr(backtest, "fetch_days_in_sale_totals", fake_fetch_days_in_sale_totals)
+    monkeypatch.setattr(backtest, "_fetch_coverage_start", lambda session: date(2026, 1, 28))
+    monkeypatch.setattr(
+        backtest,
+        "load_warehouse_policy",
+        lambda _path: SimpleNamespace(sellable_codes=("WH-1",)),
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://override")
+    monkeypatch.setenv("ONEC_DATABASE_URL", "mssql://override")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "report_display_auto_order_backtest.py",
+            "--as-of-past",
+            "2026-06-10",
+            "--horizon-days",
+            "60",
+            "--dry-run-csv",
+            str(dry_run_csv),
+            "--output-csv",
+            str(output_csv),
+            "--output-json",
+            str(output_json),
+        ],
+    )
+
+    backtest.main()
+
+    assert onec_factory_calls == [
+        {
+            "database_url": "mssql://override",
+            "query_timeout_seconds": 17,
+            "login_timeout_seconds": 9,
+        }
+    ]
+    assert onec_engine.disposed is True
+    assert session_scope_calls == [{"read_only": True, "database_url": "postgresql://override"}]
+    assert output_csv.is_file()
+    assert json.loads(output_json.read_text(encoding="utf-8"))["cards_total"] == 1

@@ -13,6 +13,7 @@ related_code:
   - scripts/validate_cli_registry.py
   - docs/registry/cli-jobs.json
 related_tests:
+  - tests/test_analyze_pickup_contract_settlements_script.py
   - tests/test_analyze_site_defect_working_cases_script.py
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
@@ -37,7 +38,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-28"
+updated_at: "2026-08-29"
 ---
 
 # Назначение
@@ -164,6 +165,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `scripts/check_onec_catalog_scope.py` на central read-only session
   scope с сохранением role-specific 1С engine, аргументов, JSON-контракта и exit
   codes.
+- [x] Перевести `scripts/analyze_pickup_contract_settlements.py` на role-specific
+  read-only 1С factory с bounded timeout и гарантированным dispose, сохранив SQL,
+  аргументы и CSV/Markdown-контракты.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -282,9 +286,22 @@ JSON/CSV/XLSX артефактов сохраняются.
     production release требуют отдельных подтверждений.
 40. После зелёного CI разрешён merge PR №101. Production migration, deploy и cutover
     в это решение не входят.
+41. Для `scripts/analyze_pickup_contract_settlements.py` разрешены реализация в
+    отдельной ветке, push и создание отдельного PR после локальных проверок. Merge
+    и production release требуют отдельных подтверждений.
+42. После зелёного CI разрешён merge PR №102. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-29 — разрешён merge PR №102; production release оставлен отдельным
+  решением.
+- 2026-08-28 — `scripts/analyze_pickup_contract_settlements.py` переведён на
+  role-specific read-only 1С factory с bounded timeout и гарантированным dispose;
+  SQL, аргументы и CSV/Markdown-контракты сохранены.
+- 2026-08-28 — разрешена подготовка отдельного read-only slice для
+  `scripts/analyze_pickup_contract_settlements.py` с push и отдельным PR; merge и
+  production оставлены отдельными решениями.
 - 2026-08-28 — разрешён merge PR №101; production release оставлен отдельным
   решением.
 - 2026-08-28 — `scripts/check_onec_catalog_scope.py` переведён на central read-only

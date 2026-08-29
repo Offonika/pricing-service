@@ -344,9 +344,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 53. Для `tasks/build_missing_display_quality_updates.py` разрешены push ветки и
     создание отдельного PR после локальных проверок. Merge и production release
     требуют отдельных подтверждений.
+54. После зелёного CI разрешён merge PR №116. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-29 — разрешён merge PR №116; production release оставлен отдельным
+  решением.
 - 2026-08-29 — разрешена подготовка display quality updates read-only slice с
   push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-29 — `tasks/build_missing_display_quality_updates.py` переведён на

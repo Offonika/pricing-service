@@ -3698,7 +3698,7 @@ def test_email_escalation_notification_uses_plain_russian(db_session) -> None:
     assert "SLA" not in notification_params["MESSAGE"]
 
 
-def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_day(
+def test_daily_report_lists_unanswered_mail_and_only_overdue_site_cases_with_action_links(
     db_session,
 ) -> None:
     site_case = _case(
@@ -3721,6 +3721,12 @@ def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_da
         source_kind="bitrix_mail",
         primary_activity_id=58049,
     )
+    site_case_not_overdue = _case(
+        source_ticket_id=758,
+        source_kind="site_ticket",
+        bitrix_item_id=389,
+        first_response_due_at=datetime(2026, 8, 28, 13, 40, tzinfo=UTC),
+    )
     answered_case = _case(
         source_ticket_id=742,
         source_kind="site_ticket",
@@ -3732,7 +3738,16 @@ def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_da
         source_kind="site_ticket",
         bitrix_item_id=999,
     )
-    db_session.add_all([site_case, mail_case, waiting_mail, answered_case, synthetic_case])
+    db_session.add_all(
+        [
+            site_case,
+            mail_case,
+            waiting_mail,
+            site_case_not_overdue,
+            answered_case,
+            synthetic_case,
+        ]
+    )
     db_session.commit()
     api = FakeBitrixApi()
     settings = _worker_settings(
@@ -3761,22 +3776,25 @@ def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_da
     assert same_day["status"] == "already_delivered"
     assert len(api.dialog_messages) == 1
     message = str(api.dialog_messages[0]["text"])
-    assert "Обращения клиентов: контроль ответов за 28.08.2026" in message
-    assert "— обращения с сайта: 1;" in message
-    assert "— письма: 2;" in message
-    assert "Обращение с сайта №743 — срок ответа истёк." in message
+    assert "Нужно ответить клиентам — 28.08.2026" in message
+    assert "Письма без ответа: 2." in message
+    assert "Просроченные обращения с сайта: 1." in message
+    assert "Обращение с сайта №743 просрочено. Нужно открыть его и ответить клиенту." in message
     assert (
         "[URL=https://portal.example.invalid/crm/type/1134/details/373/]"
-        "Открыть карточку обращения[/URL]"
+        "Открыть карточку и ответить[/URL]"
     ) in message
     assert (
-        "[URL=https://master-mobile.ru/personal/tickets/?ID=743]" "Открыть обращение на сайте[/URL]"
+        "[URL=https://master-mobile.ru/personal/tickets/?ID=743]" "Открыть исходное обращение[/URL]"
     ) in message
     assert (
         "[URL=https://portal.example.invalid/crm/activity/?ID=57188&open_view=57188]"
-        "Открыть письмо[/URL]"
+        "Открыть письмо и ответить[/URL]"
     ) in message
-    assert "карточка обращения ещё не создана" in message
+    assert "На письмо клиента ещё не ответили." in message
+    assert "карточка обращения ещё не создана" not in message
+    assert "срок ответа ещё не определён" not in message
+    assert "№758" not in message
     assert "3223000000001" not in message
     assert "№742" not in message
     state = db_session.scalar(select(SiteServiceRequestWorkerState))
@@ -3791,8 +3809,9 @@ def test_daily_report_lists_every_unanswered_case_with_links_and_repeats_next_da
         now=datetime(2026, 8, 29, 8, 0, tzinfo=UTC),
     )
     assert next_day["status"] == "delivered"
-    assert next_day["unanswered"] == 3
+    assert next_day["unanswered"] == 4
     assert len(api.dialog_messages) == 2
+    assert "Обращение с сайта №758 просрочено." in str(api.dialog_messages[1]["text"])
 
 
 def test_daily_report_recovers_accepted_message_after_timeout_without_duplicate(
@@ -3853,7 +3872,7 @@ def test_daily_report_waits_until_schedule_and_reports_empty_queue(db_session) -
     assert due["status"] == "delivered"
     assert due["unanswered"] == 0
     assert len(api.dialog_messages) == 1
-    assert "Просроченных ответов нет." in str(api.dialog_messages[0]["text"])
+    assert "Обращений, требующих ответа, нет." in str(api.dialog_messages[0]["text"])
 
 
 def test_support_message_readback_is_required_before_first_response_is_recorded(

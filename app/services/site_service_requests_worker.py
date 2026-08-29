@@ -3119,23 +3119,25 @@ def _site_service_request_daily_report_entries(
             # Synthetic health probes use reserved IDs outside the real support
             # module range and must never appear in an operational report.
             continue
-        entries.append(
-            SiteServiceRequestDailyReportEntry(
-                case_id=case.id,
-                source_kind=case.source_kind,
-                source_ticket_id=case.source_ticket_id,
-                bitrix_item_id=case.bitrix_item_id,
-                primary_activity_id=case.primary_activity_id,
-                first_response_due_at=(
-                    _as_utc(case.first_response_due_at)
-                    if case.first_response_due_at is not None
-                    else None
-                ),
-                escalated_at=(
-                    _as_utc(case.escalated_at) if case.escalated_at is not None else None
-                ),
-            )
+        entry = SiteServiceRequestDailyReportEntry(
+            case_id=case.id,
+            source_kind=case.source_kind,
+            source_ticket_id=case.source_ticket_id,
+            bitrix_item_id=case.bitrix_item_id,
+            primary_activity_id=case.primary_activity_id,
+            first_response_due_at=(
+                _as_utc(case.first_response_due_at)
+                if case.first_response_due_at is not None
+                else None
+            ),
+            escalated_at=(_as_utc(case.escalated_at) if case.escalated_at is not None else None),
         )
+        if entry.source_kind == "site_ticket" and not _site_service_request_daily_entry_is_overdue(
+            entry,
+            now=now,
+        ):
+            continue
+        entries.append(entry)
     return sorted(
         entries,
         key=lambda entry: (
@@ -3158,30 +3160,25 @@ def render_site_service_request_daily_report(
     now: datetime,
 ) -> list[str]:
     date_text = report_date.strftime("%d.%m.%Y")
-    base_header = f"Обращения клиентов: контроль ответов за {date_text}"
+    base_header = f"Нужно ответить клиентам — {date_text}"
     if not entries:
         return [
             "\n".join(
                 [
                     base_header,
                     "",
-                    "Проверка выполнена.",
-                    "Просроченных ответов нет.",
+                    "Обращений, требующих ответа, нет.",
                 ]
             )
         ]
 
     site_count = sum(entry.source_kind == "site_ticket" for entry in entries)
     mail_count = sum(entry.source_kind == "bitrix_mail" for entry in entries)
-    overdue_count = sum(
-        _site_service_request_daily_entry_is_overdue(entry, now=now) for entry in entries
-    )
     blocks = [
         _site_service_request_daily_entry_block(
             entry,
             number=number,
             settings=settings,
-            now=now,
         )
         for number, entry in enumerate(entries, start=1)
     ]
@@ -3211,16 +3208,14 @@ def render_site_service_request_daily_report(
         if part_number == 1:
             lines.extend(
                 [
-                    "Остаются без ответа:",
-                    f"— обращения с сайта: {site_count};",
-                    f"— письма: {mail_count};",
-                    f"— из них срок ответа истёк: {overdue_count}.",
+                    f"Письма без ответа: {mail_count}.",
+                    f"Просроченные обращения с сайта: {site_count}.",
                     "",
-                    "Требуют проверки и ответа:",
+                    "Что нужно сделать:",
                 ]
             )
         else:
-            lines.extend(["Продолжение списка обращений без ответа:"])
+            lines.extend(["Продолжение списка:"])
         lines.extend(group)
         messages.append("\n".join(lines))
     return messages
@@ -3231,37 +3226,27 @@ def _site_service_request_daily_entry_block(
     *,
     number: int,
     settings: Settings,
-    now: datetime,
 ) -> str:
     if entry.source_kind == "site_ticket":
-        label = f"Обращение с сайта №{entry.source_ticket_id}"
+        lines = [
+            f"{number}. Обращение с сайта №{entry.source_ticket_id} просрочено. "
+            "Нужно открыть его и ответить клиенту."
+        ]
     else:
-        label = "Письмо клиента"
-    if _site_service_request_daily_entry_is_overdue(entry, now=now):
-        status = "срок ответа истёк"
-    elif entry.first_response_due_at is not None:
-        due_local = entry.first_response_due_at.astimezone(
-            ZoneInfo(settings.site_service_requests_timezone)
-        )
-        status = f"ответить до {due_local.strftime('%d.%m.%Y %H:%M')}"
-    else:
-        status = "срок ответа ещё не определён"
-    if entry.bitrix_item_id is None:
-        status = f"{status}; карточка обращения ещё не создана"
-    lines = [f"{number}. {label} — {status}."]
+        lines = [f"{number}. На письмо клиента ещё не ответили."]
     if entry.bitrix_item_id is not None:
         try:
             item_url = site_service_request_item_url(settings, entry.bitrix_item_id)
         except SiteServiceRequestConfigurationError:
             item_url = None
         if item_url is not None:
-            lines.append(f"[URL={item_url}]Открыть карточку обращения[/URL]")
+            lines.append(f"[URL={item_url}]Открыть карточку и ответить[/URL]")
     if entry.source_kind == "site_ticket":
         ticket_url = (
             f"{settings.site_service_requests_site_base_url.rstrip('/')}"
             f"/personal/tickets/?ID={entry.source_ticket_id}"
         )
-        lines.append(f"[URL={ticket_url}]Открыть обращение на сайте[/URL]")
+        lines.append(f"[URL={ticket_url}]Открыть исходное обращение[/URL]")
     elif entry.primary_activity_id is not None:
         try:
             activity_url = site_service_request_activity_url(
@@ -3271,7 +3256,7 @@ def _site_service_request_daily_entry_block(
         except SiteServiceRequestConfigurationError:
             activity_url = None
         if activity_url is not None:
-            lines.append(f"[URL={activity_url}]Открыть письмо[/URL]")
+            lines.append(f"[URL={activity_url}]Открыть письмо и ответить[/URL]")
     return "\n".join(lines)
 
 

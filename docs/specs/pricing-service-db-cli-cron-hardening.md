@@ -31,6 +31,7 @@ related_tests:
   - tests/test_export_sms_journal_xlsx.py
   - tests/test_product_classification.py
   - tests/test_report_display_auto_order_backtest.py
+  - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
   - tests/test_report_display_supplier_lead_time_history_task.py
   - tests/test_report_exclusive_auto_detect_candidates_task.py
   - tests/test_report_parsed_models_task.py
@@ -176,6 +177,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/report_display_supplier_lead_time_history.py` на
   role-specific read-only 1С factory с bounded timeout и гарантированным dispose,
   сохранив SQL, аргументы и CSV/JSON-контракты.
+- [x] Перевести `tasks/report_display_auto_order_adaptive_lead_time_comparison.py`
+  на central read-only session scope с сохранением аргументов, fail-closed family
+  registry overlay и CSV/JSON-контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -312,6 +316,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-29 — `tasks/report_display_auto_order_adaptive_lead_time_comparison.py`
+  переведён на central read-only session scope; аргументы, fail-closed family
+  registry overlay и CSV/JSON-контракты сохранены.
 - 2026-08-29 — разрешён merge PR №110; production release оставлен отдельным
   решением.
 - 2026-08-29 — разрешена подготовка supplier lead-time read-only slice с push и

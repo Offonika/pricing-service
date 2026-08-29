@@ -199,6 +199,110 @@ def test_logistics_state_rejects_stale_version_update() -> None:
         os.remove(path)
 
 
+def test_rtu_ready_for_pickup_returns_only_accepted_remote_rtu(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    try:
+        with Session(engine) as session:
+            source = LogisticsWarehouse(
+                external_id="source",
+                name="Пресня",
+                kind="store",
+                payload={"code": "PRS"},
+            )
+            target = LogisticsWarehouse(
+                external_id="target",
+                name="Савелово",
+                kind="store",
+                payload={"onec_departments": [{"code": "SAV"}]},
+            )
+            session.add_all([source, target])
+            session.flush()
+            accepted_at = datetime(2026, 8, 28, 14, 30, tzinfo=timezone.utc)
+            remote = LogisticsTransfer(
+                source_document_type="rtu",
+                external_id="0xRTU-REMOTE",
+                document_number="РТУ-000321",
+                document_date=datetime(2026, 8, 27, 9, 0, tzinfo=timezone.utc),
+                source_warehouse_id=source.id,
+                target_warehouse_id=target.id,
+                barcode="MMLOG1|rtu|remote",
+            )
+            local = LogisticsTransfer(
+                source_document_type="rtu",
+                external_id="0xRTU-LOCAL",
+                document_number="РТУ-000322",
+                document_date=datetime(2026, 8, 27, 10, 0, tzinfo=timezone.utc),
+                source_warehouse_id=target.id,
+                target_warehouse_id=target.id,
+                barcode="MMLOG1|rtu|local",
+            )
+            session.add_all([remote, local])
+            session.flush()
+            session.add_all(
+                [
+                    LogisticsTransferState(
+                        transfer_id=remote.id,
+                        status=logistics.STATUS_AT_WAREHOUSE,
+                        current_warehouse_id=target.id,
+                        last_event_type=logistics.EVENT_ACCEPTED_AT_POINT,
+                        last_event_at=accepted_at,
+                        version=2,
+                    ),
+                    LogisticsTransferState(
+                        transfer_id=local.id,
+                        status=logistics.STATUS_AT_WAREHOUSE,
+                        current_warehouse_id=target.id,
+                        last_event_type=logistics.EVENT_ACCEPTED_AT_POINT,
+                        last_event_at=accepted_at,
+                        version=2,
+                    ),
+                ]
+            )
+            session.commit()
+
+        unauthorized = client.get(
+            "/api/logistics/rtu/ready-for-pickup",
+            params={"warehouse_code": "SAV"},
+        )
+        assert unauthorized.status_code == 401
+
+        response = client.get(
+            "/api/logistics/rtu/ready-for-pickup",
+            params={"warehouse_code": "sav", "date_from": "2026-08-26"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert [item["external_id"] for item in response.json()] == ["0xRTU-REMOTE"]
+
+        xml_response = client.get(
+            "/api/logistics/rtu/ready-for-pickup",
+            params={"warehouse_code": "SAV", "format": "xml"},
+            headers=headers,
+        )
+        assert xml_response.status_code == 200
+        assert xml_response.headers["content-type"].startswith("application/xml")
+        assert "РТУ-000321" in xml_response.text
+        assert "РТУ-000322" not in xml_response.text
+
+        missing = client.get(
+            "/api/logistics/rtu/ready-for-pickup",
+            params={"warehouse_code": "UNKNOWN"},
+            headers=headers,
+        )
+        assert missing.status_code == 404
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_logistics_mvp_flow(monkeypatch) -> None:
     engine, path = setup_db()
     headers = _configure_logistics_auth(monkeypatch)

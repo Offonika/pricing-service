@@ -294,6 +294,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "report_display_supplier_lead_time_history.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "onec_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "report_display_quality_mismatch_candidates.py": {
       "owner": "matching",
       "kind": "report",

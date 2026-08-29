@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from datetime import date
+from types import SimpleNamespace
 
 import tasks.report_display_supplier_lead_time_history as lead_time_report
 from tasks.report_display_supplier_lead_time_history import (
@@ -20,6 +21,103 @@ def test_display_supplier_lead_time_defaults_to_three_year_history(monkeypatch) 
     args = lead_time_report._parse_args()
 
     assert args.history_months == 36
+
+
+def test_display_supplier_lead_time_main_uses_bounded_onec_engine_lifecycle(
+    monkeypatch, tmp_path
+) -> None:
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    engine = FakeEngine()
+    factory_calls: list[dict[str, object]] = []
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int | float,
+        login_timeout_seconds: int | float,
+    ) -> FakeEngine:
+        factory_calls.append(
+            {
+                "database_url": database_url,
+                "query_timeout_seconds": query_timeout_seconds,
+                "login_timeout_seconds": login_timeout_seconds,
+            }
+        )
+        return engine
+
+    args = SimpleNamespace(
+        folder="дисплеи",
+        history_months=36,
+        as_of=date(2026, 8, 29),
+        limit=100,
+        onec_database_url="mssql://override",
+        supplier_order_mapping_json=tmp_path / "supplier.json",
+        receipt_mapping_json=tmp_path / "receipt.json",
+        output_csv=tmp_path / "aggregate.csv",
+        output_detail_csv=tmp_path / "detail.csv",
+        output_json=None,
+        output_seasonality_csv=tmp_path / "seasonality.csv",
+        output_seasonality_json=None,
+        json=True,
+    )
+    settings = SimpleNamespace(
+        onec_database_url="mssql://settings",
+        onec_query_timeout_seconds=41,
+        onec_login_timeout_seconds=13,
+    )
+    monkeypatch.setattr(lead_time_report, "_parse_args", lambda: args)
+    monkeypatch.setattr(lead_time_report, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        lead_time_report, "default_history_start", lambda *_args, **_kwargs: date(2023, 8, 29)
+    )
+    monkeypatch.setattr(
+        lead_time_report, "_load_document_line_mapping", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(lead_time_report, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(
+        lead_time_report,
+        "fetch_display_supplier_lead_time_source_rows",
+        lambda source_engine, **_kwargs: (
+            {
+                "nomenclature_rows": [],
+                "supplier_order_rows": [],
+                "receipt_rows": [],
+            }
+            if source_engine is engine
+            else None
+        ),
+    )
+    monkeypatch.setattr(lead_time_report, "build_lead_time_detail_rows", lambda *_args: [])
+    monkeypatch.setattr(lead_time_report, "mark_lead_time_outliers", lambda _rows: {})
+    monkeypatch.setattr(lead_time_report, "aggregate_lead_time_rows", lambda _rows: [])
+    monkeypatch.setattr(lead_time_report, "build_weekly_seasonality_rows", lambda _rows: [])
+    monkeypatch.setattr(
+        lead_time_report,
+        "build_seasonality_summary",
+        lambda *_args, **_kwargs: {"weeks": 0},
+    )
+    monkeypatch.setattr(
+        lead_time_report,
+        "build_summary",
+        lambda *_args, **_kwargs: {"detail_rows": 0},
+    )
+    monkeypatch.setattr(lead_time_report, "write_csv", lambda *_args, **_kwargs: None)
+
+    assert lead_time_report.main() == 0
+    assert factory_calls == [
+        {
+            "database_url": "mssql://override",
+            "query_timeout_seconds": 41,
+            "login_timeout_seconds": 13,
+        }
+    ]
+    assert engine.disposed is True
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

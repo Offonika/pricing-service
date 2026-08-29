@@ -704,6 +704,7 @@ def test_shipment_stage_outbox_applies_partial_then_full_dispatch(db_session) ->
     )
     client = FakeBitrixClient(_deal("FINAL_INVOICE"))
     settings = _settings(
+        order_fulfillment_bot_apply_enabled=True,
         order_fulfillment_shipments_master_enabled=True,
         order_fulfillment_shipments_stage_apply_enabled=True,
     )
@@ -762,3 +763,66 @@ def test_shipment_stage_outbox_is_fail_closed_when_disabled(db_session) -> None:
     assert client.updates == []
     db_session.refresh(row)
     assert row.status == "pending"
+
+
+def test_shipment_stage_outbox_master_switch_blocks_stage(db_session) -> None:
+    _, row = _seed_shipment_stage_row(
+        db_session,
+        target_stage="PARTIALLY_SHIPPED",
+        suffix="master-disabled",
+    )
+    client = FakeBitrixClient(_deal("FINAL_INVOICE"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_bot_apply_enabled=False,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_stage_apply_enabled=True,
+        ),
+    )
+
+    assert [item.result for item in results] == ["shipment_automation_disabled"]
+    assert client.updates == []
+    db_session.refresh(row)
+    assert row.status == "pending"
+
+
+def test_latest_strict_shipment_snapshot_supersedes_old_manual_review(db_session) -> None:
+    case, old_row = _seed_shipment_stage_row(
+        db_session,
+        target_stage="PARTIALLY_SHIPPED",
+        suffix="old-conflict",
+    )
+    old_row.status = "manual_review"
+    old_row.last_error = "unexpected_live_stage:EXECUTING"
+    db_session.commit()
+    _, latest_row = _seed_shipment_stage_row(
+        db_session,
+        case=case,
+        target_stage="IN_DELIVERY",
+        suffix="strict-complete",
+    )
+    client = FakeBitrixClient(_deal("EXECUTING"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_bot_apply_enabled=True,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_stage_apply_enabled=True,
+        ),
+    )
+
+    assert [item.result for item in results] == ["applied"]
+    assert client.deal.stage_id == "IN_DELIVERY"
+    assert client.deal.stage_id != "DELIVERY_REVIEW"
+    db_session.refresh(old_row)
+    db_session.refresh(latest_row)
+    assert old_row.status == "applied"
+    assert old_row.last_error == "superseded_by_newer_evidence"
+    assert latest_row.status == "applied"

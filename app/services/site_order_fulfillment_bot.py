@@ -27,6 +27,7 @@ from app.models.site_order_fulfillment import (
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
     SiteOrderFulfillmentOutbox,
+    SiteOrderShipment,
     SiteOrderShipmentNotification,
 )
 from app.services import pickup_inventory
@@ -171,6 +172,7 @@ OP_PUBLISH_MISSING_RECEIPT_PROMPT = "publish_missing_receipt_prompt"
 OP_CREATE_MISSING_RECEIPT_TASK = "create_missing_receipt_task"
 OP_UPDATE_SHIPMENT_CRM_FIELDS = shipment_service.OP_UPDATE_SHIPMENT_CRM_FIELDS
 OP_START_SHIPMENT_NOTIFICATION = shipment_service.OP_START_SHIPMENT_NOTIFICATION
+OP_APPLY_SHIPMENT_GATEWAY = shipment_service.OP_APPLY_SHIPMENT_GATEWAY
 
 APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
     {
@@ -181,6 +183,9 @@ APPLY_GATED_OUTBOX_OPERATIONS = frozenset(
         OP_CREATE_TASK,
         OP_UPDATE_CRM_FIELDS,
         OP_FINALIZE_CASE_EVENT,
+        OP_UPDATE_SHIPMENT_CRM_FIELDS,
+        OP_START_SHIPMENT_NOTIFICATION,
+        OP_APPLY_SHIPMENT_GATEWAY,
     }
 )
 
@@ -192,7 +197,6 @@ NON_RETRYABLE_EXTERNAL_OPERATIONS = {
     OP_FINALIZE_STRUCTURED_ARRIVAL,
     OP_PUBLISH_MISSING_RECEIPT_PROMPT,
     OP_CREATE_MISSING_RECEIPT_TASK,
-    OP_START_SHIPMENT_NOTIFICATION,
     OP_START_SMS_WORKFLOW,
     OP_CREATE_TASK,
 }
@@ -2234,6 +2238,44 @@ def process_outbox(
     if stale_rows:
         session.commit()
 
+    if (
+        _runtime_apply_enabled(settings, apply_enabled_probe)
+        and settings.order_fulfillment_shipments_master_enabled
+        and settings.order_fulfillment_shipments_notifications_enabled
+    ):
+        stale_notifications = session.scalars(
+            select(SiteOrderShipmentNotification)
+            .where(
+                SiteOrderShipmentNotification.status == "submitted",
+                SiteOrderShipmentNotification.submitted_at
+                <= now
+                - timedelta(
+                    minutes=settings.order_fulfillment_shipments_notification_recovery_minutes
+                ),
+            )
+            .order_by(SiteOrderShipmentNotification.id.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        ).all()
+        for notification in stale_notifications:
+            recovery_row = session.scalar(
+                select(SiteOrderFulfillmentOutbox).where(
+                    SiteOrderFulfillmentOutbox.operation == OP_START_SHIPMENT_NOTIFICATION,
+                    SiteOrderFulfillmentOutbox.target_type == "shipment_notification",
+                    SiteOrderFulfillmentOutbox.target_id == str(notification.id),
+                    SiteOrderFulfillmentOutbox.status == OUTBOX_COMPLETED,
+                )
+            )
+            if recovery_row is None:
+                continue
+            recovery_row.status = OUTBOX_RETRY
+            recovery_row.available_at = now
+            recovery_row.last_error = "shipment_notification_status_unconfirmed"
+            recovery_row.updated_at = now
+            stats["recovered"] += 1
+        if stale_notifications:
+            session.commit()
+
     dependency = aliased(SiteOrderFulfillmentOutbox)
     dependency_status = (
         select(dependency.status)
@@ -2577,6 +2619,12 @@ def _dispatch_outbox(
             and settings.order_fulfillment_shipments_notifications_enabled
         ):
             raise ApplyDisabledBeforeSideEffect("shipment_notifications_disabled")
+    if row.operation == OP_APPLY_SHIPMENT_GATEWAY:
+        if not (
+            settings.order_fulfillment_shipments_master_enabled
+            and settings.order_fulfillment_shipments_gateway_apply_enabled
+        ):
+            raise ApplyDisabledBeforeSideEffect("shipment_gateway_disabled")
     if row.operation == OP_PUBLISH_CARD:
         _publish_card(
             session,
@@ -2751,6 +2799,15 @@ def _dispatch_outbox(
             now=now,
         )
         return
+    if row.operation == OP_APPLY_SHIPMENT_GATEWAY:
+        _apply_shipment_gateway(
+            session,
+            row=row,
+            client=client,
+            settings=settings,
+            apply_enabled_probe=apply_enabled_probe,
+        )
+        return
     raise RuntimeError(f"unsupported_outbox_operation:{row.operation}")
 
 
@@ -2784,6 +2841,163 @@ def _update_shipment_crm_fields(
         actual = fulfillment._clean_string((readback.raw or {}).get(field_name))
         if fulfillment._clean_string(expected) != actual:
             raise RuntimeError(f"shipment_crm_field_readback_mismatch:{field_name}")
+    if shipment_service.FULL_ASSEMBLY_FIELD in fields and not fulfillment._clean_string(
+        fields.get(shipment_service.FULL_ASSEMBLY_FIELD)
+    ):
+        marker = (
+            "MM_SHIPMENT_ASSEMBLY_CORRECTION:"
+            + hashlib.sha256(row.idempotency_key.encode("utf-8")).hexdigest()[:32]
+        )
+        if not _shipment_notification_marker_present(
+            client,
+            deal_id=deal_id,
+            marker=marker,
+        ):
+            coverage_status = fulfillment._clean_string(payload.get("coverage_status"))
+            client.call(
+                "crm.timeline.comment.add",
+                {
+                    "fields": {
+                        "ENTITY_TYPE": "deal",
+                        "ENTITY_ID": deal_id,
+                        "COMMENT": (
+                            f"{marker}\nПодтверждение полной сборки снято после "
+                            f"исправленного снимка. Статус: {coverage_status or 'conflict'}."
+                        ),
+                    }
+                },
+            )
+
+
+def _apply_shipment_gateway(
+    session: Session,
+    *,
+    row: SiteOrderFulfillmentOutbox,
+    client: fulfillment.BitrixChatClient,
+    settings: Settings,
+    apply_enabled_probe: Callable[[], bool] | None,
+) -> None:
+    _require_runtime_apply_enabled(settings, apply_enabled_probe)
+    payload = row.payload or {}
+    site_order_number = fulfillment._clean_string(payload.get("site_order_number"))
+    shipment_key = fulfillment._clean_string(payload.get("shipment_key") or row.target_id)
+    deal_id = int(payload.get("deal_id") or 0)
+    if not site_order_number or not shipment_key or deal_id <= 0:
+        raise RuntimeError("invalid_shipment_gateway_payload")
+    try:
+        live_deal = client.get_deal_by_id(deal_id)
+    except Exception as exc:
+        raise RetryableBeforeExternalEffect(str(exc)) from exc
+    if live_deal is None:
+        raise RuntimeError("shipment_gateway_deal_not_found")
+    if (
+        fulfillment._clean_string((live_deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))
+        != site_order_number
+    ):
+        raise RuntimeError("shipment_gateway_deal_order_mismatch")
+    stage = fulfillment._clean_string(live_deal.stage_id).upper()
+    if (
+        stage in fulfillment.TERMINAL_CRM_STAGES
+        or stage.endswith(":WON")
+        or stage.endswith(":LOSE")
+        or "CANCEL" in stage
+    ):
+        raise RuntimeError("shipment_gateway_terminal_deal")
+
+    gateway = shipment_service.BitrixSaleShipmentGatewayClient(
+        base_url=settings.order_fulfillment_shipments_gateway_url or "",
+        token=settings.order_fulfillment_shipments_gateway_token or "",
+    )
+    order = gateway.get_order_snapshot(site_order_number=site_order_number)
+    order_id = int(order.get("order_id") or 0)
+    expected_order_id = int(payload.get("order_id") or 0)
+    if order_id <= 0 or (expected_order_id and expected_order_id != order_id):
+        raise RuntimeError("shipment_gateway_order_mismatch")
+    if order.get("mutable") is not True:
+        raise RuntimeError("shipment_gateway_order_not_mutable")
+    order_revision = fulfillment._clean_string(payload.get("source_order_revision"))
+    if not order_revision:
+        raise RuntimeError("shipment_gateway_source_revision_missing")
+    action = fulfillment._clean_string(payload.get("action"))
+    shipment_payload: dict[str, Any] | None = None
+    if action == "ensure":
+        delivery_service_id = int(payload.get("delivery_service_id") or 0)
+        items = list(payload.get("items") or [])
+        if delivery_service_id <= 0 or not items:
+            raise RuntimeError("shipment_gateway_ensure_payload_invalid")
+        result = gateway.ensure_shipment(
+            order_id=order_id,
+            shipment_key=shipment_key,
+            delivery_service_id=delivery_service_id,
+            items=[
+                {
+                    "basket_item_id": int(item.get("basket_item_id") or 0),
+                    "quantity": str(item.get("quantity") or ""),
+                }
+                for item in items
+            ],
+            site_order_number=site_order_number,
+            expected_order_revision=order_revision,
+            idempotency_key=row.idempotency_key,
+        )
+        shipment_payload = result.get("shipment")
+    elif action == "update_tracking":
+        shipment_id = int(payload.get("bitrix_shipment_id") or 0)
+        tracking_number = fulfillment._clean_string(payload.get("tracking_number"))
+        live_shipment = next(
+            (
+                item
+                for item in list(order.get("shipments") or [])
+                if int(item.get("shipment_id") or 0) == shipment_id
+            ),
+            None,
+        )
+        if live_shipment is None or not tracking_number:
+            raise RuntimeError("shipment_gateway_tracking_payload_invalid")
+        if fulfillment._clean_string(live_shipment.get("tracking_number")) == tracking_number:
+            shipment_payload = live_shipment
+        else:
+            result = gateway.update_tracking(
+                shipment_id=shipment_id,
+                tracking_number=tracking_number,
+                expected_revision=fulfillment._clean_string(live_shipment.get("revision")),
+                site_order_number=site_order_number,
+                expected_order_revision=order_revision,
+                idempotency_key=row.idempotency_key,
+            )
+            shipment_payload = result.get("shipment")
+    else:
+        raise RuntimeError("shipment_gateway_action_unknown")
+    if not isinstance(shipment_payload, dict) or not shipment_payload.get("shipment_id"):
+        raise RuntimeError("shipment_gateway_readback_invalid")
+
+    case = session.scalar(
+        select(SiteOrderExecutionCase).where(
+            SiteOrderExecutionCase.site_order_number == site_order_number
+        )
+    )
+    shipment = session.scalar(
+        select(SiteOrderShipment).where(
+            SiteOrderShipment.case_id == (case.id if case else -1),
+            SiteOrderShipment.shipment_key == shipment_key,
+        )
+    )
+    if shipment is None:
+        raise RuntimeError("shipment_gateway_local_shipment_missing")
+    shipment.bitrix_shipment_id = int(shipment_payload["shipment_id"])
+    shipment.source_revision = fulfillment._clean_string(shipment_payload.get("revision")) or None
+    if shipment_payload.get("tracking_number") is not None:
+        shipment.tracking_number = (
+            fulfillment._clean_string(shipment_payload.get("tracking_number")) or None
+        )
+    item_ids = {
+        int(item.get("basket_item_id") or 0): int(item.get("shipment_item_id") or 0)
+        for item in list(shipment_payload.get("items") or [])
+        if int(item.get("basket_item_id") or 0) > 0
+    }
+    for item in shipment.items:
+        if item.basket_item_id in item_ids:
+            item.bitrix_shipment_item_id = item_ids[item.basket_item_id]
 
 
 def _start_shipment_notification(
@@ -2801,7 +3015,7 @@ def _start_shipment_notification(
     notification = session.get(SiteOrderShipmentNotification, notification_id)
     if notification is None:
         raise RuntimeError("shipment_notification_not_found")
-    if notification.status in {"submitted", "sent"}:
+    if notification.status in {"sent", "delivered"}:
         return
     shipment = notification.shipment
     case = shipment.case
@@ -2841,6 +3055,16 @@ def _start_shipment_notification(
         raise ApplyDisabledBeforeSideEffect("shipment_notification_workflow_not_configured")
 
     payload = notification.payload or {}
+    marker = _shipment_notification_marker(notification.idempotency_key)
+    if _shipment_notification_marker_present(
+        client,
+        deal_id=deal_id,
+        marker=marker,
+    ):
+        notification.status = "sent"
+        notification.sent_at = notification.sent_at or now
+        notification.last_error = None
+        return
     items_text = ", ".join(
         f"{item.get('product_code') or item.get('product_ref')} × {item.get('quantity')}"
         for item in list(payload.get("items") or [])
@@ -2858,15 +3082,39 @@ def _start_shipment_notification(
             "ITEMS_TEXT": items_text,
             "CHANNEL": notification.channel,
             "IDEMPOTENCY_KEY": notification.idempotency_key,
+            "MARKER": marker,
         },
     )
     if not workflow_id:
         raise RuntimeError("shipment_notification_workflow_returned_empty_id")
     notification.status = "submitted"
     notification.external_ref = str(workflow_id)
-    notification.sent_at = now
+    notification.submitted_at = now
     notification.last_error = None
     row.payload = {**(row.payload or {}), "workflow_id": str(workflow_id)}
+
+
+def _shipment_notification_marker(idempotency_key: str) -> str:
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]
+    return f"MM_SHIPMENT_NOTICE:{digest}"
+
+
+def _shipment_notification_marker_present(
+    client: fulfillment.BitrixChatClient,
+    *,
+    deal_id: int,
+    marker: str,
+) -> bool:
+    response = client.call(
+        "crm.timeline.comment.list",
+        {
+            "filter": {"ENTITY_TYPE": "deal", "ENTITY_ID": deal_id},
+            "select": ["ID", "COMMENT"],
+            "order": {"ID": "DESC"},
+        },
+    )
+    rows = response.get("result") or []
+    return any(marker in str(item.get("COMMENT") or "") for item in rows if isinstance(item, dict))
 
 
 def _publish_missing_receipt_prompt(

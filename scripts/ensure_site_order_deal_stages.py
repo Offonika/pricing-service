@@ -19,7 +19,7 @@ REQUIRED_STAGES = (
     {
         "STATUS_ID": "PARTIALLY_SHIPPED",
         "NAME": "Частично отправлен",
-        "SORT": 58,
+        "SORT": 52,
     },
     {
         "STATUS_ID": "PICKUP_TRANSIT",
@@ -54,6 +54,12 @@ REQUIRED_USER_FIELDS = (
         "EDIT_FORM_LABEL": "Количество физических отправлений",
         "LIST_COLUMN_LABEL": "Количество физических отправлений",
         "USER_TYPE_ID": "integer",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_FULL_ASSEMBLY_STATUS",
+        "EDIT_FORM_LABEL": "Статус полноты сборки",
+        "LIST_COLUMN_LABEL": "Статус полноты сборки",
+        "USER_TYPE_ID": "string",
     },
     {
         "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_EVENT_ID",

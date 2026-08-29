@@ -226,6 +226,7 @@ class SiteOrderRtu(Base):
     __table_args__ = (
         UniqueConstraint("case_id", "external_id", name="uq_site_order_rtu_case_external"),
         Index("ix_site_order_rtu_case_assembled", "case_id", "assembled_at"),
+        Index("ix_site_order_rtu_active", "active", "updated_at"),
     )
 
     case_id: Mapped[int] = mapped_column(
@@ -237,6 +238,10 @@ class SiteOrderRtu(Base):
     posted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     assembled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    last_seen_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -284,7 +289,13 @@ class SiteOrderShipment(Base):
             "bitrix_shipment_id",
             name="uq_site_order_shipment_bitrix_id",
         ),
+        UniqueConstraint(
+            "case_id",
+            "part_number",
+            name="uq_site_order_shipment_case_part",
+        ),
         Index("ix_site_order_shipment_case_status", "case_id", "status"),
+        Index("ix_site_order_shipment_active", "active", "updated_at"),
         Index("ix_site_order_shipment_tracking", "tracking_number"),
     )
 
@@ -303,6 +314,14 @@ class SiteOrderShipment(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    last_seen_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    part_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    legacy_owned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -377,7 +396,10 @@ class SiteOrderShipmentNotification(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

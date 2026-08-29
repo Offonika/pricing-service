@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import sqlite3
@@ -17,7 +18,7 @@ import sys
 import tempfile
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -39,6 +40,8 @@ from app.services import (  # noqa: E402
     site_order_execution_reconciliation as execution_reconciliation,
 )
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
+from app.services import site_order_shipment_poller as shipment_poller  # noqa: E402
+from app.services import site_order_shipments as shipment_service  # noqa: E402
 from app.services import site_order_stage_outbox as stage_outbox_service  # noqa: E402
 
 DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
@@ -1631,6 +1634,151 @@ def run_daily_sync(
     }
 
 
+def run_shipment_poller_sync(
+    *,
+    client: fulfillment.BitrixChatClient,
+    apply: bool,
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.order_fulfillment_shipments_poller_enabled:
+        return {"mode": "shipments", "enabled": False, "processed": 0}
+    cursor_path = Path(settings.order_fulfillment_shipments_poller_cursor_path)
+    if not cursor_path.is_absolute():
+        cursor_path = REPO_ROOT / cursor_path
+    cursor = load_executing_cursor(cursor_path)
+    limit = settings.order_fulfillment_shipments_poller_limit
+    overlap = settings.order_fulfillment_shipments_poller_overlap
+    deals = client.list_deals_by_stages(
+        ["EXECUTING", "FINAL_INVOICE", "PARTIALLY_SHIPPED", "PICKUP_TRANSIT", "IN_DELIVERY"],
+        limit=min(5000, max(limit * 5, limit + overlap)),
+    )
+    ordered = sorted(deals, key=lambda item: item.deal_id)
+    recent = ordered[-overlap:]
+    forward = [deal for deal in ordered if deal.deal_id > cursor][:limit]
+    cycle_completed = len(forward) < limit
+    selected_by_id = {deal.deal_id: deal for deal in recent}
+    selected_by_id.update({deal.deal_id: deal for deal in forward})
+    selected = sorted(selected_by_id.values(), key=lambda item: item.deal_id)
+    order_numbers = {
+        deal.deal_id: fulfillment._clean_string(
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        for deal in selected
+    }
+    onec_snapshots = query_multi_shipment_onec_snapshots(
+        [value for value in order_numbers.values() if value]
+    )
+    gateway = shipment_service.BitrixSaleShipmentGatewayClient(
+        base_url=settings.order_fulfillment_shipments_gateway_url or "",
+        token=settings.order_fulfillment_shipments_gateway_token or "",
+    )
+    persist = bool(
+        settings.order_fulfillment_shipments_master_enabled
+        and settings.order_fulfillment_shipments_ingest_enabled
+    )
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    observed_at = datetime.now()
+    with session_scope() as session:
+        for deal in selected:
+            order_number = order_numbers.get(deal.deal_id) or ""
+            try:
+                onec_snapshot = onec_snapshots.get(order_number)
+                if not order_number or not onec_snapshot or not onec_snapshot.get("expected_items"):
+                    raise RuntimeError("shipment_poller_onec_snapshot_missing")
+                bitrix_order = gateway.get_order_snapshot(site_order_number=order_number)
+                payload = shipment_poller.compose_snapshot(
+                    deal=deal,
+                    site_order_number=order_number,
+                    onec_snapshot=onec_snapshot,
+                    bitrix_order=bitrix_order,
+                    observed_at=observed_at,
+                )
+                result = shipment_service.sync_order_shipments(
+                    session,
+                    **payload,
+                    persist=persist,
+                    enqueue_crm_fields=(
+                        persist and settings.order_fulfillment_shipments_crm_fields_enabled
+                    ),
+                    enqueue_notifications=(
+                        persist and settings.order_fulfillment_shipments_notifications_enabled
+                    ),
+                    email_enabled=settings.order_fulfillment_shipments_email_enabled,
+                    sms_enabled=settings.order_fulfillment_shipments_sms_enabled,
+                    enqueue_gateway=False,
+                )
+                results.append(asdict(result))
+                if persist:
+                    session.commit()
+            except Exception as exc:  # one bad order must not stop the shadow batch.
+                session.rollback()
+                errors.append(
+                    {
+                        "deal_id": deal.deal_id,
+                        "site_order_number": order_number,
+                        "error": f"{type(exc).__name__}:{str(exc)[:500]}",
+                    }
+                )
+        stage_results = (
+            stage_outbox_service.process_stage_outbox(
+                session,
+                client=client,
+                apply=apply,
+                settings=settings,
+                limit=limit,
+            )
+            if persist
+            else []
+        )
+    save_shipment_poller_cursor(
+        cursor_path,
+        cursor_before=cursor,
+        cursor_after=(0 if cycle_completed else max((deal.deal_id for deal in forward), default=0)),
+        cycle_completed=cycle_completed,
+    )
+    return {
+        "mode": "shipments",
+        "enabled": True,
+        "persist": persist,
+        "processed": len(results),
+        "errors": errors,
+        "cursor_before": cursor,
+        "cursor_after": (
+            0 if cycle_completed else max((deal.deal_id for deal in forward), default=cursor)
+        ),
+        "results": results,
+        "stage_results": [item.to_dict() for item in stage_results],
+    }
+
+
+def save_shipment_poller_cursor(
+    path: Path,
+    *,
+    cursor_before: int,
+    cursor_after: int,
+    cycle_completed: bool,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_deal_id": cursor_after,
+        "previous_deal_id": cursor_before,
+        "cycle_completed": cycle_completed,
+        "updated_at": datetime.now().isoformat(),
+    }
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as file_obj:
+        json.dump(payload, file_obj, ensure_ascii=False, sort_keys=True)
+        file_obj.write("\n")
+        temporary_path = Path(file_obj.name)
+    temporary_path.replace(path)
+
+
 def load_pickup_daily_metrics(settings: Any) -> dict[str, Any]:
     try:
         with session_scope() as session:
@@ -1639,6 +1787,10 @@ def load_pickup_daily_metrics(settings: Any) -> dict[str, Any]:
                 settings=settings,
             )
             metrics.update(execution_reconciliation.execution_reconciliation_metrics(session))
+            metrics.update(shipment_poller.shipment_operational_metrics(session))
+            metrics["shipment_configuration_issues"] = (
+                shipment_poller.shipment_configuration_issues(settings)
+            )
             return metrics
     except Exception as exc:  # daily digest must survive a temporary service DB failure.
         return {"error": type(exc).__name__}
@@ -2106,6 +2258,142 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
             "missing_item_count": int(mapping.get("missing_item_count") or 0),
             "excess_item_count": int(mapping.get("excess_item_count") or 0),
         }
+    return result
+
+
+def query_multi_shipment_onec_snapshots(
+    order_numbers: list[str],
+) -> dict[str, dict[str, Any]]:
+    settings = get_settings()
+    unique_orders = [
+        value for value in dict.fromkeys(clean_csv_value(item) for item in order_numbers) if value
+    ]
+    if not unique_orders or not settings.onec_database_url:
+        return {}
+    params = {f"order_{index}": value for index, value in enumerate(unique_orders)}
+    placeholders = ", ".join(f":order_{index}" for index in range(len(unique_orders)))
+    expected_statement = text(f"""
+        SELECT
+            NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+            CONVERT(varchar(34), line._Fld2434RRef, 1) AS product_ref,
+            CAST(SUM(line._Fld2431) AS decimal(18, 4)) AS quantity
+        FROM dbo._Document132 AS ord WITH (NOLOCK)
+        JOIN dbo._Document132_VT2427 AS line WITH (NOLOCK)
+          ON line._Document132_IDRRef = ord._IDRRef
+        WHERE LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+          AND ord._Marked = 0x00
+          AND line._Fld2434RRef <> 0x00000000000000000000000000000000
+          AND line._Fld2431 > 0
+        GROUP BY NULLIF(LTRIM(RTRIM(ord._Fld2425)), N''), line._Fld2434RRef
+    """)
+    rtu_statement = text(f"""
+        WITH rtu_base AS (
+            SELECT
+                rtu._IDRRef AS rtu_id,
+                NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+                CONVERT(varchar(34), rtu._IDRRef, 1) AS external_id,
+                LTRIM(RTRIM(rtu._Number)) AS rtu_number,
+                rtu._Posted AS posted,
+                rtu._Marked AS marked,
+                (
+                    SELECT MAX(event._Fld9450)
+                    FROM dbo._InfoRg9448 AS event WITH (NOLOCK)
+                    WHERE event._Fld9449_RRRef = rtu._IDRRef
+                      AND event._Fld9449_TYPE = 0x08
+                      AND event._Fld9449_RTRef = 0x000000CB
+                      AND event._Fld9454 = N'Собран'
+                ) AS assembled_at
+            FROM dbo._Document203 AS rtu WITH (NOLOCK)
+            JOIN dbo._Document132 AS ord WITH (NOLOCK)
+              ON ord._IDRRef = rtu._Fld4939_RRRef
+            WHERE LTRIM(RTRIM(ord._Fld2425)) IN ({placeholders})
+              AND rtu._Posted = 0x01
+              AND rtu._Marked = 0x00
+        )
+        SELECT
+            base.site_order_number,
+            base.external_id,
+            base.rtu_number,
+            base.posted,
+            base.marked,
+            base.assembled_at,
+            CONVERT(varchar(34), line._Fld4974RRef, 1) AS product_ref,
+            CAST(SUM(line._Fld4971) AS decimal(18, 4)) AS quantity
+        FROM rtu_base AS base
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = base.rtu_id
+        WHERE line._Fld4974RRef <> 0x00000000000000000000000000000000
+          AND line._Fld4971 > 0
+        GROUP BY
+            base.site_order_number,
+            base.external_id,
+            base.rtu_number,
+            base.posted,
+            base.marked,
+            base.assembled_at,
+            line._Fld4974RRef
+    """)
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            expected_rows = connection.execute(expected_statement, params).fetchall()
+            rtu_rows = connection.execute(rtu_statement, params).fetchall()
+    finally:
+        engine.dispose()
+
+    result: dict[str, dict[str, Any]] = {
+        order_number: {"expected_items": [], "rtus": []} for order_number in unique_orders
+    }
+    revision_payload: defaultdict[str, list[str]] = defaultdict(list)
+    for row in expected_rows:
+        mapping = getattr(row, "_mapping", row)
+        order_number = clean_csv_value(mapping["site_order_number"])
+        item = {
+            "product_ref": clean_csv_value(mapping["product_ref"]),
+            "quantity": str(mapping["quantity"]),
+        }
+        result.setdefault(order_number, {"expected_items": [], "rtus": []})[
+            "expected_items"
+        ].append(item)
+        revision_payload[order_number].append(f"E:{item['product_ref']}:{item['quantity']}")
+    rtus_by_order: defaultdict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    for row in rtu_rows:
+        mapping = getattr(row, "_mapping", row)
+        order_number = clean_csv_value(mapping["site_order_number"])
+        external_id = clean_csv_value(mapping["external_id"])
+        rtu = rtus_by_order[order_number].setdefault(
+            external_id,
+            {
+                "external_id": external_id,
+                "number": clean_csv_value(mapping["rtu_number"]),
+                "posted": bool(mapping["posted"]),
+                "assembled_at": mapping["assembled_at"],
+                "cancelled_at": None,
+                "source_revision": None,
+                "items": [],
+            },
+        )
+        item = {
+            "product_ref": clean_csv_value(mapping["product_ref"]),
+            "quantity": str(mapping["quantity"]),
+        }
+        rtu["items"].append(item)
+        revision_payload[order_number].append(
+            f"R:{external_id}:{rtu['assembled_at']}:{item['product_ref']}:{item['quantity']}"
+        )
+    for order_number, rtus in rtus_by_order.items():
+        for rtu in rtus.values():
+            rtu_revision = hashlib.sha256(
+                json.dumps(rtu, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            rtu["source_revision"] = rtu_revision
+        result.setdefault(order_number, {"expected_items": [], "rtus": []})["rtus"] = list(
+            rtus.values()
+        )
+    for order_number, snapshot in result.items():
+        snapshot["source_revision"] = hashlib.sha256(
+            "\n".join(sorted(revision_payload[order_number])).encode("utf-8")
+        ).hexdigest()
     return result
 
 
@@ -3314,6 +3602,25 @@ def _pickup_daily_digest_lines(metrics: dict[str, Any]) -> list[str]:
         f"pending {int(outbox.get('pending') or 0)}, "
         f"retry {int(outbox.get('retry') or 0)}, "
         f"failed {int(outbox.get('failed') or 0)}.",
+        "- физические отправления: "
+        f"активных {int(metrics.get('shipments_active') or 0)}, "
+        f"без Bitrix ID {int(metrics.get('shipments_without_bitrix_id') or 0)}, "
+        f"без трека {int(metrics.get('shipments_without_tracking') or 0)}, "
+        f"неактуальных {int(metrics.get('shipments_retired') or 0)};",
+        "- контур отправлений: "
+        f"конфликтов {int(metrics.get('shipment_conflicts') or 0)}, "
+        f"распределения РТУ {int(metrics.get('shipment_rtu_allocation_conflicts') or 0)}, "
+        f"gateway {int(metrics.get('shipment_gateway_conflicts') or 0)}, "
+        f"зависший outbox {int(metrics.get('shipment_outbox_stuck') or 0)}, "
+        f"зависших стадий {int(metrics.get('shipment_stage_pending') or 0)}, "
+        f"уведомления {json.dumps(metrics.get('shipment_notifications') or {}, ensure_ascii=False, sort_keys=True)}.",
+        "- готовность контура отправлений: "
+        + (
+            "готов"
+            if not metrics.get("shipment_configuration_issues")
+            else ", ".join(metrics.get("shipment_configuration_issues") or [])
+        )
+        + ".",
     ]
     if freshness_text:
         lines.append(f"- свежесть чатов: {freshness_text}.")
@@ -3513,7 +3820,11 @@ def parse_summary_stamp(stamp: str) -> datetime | None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("quick", "chat", "daily", "all"), default="all")
+    parser.add_argument(
+        "--mode",
+        choices=("quick", "chat", "shipments", "daily", "all"),
+        default="all",
+    )
     parser.add_argument("--apply", action="store_true", help="Actually update Bitrix stages.")
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--new-limit", type=int, default=500)
@@ -3561,6 +3872,8 @@ def main() -> int:
                 review_limit=args.review_limit,
             )
         )
+    if args.mode in {"shipments", "all"}:
+        summaries.append(run_shipment_poller_sync(client=client, apply=args.apply))
     if args.mode in {"daily", "all"}:
         summaries.append(
             run_daily_sync(

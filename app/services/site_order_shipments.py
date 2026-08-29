@@ -26,7 +26,12 @@ from app.models import (
 from app.services import site_order_fulfillment as fulfillment
 
 FULL_ASSEMBLY_FIELD = "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT"
+FULL_ASSEMBLY_STATUS_FIELD = "UF_CRM_MM_FULL_ASSEMBLY_STATUS"
 SHIPMENT_COUNT_FIELD = "UF_CRM_MM_SHIPMENT_COUNT"
+
+DELIVERY_CARRIER = "carrier"
+DELIVERY_INTERNAL_PICKUP = "internal_pickup"
+DELIVERY_UNKNOWN = "unknown"
 
 STATUS_PLANNED = "planned"
 STATUS_READY = "ready"
@@ -41,6 +46,7 @@ EVENT_DISPATCHED = "dispatched"
 
 OP_UPDATE_SHIPMENT_CRM_FIELDS = "update_shipment_crm_fields"
 OP_START_SHIPMENT_NOTIFICATION = "start_shipment_notification"
+OP_APPLY_SHIPMENT_GATEWAY = "apply_shipment_gateway"
 
 QUANTITY_TOLERANCE = Decimal("0.0001")
 
@@ -94,6 +100,13 @@ class BitrixSaleShipmentGatewayClient:
             raise ShipmentGatewayError("shipment_gateway_list_invalid")
         return [item for item in shipments if isinstance(item, dict)]
 
+    def get_order_snapshot(self, *, site_order_number: str) -> dict[str, Any]:
+        result = self.call("snapshot", {"site_order_number": site_order_number})
+        order = result.get("order")
+        if not isinstance(order, dict):
+            raise ShipmentGatewayError("shipment_gateway_snapshot_invalid")
+        return order
+
     def ensure_shipment(
         self,
         *,
@@ -101,15 +114,25 @@ class BitrixSaleShipmentGatewayClient:
         shipment_key: str,
         delivery_service_id: int,
         items: list[dict[str, Any]],
+        site_order_number: str | None = None,
+        expected_order_revision: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "order_id": order_id,
+            "shipment_key": shipment_key,
+            "delivery_service_id": delivery_service_id,
+            "items": items,
+        }
+        if site_order_number:
+            payload["site_order_number"] = site_order_number
+        if expected_order_revision:
+            payload["expected_order_revision"] = expected_order_revision
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         return self.call(
             "ensure",
-            {
-                "order_id": order_id,
-                "shipment_key": shipment_key,
-                "delivery_service_id": delivery_service_id,
-                "items": items,
-            },
+            payload,
         )
 
     def update_tracking(
@@ -117,15 +140,25 @@ class BitrixSaleShipmentGatewayClient:
         *,
         shipment_id: int,
         tracking_number: str,
-        expected_revision: int | None = None,
+        expected_revision: int | str | None = None,
+        site_order_number: str | None = None,
+        expected_order_revision: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "shipment_id": shipment_id,
+            "tracking_number": tracking_number,
+            "expected_revision": expected_revision,
+        }
+        if site_order_number:
+            payload["site_order_number"] = site_order_number
+        if expected_order_revision:
+            payload["expected_order_revision"] = expected_order_revision
+        if idempotency_key:
+            payload["idempotency_key"] = idempotency_key
         return self.call(
             "update_tracking",
-            {
-                "shipment_id": shipment_id,
-                "tracking_number": tracking_number,
-                "expected_revision": expected_revision,
-            },
+            payload,
         )
 
 
@@ -150,6 +183,7 @@ class ShipmentStageDecision:
 
 @dataclass(frozen=True, slots=True)
 class ShipmentSyncResult:
+    snapshot_id: str
     site_order_number: str
     coverage_status: str
     full_assembly: bool
@@ -160,91 +194,15 @@ class ShipmentSyncResult:
     event_id: int | None = None
     stage_outbox_id: int | None = None
     notification_count: int = 0
+    gateway_operation_count: int = 0
     conflict: bool = False
 
 
-def ensure_missing_bitrix_shipments(
-    gateway: BitrixSaleShipmentGatewayClient,
-    *,
-    order_id: int,
-    shipment_snapshots: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Create only explicitly split parts that do not yet have a Bitrix shipment ID."""
-    if len(shipment_snapshots) <= 1:
-        return shipment_snapshots
-    live_shipments = gateway.list_shipments(order_id=order_id)
-    live_by_id = {
-        int(item["shipment_id"]): item
-        for item in live_shipments
-        if item.get("shipment_id") not in (None, "")
-    }
-    result: list[dict[str, Any]] = []
-    for raw in shipment_snapshots:
-        snapshot = dict(raw)
-        bitrix_id = snapshot.get("bitrix_shipment_id")
-        items = list(snapshot.get("items") or [])
-        if bitrix_id not in (None, ""):
-            shipment = live_by_id.get(int(bitrix_id))
-            if shipment is None:
-                raise ShipmentGatewayError("bitrix_shipment_not_found")
-        else:
-            shipment_key = _clean(snapshot.get("shipment_key"))
-            delivery_service_id = snapshot.get("delivery_service_id")
-            if not shipment_key:
-                raise ShipmentGatewayError("missing_shipment_key")
-            if delivery_service_id in (None, ""):
-                raise ShipmentGatewayError("missing_delivery_service_id")
-            if not items or any(item.get("basket_item_id") in (None, "") for item in items):
-                raise ShipmentGatewayError("missing_basket_item_id")
-            ensured = gateway.ensure_shipment(
-                order_id=order_id,
-                shipment_key=shipment_key,
-                delivery_service_id=int(delivery_service_id),
-                items=[
-                    {
-                        "basket_item_id": int(item["basket_item_id"]),
-                        "quantity": str(_quantity(item.get("quantity"))),
-                    }
-                    for item in items
-                ],
-            )
-            shipment = ensured.get("shipment")
-        if not isinstance(shipment, dict) or shipment.get("shipment_id") in (None, ""):
-            raise ShipmentGatewayError("shipment_gateway_ensure_invalid")
-        snapshot["bitrix_shipment_id"] = int(shipment["shipment_id"])
-        item_ids = {
-            int(item["basket_item_id"]): int(item["shipment_item_id"])
-            for item in shipment.get("items") or []
-            if isinstance(item, dict)
-            and item.get("basket_item_id") not in (None, "")
-            and item.get("shipment_item_id") not in (None, "")
-        }
-        snapshot["items"] = [
-            {
-                **item,
-                "bitrix_shipment_item_id": item_ids.get(int(item["basket_item_id"])),
-            }
-            for item in items
-        ]
-        tracking_number = _clean(snapshot.get("tracking_number"))
-        if tracking_number and tracking_number != _clean(shipment.get("tracking_number")):
-            updated = gateway.update_tracking(
-                shipment_id=int(shipment["shipment_id"]),
-                tracking_number=tracking_number,
-                expected_revision=(
-                    int(shipment["revision"])
-                    if shipment.get("revision") not in (None, "")
-                    else None
-                ),
-            )
-            updated_shipment = updated.get("shipment")
-            if (
-                not isinstance(updated_shipment, dict)
-                or _clean(updated_shipment.get("tracking_number")) != tracking_number
-            ):
-                raise ShipmentGatewayError("shipment_tracking_update_invalid")
-        result.append(snapshot)
-    return result
+@dataclass(frozen=True, slots=True)
+class ShipmentNotificationStatusResult:
+    idempotency_key: str
+    status: str
+    changed: bool
 
 
 def _quantity(value: Any) -> Decimal:
@@ -318,6 +276,7 @@ def derive_shipment_stage(
     coverage: AssemblyCoverage,
     expected_lines: Iterable[Mapping[str, Any]],
     shipments: Iterable[Mapping[str, Any]],
+    delivery_kind: str = DELIVERY_UNKNOWN,
 ) -> ShipmentStageDecision:
     current = _clean(current_stage).upper()
     if (
@@ -406,8 +365,14 @@ def derive_shipment_stage(
         for product_ref, quantity in expected.items()
     )
     if all_dispatched:
-        target = "IN_DELIVERY"
-        reason = "all_order_quantities_dispatched"
+        if delivery_kind == DELIVERY_CARRIER:
+            target = "IN_DELIVERY"
+            reason = "all_order_quantities_dispatched"
+        elif delivery_kind == DELIVERY_INTERNAL_PICKUP:
+            target = "PICKUP_TRANSIT"
+            reason = "all_order_quantities_sent_to_pickup_point"
+        else:
+            return ShipmentStageDecision("manual_review", None, "delivery_kind_unknown")
     elif dispatched_total > QUANTITY_TOLERANCE:
         target = "PARTIALLY_SHIPPED"
         reason = "some_order_quantities_dispatched"
@@ -439,6 +404,125 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return value
+
+
+def build_snapshot_id(
+    *,
+    site_order_number: str,
+    delivery_kind: str,
+    expected_items: list[Mapping[str, Any]],
+    rtus: list[Mapping[str, Any]],
+    shipments: list[Mapping[str, Any]],
+    source_revisions: Mapping[str, str] | None = None,
+) -> str:
+    """Return a stable content fingerprint independent of observation time/CRM stage."""
+
+    # Revisions are evidence metadata.  A source may advance its own revision while
+    # yielding the same business content, which must not create another snapshot.
+    del source_revisions
+
+    def normalized_lines(lines: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        result = [
+            {
+                "product_ref": _clean(item.get("product_ref")),
+                "product_code": _clean(item.get("product_code")),
+                "quantity": str(_quantity(item.get("quantity"))),
+                "rtu_external_id": _clean(item.get("rtu_external_id")),
+                "basket_item_id": item.get("basket_item_id"),
+            }
+            for item in lines
+        ]
+        return sorted(
+            result,
+            key=lambda item: (
+                item["product_ref"],
+                item["rtu_external_id"],
+                item["quantity"],
+                str(item["basket_item_id"] or ""),
+            ),
+        )
+
+    normalized_rtus = [
+        {
+            "external_id": _clean(raw.get("external_id")),
+            "posted": bool(raw.get("posted")),
+            "assembled_at": _json_ready(raw.get("assembled_at")),
+            "cancelled_at": _json_ready(raw.get("cancelled_at")),
+            "source_revision": _clean(raw.get("source_revision")),
+            "items": normalized_lines(raw.get("items") or []),
+        }
+        for raw in rtus
+    ]
+    normalized_rtus.sort(key=lambda item: item["external_id"])
+    normalized_shipments = [
+        {
+            "shipment_key": _clean(raw.get("shipment_key"))
+            or (
+                f"bitrix:{raw.get('bitrix_shipment_id')}"
+                if raw.get("bitrix_shipment_id") not in (None, "")
+                else ""
+            ),
+            "bitrix_shipment_id": raw.get("bitrix_shipment_id"),
+            "delivery_service_id": raw.get("delivery_service_id"),
+            "carrier": _clean(raw.get("carrier")).lower(),
+            "tracking_number": _clean(raw.get("tracking_number")),
+            "status": _clean(raw.get("status")).lower() or STATUS_PLANNED,
+            "dispatched_at": _json_ready(raw.get("dispatched_at")),
+            "delivered_at": _json_ready(raw.get("delivered_at")),
+            "returned_at": _json_ready(raw.get("returned_at")),
+            "source_revision": _clean(raw.get("source_revision")),
+            "items": normalized_lines(raw.get("items") or []),
+        }
+        for raw in shipments
+    ]
+    normalized_shipments.sort(key=lambda item: item["shipment_key"])
+    return _fingerprint(
+        {
+            "site_order_number": _clean(site_order_number),
+            "delivery_kind": _clean(delivery_kind).lower() or DELIVERY_UNKNOWN,
+            "expected_items": normalized_lines(expected_items),
+            "rtus": normalized_rtus,
+            "shipments": normalized_shipments,
+        }
+    )
+
+
+def validate_rtu_allocations(
+    *,
+    rtus: list[Mapping[str, Any]],
+    shipments: list[Mapping[str, Any]],
+) -> str | None:
+    valid_rtus: dict[str, dict[str, Decimal]] = {}
+    for raw in rtus:
+        if not (
+            bool(raw.get("posted")) and raw.get("assembled_at") and not raw.get("cancelled_at")
+        ):
+            continue
+        external_id = _clean(raw.get("external_id"))
+        if external_id:
+            valid_rtus[external_id] = _aggregate_lines(raw.get("items") or [])
+
+    allocated: defaultdict[tuple[str, str], Decimal] = defaultdict(Decimal)
+    require_ref = len(valid_rtus) > 1
+    for shipment in shipments:
+        if _clean(shipment.get("status")).lower() == STATUS_RETURNED:
+            continue
+        for item in shipment.get("items") or []:
+            rtu_external_id = _clean(item.get("rtu_external_id"))
+            product_ref = _clean(item.get("product_ref"))
+            if require_ref and not rtu_external_id:
+                return "shipment_rtu_allocation_missing"
+            if not rtu_external_id:
+                continue
+            if rtu_external_id not in valid_rtus:
+                return "shipment_rtu_not_found_or_inactive"
+            if product_ref not in valid_rtus[rtu_external_id]:
+                return "shipment_rtu_product_mismatch"
+            allocated[(rtu_external_id, product_ref)] += _quantity(item.get("quantity"))
+    for (rtu_external_id, product_ref), quantity in allocated.items():
+        if quantity - valid_rtus[rtu_external_id][product_ref] > QUANTITY_TOLERANCE:
+            return "shipment_rtu_quantity_excess"
+    return None
 
 
 def _replace_rtu_items(rtu: SiteOrderRtu, items: list[Mapping[str, Any]]) -> None:
@@ -544,9 +628,14 @@ def _enqueue_crm_fields(
     shipment_count: int,
     full_assembly_at: datetime,
 ) -> SiteOrderFulfillmentOutbox | None:
-    fields = {SHIPMENT_COUNT_FIELD: shipment_count}
+    fields = {
+        SHIPMENT_COUNT_FIELD: shipment_count,
+        FULL_ASSEMBLY_STATUS_FIELD: coverage.status,
+    }
     if coverage.complete:
         fields[FULL_ASSEMBLY_FIELD] = full_assembly_at.isoformat()
+    else:
+        fields[FULL_ASSEMBLY_FIELD] = ""
     key = f"shipment-crm-fields:{order_number}:{_fingerprint(fields)}"
     if session.scalar(
         select(SiteOrderFulfillmentOutbox.id).where(
@@ -588,8 +677,13 @@ def _enqueue_notifications(
         for channel, enabled in ((CHANNEL_EMAIL, email_enabled), (CHANNEL_SMS, sms_enabled))
         if enabled
     ]
-    ordered_shipments = sorted(shipments, key=lambda item: item.shipment_key)
-    for index, shipment in enumerate(ordered_shipments, start=1):
+    ordered_shipments = sorted(
+        shipments,
+        key=lambda item: (item.part_number or 2_147_483_647, item.shipment_key),
+    )
+    for shipment in ordered_shipments:
+        if shipment.legacy_owned:
+            continue
         if shipment.status not in {STATUS_DISPATCHED, STATUS_DELIVERED}:
             continue
         if not _clean(shipment.tracking_number):
@@ -624,7 +718,7 @@ def _enqueue_notifications(
                     "site_order_number": case.site_order_number,
                     "deal_id": case.bitrix_deal_id,
                     "tracking_number": shipment.tracking_number,
-                    "part_number": index,
+                    "part_number": shipment.part_number,
                     "part_count": len(ordered_shipments),
                     "items": [
                         {
@@ -653,6 +747,74 @@ def _enqueue_notifications(
     return created
 
 
+def _enqueue_gateway_operations(
+    session: Session,
+    *,
+    case: SiteOrderExecutionCase,
+    bitrix_order_id: int | None,
+    shipments: list[Mapping[str, Any]],
+    snapshot_id: str,
+    source_revisions: Mapping[str, str] | None,
+) -> int:
+    created = 0
+    for raw in shipments:
+        shipment_key = _clean(raw.get("shipment_key")) or (
+            f"bitrix:{raw.get('bitrix_shipment_id')}"
+            if raw.get("bitrix_shipment_id") not in (None, "")
+            else ""
+        )
+        bitrix_shipment_id = raw.get("bitrix_shipment_id")
+        action: str | None = None
+        if bitrix_shipment_id in (None, ""):
+            if not bool(raw.get("explicit_split_confirmed")):
+                continue
+            if bitrix_order_id is None:
+                raise ValueError("bitrix_order_id_required_for_explicit_split")
+            action = "ensure"
+        elif bool(raw.get("tracking_update_confirmed")) and _clean(raw.get("tracking_number")):
+            action = "update_tracking"
+        if action is None:
+            continue
+        source_order_revision = _clean((source_revisions or {}).get("bitrix_sale"))
+        if not source_order_revision:
+            raise ValueError("bitrix_order_revision_required_for_gateway")
+        payload = _json_ready(
+            {
+                "action": action,
+                "snapshot_id": snapshot_id,
+                "site_order_number": case.site_order_number,
+                "deal_id": case.bitrix_deal_id,
+                "order_id": bitrix_order_id,
+                "source_order_revision": source_order_revision,
+                "shipment_key": shipment_key,
+                "bitrix_shipment_id": bitrix_shipment_id,
+                "delivery_service_id": raw.get("delivery_service_id"),
+                "tracking_number": raw.get("tracking_number"),
+                "items": list(raw.get("items") or []),
+            }
+        )
+        key = f"shipment-gateway:{case.site_order_number}:{shipment_key}:{_fingerprint(payload)}"
+        if session.scalar(
+            select(SiteOrderFulfillmentOutbox.id).where(
+                SiteOrderFulfillmentOutbox.idempotency_key == key
+            )
+        ):
+            continue
+        session.add(
+            SiteOrderFulfillmentOutbox(
+                operation=OP_APPLY_SHIPMENT_GATEWAY,
+                target_type="shipment_gateway",
+                target_id=shipment_key,
+                status="pending",
+                available_at=datetime.now(),
+                idempotency_key=key,
+                payload=payload,
+            )
+        )
+        created += 1
+    return created
+
+
 def sync_order_shipments(
     session: Session,
     *,
@@ -668,7 +830,24 @@ def sync_order_shipments(
     enqueue_notifications: bool,
     email_enabled: bool,
     sms_enabled: bool,
+    snapshot_id: str | None = None,
+    delivery_kind: str = DELIVERY_UNKNOWN,
+    observed_at: datetime | None = None,
+    source_revisions: Mapping[str, str] | None = None,
+    bitrix_order_id: int | None = None,
+    enqueue_gateway: bool = False,
 ) -> ShipmentSyncResult:
+    computed_snapshot_id = build_snapshot_id(
+        site_order_number=site_order_number,
+        delivery_kind=delivery_kind,
+        expected_items=expected_items,
+        rtus=rtus,
+        shipments=shipments,
+        source_revisions=source_revisions,
+    )
+    if snapshot_id is not None and snapshot_id != computed_snapshot_id:
+        raise ValueError("snapshot_id_mismatch")
+    snapshot_id = computed_snapshot_id
     assembled_lines = [
         item
         for rtu in rtus
@@ -681,7 +860,11 @@ def sync_order_shipments(
         coverage=coverage,
         expected_lines=expected_items,
         shipments=shipments,
+        delivery_kind=delivery_kind,
     )
+    allocation_error = validate_rtu_allocations(rtus=rtus, shipments=shipments)
+    if allocation_error:
+        decision = ShipmentStageDecision("manual_review", None, allocation_error)
     conflict = decision.action == "manual_review"
     payload = _json_ready(
         {
@@ -689,6 +872,10 @@ def sync_order_shipments(
             "bitrix_deal_id": bitrix_deal_id,
             "current_stage": current_stage,
             "event_at": event_at.isoformat(),
+            "observed_at": (observed_at or event_at).isoformat(),
+            "snapshot_id": snapshot_id,
+            "delivery_kind": delivery_kind,
+            "source_revisions": dict(source_revisions or {}),
             "coverage": asdict(coverage),
             "decision": asdict(decision),
             "expected_items": expected_items,
@@ -696,9 +883,10 @@ def sync_order_shipments(
             "shipments": shipments,
         }
     )
-    fingerprint = _fingerprint(payload)
+    fingerprint = snapshot_id
     if not persist:
         return ShipmentSyncResult(
+            snapshot_id=snapshot_id,
             site_order_number=site_order_number,
             coverage_status=coverage.status,
             full_assembly=coverage.complete,
@@ -715,7 +903,7 @@ def sync_order_shipments(
         event_type="shipment_snapshot_reconciled",
         event_at=event_at,
         source="bitrix_sale",
-        source_ref=f"shipment-snapshot:{site_order_number}:{fingerprint}",
+        source_ref=f"shipment-snapshot:{site_order_number}:{snapshot_id}",
         confidence="strong" if not conflict else "medium",
         raw_message_id=None,
         payload=payload,
@@ -727,6 +915,10 @@ def sync_order_shipments(
     )
     if case is None:
         raise RuntimeError("execution_case_not_created")
+    previous_control = (
+        (case.payload or {}).get("shipment_control") if isinstance(case.payload, dict) else {}
+    )
+    previous_shipment_count = int((previous_control or {}).get("shipment_count") or 0)
     case.bitrix_deal_id = bitrix_deal_id
     case.current_crm_stage = current_stage
     if event is not None:
@@ -737,6 +929,10 @@ def sync_order_shipments(
         **(case.payload if isinstance(case.payload, dict) else {}),
         "shipment_control": {
             "fingerprint": fingerprint,
+            "snapshot_id": snapshot_id,
+            "observed_at": (observed_at or event_at).isoformat(),
+            "delivery_kind": delivery_kind,
+            "source_revisions": dict(source_revisions or {}),
             "coverage_status": coverage.status,
             "expected_items": expected_items,
             "shipment_count": len(shipments),
@@ -745,10 +941,12 @@ def sync_order_shipments(
     case.updated_at = datetime.now()
 
     existing_rtus = {row.external_id: row for row in case.rtus}
+    seen_rtu_ids: set[str] = set()
     for raw in rtus:
         external_id = _clean(raw.get("external_id"))
         if not external_id:
             raise ValueError("missing_rtu_external_id")
+        seen_rtu_ids.add(external_id)
         rtu = existing_rtus.get(external_id)
         if rtu is None:
             rtu = SiteOrderRtu(case=case, external_id=external_id)
@@ -757,23 +955,43 @@ def sync_order_shipments(
         rtu.posted = bool(raw.get("posted"))
         rtu.assembled_at = raw.get("assembled_at")
         rtu.cancelled_at = raw.get("cancelled_at")
+        rtu.active = True
+        rtu.last_seen_snapshot_id = snapshot_id
+        rtu.retired_at = None
+        rtu.source_revision = _clean(raw.get("source_revision")) or None
         rtu.payload = raw.get("payload")
         _replace_rtu_items(rtu, list(raw.get("items") or []))
+    for external_id, rtu in existing_rtus.items():
+        if external_id not in seen_rtu_ids and rtu.active:
+            rtu.active = False
+            rtu.retired_at = observed_at or event_at
 
     existing_shipments = {row.shipment_key: row for row in case.shipments}
+    seen_shipment_keys: set[str] = set()
+    next_part_number = max(
+        (row.part_number or 0 for row in existing_shipments.values()),
+        default=0,
+    )
     persisted_shipments: list[SiteOrderShipment] = []
-    for raw in shipments:
+    for raw in sorted(
+        shipments,
+        key=lambda item: _clean(item.get("shipment_key"))
+        or f"bitrix:{item.get('bitrix_shipment_id') or ''}",
+    ):
         bitrix_id = raw.get("bitrix_shipment_id")
         shipment_key = _clean(raw.get("shipment_key")) or (
             f"bitrix:{bitrix_id}" if bitrix_id not in (None, "") else ""
         )
         if not shipment_key:
             raise ValueError("missing_shipment_key")
+        seen_shipment_keys.add(shipment_key)
         shipment = existing_shipments.get(shipment_key)
         incoming_fingerprint = _shipment_revision_fingerprint(raw)
         if shipment is None:
             shipment = SiteOrderShipment(case=case, shipment_key=shipment_key)
             session.add(shipment)
+            next_part_number += 1
+            shipment.part_number = next_part_number
         elif (shipment.payload or {}).get("fingerprint") != incoming_fingerprint:
             shipment.revision += 1
         shipment.bitrix_shipment_id = int(bitrix_id) if bitrix_id not in (None, "") else None
@@ -783,9 +1001,27 @@ def sync_order_shipments(
         shipment.dispatched_at = raw.get("dispatched_at")
         shipment.delivered_at = raw.get("delivered_at")
         shipment.returned_at = raw.get("returned_at")
+        shipment.active = True
+        shipment.last_seen_snapshot_id = snapshot_id
+        shipment.retired_at = None
+        shipment.source_revision = _clean(raw.get("source_revision")) or None
+        if shipment.part_number is None:
+            next_part_number += 1
+            shipment.part_number = next_part_number
+        if (
+            len(shipments) > 1
+            and previous_shipment_count == 1
+            and shipment.id is not None
+            and shipment.status in {STATUS_DISPATCHED, STATUS_DELIVERED}
+        ):
+            shipment.legacy_owned = True
         shipment.payload = {**(raw.get("payload") or {}), "fingerprint": incoming_fingerprint}
         _replace_shipment_items(shipment, list(raw.get("items") or []))
         persisted_shipments.append(shipment)
+    for shipment_key, shipment in existing_shipments.items():
+        if shipment_key not in seen_shipment_keys and shipment.active:
+            shipment.active = False
+            shipment.retired_at = observed_at or event_at
     session.flush()
 
     stage_outbox_id: int | None = None
@@ -823,7 +1059,13 @@ def sync_order_shipments(
         )
     if enqueue_crm_fields:
         full_assembly_at = max(
-            (assembled_at for raw in rtus if (assembled_at := raw.get("assembled_at")) is not None),
+            (
+                assembled_at
+                for raw in rtus
+                if bool(raw.get("posted"))
+                and not raw.get("cancelled_at")
+                and (assembled_at := raw.get("assembled_at")) is not None
+            ),
             default=event_at,
         )
         _enqueue_crm_fields(
@@ -845,8 +1087,21 @@ def sync_order_shipments(
         if enqueue_notifications
         else 0
     )
+    gateway_operation_count = (
+        _enqueue_gateway_operations(
+            session,
+            case=case,
+            bitrix_order_id=bitrix_order_id,
+            shipments=shipments,
+            snapshot_id=snapshot_id,
+            source_revisions=source_revisions,
+        )
+        if enqueue_gateway
+        else 0
+    )
     session.flush()
     return ShipmentSyncResult(
+        snapshot_id=snapshot_id,
         site_order_number=site_order_number,
         coverage_status=coverage.status,
         full_assembly=coverage.complete,
@@ -857,5 +1112,58 @@ def sync_order_shipments(
         event_id=event.id if event is not None else None,
         stage_outbox_id=stage_outbox_id,
         notification_count=notification_count,
+        gateway_operation_count=gateway_operation_count,
         conflict=conflict,
     )
+
+
+def update_notification_status(
+    session: Session,
+    *,
+    idempotency_key: str,
+    status: str,
+    occurred_at: datetime,
+    external_ref: str | None = None,
+    error: str | None = None,
+) -> ShipmentNotificationStatusResult:
+    notification = session.scalar(
+        select(SiteOrderShipmentNotification).where(
+            SiteOrderShipmentNotification.idempotency_key == idempotency_key
+        )
+    )
+    if notification is None:
+        raise ValueError("shipment_notification_not_found")
+    known_statuses = {"pending", "submitted", "sent", "delivered", "failed"}
+    if status not in known_statuses:
+        raise ValueError("shipment_notification_status_unknown")
+    current = notification.status if notification.status in known_statuses else "pending"
+    allowed = {
+        "pending": {"pending", "submitted", "sent", "delivered", "failed"},
+        "submitted": {"submitted", "sent", "delivered", "failed"},
+        "sent": {"sent", "delivered"},
+        "delivered": {"delivered"},
+        # A failed workflow may be retried with the same idempotency key. A later
+        # success is authoritative; a late failure cannot regress sent/delivered.
+        "failed": {"failed", "submitted", "sent", "delivered"},
+    }
+    if status not in allowed[current]:
+        return ShipmentNotificationStatusResult(idempotency_key, current, False)
+    changed = current != status
+    notification.status = status
+    if external_ref:
+        notification.external_ref = external_ref
+    if status == "submitted":
+        notification.submitted_at = notification.submitted_at or occurred_at
+    elif status == "sent":
+        notification.submitted_at = notification.submitted_at or occurred_at
+        notification.sent_at = notification.sent_at or occurred_at
+    elif status == "delivered":
+        notification.submitted_at = notification.submitted_at or occurred_at
+        notification.sent_at = notification.sent_at or occurred_at
+        notification.delivered_at = notification.delivered_at or occurred_at
+    elif status == "failed":
+        notification.failed_at = notification.failed_at or occurred_at
+        notification.last_error = _clean(error)[:1000] or "workflow_failed"
+    if status != "failed":
+        notification.last_error = None
+    return ShipmentNotificationStatusResult(idempotency_key, notification.status, changed)

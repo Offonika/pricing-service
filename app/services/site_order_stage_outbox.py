@@ -49,7 +49,12 @@ STAGE_ORDER = {
     "LOSE": 100,
 }
 EXECUTION_TARGET_STAGES = {"PREPAYMENT_INVOICE", "FINAL_INVOICE", "WON", "LOSE"}
-SHIPMENT_TARGET_STAGES = {"FINAL_INVOICE", "PARTIALLY_SHIPPED", "IN_DELIVERY"}
+SHIPMENT_TARGET_STAGES = {
+    "FINAL_INVOICE",
+    "PARTIALLY_SHIPPED",
+    "IN_DELIVERY",
+    CRM_STAGE_PICKUP_TRANSIT,
+}
 FULL_ASSEMBLY_FIELD = "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT"
 EXECUTION_HISTORICAL_APPLY_BATCH_LIMIT = 20
 
@@ -431,17 +436,53 @@ def _is_terminal_stage(stage: str) -> bool:
 
 
 def _has_blocking_predecessor(session: Session, row: SiteOrderStageOutbox) -> bool:
-    return bool(
-        session.scalar(
-            select(
-                exists().where(
-                    SiteOrderStageOutbox.case_id == row.case_id,
-                    SiteOrderStageOutbox.id < row.id,
-                    SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
-                )
-            )
+    predecessors = session.scalars(
+        select(SiteOrderStageOutbox).where(
+            SiteOrderStageOutbox.case_id == row.case_id,
+            SiteOrderStageOutbox.id < row.id,
+            SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
         )
-    )
+    ).all()
+    for predecessor in predecessors:
+        if (
+            _is_order_reconciliation_row(row)
+            and _is_order_reconciliation_row(predecessor)
+            and row.case.last_evidence_event_id == row.event_id
+            and predecessor.event_id != row.event_id
+        ):
+            continue
+        return True
+    return False
+
+
+def _supersede_stale_shipment_predecessors(
+    session: Session,
+    row: SiteOrderStageOutbox,
+    *,
+    apply: bool,
+    now: datetime,
+) -> None:
+    if (
+        not apply
+        or not _is_shipment_reconciliation_row(row)
+        or row.case.last_evidence_event_id != row.event_id
+    ):
+        return
+    predecessors = session.scalars(
+        select(SiteOrderStageOutbox).where(
+            SiteOrderStageOutbox.case_id == row.case_id,
+            SiteOrderStageOutbox.id < row.id,
+            SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
+        )
+    ).all()
+    for predecessor in predecessors:
+        if not _is_shipment_reconciliation_row(predecessor):
+            continue
+        predecessor.status = STATUS_APPLIED
+        predecessor.applied_at = predecessor.applied_at or now
+        predecessor.next_attempt_at = None
+        predecessor.last_error = "superseded_by_newer_evidence"
+        predecessor.updated_at = now
 
 
 def _resolve_deal(
@@ -478,6 +519,7 @@ def _process_row(
     apply: bool,
     now: datetime,
 ) -> StageOutboxResult:
+    _supersede_stale_shipment_predecessors(session, row, apply=apply, now=now)
     if _has_blocking_predecessor(session, row):
         return _result(row, "waiting_for_predecessor")
     execution_row = _is_execution_reconciliation_row(row)
@@ -536,7 +578,12 @@ def _process_row(
         expected_stages = {
             "FINAL_INVOICE": {"EXECUTING"},
             "PARTIALLY_SHIPPED": {"EXECUTING", "FINAL_INVOICE"},
-            "IN_DELIVERY": {"FINAL_INVOICE", "PARTIALLY_SHIPPED"},
+            "IN_DELIVERY": {"EXECUTING", "FINAL_INVOICE", "PARTIALLY_SHIPPED"},
+            CRM_STAGE_PICKUP_TRANSIT: {
+                "EXECUTING",
+                "FINAL_INVOICE",
+                "PARTIALLY_SHIPPED",
+            },
         }[row.target_stage]
     else:
         expected_stages = {ALLOWED_FROM_STAGE[row.target_stage]}
@@ -633,6 +680,8 @@ def _process_row(
     row.next_attempt_at = None
     row.last_error = None
     row.updated_at = now
+    row.case.current_crm_stage = row.target_stage
+    row.case.updated_at = now
     return _result(row, "applied", live_stage=row.target_stage, applied=True)
 
 
@@ -705,7 +754,8 @@ def process_stage_outbox(
                     historical_apply_attempts += 1
             elif _is_shipment_reconciliation_row(row):
                 if not (
-                    settings.order_fulfillment_shipments_master_enabled
+                    settings.order_fulfillment_bot_apply_enabled
+                    and settings.order_fulfillment_shipments_master_enabled
                     and settings.order_fulfillment_shipments_stage_apply_enabled
                 ):
                     results.append(_result(row, "shipment_automation_disabled"))

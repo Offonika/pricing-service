@@ -110,6 +110,7 @@ class RtuSnapshotInput(BaseModel):
     posted: bool = False
     assembled_at: datetime | None = None
     cancelled_at: datetime | None = None
+    source_revision: str | None = Field(default=None, max_length=128)
     items: list[ShipmentLineInput] = Field(default_factory=list)
     payload: dict[str, Any] | None = None
 
@@ -131,16 +132,23 @@ class ShipmentSnapshotInput(BaseModel):
     dispatched_at: datetime | None = None
     delivered_at: datetime | None = None
     returned_at: datetime | None = None
+    source_revision: str | None = Field(default=None, max_length=128)
+    explicit_split_confirmed: bool = False
+    tracking_update_confirmed: bool = False
     items: list[ShipmentLineInput] = Field(default_factory=list)
     payload: dict[str, Any] | None = None
 
 
 class OrderShipmentsSyncRequest(BaseModel):
+    snapshot_id: str | None = Field(default=None, min_length=64, max_length=64)
     site_order_number: str = Field(min_length=1, max_length=64)
     bitrix_deal_id: int = Field(ge=1)
     bitrix_order_id: int | None = Field(default=None, ge=1)
     current_stage: str | None = None
+    delivery_kind: Literal["carrier", "internal_pickup", "unknown"] = "unknown"
     event_at: datetime
+    observed_at: datetime | None = None
+    source_revisions: dict[str, str] = Field(default_factory=dict)
     expected_items: list[ShipmentLineInput]
     rtus: list[RtuSnapshotInput] = Field(default_factory=list)
     shipments: list[ShipmentSnapshotInput] = Field(default_factory=list)
@@ -148,6 +156,7 @@ class OrderShipmentsSyncRequest(BaseModel):
 
 
 class OrderShipmentsSyncResponse(BaseModel):
+    snapshot_id: str
     site_order_number: str
     coverage_status: str
     full_assembly: bool
@@ -158,4 +167,19 @@ class OrderShipmentsSyncResponse(BaseModel):
     event_id: int | None = None
     stage_outbox_id: int | None = None
     notification_count: int = 0
+    gateway_operation_count: int = 0
     conflict: bool = False
+
+
+class ShipmentNotificationStatusRequest(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    status: Literal["submitted", "sent", "delivered", "failed"]
+    occurred_at: datetime
+    external_ref: str | None = Field(default=None, max_length=255)
+    error: str | None = Field(default=None, max_length=1000)
+
+
+class ShipmentNotificationStatusResponse(BaseModel):
+    idempotency_key: str
+    status: str
+    changed: bool

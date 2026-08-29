@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import func, select
 
 from app.core.config import Settings
 from app.models import (
     SiteOrderFulfillmentOutbox,
+    SiteOrderRtu,
     SiteOrderShipment,
     SiteOrderShipmentNotification,
     SiteOrderStageOutbox,
@@ -38,18 +40,22 @@ class _GatewaySession:
 
 
 class _BitrixClient:
-    def __init__(self, order_number: str, deal_id: int) -> None:
+    def __init__(
+        self, order_number: str, deal_id: int, *, stage_id: str = "PARTIALLY_SHIPPED"
+    ) -> None:
         self.order_number = order_number
         self.deal_id = deal_id
+        self.stage_id = stage_id
         self.raw = {fulfillment.CRM_ORDER_NUMBER_FIELD: order_number}
         self.workflows: list[dict] = []
+        self.timeline_comments: list[str] = []
 
     def get_deal_by_id(self, deal_id: int):
         if deal_id != self.deal_id:
             return None
         return fulfillment.BitrixDealSnapshot(
             deal_id=deal_id,
-            stage_id="PARTIALLY_SHIPPED",
+            stage_id=self.stage_id,
             raw=dict(self.raw),
         )
 
@@ -61,6 +67,15 @@ class _BitrixClient:
     def start_business_process(self, **payload):
         self.workflows.append(payload)
         return "workflow-1"
+
+    def call(self, method: str, params: dict | None = None):
+        assert params is not None
+        if method == "crm.timeline.comment.list":
+            return {"result": [{"COMMENT": value} for value in self.timeline_comments]}
+        if method == "crm.timeline.comment.add":
+            self.timeline_comments.append(params["fields"]["COMMENT"])
+            return {"result": len(self.timeline_comments)}
+        raise AssertionError(method)
 
 
 def _line(product_ref: str, quantity: str, **extra):
@@ -141,108 +156,6 @@ def test_shipment_gateway_fails_closed_on_error_response() -> None:
         raise AssertionError("shipment gateway error was not raised")
 
 
-def test_explicit_split_creates_only_missing_bitrix_shipment() -> None:
-    class Gateway:
-        calls: list[dict] = []
-
-        def list_shipments(self, **kwargs):
-            self.calls.append({"list": kwargs})
-            return [{"shipment_id": 51, "tracking_number": ""}]
-
-        def ensure_shipment(self, **kwargs):
-            self.calls.append(kwargs)
-            return {
-                "ok": True,
-                "created": True,
-                "shipment": {
-                    "shipment_id": 52,
-                    "items": [
-                        {
-                            "basket_item_id": 702,
-                            "shipment_item_id": 802,
-                            "quantity": "1.0000",
-                        }
-                    ],
-                },
-            }
-
-    gateway = Gateway()
-    snapshots = shipments.ensure_missing_bitrix_shipments(
-        gateway,
-        order_id=7001,
-        shipment_snapshots=[
-            {
-                "shipment_key": "part-1",
-                "bitrix_shipment_id": 51,
-                "delivery_service_id": 11,
-                "items": [_line("phone", "1", basket_item_id=701)],
-            },
-            {
-                "shipment_key": "part-2",
-                "delivery_service_id": 11,
-                "items": [_line("case", "1", basket_item_id=702)],
-            },
-        ],
-    )
-
-    assert len(gateway.calls) == 2
-    assert gateway.calls[1]["shipment_key"] == "part-2"
-    assert snapshots[0]["bitrix_shipment_id"] == 51
-    assert snapshots[1]["bitrix_shipment_id"] == 52
-    assert snapshots[1]["items"][0]["bitrix_shipment_item_id"] == 802
-
-
-def test_split_tracking_is_updated_only_on_exact_shipment_id() -> None:
-    class Gateway:
-        updated: list[dict] = []
-
-        def list_shipments(self, **kwargs):
-            del kwargs
-            return [
-                {"shipment_id": 51, "tracking_number": "track-1", "revision": 10},
-                {"shipment_id": 52, "tracking_number": "", "revision": 11},
-            ]
-
-        def update_tracking(self, **kwargs):
-            self.updated.append(kwargs)
-            return {
-                "ok": True,
-                "shipment": {
-                    "shipment_id": kwargs["shipment_id"],
-                    "tracking_number": kwargs["tracking_number"],
-                },
-            }
-
-    gateway = Gateway()
-    result = shipments.ensure_missing_bitrix_shipments(
-        gateway,
-        order_id=7001,
-        shipment_snapshots=[
-            {
-                "shipment_key": "part-1",
-                "bitrix_shipment_id": 51,
-                "tracking_number": "track-1",
-                "items": [_line("phone", "1", basket_item_id=701)],
-            },
-            {
-                "shipment_key": "part-2",
-                "bitrix_shipment_id": 52,
-                "tracking_number": "track-2",
-                "items": [_line("case", "1", basket_item_id=702)],
-            },
-        ],
-    )
-
-    assert len(result) == 2
-    assert gateway.updated == [
-        {
-            "shipment_id": 52,
-            "tracking_number": "track-2",
-            "expected_revision": 11,
-        }
-    ]
-
-
 def test_coverage_uses_order_quantities_not_number_of_existing_rtus() -> None:
     expected = [_line("phone", "1"), _line("case", "1")]
     only_existing_rtu = [_line("phone", "1")]
@@ -296,12 +209,14 @@ def test_two_shipments_in_different_days_derive_partial_then_delivery() -> None:
         coverage=coverage,
         expected_lines=expected,
         shipments=[first, second_planned],
+        delivery_kind=shipments.DELIVERY_CARRIER,
     )
     complete = shipments.derive_shipment_stage(
         current_stage="PARTIALLY_SHIPPED",
         coverage=coverage,
         expected_lines=expected,
         shipments=[first, second_dispatched],
+        delivery_kind=shipments.DELIVERY_CARRIER,
     )
 
     assert partial.target_stage == "PARTIALLY_SHIPPED"
@@ -525,6 +440,7 @@ def test_shipment_outbox_updates_guard_fields_and_starts_one_workflow(db_session
     client = _BitrixClient("242687", 39003)
     settings = Settings(
         _env_file=None,
+        order_fulfillment_bot_apply_enabled=True,
         order_fulfillment_shipments_master_enabled=True,
         order_fulfillment_shipments_crm_fields_enabled=True,
         order_fulfillment_shipments_notifications_enabled=True,
@@ -550,3 +466,738 @@ def test_shipment_outbox_updates_guard_fields_and_starts_one_workflow(db_session
     notification = db_session.scalar(select(SiteOrderShipmentNotification))
     assert notification is not None
     assert notification.status == "submitted"
+    assert notification.submitted_at == datetime(2026, 8, 29, 12, 5)
+    assert notification.sent_at is None
+
+
+def test_snapshot_id_is_content_based_and_ignores_source_revision() -> None:
+    expected = [_line("case", "1"), _line("phone", "1")]
+    rtus = [
+        _rtu("rtu-2", [_line("case", "1")]),
+        _rtu("rtu-1", [_line("phone", "1")]),
+    ]
+    physical = [
+        _shipment(
+            "shipment-1",
+            [_line("phone", "1", rtu_external_id="rtu-1")],
+            status=shipments.STATUS_READY,
+        )
+    ]
+
+    first = shipments.build_snapshot_id(
+        site_order_number="242700",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=expected,
+        rtus=rtus,
+        shipments=physical,
+        source_revisions={"onec": "revision-1", "bitrix_sale": "revision-1"},
+    )
+    same_content = shipments.build_snapshot_id(
+        site_order_number="242700",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=list(reversed(expected)),
+        rtus=list(reversed(rtus)),
+        shipments=physical,
+        source_revisions={"onec": "revision-2", "bitrix_sale": "revision-2"},
+    )
+    corrected = shipments.build_snapshot_id(
+        site_order_number="242700",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=expected,
+        rtus=rtus,
+        shipments=[{**physical[0], "status": shipments.STATUS_DISPATCHED}],
+        source_revisions={"onec": "revision-3", "bitrix_sale": "revision-3"},
+    )
+
+    assert same_content == first
+    assert corrected != first
+
+
+def test_disappeared_rtu_and_shipment_are_retired_and_correction_clears_assembly(
+    db_session,
+) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    rtus = [
+        _rtu("rtu-1", [_line("phone", "1")]),
+        _rtu("rtu-2", [_line("case", "1")]),
+    ]
+    physical = [
+        _shipment(
+            "shipment-1",
+            [_line("phone", "1", rtu_external_id="rtu-1")],
+            status=shipments.STATUS_READY,
+        ),
+        _shipment(
+            "shipment-2",
+            [_line("case", "1", rtu_external_id="rtu-2")],
+            status=shipments.STATUS_READY,
+        ),
+    ]
+    base = {
+        "site_order_number": "242701",
+        "bitrix_deal_id": 39701,
+        "current_stage": "FINAL_INVOICE",
+        "delivery_kind": shipments.DELIVERY_CARRIER,
+        "expected_items": expected,
+        "event_at": datetime(2026, 8, 29, 12, 0),
+        "persist": True,
+        "enqueue_crm_fields": True,
+        "enqueue_notifications": False,
+        "email_enabled": False,
+        "sms_enabled": False,
+    }
+    shipments.sync_order_shipments(db_session, **base, rtus=rtus, shipments=physical)
+    db_session.commit()
+
+    corrected = shipments.sync_order_shipments(
+        db_session,
+        **{
+            **base,
+            "event_at": datetime(2026, 8, 29, 13, 0),
+            "current_stage": "FINAL_INVOICE",
+        },
+        rtus=rtus[:1],
+        shipments=physical[:1],
+    )
+    db_session.commit()
+
+    retired_rtu = db_session.scalar(select(SiteOrderRtu).where(SiteOrderRtu.external_id == "rtu-2"))
+    retired_shipment = db_session.scalar(
+        select(SiteOrderShipment).where(SiteOrderShipment.shipment_key == "shipment-2")
+    )
+    crm_rows = db_session.scalars(
+        select(SiteOrderFulfillmentOutbox)
+        .where(SiteOrderFulfillmentOutbox.operation == shipments.OP_UPDATE_SHIPMENT_CRM_FIELDS)
+        .order_by(SiteOrderFulfillmentOutbox.id)
+    ).all()
+
+    assert corrected.coverage_status == "partial"
+    assert retired_rtu is not None and retired_rtu.active is False
+    assert retired_rtu.retired_at == datetime(2026, 8, 29, 13, 0)
+    assert retired_shipment is not None and retired_shipment.active is False
+    assert retired_shipment.retired_at == datetime(2026, 8, 29, 13, 0)
+    assert crm_rows[-1].payload["fields"][shipments.FULL_ASSEMBLY_FIELD] == ""
+    assert crm_rows[-1].payload["fields"][shipments.FULL_ASSEMBLY_STATUS_FIELD] == "partial"
+
+    client = _BitrixClient("242701", 39701)
+    bot._dispatch_outbox(  # noqa: SLF001
+        db_session,
+        row=crm_rows[-1],
+        client=client,
+        settings=Settings(
+            _env_file=None,
+            order_fulfillment_bot_apply_enabled=True,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_crm_fields_enabled=True,
+        ),
+        onec_validator=lambda _: None,
+        now=datetime(2026, 8, 29, 13, 5),
+    )
+    assert any(
+        "Подтверждение полной сборки снято" in comment and "Статус: partial" in comment
+        for comment in client.timeline_comments
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_reason"),
+    [
+        (_line("case", "1", rtu_external_id="missing"), "shipment_rtu_not_found_or_inactive"),
+        (_line("case", "1", rtu_external_id="rtu-1"), "shipment_rtu_product_mismatch"),
+        (_line("phone", "2", rtu_external_id="rtu-1"), "shipment_rtu_quantity_excess"),
+    ],
+)
+def test_rtu_allocation_is_strict(line: dict, expected_reason: str) -> None:
+    reason = shipments.validate_rtu_allocations(
+        rtus=[_rtu("rtu-1", [_line("phone", "1")])],
+        shipments=[_shipment("shipment-1", [line], status=shipments.STATUS_READY)],
+    )
+
+    assert reason == expected_reason
+
+
+def test_internal_pickup_routes_to_pickup_transit() -> None:
+    expected = [_line("phone", "1")]
+    decision = shipments.derive_shipment_stage(
+        current_stage="EXECUTING",
+        coverage=shipments.evaluate_assembly_coverage(expected, expected),
+        expected_lines=expected,
+        shipments=[
+            _shipment(
+                "shipment-1",
+                expected,
+                status=shipments.STATUS_DISPATCHED,
+                tracking="internal-trip",
+            )
+        ],
+        delivery_kind=shipments.DELIVERY_INTERNAL_PICKUP,
+    )
+
+    assert decision.target_stage == "PICKUP_TRANSIT"
+
+
+def test_gateway_outbox_requires_explicit_mutation(db_session) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    physical = [
+        {
+            **_shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id="rtu-1", basket_item_id=701)],
+                status=shipments.STATUS_READY,
+                tracking="existing-track",
+            ),
+            "delivery_service_id": 11,
+        },
+        {
+            "shipment_key": "shipment-2",
+            "delivery_service_id": 11,
+            "explicit_split_confirmed": True,
+            "status": shipments.STATUS_READY,
+            "items": [_line("case", "1", rtu_external_id="rtu-1", basket_item_id=702)],
+        },
+    ]
+    result = shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242702",
+        bitrix_deal_id=39702,
+        bitrix_order_id=7702,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        source_revisions={"bitrix_sale": "bitrix-revision-1"},
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=physical,
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=False,
+        enqueue_gateway=True,
+        email_enabled=False,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    rows = db_session.scalars(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == shipments.OP_APPLY_SHIPMENT_GATEWAY
+        )
+    ).all()
+
+    assert result.gateway_operation_count == 1
+    assert len(rows) == 1
+    assert rows[0].payload["action"] == "ensure"
+    assert rows[0].payload["shipment_key"] == "shipment-2"
+    assert rows[0].payload["source_order_revision"] == "bitrix-revision-1"
+
+    tracking_update = shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242702",
+        bitrix_deal_id=39702,
+        bitrix_order_id=7702,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        source_revisions={"bitrix_sale": "bitrix-revision-1"},
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[{**physical[0], "tracking_update_confirmed": True}, physical[1]],
+        event_at=datetime(2026, 8, 29, 12, 5),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=False,
+        enqueue_gateway=True,
+        email_enabled=False,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    actions = db_session.scalars(
+        select(SiteOrderFulfillmentOutbox)
+        .where(SiteOrderFulfillmentOutbox.operation == shipments.OP_APPLY_SHIPMENT_GATEWAY)
+        .order_by(SiteOrderFulfillmentOutbox.id)
+    ).all()
+
+    assert tracking_update.event_id is None
+    assert tracking_update.gateway_operation_count == 1
+    assert [item.payload["action"] for item in actions] == ["ensure", "update_tracking"]
+
+
+def test_master_switch_blocks_all_shipment_outbox_effects(db_session) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242703",
+        bitrix_deal_id=39703,
+        bitrix_order_id=7703,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        source_revisions={"bitrix_sale": "bitrix-revision-1"},
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            {
+                **_shipment(
+                    "shipment-1",
+                    [_line("phone", "1", rtu_external_id="rtu-1", basket_item_id=701)],
+                    status=shipments.STATUS_DISPATCHED,
+                    tracking="track-1",
+                ),
+                "delivery_service_id": 11,
+            },
+            {
+                "shipment_key": "shipment-2",
+                "delivery_service_id": 11,
+                "explicit_split_confirmed": True,
+                "status": shipments.STATUS_READY,
+                "items": [_line("case", "1", rtu_external_id="rtu-1", basket_item_id=702)],
+            },
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=True,
+        enqueue_notifications=True,
+        enqueue_gateway=True,
+        email_enabled=True,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    rows = db_session.scalars(select(SiteOrderFulfillmentOutbox)).all()
+    client = _BitrixClient("242703", 39703)
+    settings = Settings(
+        _env_file=None,
+        order_fulfillment_bot_apply_enabled=False,
+        order_fulfillment_shipments_master_enabled=True,
+        order_fulfillment_shipments_crm_fields_enabled=True,
+        order_fulfillment_shipments_notifications_enabled=True,
+        order_fulfillment_shipments_gateway_apply_enabled=True,
+        order_fulfillment_shipments_email_enabled=True,
+        order_fulfillment_shipments_email_workflow_template_id=77,
+        order_fulfillment_shipments_gateway_url="https://example.invalid",
+        order_fulfillment_shipments_gateway_token="secret",
+    )
+
+    assert {row.operation for row in rows} == {
+        shipments.OP_UPDATE_SHIPMENT_CRM_FIELDS,
+        shipments.OP_START_SHIPMENT_NOTIFICATION,
+        shipments.OP_APPLY_SHIPMENT_GATEWAY,
+    }
+    for row in rows:
+        with pytest.raises(bot.ApplyDisabledBeforeSideEffect):
+            bot._dispatch_outbox(  # noqa: SLF001
+                db_session,
+                row=row,
+                client=client,
+                settings=settings,
+                onec_validator=lambda _: None,
+                now=datetime(2026, 8, 29, 12, 5),
+            )
+    assert client.raw == {fulfillment.CRM_ORDER_NUMBER_FIELD: "242703"}
+    assert client.workflows == []
+
+
+@pytest.mark.parametrize(
+    ("client_order", "stage_id", "expected_error"),
+    [
+        ("another-order", "PARTIALLY_SHIPPED", "shipment_gateway_deal_order_mismatch"),
+        ("242703", "WON", "shipment_gateway_terminal_deal"),
+    ],
+)
+def test_gateway_never_mutates_foreign_or_terminal_deal(
+    db_session,
+    client_order: str,
+    stage_id: str,
+    expected_error: str,
+) -> None:
+    expected = [_line("phone", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242703",
+        bitrix_deal_id=39703,
+        bitrix_order_id=7703,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        source_revisions={"bitrix_sale": "bitrix-revision-1"},
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            {
+                "shipment_key": "shipment-1",
+                "delivery_service_id": 11,
+                "explicit_split_confirmed": True,
+                "status": shipments.STATUS_READY,
+                "items": [_line("phone", "1", rtu_external_id="rtu-1", basket_item_id=701)],
+            }
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=False,
+        enqueue_gateway=True,
+        email_enabled=False,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    row = db_session.scalar(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == shipments.OP_APPLY_SHIPMENT_GATEWAY
+        )
+    )
+    assert row is not None
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        bot._dispatch_outbox(  # noqa: SLF001
+            db_session,
+            row=row,
+            client=_BitrixClient(client_order, 39703, stage_id=stage_id),
+            settings=Settings(
+                _env_file=None,
+                order_fulfillment_bot_apply_enabled=True,
+                order_fulfillment_shipments_master_enabled=True,
+                order_fulfillment_shipments_gateway_apply_enabled=True,
+                order_fulfillment_shipments_gateway_url="https://example.invalid",
+                order_fulfillment_shipments_gateway_token="secret",
+            ),
+            onec_validator=lambda _: None,
+            now=datetime(2026, 8, 29, 12, 5),
+        )
+
+
+def test_gateway_outbox_validates_live_order_and_updates_local_readback(
+    db_session,
+    monkeypatch,
+) -> None:
+    expected = [_line("phone", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242708",
+        bitrix_deal_id=39708,
+        bitrix_order_id=7708,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        source_revisions={"bitrix_sale": "bitrix-revision-1"},
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            {
+                "shipment_key": "shipment-1",
+                "delivery_service_id": 11,
+                "explicit_split_confirmed": True,
+                "status": shipments.STATUS_READY,
+                "items": [_line("phone", "1", rtu_external_id="rtu-1", basket_item_id=701)],
+            }
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=False,
+        enqueue_gateway=True,
+        email_enabled=False,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    row = db_session.scalar(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == shipments.OP_APPLY_SHIPMENT_GATEWAY
+        )
+    )
+    assert row is not None
+    captured: dict = {}
+
+    class Gateway:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+        def get_order_snapshot(self, *, site_order_number):
+            assert site_order_number == "242708"
+            return {
+                "order_id": 7708,
+                "mutable": True,
+                "revision": "current-live-revision",
+                "shipments": [],
+            }
+
+        def ensure_shipment(self, **kwargs):
+            captured["ensure"] = kwargs
+            return {
+                "ok": True,
+                "shipment": {
+                    "shipment_id": 88,
+                    "revision": "shipment-revision-2",
+                    "tracking_number": "",
+                    "items": [{"basket_item_id": 701, "shipment_item_id": 801}],
+                },
+            }
+
+    monkeypatch.setattr(shipments, "BitrixSaleShipmentGatewayClient", Gateway)
+
+    bot._dispatch_outbox(  # noqa: SLF001
+        db_session,
+        row=row,
+        client=_BitrixClient("242708", 39708),
+        settings=Settings(
+            _env_file=None,
+            order_fulfillment_bot_apply_enabled=True,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_gateway_apply_enabled=True,
+            order_fulfillment_shipments_gateway_url="https://example.invalid",
+            order_fulfillment_shipments_gateway_token="secret",
+        ),
+        onec_validator=lambda _: None,
+        now=datetime(2026, 8, 29, 12, 5),
+    )
+
+    local = db_session.scalar(
+        select(SiteOrderShipment).where(SiteOrderShipment.shipment_key == "shipment-1")
+    )
+    assert local is not None
+    assert captured["ensure"]["expected_order_revision"] == "bitrix-revision-1"
+    assert captured["ensure"]["idempotency_key"] == row.idempotency_key
+    assert local.bitrix_shipment_id == 88
+    assert local.source_revision == "shipment-revision-2"
+    assert local.items[0].bitrix_shipment_item_id == 801
+
+
+def test_single_to_multi_keeps_first_part_owned_by_legacy_robot(db_session) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    base = {
+        "site_order_number": "242704",
+        "bitrix_deal_id": 39704,
+        "delivery_kind": shipments.DELIVERY_CARRIER,
+        "expected_items": expected,
+        "rtus": [_rtu("rtu-1", expected)],
+        "persist": True,
+        "enqueue_crm_fields": False,
+        "enqueue_notifications": True,
+        "email_enabled": True,
+        "sms_enabled": False,
+    }
+    first = _shipment(
+        "shipment-1",
+        [_line("phone", "1", rtu_external_id="rtu-1")],
+        status=shipments.STATUS_DISPATCHED,
+        tracking="track-1",
+    )
+    shipments.sync_order_shipments(
+        db_session,
+        **base,
+        current_stage="FINAL_INVOICE",
+        shipments=[first],
+        event_at=datetime(2026, 8, 29, 12, 0),
+    )
+    db_session.commit()
+    second = _shipment(
+        "shipment-2",
+        [_line("case", "1", rtu_external_id="rtu-1")],
+        status=shipments.STATUS_DISPATCHED,
+        tracking="track-2",
+    )
+    result = shipments.sync_order_shipments(
+        db_session,
+        **base,
+        current_stage="PARTIALLY_SHIPPED",
+        shipments=[first, second],
+        event_at=datetime(2026, 8, 29, 13, 0),
+    )
+    db_session.commit()
+    persisted = {
+        row.shipment_key: row for row in db_session.scalars(select(SiteOrderShipment)).all()
+    }
+    notifications = db_session.scalars(select(SiteOrderShipmentNotification)).all()
+
+    assert result.notification_count == 1
+    assert persisted["shipment-1"].legacy_owned is True
+    assert persisted["shipment-1"].part_number == 1
+    assert persisted["shipment-2"].part_number == 2
+    assert [item.shipment.shipment_key for item in notifications] == ["shipment-2"]
+
+
+def test_lost_notification_commit_is_recovered_from_marker(db_session) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242705",
+        bitrix_deal_id=39705,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_DISPATCHED,
+                tracking="track-1",
+            ),
+            _shipment(
+                "shipment-2",
+                [_line("case", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_READY,
+                tracking="track-2",
+            ),
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=True,
+        email_enabled=True,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    notification = db_session.scalar(select(SiteOrderShipmentNotification))
+    row = db_session.scalar(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == shipments.OP_START_SHIPMENT_NOTIFICATION
+        )
+    )
+    assert notification is not None and row is not None
+    client = _BitrixClient("242705", 39705)
+    client.timeline_comments.append(
+        bot._shipment_notification_marker(notification.idempotency_key)  # noqa: SLF001
+    )
+
+    bot._dispatch_outbox(  # noqa: SLF001
+        db_session,
+        row=row,
+        client=client,
+        settings=Settings(
+            _env_file=None,
+            order_fulfillment_bot_apply_enabled=True,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_notifications_enabled=True,
+            order_fulfillment_shipments_email_enabled=True,
+            order_fulfillment_shipments_email_workflow_template_id=77,
+        ),
+        onec_validator=lambda _: None,
+        now=datetime(2026, 8, 29, 12, 5),
+    )
+
+    assert notification.status == "sent"
+    assert notification.sent_at == datetime(2026, 8, 29, 12, 5)
+    assert client.workflows == []
+
+
+def test_stale_submitted_notification_is_rechecked_before_workflow_retry(db_session) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242707",
+        bitrix_deal_id=39707,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_DISPATCHED,
+                tracking="track-1",
+            ),
+            _shipment(
+                "shipment-2",
+                [_line("case", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_READY,
+                tracking="track-2",
+            ),
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=True,
+        email_enabled=True,
+        sms_enabled=False,
+    )
+    db_session.commit()
+    notification = db_session.scalar(select(SiteOrderShipmentNotification))
+    row = db_session.scalar(
+        select(SiteOrderFulfillmentOutbox).where(
+            SiteOrderFulfillmentOutbox.operation == shipments.OP_START_SHIPMENT_NOTIFICATION
+        )
+    )
+    assert notification is not None and row is not None
+    notification.status = "submitted"
+    notification.submitted_at = datetime(2026, 8, 29, 12, 0)
+    row.status = "completed"
+    row.updated_at = datetime(2026, 8, 29, 12, 0)
+    db_session.commit()
+    client = _BitrixClient("242707", 39707)
+    client.timeline_comments.append(
+        bot._shipment_notification_marker(notification.idempotency_key)  # noqa: SLF001
+    )
+
+    stats = bot.process_outbox(
+        db_session,
+        client=client,
+        settings=Settings(
+            _env_file=None,
+            order_fulfillment_bot_apply_enabled=True,
+            order_fulfillment_shipments_master_enabled=True,
+            order_fulfillment_shipments_notifications_enabled=True,
+            order_fulfillment_shipments_email_enabled=True,
+            order_fulfillment_shipments_email_workflow_template_id=77,
+            order_fulfillment_shipments_notification_recovery_minutes=30,
+        ),
+        onec_validator=lambda _: None,
+        now=datetime(2026, 8, 29, 12, 31),
+    )
+
+    db_session.refresh(notification)
+    db_session.refresh(row)
+    assert stats["recovered"] == 1
+    assert notification.status == "sent"
+    assert row.status == "completed"
+    assert client.workflows == []
+
+
+def test_notification_status_allows_failed_recovery_without_success_regression(
+    db_session,
+) -> None:
+    expected = [_line("phone", "1"), _line("case", "1")]
+    shipments.sync_order_shipments(
+        db_session,
+        site_order_number="242706",
+        bitrix_deal_id=39706,
+        current_stage="FINAL_INVOICE",
+        delivery_kind=shipments.DELIVERY_CARRIER,
+        expected_items=expected,
+        rtus=[_rtu("rtu-1", expected)],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_DISPATCHED,
+                tracking="track-1",
+            ),
+            _shipment(
+                "shipment-2",
+                [_line("case", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_READY,
+                tracking="track-2",
+            ),
+        ],
+        event_at=datetime(2026, 8, 29, 12, 0),
+        persist=True,
+        enqueue_crm_fields=False,
+        enqueue_notifications=True,
+        email_enabled=True,
+        sms_enabled=False,
+    )
+    notification = db_session.scalar(select(SiteOrderShipmentNotification))
+    assert notification is not None
+    notification.status = "failed"
+    db_session.flush()
+
+    recovered = shipments.update_notification_status(
+        db_session,
+        idempotency_key=notification.idempotency_key,
+        status="sent",
+        occurred_at=datetime(2026, 8, 29, 12, 10),
+    )
+    late_failure = shipments.update_notification_status(
+        db_session,
+        idempotency_key=notification.idempotency_key,
+        status="failed",
+        occurred_at=datetime(2026, 8, 29, 12, 11),
+        error="late callback",
+    )
+
+    assert recovered.changed is True
+    assert late_failure.changed is False
+    assert notification.status == "sent"

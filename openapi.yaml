@@ -9045,6 +9045,31 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/order-fulfillment/shipments/notifications/status:
+    post:
+      summary: Update Shipment Notification Status
+      operationId: update_shipment_notification_status_api_order_fulfillment_shipments_notifications_status_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShipmentNotificationStatusRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShipmentNotificationStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/bitrix/messages:
     post:
       summary: Ingest Bitrix Message
@@ -23696,6 +23721,13 @@ components:
       title: OrderPaymentCheckResponse
     OrderShipmentsSyncRequest:
       properties:
+        snapshot_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 64
+          - type: 'null'
+          title: Snapshot Id
         site_order_number:
           type: string
           maxLength: 64
@@ -23716,10 +23748,29 @@ components:
           - type: string
           - type: 'null'
           title: Current Stage
+        delivery_kind:
+          type: string
+          enum:
+          - carrier
+          - internal_pickup
+          - unknown
+          title: Delivery Kind
+          default: unknown
         event_at:
           type: string
           format: date-time
           title: Event At
+        observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Observed At
+        source_revisions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Source Revisions
         expected_items:
           items:
             $ref: '#/components/schemas/ShipmentLineInput'
@@ -23748,6 +23799,9 @@ components:
       title: OrderShipmentsSyncRequest
     OrderShipmentsSyncResponse:
       properties:
+        snapshot_id:
+          type: string
+          title: Snapshot Id
         site_order_number:
           type: string
           title: Site Order Number
@@ -23785,12 +23839,17 @@ components:
           type: integer
           title: Notification Count
           default: 0
+        gateway_operation_count:
+          type: integer
+          title: Gateway Operation Count
+          default: 0
         conflict:
           type: boolean
           title: Conflict
           default: false
       type: object
       required:
+      - snapshot_id
       - site_order_number
       - coverage_status
       - full_assembly
@@ -28990,6 +29049,12 @@ components:
             format: date-time
           - type: 'null'
           title: Cancelled At
+        source_revision:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Source Revision
         items:
           items:
             $ref: '#/components/schemas/ShipmentLineInput'
@@ -29221,6 +29286,60 @@ components:
       - product_ref
       - quantity
       title: ShipmentLineInput
+    ShipmentNotificationStatusRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Idempotency Key
+        status:
+          type: string
+          enum:
+          - submitted
+          - sent
+          - delivered
+          - failed
+          title: Status
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        external_ref:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: External Ref
+        error:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - idempotency_key
+      - status
+      - occurred_at
+      title: ShipmentNotificationStatusRequest
+    ShipmentNotificationStatusResponse:
+      properties:
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        status:
+          type: string
+          title: Status
+        changed:
+          type: boolean
+          title: Changed
+      type: object
+      required:
+      - idempotency_key
+      - status
+      - changed
+      title: ShipmentNotificationStatusResponse
     ShipmentSnapshotInput:
       properties:
         shipment_key:
@@ -29279,6 +29398,20 @@ components:
             format: date-time
           - type: 'null'
           title: Returned At
+        source_revision:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Source Revision
+        explicit_split_confirmed:
+          type: boolean
+          title: Explicit Split Confirmed
+          default: false
+        tracking_update_confirmed:
+          type: boolean
+          title: Tracking Update Confirmed
+          default: false
         items:
           items:
             $ref: '#/components/schemas/ShipmentLineInput'

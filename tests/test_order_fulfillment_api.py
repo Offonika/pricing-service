@@ -153,7 +153,7 @@ def test_shipment_sync_persist_is_feature_gated(monkeypatch) -> None:
     assert response.status_code == 409
 
 
-def test_shipment_sync_creates_only_explicit_missing_part_via_gateway(
+def test_shipment_sync_enqueues_only_explicit_missing_part_for_gateway(
     monkeypatch,
 ) -> None:
     _configure(monkeypatch)
@@ -165,28 +165,11 @@ def test_shipment_sync_creates_only_explicit_missing_part_via_gateway(
     get_settings.cache_clear()
     captured: dict = {}
 
-    class Gateway:
-        def __init__(self, **kwargs):
-            captured["gateway_config"] = kwargs
-
-        def ensure_shipment(self, **kwargs):
-            captured["ensure"] = kwargs
-            return {
-                "ok": True,
-                "shipment": {
-                    "shipment_id": 52,
-                    "items": [{"basket_item_id": 702, "shipment_item_id": 802}],
-                },
-            }
-
-        def list_shipments(self, **kwargs):
-            captured["list"] = kwargs
-            return [{"shipment_id": 51, "tracking_number": ""}]
-
     def fake_sync(db, **kwargs):
         del db
         captured["sync"] = kwargs
         return shipment_service.ShipmentSyncResult(
+            snapshot_id="a" * 64,
             site_order_number=kwargs["site_order_number"],
             coverage_status="complete",
             full_assembly=True,
@@ -194,9 +177,9 @@ def test_shipment_sync_creates_only_explicit_missing_part_via_gateway(
             target_stage="FINAL_INVOICE",
             action="update_stage",
             reason="all_order_quantities_assembled",
+            gateway_operation_count=1,
         )
 
-    monkeypatch.setattr(shipment_service, "BitrixSaleShipmentGatewayClient", Gateway)
     monkeypatch.setattr(shipment_service, "sync_order_shipments", fake_sync)
     engine = create_engine("sqlite://", poolclass=StaticPool)
     app.dependency_overrides = {get_db: _override_db(engine)}
@@ -231,6 +214,7 @@ def test_shipment_sync_creates_only_explicit_missing_part_via_gateway(
                     {
                         "shipment_key": "part-2",
                         "delivery_service_id": 11,
+                        "explicit_split_confirmed": True,
                         "items": [
                             {
                                 "product_ref": "case",
@@ -249,9 +233,11 @@ def test_shipment_sync_creates_only_explicit_missing_part_via_gateway(
         get_settings.cache_clear()
 
     assert response.status_code == 200
-    assert captured["ensure"]["shipment_key"] == "part-2"
+    assert response.json()["gateway_operation_count"] == 1
+    assert captured["sync"]["enqueue_gateway"] is True
     assert captured["sync"]["shipments"][0]["bitrix_shipment_id"] == 51
-    assert captured["sync"]["shipments"][1]["bitrix_shipment_id"] == 52
+    assert captured["sync"]["shipments"][1]["explicit_split_confirmed"] is True
+    assert captured["sync"]["shipments"][1]["bitrix_shipment_id"] is None
 
 
 def test_order_fulfillment_persisted_courier_ocr_creates_recommendation(

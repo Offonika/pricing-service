@@ -288,6 +288,15 @@ class Settings(BaseSettings):
     order_fulfillment_shipments_email_enabled: bool = False
     order_fulfillment_shipments_sms_enabled: bool = False
     order_fulfillment_shipments_gateway_apply_enabled: bool = False
+    order_fulfillment_shipments_poller_enabled: bool = False
+    order_fulfillment_shipments_poller_limit: int = Field(default=100, ge=1, le=1000)
+    order_fulfillment_shipments_poller_overlap: int = Field(default=20, ge=1, le=250)
+    order_fulfillment_shipments_notification_recovery_minutes: int = Field(
+        default=30, ge=5, le=1440
+    )
+    order_fulfillment_shipments_poller_cursor_path: str = (
+        "/opt/MM/pricing-service/.local/order-fulfillment-pilot/" "shipment-poller-cursor.json"
+    )
     order_fulfillment_shipments_gateway_url: str | None = None
     order_fulfillment_shipments_gateway_token: str | None = None
     order_fulfillment_shipments_email_workflow_template_id: int | None = Field(default=None, ge=1)

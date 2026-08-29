@@ -439,6 +439,16 @@
       "spec": "docs/specs/site-order-fulfillment-control-contour.md",
       "remove_after": "2026-12-31"
     },
+    "order_fulfillment_sync.py": {
+      "owner": "pricing-platform",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "verified_by_snapshot_and_outbox_keys",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/site-order-fulfillment-control-contour.md",
+      "remove_after": null
+    },
     "reprocess_pickup_inventory.py": {
       "owner": "pricing-platform",
       "kind": "backfill",

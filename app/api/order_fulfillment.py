@@ -19,6 +19,8 @@ from app.schemas.order_fulfillment import (
     OrderFulfillmentReviewResponse,
     OrderShipmentsSyncRequest,
     OrderShipmentsSyncResponse,
+    ShipmentNotificationStatusRequest,
+    ShipmentNotificationStatusResponse,
 )
 from app.services import site_order_fulfillment as fulfillment
 from app.services import site_order_shipments
@@ -41,43 +43,64 @@ def sync_order_shipments(
             detail="shipment ingest is disabled",
         )
     shipment_snapshots = [item.model_dump(mode="python") for item in payload.shipments]
-    if not payload.dry_run and settings.order_fulfillment_shipments_gateway_apply_enabled:
-        if payload.bitrix_order_id is None:
-            raise HTTPException(status_code=409, detail="bitrix_order_id is required")
-        try:
-            gateway = site_order_shipments.BitrixSaleShipmentGatewayClient(
-                base_url=settings.order_fulfillment_shipments_gateway_url or "",
-                token=settings.order_fulfillment_shipments_gateway_token or "",
-            )
-            shipment_snapshots = site_order_shipments.ensure_missing_bitrix_shipments(
-                gateway,
-                order_id=payload.bitrix_order_id,
-                shipment_snapshots=shipment_snapshots,
-            )
-        except (ValueError, site_order_shipments.ShipmentGatewayError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-    result = site_order_shipments.sync_order_shipments(
-        db,
-        site_order_number=payload.site_order_number,
-        bitrix_deal_id=payload.bitrix_deal_id,
-        current_stage=payload.current_stage,
-        expected_items=[item.model_dump(mode="python") for item in payload.expected_items],
-        rtus=[item.model_dump(mode="python") for item in payload.rtus],
-        shipments=shipment_snapshots,
-        event_at=payload.event_at,
-        persist=not payload.dry_run,
-        enqueue_crm_fields=(
-            not payload.dry_run and settings.order_fulfillment_shipments_crm_fields_enabled
-        ),
-        enqueue_notifications=(
-            not payload.dry_run and settings.order_fulfillment_shipments_notifications_enabled
-        ),
-        email_enabled=settings.order_fulfillment_shipments_email_enabled,
-        sms_enabled=settings.order_fulfillment_shipments_sms_enabled,
-    )
+    try:
+        result = site_order_shipments.sync_order_shipments(
+            db,
+            snapshot_id=payload.snapshot_id,
+            site_order_number=payload.site_order_number,
+            bitrix_deal_id=payload.bitrix_deal_id,
+            current_stage=payload.current_stage,
+            delivery_kind=payload.delivery_kind,
+            expected_items=[item.model_dump(mode="python") for item in payload.expected_items],
+            rtus=[item.model_dump(mode="python") for item in payload.rtus],
+            shipments=shipment_snapshots,
+            event_at=payload.event_at,
+            observed_at=payload.observed_at,
+            source_revisions=payload.source_revisions,
+            bitrix_order_id=payload.bitrix_order_id,
+            enqueue_gateway=(
+                not payload.dry_run and settings.order_fulfillment_shipments_gateway_apply_enabled
+            ),
+            persist=not payload.dry_run,
+            enqueue_crm_fields=(
+                not payload.dry_run and settings.order_fulfillment_shipments_crm_fields_enabled
+            ),
+            enqueue_notifications=(
+                not payload.dry_run and settings.order_fulfillment_shipments_notifications_enabled
+            ),
+            email_enabled=settings.order_fulfillment_shipments_email_enabled,
+            sms_enabled=settings.order_fulfillment_shipments_sms_enabled,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not payload.dry_run:
         db.commit()
     return OrderShipmentsSyncResponse(**asdict(result))
+
+
+@router.post(
+    "/shipments/notifications/status",
+    response_model=ShipmentNotificationStatusResponse,
+)
+def update_shipment_notification_status(
+    payload: ShipmentNotificationStatusRequest,
+    db: Session = Depends(get_db),
+) -> ShipmentNotificationStatusResponse:
+    try:
+        result = site_order_shipments.update_notification_status(
+            db,
+            idempotency_key=payload.idempotency_key,
+            status=payload.status,
+            occurred_at=payload.occurred_at,
+            external_ref=payload.external_ref,
+            error=payload.error,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    db.commit()
+    return ShipmentNotificationStatusResponse(**asdict(result))
 
 
 @router.post("/bitrix/messages", response_model=BitrixChatMessageIngestResponse)

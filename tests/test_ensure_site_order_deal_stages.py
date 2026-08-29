@@ -27,7 +27,7 @@ def test_build_plan_requires_manual_review_for_existing_stage_mismatch() -> None
             {
                 "STATUS_ID": "PARTIALLY_SHIPPED",
                 "NAME": "Частично отправлен",
-                "SORT": "58",
+                "SORT": "52",
             },
             {
                 "STATUS_ID": "PICKUP_TRANSIT",
@@ -74,6 +74,7 @@ def test_build_user_field_plan_adds_missing_sms_shadow_fields() -> None:
         "UF_CRM_MM_PICKUP_POINT_NAME",
         "UF_CRM_MM_PICKUP_POINT_ADDRESS",
         "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT",
+        "UF_CRM_MM_FULL_ASSEMBLY_STATUS",
         "UF_CRM_MM_SHIPMENT_COUNT",
     }
     assert all(item["action"] == "add" for item in plan)

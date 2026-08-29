@@ -8,6 +8,7 @@ owner: "operations"
 source_of_truth: true
 related_code:
   - alembic/versions/c1e3a5b7d9f1_add_multi_shipment_fulfillment.py
+  - alembic/versions/d2f4a6b8c0e2_harden_multi_shipment_snapshots.py
   - alembic/versions/3e7a9c1d5f24_add_pickup_inventory_and_sla.py
   - app/api/order_fulfillment.py
   - app/api/order_fulfillment_bot.py
@@ -17,6 +18,7 @@ related_code:
   - app/services/site_order_execution_reconciliation.py
   - app/services/site_order_fulfillment_bot.py
   - app/services/site_order_shipments.py
+  - app/services/site_order_shipment_poller.py
   - app/services/pickup_control.py
   - app/services/pickup_history.py
   - app/services/pickup_inventory.py
@@ -56,7 +58,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-29"
+updated_at: "2026-08-30"
 ---
 
 # Назначение
@@ -148,11 +150,35 @@ Bitrix-чат не должен становиться системой хран
 уведомление. Для единственной отгрузки продолжают действовать существующие
 CRM-роботы: новый контур не отправляет второе письмо или SMS.
 
+Первая production-версия агрегирует полный снимок заказа read-only poller-ом в
+`pricing-service`: состав и РТУ читаются из `1С`, живая сделка и физические
+отгрузки — из `Bitrix24`. Publisher расширенного события из `УТ 10.3` остаётся
+следующим этапом и до отдельного cutover не является обязательным источником.
+Снимок имеет стабильный content-based `snapshot_id`, не зависящий от времени
+наблюдения и текущей стадии CRM.
+
+Полный снимок содержит `delivery_kind` (`carrier`, `internal_pickup`, `unknown`),
+время наблюдения и ревизии обоих источников, весь состав заказа, все актуальные
+РТУ и все несистемные физические отгрузки. `snapshot_id` считается только по
+нормализованному бизнес-содержимому: изменение времени, стадии CRM или внутренней
+ревизии источника без изменения состава не создаёт нового события. Исчезнувшие
+из следующего полного снимка РТУ и отправления становятся неактуальными, но их
+предыдущие ревизии и append-only события сохраняются.
+
+Маршрут определяется явно: полностью отправленная доставка переходит в
+`IN_DELIVERY`, внутренний самовывоз — в `PICKUP_TRANSIT`; неизвестный вид
+доставки не меняет CRM и создаёт ручную проверку. Внедрение выполняется
+поэтапным production-пилотом: shadow ingest, CRM-поля, стадии, gateway и только
+затем отдельные уведомления частей.
+
 Bitrix Shipment gateway принимает только Bearer-authenticated POST JSON,
 создаёт дополнительную отгрузку идемпотентно по `shipment_key`, проверяет состав
 после записи и меняет трек только по точному `shipment_id`. Старый мост единого
 поля `UF_CRM_OT_TRACKING` запрещено применять к заказу с несколькими физическими
 отгрузками: один трек нельзя размножать на все части.
+Обычный read-only snapshot не ставит gateway-мутацию в outbox: создание части
+требует `explicit_split_confirmed=true`, а изменение трека — отдельного
+`tracking_update_confirmed=true` и совпадающей живой ревизии Bitrix Sale.
 
 # Текущий Контекст
 
@@ -1391,6 +1417,11 @@ Smoke:
 - Добавить ежедневный отчет по заказам на точках самовывоза и курьеру СПб.
 
 # Changelog
+
+- 2026-08-29 — для v1 выбран read-only backend-poller вместо обязательной
+  доработки production `УТ 10.3`; publisher 1С отложен до следующего этапа,
+  доставка и внутренний самовывоз маршрутизируются раздельно, rollout доводится
+  до production по независимым feature flags после shadow-сверки.
 
 - 2026-08-28 — для внутреннего пилота зафиксирована цепочка
   `FINAL_INVOICE → PICKUP_TRANSIT → PICKUP_WAITING`; production SMS выключены,

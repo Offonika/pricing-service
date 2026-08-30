@@ -371,9 +371,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 59. Для `tasks/build_assortment_lifecycle_facts.py` разрешены push ветки и
     создание отдельного PR после локальных проверок. Merge и production release
     требуют отдельных подтверждений.
+60. После зелёного CI разрешён merge PR №125. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-30 — разрешён merge PR №125; production release оставлен отдельным
+  решением.
 - 2026-08-30 — разрешена подготовка assortment lifecycle facts read-only slice
   с push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-30 — `tasks/build_assortment_lifecycle_facts.py` переведён на central

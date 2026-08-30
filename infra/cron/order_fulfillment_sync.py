@@ -248,6 +248,14 @@ class ExecutingDealScan:
 
 
 def load_env_files(paths: tuple[Path, ...] = DEFAULT_ENV_FILES) -> dict[str, str]:
+    """Load environment defaults with the first file as the authority.
+
+    ``DEFAULT_ENV_FILES`` lists the release-local ``.env`` before the legacy
+    orchestrator file.  Later files are fallbacks only: allowing them to
+    overwrite ``DATABASE_URL`` can send the fulfillment worker to an unrelated
+    database even though the API and Alembic use the release-local value.
+    """
+
     values: dict[str, str] = {}
     for path in paths:
         if not path.exists():
@@ -257,7 +265,7 @@ def load_env_files(paths: tuple[Path, ...] = DEFAULT_ENV_FILES) -> dict[str, str
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            values[key.strip()] = value.strip().strip('"').strip("'")
+            values.setdefault(key.strip(), value.strip().strip('"').strip("'"))
     return values
 
 

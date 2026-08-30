@@ -13,6 +13,27 @@ from app.services import site_order_fulfillment as service
 from infra.cron import order_fulfillment_sync as sync
 
 
+def test_load_env_files_uses_later_files_only_as_fallback(tmp_path: Path) -> None:
+    runtime_env = tmp_path / "runtime.env"
+    runtime_env.write_text(
+        "DATABASE_URL=postgresql://runtime/pricing\nRUNTIME_ONLY=enabled\n",
+        encoding="utf-8",
+    )
+    legacy_env = tmp_path / "legacy.env"
+    legacy_env.write_text(
+        "DATABASE_URL=postgresql://legacy/call_analytics\nLEGACY_ONLY=enabled\n",
+        encoding="utf-8",
+    )
+
+    values = sync.load_env_files((runtime_env, legacy_env))
+
+    assert values == {
+        "DATABASE_URL": "postgresql://runtime/pricing",
+        "RUNTIME_ONLY": "enabled",
+        "LEGACY_ONLY": "enabled",
+    }
+
+
 class FakeBitrixClient:
     def __init__(self, deals: dict[int, service.BitrixDealSnapshot]) -> None:
         self.deals = deals

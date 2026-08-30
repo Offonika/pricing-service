@@ -22,6 +22,7 @@ related_tests:
   - tests/test_build_display_working_confirmation_overrides_task.py
   - tests/test_build_missing_display_quality_updates_task.py
   - tests/test_build_missing_onec_subject_updates_task.py
+  - tests/test_build_ved_akb_master_register_task.py
   - tests/test_receivable_credit_profile.py
   - tests/test_receivable_decision_portrait.py
   - tests/test_check_onec_catalog_scope_script.py
@@ -197,6 +198,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/build_missing_onec_subject_updates.py` на central read-only
   session scope и role-specific 1С factory с bounded timeout и гарантированным
   dispose, сохранив классификацию предметов, аргументы и JSON/XML-контракты.
+- [x] Перевести `tasks/build_ved_akb_master_register.py` на central read-only
+  session scope и role-specific 1С factory с bounded timeout и гарантированным
+  dispose, сохранив SQL, аргументы и XLSX-контракт.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -355,9 +359,21 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 56. После зелёного CI разрешён merge PR №121. Production migration, deploy и
     cutover в это решение не входят.
+57. Для `tasks/build_ved_akb_master_register.py` разрешены push ветки и создание
+    отдельного PR после локальных проверок. Merge и production release требуют
+    отдельных подтверждений.
+58. После зелёного CI разрешён merge PR №124. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-30 — разрешён merge PR №124; production release оставлен отдельным
+  решением.
+- 2026-08-30 — разрешена подготовка VED AKB master register read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
+- 2026-08-30 — `tasks/build_ved_akb_master_register.py` переведён на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; SQL, аргументы и XLSX-контракт сохранены.
 - 2026-08-30 — разрешён merge PR №121; production release оставлен отдельным
   решением.
 - 2026-08-30 — разрешена подготовка missing 1C subject updates read-only slice с

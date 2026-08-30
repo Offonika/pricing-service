@@ -104,6 +104,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "build_ved_akb_master_register.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "check_receivable_authoritative_snapshot.py": {
       "owner": "receivables",
       "kind": "maintenance",

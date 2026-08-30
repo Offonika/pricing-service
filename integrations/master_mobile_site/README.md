@@ -38,13 +38,20 @@ backup и выполнить read-only preflight. Затем в управляе
    проверить readback;
 3. объединить массив из `service_ticket_component_params.php` с параметрами
    существующего `support.ticket.edit`; если штатный шаблон не показывает поля —
-   создать отдельную копию шаблона и вывести те же три user fields;
+   создать отдельную копию шаблона и вывести те же три user fields. Подпись автора
+   сообщения выводить через `mm_site_service_ticket_author_label($arMessage)`,
+   чтобы клиент видел «Поддержка MASTER MOBILE», а не имя служебного пользователя;
 4. настроить API base URL, HMAC secret и ID отдельного support user только через
    Bitrix Option, не в Git;
 5. зарегистрировать `mm_site_service_ticket_agent();` с минутным интервалом в
    штатном cron-driven Agent;
 6. сначала оставить оба feature flag выключенными и включать их по rollout из
    канонического spec.
+
+Bridge объявляет capability `command-files-v1`, проверяет размер/SHA-256 каждого
+исходящего файла и при повторе дозагружает недостающие вложения к сообщению с тем
+же command marker. Метод `backfillConversationSnapshot($ticketId)` предназначен
+только для отдельно подтверждённого адресного backfill существующей карточки.
 
 Перед live-включением обязательны `php -l`, повторный DDL dry-run, readback полей,
 один synthetic inbound ticket и только затем отдельный outbound smoke.

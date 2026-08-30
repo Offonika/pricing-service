@@ -38,7 +38,9 @@ class SiteServiceRequestHistoryMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     message_id: int = Field(alias="messageId", gt=0)
-    author_kind: str = Field(alias="authorKind", min_length=1, max_length=32)
+    author_kind: Literal["customer", "support", "support-team", "support_team"] = Field(
+        alias="authorKind"
+    )
     is_visible_to_customer: bool = Field(default=True, alias="isVisibleToCustomer")
     created_at: datetime = Field(alias="createdAt")
     text: str = Field(max_length=200_000)
@@ -133,6 +135,14 @@ class SiteServiceRequestEventAcceptedResponse(BaseModel):
     missing_file_ids: list[int] = Field(alias="missingFileIds")
 
 
+class SiteServiceRequestSnapshotAcceptedResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    ticket_id: int = Field(alias="ticketId", gt=0)
+    snapshot_message_id: int = Field(alias="snapshotMessageId", gt=0)
+    status: Literal["accepted"]
+
+
 class SiteServiceEmailEventPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -196,6 +206,17 @@ class SiteServiceRequestFileStagedResponse(BaseModel):
     )
 
 
+class SiteServiceRequestCommandFilePayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    file_id: int = Field(alias="fileId", gt=0)
+    name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(alias="mimeType", min_length=1, max_length=255)
+    size: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    download_path: str = Field(alias="downloadPath", min_length=1, max_length=512)
+
+
 class SiteServiceRequestCommandPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -209,6 +230,7 @@ class SiteServiceRequestCommandPayload(BaseModel):
     )
     lease_until: datetime = Field(alias="leaseUntil")
     lease_token: str = Field(alias="leaseToken", min_length=32, max_length=128)
+    files: list[SiteServiceRequestCommandFilePayload] = Field(default_factory=list, max_length=20)
 
 
 class SiteServiceRequestCommandsResponse(BaseModel):
@@ -232,6 +254,8 @@ class SiteServiceRequestCommandAckPayload(BaseModel):
             "ticket_not_found",
             "support_user_invalid",
             "message_write_failed",
+            "attachment_download_failed",
+            "attachment_write_failed",
         ]
         | None
     ) = Field(default=None, alias="errorCode")
@@ -311,3 +335,86 @@ class SiteServiceRequestHealthResponse(BaseModel):
     email_ingest_enabled: bool = Field(alias="emailIngestEnabled")
     bitrix_writes_enabled: bool = Field(alias="bitrixWritesEnabled")
     outbound_replies_enabled: bool = Field(alias="outboundRepliesEnabled")
+
+
+class SiteServiceRequestUiSessionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    access_token: str = Field(alias="accessToken", min_length=1, max_length=4096)
+    domain: str = Field(min_length=1, max_length=255)
+    member_id: str = Field(alias="memberId", min_length=1, max_length=255)
+    placement: Literal["CRM_DYNAMIC_1134_DETAIL_TAB"]
+    item_id: int = Field(alias="itemId", gt=0)
+
+
+class SiteServiceRequestUiUser(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int = Field(gt=0)
+    name: str = Field(min_length=1, max_length=255)
+    is_admin: bool = Field(alias="isAdmin")
+
+
+class SiteServiceRequestUiSessionResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    session_token: str = Field(alias="sessionToken")
+    expires_at: datetime = Field(alias="expiresAt")
+    item_id: int = Field(alias="itemId", gt=0)
+    user: SiteServiceRequestUiUser
+
+
+class SiteServiceRequestConversationAttachment(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    name: str
+    mime_type: str = Field(alias="mimeType")
+    size: int = Field(ge=0)
+    status: Literal["pending", "staged", "uploaded", "leased", "applied", "failed"]
+    download_url: str | None = Field(default=None, alias="downloadUrl")
+
+
+class SiteServiceRequestConversationMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    direction: Literal["inbound", "outbound", "internal"]
+    author_label: str = Field(alias="authorLabel")
+    text: str | None
+    created_at: datetime = Field(alias="createdAt")
+    delivery_status: Literal["received", "sending", "delivered", "failed", "note"] = Field(
+        alias="deliveryStatus"
+    )
+    error_code: str | None = Field(default=None, alias="errorCode", max_length=128)
+    retryable: bool = False
+    visible_to_customer: bool = Field(alias="visibleToCustomer")
+    attachments: list[SiteServiceRequestConversationAttachment] = Field(default_factory=list)
+
+
+class SiteServiceRequestConversationResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    item_id: int = Field(alias="itemId", gt=0)
+    source_kind: Literal["site_ticket", "bitrix_mail"] = Field(alias="sourceKind")
+    can_reply: bool = Field(alias="canReply")
+    original_url: str | None = Field(default=None, alias="originalUrl")
+    next_before_id: int | None = Field(default=None, alias="nextBeforeId")
+    messages: list[SiteServiceRequestConversationMessage]
+
+
+class SiteServiceRequestConversationMutationResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    duplicate: bool
+    status: Literal["pending", "leased", "applied", "failed", "note"]
+
+
+class SiteServiceRequestInternalNoteRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    client_request_id: str = Field(
+        alias="clientRequestId", min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"
+    )
+    text: str = Field(min_length=1, max_length=20_000)

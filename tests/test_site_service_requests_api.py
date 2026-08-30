@@ -23,6 +23,7 @@ from app.main import app
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
+    SiteServiceRequestCommandFile,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
     SiteServiceRequestNonce,
@@ -210,10 +211,11 @@ def _report_file_unavailable(
     )
 
 
-def _get_commands(client):
+def _get_commands(client, *, capabilities: str | None = None):
+    extra = {"X-MM-Site-Capabilities": capabilities} if capabilities else None
     return client.get(
         _COMMANDS_PATH,
-        headers=_signed_headers(method="GET", path=_COMMANDS_PATH, body=b""),
+        headers=_signed_headers(method="GET", path=_COMMANDS_PATH, body=b"", extra=extra),
     )
 
 
@@ -997,6 +999,7 @@ def test_commands_api_leases_decrypted_command_and_releases_it_after_expiry(
             "replyText": "Проверочный ответ клиенту",
             "leaseUntil": first.json()["commands"][0]["leaseUntil"],
             "leaseToken": first_lease_token,
+            "files": [],
         }
     ]
     assert second.status_code == 200
@@ -1007,6 +1010,60 @@ def test_commands_api_leases_decrypted_command_and_releases_it_after_expiry(
     db_session.refresh(command)
     assert command.status == "leased"
     assert command.attempts == 2
+
+
+def test_command_attachment_requires_capability_and_lease_token(client, db_session) -> None:
+    settings = _settings(
+        site_service_requests_outbound_replies_enabled=True,
+        site_service_requests_command_attachments_enabled=True,
+    )
+    cipher = SiteServiceRequestCipher(_ENCRYPTION_KEY)
+    with _api_dependencies(db_session, settings):
+        assert _post_event(client, _event_payload()).status_code == 202
+        case = db_session.scalar(select(SiteServiceRequestCase))
+        assert case is not None
+        command = _create_command(db_session, case_id=case.id)
+        body = b"attachment-body"
+        attachment = SiteServiceRequestCommandFile(
+            command_id=command.id,
+            client_file_id="file-request-3223",
+            safe_filename="answer.txt",
+            mime_type="text/plain",
+            byte_size=len(body),
+            sha256=hashlib.sha256(body).hexdigest(),
+            payload_encrypted=cipher.encrypt(
+                body,
+                event_id=f"command-file:{command.command_key}:file-request-3223",
+            ),
+            status="pending",
+        )
+        db_session.add(attachment)
+        db_session.commit()
+
+        unsupported = _get_commands(client)
+        leased = _get_commands(client, capabilities="command-files-v1")
+        command_payload = leased.json()["commands"][0]
+        path = command_payload["files"][0]["downloadPath"]
+        missing_token = client.get(
+            path,
+            headers=_signed_headers(method="GET", path=path, body=b""),
+        )
+        downloaded = client.get(
+            path,
+            headers=_signed_headers(
+                method="GET",
+                path=path,
+                body=b"",
+                extra={"X-MM-Command-Lease-Token": command_payload["leaseToken"]},
+            ),
+        )
+
+    assert unsupported.status_code == 200
+    assert unsupported.json()["commands"] == []
+    assert leased.status_code == 200
+    assert command_payload["files"][0]["sha256"] == hashlib.sha256(body).hexdigest()
+    assert missing_token.status_code == 422
+    assert downloaded.status_code == 200 and downloaded.content == body
 
 
 def test_command_lease_locks_case_before_command(db_session) -> None:

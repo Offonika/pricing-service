@@ -6620,6 +6620,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/snapshots:
+    post:
+      summary: Accept Conversation Snapshot
+      operationId: accept_conversation_snapshot_api_internal_site_service_requests_snapshots_post
+      parameters:
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestEventPayload'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestSnapshotAcceptedResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/internal/site-service-requests/email-events:
     post:
       summary: Accept Email Event
@@ -6831,6 +6879,14 @@ paths:
       summary: Get Commands
       operationId: get_commands_api_internal_site_service_requests_commands_get
       parameters:
+      - name: X-MM-Site-Capabilities
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: X-Mm-Site-Capabilities
       - name: X-MM-Site-Timestamp
         in: header
         required: true
@@ -6868,6 +6924,72 @@ paths:
           description: Nonce replay
         '503':
           description: Command storage or encryption is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/site-service-requests/commands/{command_id}/files/{file_id}:
+    get:
+      summary: Get Command File
+      operationId: get_command_file_api_internal_site_service_requests_commands__command_id__files__file_id__get
+      parameters:
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Command Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: File Id
+      - name: X-MM-Command-Lease-Token
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 32
+          maxLength: 128
+          title: X-Mm-Command-Lease-Token
+      - name: X-MM-Site-Timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Timestamp
+      - name: X-MM-Site-Nonce
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Nonce
+      - name: X-MM-Site-Content-SHA256
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Content-Sha256
+      - name: X-MM-Site-Signature
+        in: header
+        required: true
+        schema:
+          type: string
+          title: X-Mm-Site-Signature
+      responses:
+        '200':
+          description: Encrypted command attachment decrypted for the active lease
+        '401':
+          description: Invalid or missing site HMAC authentication
+        '404':
+          description: Command attachment is unavailable
+        '409':
+          description: Command lease or attachment payload conflict
+        '503':
+          description: Command encryption is unavailable
         '422':
           description: Validation Error
           content:
@@ -6980,6 +7102,160 @@ paths:
           description: Nonce replay
         '503':
           description: Health storage is unavailable
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/session:
+    post:
+      summary: Create Ui Session
+      operationId: create_ui_session_api_site_service_requests_ui_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestUiSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestUiSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/conversation:
+    get:
+      summary: Conversation
+      operationId: conversation_api_site_service_requests_ui_items__item_id__conversation_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      - name: beforeId
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0
+          - type: 'null'
+          title: Beforeid
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestConversationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/replies:
+    post:
+      summary: Create Reply
+      operationId: create_reply_api_site_service_requests_ui_items__item_id__replies_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_create_reply_api_site_service_requests_ui_items__item_id__replies_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestConversationMutationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/notes:
+    post:
+      summary: Create Note
+      operationId: create_note_api_site_service_requests_ui_items__item_id__notes_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteServiceRequestInternalNoteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestConversationMutationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-service-requests/ui/items/{item_id}/replies/{command_id}/retry:
+    post:
+      summary: Retry Reply
+      operationId: retry_reply_api_site_service_requests_ui_items__item_id__replies__command_id__retry_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Item Id
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteServiceRequestConversationMutationResponse'
         '422':
           description: Validation Error
           content:
@@ -12472,6 +12748,32 @@ components:
       required:
       - user_id
       title: BitrixReceivablesUser
+    Body_create_reply_api_site_service_requests_ui_items__item_id__replies_post:
+      properties:
+        clientRequestId:
+          type: string
+          maxLength: 64
+          minLength: 8
+          pattern: ^[A-Za-z0-9_-]+$
+          title: Clientrequestid
+        text:
+          type: string
+          maxLength: 200000
+          minLength: 1
+          title: Text
+        files:
+          anyOf:
+          - items:
+              type: string
+              contentMediaType: application/octet-stream
+            type: array
+          - type: 'null'
+          title: Files
+      type: object
+      required:
+      - clientRequestId
+      - text
+      title: Body_create_reply_api_site_service_requests_ui_items__item_id__replies_post
     Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post:
       properties:
         file:
@@ -30164,6 +30466,8 @@ components:
             - ticket_not_found
             - support_user_invalid
             - message_write_failed
+            - attachment_download_failed
+            - attachment_write_failed
           - type: 'null'
           title: Errorcode
       type: object
@@ -30193,6 +30497,44 @@ components:
       - status
       - duplicate
       title: SiteServiceRequestCommandAckResponse
+    SiteServiceRequestCommandFilePayload:
+      properties:
+        fileId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Fileid
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        mimeType:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Mimetype
+        size:
+          type: integer
+          minimum: 0.0
+          title: Size
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Sha256
+        downloadPath:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Downloadpath
+      type: object
+      required:
+      - fileId
+      - name
+      - mimeType
+      - size
+      - sha256
+      - downloadPath
+      title: SiteServiceRequestCommandFilePayload
     SiteServiceRequestCommandPayload:
       properties:
         commandId:
@@ -30222,6 +30564,12 @@ components:
           maxLength: 128
           minLength: 32
           title: Leasetoken
+        files:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestCommandFilePayload'
+          type: array
+          maxItems: 20
+          title: Files
       type: object
       required:
       - commandId
@@ -30248,6 +30596,165 @@ components:
       required:
       - commands
       title: SiteServiceRequestCommandsResponse
+    SiteServiceRequestConversationAttachment:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+        mimeType:
+          type: string
+          title: Mimetype
+        size:
+          type: integer
+          minimum: 0.0
+          title: Size
+        status:
+          type: string
+          enum:
+          - pending
+          - staged
+          - uploaded
+          - leased
+          - applied
+          - failed
+          title: Status
+        downloadUrl:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Downloadurl
+      type: object
+      required:
+      - id
+      - name
+      - mimeType
+      - size
+      - status
+      title: SiteServiceRequestConversationAttachment
+    SiteServiceRequestConversationMessage:
+      properties:
+        id:
+          type: string
+          title: Id
+        direction:
+          type: string
+          enum:
+          - inbound
+          - outbound
+          - internal
+          title: Direction
+        authorLabel:
+          type: string
+          title: Authorlabel
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        deliveryStatus:
+          type: string
+          enum:
+          - received
+          - sending
+          - delivered
+          - failed
+          - note
+          title: Deliverystatus
+        errorCode:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Errorcode
+        retryable:
+          type: boolean
+          title: Retryable
+          default: false
+        visibleToCustomer:
+          type: boolean
+          title: Visibletocustomer
+        attachments:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestConversationAttachment'
+          type: array
+          title: Attachments
+      type: object
+      required:
+      - id
+      - direction
+      - authorLabel
+      - text
+      - createdAt
+      - deliveryStatus
+      - visibleToCustomer
+      title: SiteServiceRequestConversationMessage
+    SiteServiceRequestConversationMutationResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        duplicate:
+          type: boolean
+          title: Duplicate
+        status:
+          type: string
+          enum:
+          - pending
+          - leased
+          - applied
+          - failed
+          - note
+          title: Status
+      type: object
+      required:
+      - id
+      - duplicate
+      - status
+      title: SiteServiceRequestConversationMutationResponse
+    SiteServiceRequestConversationResponse:
+      properties:
+        itemId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Itemid
+        sourceKind:
+          type: string
+          enum:
+          - site_ticket
+          - bitrix_mail
+          title: Sourcekind
+        canReply:
+          type: boolean
+          title: Canreply
+        originalUrl:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Originalurl
+        nextBeforeId:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Nextbeforeid
+        messages:
+          items:
+            $ref: '#/components/schemas/SiteServiceRequestConversationMessage'
+          type: array
+          title: Messages
+      type: object
+      required:
+      - itemId
+      - sourceKind
+      - canReply
+      - messages
+      title: SiteServiceRequestConversationResponse
     SiteServiceRequestEventAcceptedResponse:
       properties:
         eventId:
@@ -30521,8 +31028,11 @@ components:
           title: Messageid
         authorKind:
           type: string
-          maxLength: 32
-          minLength: 1
+          enum:
+          - customer
+          - support
+          - support-team
+          - support_team
           title: Authorkind
         isVisibleToCustomer:
           type: boolean
@@ -30549,6 +31059,44 @@ components:
       - text
       - files
       title: SiteServiceRequestHistoryMessage
+    SiteServiceRequestInternalNoteRequest:
+      properties:
+        clientRequestId:
+          type: string
+          maxLength: 64
+          minLength: 8
+          pattern: ^[A-Za-z0-9_-]+$
+          title: Clientrequestid
+        text:
+          type: string
+          maxLength: 20000
+          minLength: 1
+          title: Text
+      type: object
+      required:
+      - clientRequestId
+      - text
+      title: SiteServiceRequestInternalNoteRequest
+    SiteServiceRequestSnapshotAcceptedResponse:
+      properties:
+        ticketId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Ticketid
+        snapshotMessageId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Snapshotmessageid
+        status:
+          type: string
+          const: accepted
+          title: Status
+      type: object
+      required:
+      - ticketId
+      - snapshotMessageId
+      - status
+      title: SiteServiceRequestSnapshotAcceptedResponse
     SiteServiceRequestTicket:
       properties:
         id:
@@ -30609,6 +31157,81 @@ components:
       - requestType
       - isClosed
       title: SiteServiceRequestTicket
+    SiteServiceRequestUiSessionRequest:
+      properties:
+        accessToken:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Accesstoken
+        domain:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Domain
+        memberId:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Memberid
+        placement:
+          type: string
+          const: CRM_DYNAMIC_1134_DETAIL_TAB
+          title: Placement
+        itemId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Itemid
+      type: object
+      required:
+      - accessToken
+      - domain
+      - memberId
+      - placement
+      - itemId
+      title: SiteServiceRequestUiSessionRequest
+    SiteServiceRequestUiSessionResponse:
+      properties:
+        sessionToken:
+          type: string
+          title: Sessiontoken
+        expiresAt:
+          type: string
+          format: date-time
+          title: Expiresat
+        itemId:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Itemid
+        user:
+          $ref: '#/components/schemas/SiteServiceRequestUiUser'
+      type: object
+      required:
+      - sessionToken
+      - expiresAt
+      - itemId
+      - user
+      title: SiteServiceRequestUiSessionResponse
+    SiteServiceRequestUiUser:
+      properties:
+        id:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Id
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        isAdmin:
+          type: boolean
+          title: Isadmin
+      type: object
+      required:
+      - id
+      - name
+      - isAdmin
+      title: SiteServiceRequestUiUser
     SmsAttemptCreateRequest:
       properties:
         event_id:

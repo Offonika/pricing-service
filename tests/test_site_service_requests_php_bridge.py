@@ -37,6 +37,7 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "'support-team'" in source
     assert "'isVisibleToCustomer'" in source
     assert "`IS_HIDDEN`" in source
+    assert source.count("`IS_LOG` = 'N'") == 2
     assert " AND `ID` <= " in source
     assert "'leaseToken' => $leaseToken" in source
     assert "payloadFileIsUnavailable" in source
@@ -69,6 +70,12 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "`DATE_CLOSE`" in source
     assert "$ticket['CLOSED']" not in source
     assert "ticketDateIsClosed($ticket['DATE_CLOSE'] ?? null)" in source
+    assert "X-MM-Site-Capabilities: command-files-v1" in source
+    assert "X-MM-Command-Lease-Token" in source
+    assert "missingCommandFiles" in source
+    assert "attachment_write_failed" in source
+    assert "backfillConversationSnapshot" in source
+    assert "Поддержка MASTER MOBILE" in source
 
 
 def test_bridge_hardening_keeps_ambiguous_writes_and_field_repair_idempotent() -> None:
@@ -196,6 +203,14 @@ def test_php_source_lints(path: Path) -> None:
                 "zeroDate": False,
                 "closed": True,
                 "malformedError": "ticket_date_close_invalid",
+            },
+        ),
+        (
+            "ticket_log_filter_fixture.php",
+            {
+                "latestMessageId": 1780,
+                "historyMessageIds": [1780],
+                "historyAuthorKinds": ["customer"],
             },
         ),
     ],

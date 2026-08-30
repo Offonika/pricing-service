@@ -146,6 +146,52 @@ export function isBitrixProcurementLabelsRoute() {
   return path === "/bitrix/procurement-labels" || path.startsWith("/bitrix/procurement-labels/");
 }
 
+export function isBitrixSiteServiceRequestsRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path === "/bitrix/site-service-requests" || path.startsWith("/bitrix/site-service-requests/");
+}
+
+export interface BitrixSiteServiceRequestsSessionResponse {
+  sessionToken: string;
+  expiresAt: string;
+  itemId: number;
+  user: { id: number; name: string; isAdmin: boolean };
+}
+
+export function getSiteServiceRequestItemId() {
+  const launchId = window.__MM_BITRIX_LAUNCH__?.placement_options?.ID;
+  const value = String(launchId ?? "").trim();
+  return /^[1-9][0-9]*$/.test(value) ? Number(value) : 0;
+}
+
+export async function initializeBitrixSiteServiceRequestsSession() {
+  clearApiAuthToken();
+  let auth = getLaunchAuth();
+  if (!auth) {
+    await loadBitrixSdk();
+    auth = await initBitrix();
+  }
+  const itemId = getSiteServiceRequestItemId();
+  const placement = window.__MM_BITRIX_LAUNCH__?.placement || "";
+  if (!itemId) throw new Error("Bitrix24 не передал номер карточки");
+  const { data } = await api.post<BitrixSiteServiceRequestsSessionResponse>(
+    "/site-service-requests/ui/session",
+    {
+      accessToken: auth.access_token,
+      domain: auth.domain,
+      memberId: auth.member_id,
+      placement,
+      itemId,
+    },
+  );
+  setApiAuthToken(data.sessionToken);
+  if (window.__MM_BITRIX_LAUNCH__) {
+    window.__MM_BITRIX_LAUNCH__.access_token = null;
+  }
+  document.getElementById("mm-bitrix-launch")?.remove();
+  return data;
+}
+
 export function isBitrixProcurementAssortmentRoute() {
   const path = window.location.pathname.replace(/\/+$/, "");
   return path === "/bitrix/procurement-assortment" || path.startsWith("/bitrix/procurement-assortment/");

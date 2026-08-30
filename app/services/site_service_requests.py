@@ -22,8 +22,10 @@ from app.core.config import Settings
 from app.models.site_service_requests import (
     SiteServiceRequestCase,
     SiteServiceRequestCommand,
+    SiteServiceRequestCommandFile,
     SiteServiceRequestEvent,
     SiteServiceRequestFile,
+    SiteServiceRequestMessage,
     SiteServiceRequestSource,
     SiteServiceRequestWorkerState,
 )
@@ -95,6 +97,15 @@ class StagedSiteServiceRequestFile:
 
 
 @dataclass(frozen=True)
+class LeasedSiteServiceRequestCommandFile:
+    file_id: int
+    name: str
+    mime_type: str
+    byte_size: int
+    sha256: str
+
+
+@dataclass(frozen=True)
 class LeasedSiteServiceRequestCommand:
     command_id: int
     command_key: str
@@ -102,6 +113,7 @@ class LeasedSiteServiceRequestCommand:
     reply_text: str
     lease_until: datetime
     lease_token: str
+    files: tuple[LeasedSiteServiceRequestCommandFile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,6 +174,7 @@ def accept_site_service_request_event(
     payload_sha256: str,
     cipher: SiteServiceRequestCipher,
     max_file_bytes: int,
+    conversation_retention_days: int = 90,
     now: datetime | None = None,
 ) -> AcceptedSiteServiceRequestEvent:
     existing_event = session.scalar(
@@ -195,6 +208,15 @@ def accept_site_service_request_event(
                 session.flush()
             elif _as_utc(payload.occurred_at) < _as_utc(case.first_seen_at):
                 case.first_seen_at = _as_utc(payload.occurred_at)
+
+            reconcile_site_service_request_conversation_snapshot(
+                session,
+                case=case,
+                payload=payload,
+                cipher=cipher,
+                retention_days=conversation_retention_days,
+                now=current_time,
+            )
 
             source_key = f"site-support-ticket:{payload.ticket.id}"
             if case.source_key is None:
@@ -285,6 +307,167 @@ def accept_site_service_request_event(
         duplicate=False,
         missing_file_ids=missing_file_ids,
     )
+
+
+def reconcile_site_service_request_conversation_snapshot(
+    session: Session,
+    *,
+    case: SiteServiceRequestCase,
+    payload: SiteServiceRequestEventPayload,
+    cipher: SiteServiceRequestCipher,
+    retention_days: int = 90,
+    now: datetime | None = None,
+) -> None:
+    """Refresh the encrypted UI read-model without making it a source of truth."""
+
+    current_time = _as_utc(now or datetime.now(UTC))
+    snapshot_message_id = max(message.message_id for message in payload.history)
+    current_snapshot = case.conversation_snapshot_message_id or 0
+    if snapshot_message_id >= current_snapshot:
+        existing_messages = {
+            message.source_message_id: message
+            for message in session.scalars(
+                select(SiteServiceRequestMessage).where(
+                    SiteServiceRequestMessage.case_id == case.id,
+                    SiteServiceRequestMessage.message_kind == "site_message",
+                    SiteServiceRequestMessage.source_message_id.is_not(None),
+                )
+            )
+        }
+        command_authors = {
+            command.source_message_id: command
+            for command in session.scalars(
+                select(SiteServiceRequestCommand).where(
+                    SiteServiceRequestCommand.case_id == case.id,
+                    SiteServiceRequestCommand.source_message_id.is_not(None),
+                )
+            )
+        }
+        for snapshot_message in payload.history:
+            raw_text = snapshot_message.text.encode("utf-8")
+            text_sha256 = hashlib.sha256(raw_text).hexdigest()
+            message = existing_messages.get(snapshot_message.message_id)
+            if (
+                message is not None
+                and (message.last_snapshot_message_id or 0) > snapshot_message_id
+            ):
+                continue
+            command = command_authors.get(snapshot_message.message_id)
+            author_name = command.created_by_name if command is not None else None
+            author_user_id = command.created_by_bitrix_user_id if command is not None else None
+            encrypted = cipher.encrypt(
+                raw_text,
+                event_id=f"conversation:{case.id}:{snapshot_message.message_id}",
+            )
+            if message is None:
+                message = SiteServiceRequestMessage(
+                    case_id=case.id,
+                    source_message_id=snapshot_message.message_id,
+                    message_kind="site_message",
+                    direction=_site_service_request_snapshot_direction(
+                        author_kind=snapshot_message.author_kind,
+                        is_visible_to_customer=snapshot_message.is_visible_to_customer,
+                    ),
+                    author_kind=snapshot_message.author_kind,
+                    author_bitrix_user_id=author_user_id,
+                    author_name=author_name,
+                    is_visible_to_customer=snapshot_message.is_visible_to_customer,
+                    text_encrypted=encrypted,
+                    text_sha256=text_sha256,
+                    last_snapshot_message_id=snapshot_message_id,
+                    created_at=_as_utc(snapshot_message.created_at),
+                    updated_at=current_time,
+                )
+                session.add(message)
+                existing_messages[snapshot_message.message_id] = message
+            else:
+                message.direction = _site_service_request_snapshot_direction(
+                    author_kind=snapshot_message.author_kind,
+                    is_visible_to_customer=snapshot_message.is_visible_to_customer,
+                )
+                message.author_kind = snapshot_message.author_kind
+                message.author_bitrix_user_id = author_user_id
+                message.author_name = author_name
+                message.is_visible_to_customer = snapshot_message.is_visible_to_customer
+                message.text_encrypted = encrypted
+                message.text_sha256 = text_sha256
+                message.last_snapshot_message_id = snapshot_message_id
+                message.purged_at = None
+                message.created_at = _as_utc(snapshot_message.created_at)
+                message.updated_at = current_time
+        case.conversation_snapshot_message_id = snapshot_message_id
+
+        if payload.ticket.is_closed:
+            if case.conversation_closed_at is None:
+                case.conversation_closed_at = current_time
+            case.conversation_purge_after = case.conversation_closed_at + timedelta(
+                days=retention_days
+            )
+        else:
+            case.conversation_closed_at = None
+            case.conversation_purge_after = None
+
+
+def _site_service_request_snapshot_direction(
+    *, author_kind: str, is_visible_to_customer: bool
+) -> str:
+    if not is_visible_to_customer:
+        return "internal"
+    return "inbound" if author_kind == "customer" else "outbound"
+
+
+def purge_expired_site_service_request_conversations(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> int:
+    current_time = _as_utc(now or datetime.now(UTC))
+    cases = list(
+        session.scalars(
+            select(SiteServiceRequestCase)
+            .where(
+                SiteServiceRequestCase.conversation_purge_after.is_not(None),
+                SiteServiceRequestCase.conversation_purge_after <= current_time,
+            )
+            .order_by(SiteServiceRequestCase.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+    )
+    purged_count = 0
+    for case in cases:
+        active_command = session.scalar(
+            select(SiteServiceRequestCommand.id)
+            .where(
+                SiteServiceRequestCommand.case_id == case.id,
+                SiteServiceRequestCommand.status.in_(("pending", "leased")),
+            )
+            .limit(1)
+        )
+        if active_command is not None:
+            # Never erase a payload which the bridge may still deliver. Keep the
+            # deadline so a later worker tick retries the purge after ACK.
+            continue
+        for message in session.scalars(
+            select(SiteServiceRequestMessage)
+            .where(
+                SiteServiceRequestMessage.case_id == case.id,
+                SiteServiceRequestMessage.text_encrypted.is_not(None),
+            )
+            .with_for_update()
+        ):
+            message.text_encrypted = None
+            message.purged_at = current_time
+            message.updated_at = current_time
+        for command in session.scalars(
+            select(SiteServiceRequestCommand).where(SiteServiceRequestCommand.case_id == case.id)
+        ):
+            session.delete(command)
+        case.conversation_purge_after = None
+        case.updated_at = current_time
+        purged_count += 1
+    return purged_count
 
 
 def accept_site_service_email_event(
@@ -726,6 +909,7 @@ def lease_site_service_request_commands(
     cipher: SiteServiceRequestCipher,
     enabled: bool,
     lease_seconds: int,
+    include_attachments: bool = False,
     limit: int = 20,
     now: datetime | None = None,
 ) -> list[LeasedSiteServiceRequestCommand]:
@@ -784,9 +968,12 @@ def lease_site_service_request_commands(
     invalid_text_commands: list[SiteServiceRequestCommand] = []
     crypto_error_commands: list[SiteServiceRequestCommand] = []
     first_crypto_error: SiteServiceRequestConfigurationError | None = None
+    authenticated_payload_seen = False
     for command in commands:
         if len(leased) >= lease_limit:
             break
+        if command.attachments and not include_attachments:
+            continue
         try:
             reply_bytes = cipher.decrypt(
                 command.reply_encrypted,
@@ -801,6 +988,7 @@ def lease_site_service_request_commands(
         except UnicodeDecodeError:
             invalid_text_commands.append(command)
             continue
+        authenticated_payload_seen = True
         if (
             not reply_text.strip()
             or len(reply_text) > SITE_SERVICE_REQUEST_REPLY_MAX_LENGTH
@@ -808,11 +996,50 @@ def lease_site_service_request_commands(
         ):
             invalid_text_commands.append(command)
             continue
+        leased_files: list[LeasedSiteServiceRequestCommandFile] = []
+        invalid_attachment = False
+        for attachment in command.attachments:
+            if attachment.payload_encrypted is None:
+                invalid_attachment = True
+                break
+            try:
+                file_bytes = cipher.decrypt(
+                    attachment.payload_encrypted,
+                    event_id=(f"command-file:{command.command_key}:{attachment.client_file_id}"),
+                )
+            except SiteServiceRequestConfigurationError as exc:
+                crypto_error_commands.append(command)
+                if first_crypto_error is None:
+                    first_crypto_error = exc
+                invalid_attachment = True
+                break
+            if (
+                len(file_bytes) != attachment.byte_size
+                or hashlib.sha256(file_bytes).hexdigest() != attachment.sha256
+            ):
+                invalid_attachment = True
+                break
+            leased_files.append(
+                LeasedSiteServiceRequestCommandFile(
+                    file_id=attachment.id,
+                    name=attachment.safe_filename,
+                    mime_type=attachment.mime_type,
+                    byte_size=attachment.byte_size,
+                    sha256=attachment.sha256,
+                )
+            )
+        if invalid_attachment:
+            if command not in crypto_error_commands:
+                invalid_text_commands.append(command)
+            continue
         command.status = "leased"
         command.attempts += 1
         command.lease_until = lease_until
         command.lease_token = secrets.token_urlsafe(32)
         command.updated_at = current_time
+        for attachment in command.attachments:
+            attachment.status = "leased"
+            attachment.updated_at = current_time
         leased.append(
             LeasedSiteServiceRequestCommand(
                 command_id=command.id,
@@ -821,6 +1048,7 @@ def lease_site_service_request_commands(
                 reply_text=reply_text,
                 lease_until=lease_until,
                 lease_token=command.lease_token,
+                files=tuple(leased_files),
             )
         )
 
@@ -828,7 +1056,7 @@ def lease_site_service_request_commands(
     # valid. Only then may other invalid rows be quarantined as corruption; if
     # every row fails authentication, fail closed so a wrong global key cannot
     # terminally discard all pending replies.
-    key_is_proven = bool(leased or invalid_text_commands)
+    key_is_proven = authenticated_payload_seen or bool(leased or invalid_text_commands)
     if crypto_error_commands and not key_is_proven:
         assert first_crypto_error is not None
         raise first_crypto_error
@@ -841,6 +1069,10 @@ def lease_site_service_request_commands(
         command.card_action_cleared_at = current_time
         command.last_error_code = "command_payload_invalid"
         command.updated_at = current_time
+        for attachment in command.attachments:
+            attachment.status = "failed"
+            attachment.last_error_code = "command_payload_invalid"
+            attachment.updated_at = current_time
         latest_command_id = session.scalar(
             select(SiteServiceRequestCommand.id)
             .where(SiteServiceRequestCommand.case_id == command.case_id)
@@ -857,6 +1089,45 @@ def lease_site_service_request_commands(
             command.case.outbound_last_error_code = "command_payload_invalid"
     session.flush()
     return leased
+
+
+def read_site_service_request_command_file(
+    session: Session,
+    *,
+    command_id: int,
+    file_id: int,
+    lease_token: str,
+    cipher: SiteServiceRequestCipher,
+    now: datetime | None = None,
+) -> tuple[SiteServiceRequestCommandFile, bytes]:
+    current_time = _as_utc(now or datetime.now(UTC))
+    command = session.scalar(
+        select(SiteServiceRequestCommand).where(SiteServiceRequestCommand.id == command_id)
+    )
+    if command is None:
+        raise SiteServiceRequestNotFoundError("command_not_found")
+    if (
+        command.status != "leased"
+        or command.lease_token != lease_token
+        or command.lease_until is None
+        or _as_utc(command.lease_until) <= current_time
+    ):
+        raise SiteServiceRequestConflictError("command_lease_conflict")
+    attachment = session.scalar(
+        select(SiteServiceRequestCommandFile).where(
+            SiteServiceRequestCommandFile.id == file_id,
+            SiteServiceRequestCommandFile.command_id == command.id,
+        )
+    )
+    if attachment is None or attachment.payload_encrypted is None:
+        raise SiteServiceRequestNotFoundError("command_file_not_found")
+    body = cipher.decrypt(
+        attachment.payload_encrypted,
+        event_id=f"command-file:{command.command_key}:{attachment.client_file_id}",
+    )
+    if len(body) != attachment.byte_size or hashlib.sha256(body).hexdigest() != attachment.sha256:
+        raise SiteServiceRequestConflictError("command_file_payload_invalid")
+    return attachment, body
 
 
 def acknowledge_site_service_request_command(
@@ -928,6 +1199,11 @@ def acknowledge_site_service_request_command(
         command.ack_at = _as_utc(payload.applied_at)
         command.last_error_code = None
         command.lease_until = None
+        for attachment in command.attachments:
+            attachment.status = "applied"
+            attachment.payload_encrypted = None
+            attachment.last_error_code = None
+            attachment.updated_at = current_time
         case.latest_outbound_message_id = max(
             case.latest_outbound_message_id or 0,
             payload.message_id,
@@ -955,6 +1231,10 @@ def acknowledge_site_service_request_command(
         command.ack_at = current_time
         command.last_error_code = payload.error_code
         command.lease_until = None
+        for attachment in command.attachments:
+            attachment.status = "failed"
+            attachment.last_error_code = payload.error_code
+            attachment.updated_at = current_time
         if is_latest_command:
             _update_site_service_request_outbound_checkpoint(
                 case,

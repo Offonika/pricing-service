@@ -117,6 +117,40 @@ def test_onec_pytds_engine_passes_distinct_query_and_login_timeouts(monkeypatch)
     assert captured["connect_args"] == {"timeout": 30.0, "login_timeout": 6.0}
 
 
+def test_onec_engine_omits_mssql_timeouts_for_sqlite_fixture(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_create_engine(database_url: str, **options):
+        captured.update({"database_url": database_url, **options})
+        return sentinel
+
+    monkeypatch.setattr(
+        "app.infrastructure.db.engines.sqlalchemy_create_engine", fake_create_engine
+    )
+
+    result = build_onec_engine(
+        "sqlite:///:memory:",
+        query_timeout_seconds=30,
+        login_timeout_seconds=6,
+    )
+
+    assert result is sentinel
+    assert captured == {
+        "database_url": "sqlite:///:memory:",
+        "pool_pre_ping": True,
+    }
+
+
+def test_onec_engine_rejects_unsupported_dialect() -> None:
+    with pytest.raises(ValueError, match="1C source must use MSSQL"):
+        build_onec_engine(
+            "postgresql://readonly:secret@onec/db",
+            query_timeout_seconds=30,
+            login_timeout_seconds=6,
+        )
+
+
 def test_onec_pyodbc_engine_uses_login_timeout_and_cursor_query_timeout(monkeypatch) -> None:
     captured: dict[str, object] = {}
     listeners: list[tuple[object, str, object]] = []

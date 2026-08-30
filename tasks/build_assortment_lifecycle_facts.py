@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.services.assortment_lifecycle_classification_store import fetch_previous_statuses
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
@@ -81,11 +81,15 @@ def main() -> int:
                 args.receipt_mapping_json,
                 error_code=RECEIPT_MAPPING_UNRESOLVED,
             )
-            engine = build_engine(onec_database_url, pool_pre_ping=True)
+            onec_engine = build_onec_engine(
+                onec_database_url,
+                query_timeout_seconds=settings.onec_query_timeout_seconds,
+                login_timeout_seconds=settings.onec_login_timeout_seconds,
+            )
             try:
                 nomenclature_rows, supplier_order_rows, receipt_rows = (
                     fetch_onec_lifecycle_source_rows(
-                        engine,
+                        onec_engine,
                         folder=args.folder,
                         history_start=history_start,
                         supplier_mapping=supplier_mapping,
@@ -101,20 +105,20 @@ def main() -> int:
                     for row in nomenclature_rows
                 ]
                 first_sale_dates = fetch_first_sale_dates(
-                    engine,
+                    onec_engine,
                     nomenclature_codes=codes,
                 )
                 # Продажи за 30/90/180 дней — вход переходов «Пошли продажи ->
                 # Растим -> Поддерживаем» по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
-                    engine,
+                    onec_engine,
                     nomenclature_codes=codes,
                     date_to=demand_date_to,
                 )
             finally:
-                engine.dispose()
-            product_engine = build_engine(settings.database_url, pool_pre_ping=True)
-            try:
+                onec_engine.dispose()
+            with session_scope(read_only=True) as session:
+                product_engine = session.get_bind()
                 nomenclature_rows = enrich_nomenclature_rows_with_product_snapshot(
                     product_engine,
                     nomenclature_rows,
@@ -129,8 +133,6 @@ def main() -> int:
                     windows_days=DEMAND_WINDOWS_DAYS,
                 )
                 previous_statuses = fetch_previous_statuses(product_engine)
-            finally:
-                product_engine.dispose()
     except ValueError as exc:
         if args.json:
             print(
@@ -157,16 +159,13 @@ def main() -> int:
         previous_statuses=previous_statuses,
     )
     if not args.input_json:
-        product_engine = build_engine(settings.database_url, pool_pre_ping=True)
-        try:
+        with session_scope(read_only=True) as session:
             facts = attach_effective_availability_shadow_to_facts(
-                product_engine,
+                session.get_bind(),
                 facts,
                 date_to=(args.today or date.today()) - timedelta(days=1),
                 history_days=DEFAULT_AVAILABILITY_HISTORY_DAYS,
             )
-        finally:
-            product_engine.dispose()
     payload = {
         "meta": {
             "schema": "assortment_lifecycle_facts.v1",

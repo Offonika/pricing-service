@@ -359,9 +359,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 56. После зелёного CI разрешён merge PR №121. Production migration, deploy и
     cutover в это решение не входят.
+57. Для `tasks/build_ved_akb_master_register.py` разрешены push ветки и создание
+    отдельного PR после локальных проверок. Merge и production release требуют
+    отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-30 — разрешена подготовка VED AKB master register read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-30 — `tasks/build_ved_akb_master_register.py` переведён на central
   read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose; SQL, аргументы и XLSX-контракт сохранены.

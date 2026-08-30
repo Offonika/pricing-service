@@ -204,6 +204,16 @@
       "spec": "docs/specs/customer-settlements-backend-v1.md",
       "remove_after": null
     },
+    "check_logistics_stage_outbox_health.py": {
+      "owner": "logistics",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "read_only",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "cleanup_customer_settlements.py": {
       "owner": "receivables",
       "kind": "permanent_cli",

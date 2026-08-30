@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db import get_application_engine
+from app.infrastructure.db import session_scope
 from app.models import SiteOrderStageOutbox
 from app.services.site_order_stage_outbox import (
     CRM_STAGE_PICKUP_TRANSIT,
@@ -71,7 +71,7 @@ def main() -> int:
         raise SystemExit("--max-delay-seconds must be greater than zero")
 
     settings = get_settings()
-    with Session(get_application_engine()) as session:
+    with session_scope(read_only=True) as session:
         report = build_health_report(
             session,
             pilot_warehouse_external_ids=(settings.logistics_stage_pilot_warehouse_external_ids),

@@ -327,7 +327,7 @@ def derive_shipment_stage(
             return ShipmentStageDecision("manual_review", None, "shipment_marked_conflict")
         if status == STATUS_RETURNED:
             returned = True
-        if status != STATUS_RETURNED:
+        if status in {STATUS_READY, STATUS_DISPATCHED, STATUS_DELIVERED}:
             allocated_lines.extend(list(shipment.get("items") or []))
         if status in {STATUS_DISPATCHED, STATUS_DELIVERED, STATUS_RETURNED}:
             dispatched_lines.extend(list(shipment.get("items") or []))
@@ -504,13 +504,14 @@ def validate_rtu_allocations(
             valid_rtus[external_id] = _aggregate_lines(raw.get("items") or [])
 
     allocated: defaultdict[tuple[str, str], Decimal] = defaultdict(Decimal)
-    require_ref = len(valid_rtus) > 1
     for shipment in shipments:
-        if _clean(shipment.get("status")).lower() == STATUS_RETURNED:
+        status = _clean(shipment.get("status")).lower() or STATUS_PLANNED
+        if status not in {STATUS_READY, STATUS_DISPATCHED, STATUS_DELIVERED}:
             continue
         for item in shipment.get("items") or []:
             rtu_external_id = _clean(item.get("rtu_external_id"))
             product_ref = _clean(item.get("product_ref"))
+            require_ref = status in {STATUS_DISPATCHED, STATUS_DELIVERED} or len(valid_rtus) > 1
             if require_ref and not rtu_external_id:
                 return "shipment_rtu_allocation_missing"
             if not rtu_external_id:

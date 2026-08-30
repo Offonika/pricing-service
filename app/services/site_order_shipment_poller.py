@@ -136,18 +136,42 @@ def _compose_shipments(
                     [str(rtu.get("external_id") or ""), Decimal(str(item.get("quantity") or 0))]
                 )
 
-    result: list[dict[str, Any]] = []
-    for raw in bitrix_order.get("shipments") or []:
-        if not isinstance(raw, Mapping):
-            continue
+    raw_shipments = [
+        (index, raw)
+        for index, raw in enumerate(bitrix_order.get("shipments") or [])
+        if isinstance(raw, Mapping)
+    ]
+
+    def operational_priority(raw: Mapping[str, Any]) -> int:
+        if bool(raw.get("canceled")):
+            return 3
+        if bool(raw.get("deducted")):
+            return 0
+        if str(raw.get("tracking_number") or "").strip():
+            return 1
+        return 2
+
+    # A standard planned Bitrix shipment often contains the whole order. Allocate
+    # actual/ready parts first so that the placeholder cannot consume assembled RTU
+    # quantities which belong to a physical shipment.
+    composed: dict[int, dict[str, Any]] = {}
+    for index, raw in sorted(
+        raw_shipments,
+        key=lambda item: (operational_priority(item[1]), item[0]),
+    ):
         items: list[dict[str, Any]] = []
         allocation_conflict = False
+        canceled = bool(raw.get("canceled"))
         for item in raw.get("items") or []:
             if not isinstance(item, Mapping):
                 continue
             product_ref = str(item.get("product_xml_id") or item.get("product_id") or "").strip()
             remaining = Decimal(str(item.get("quantity") or 0))
-            while remaining > shipment_service.QUANTITY_TOLERANCE and pools[product_ref]:
+            while (
+                not canceled
+                and remaining > shipment_service.QUANTITY_TOLERANCE
+                and pools[product_ref]
+            ):
                 rtu_external_id, available = pools[product_ref][0]
                 take = min(remaining, available)
                 items.append(
@@ -178,36 +202,30 @@ def _compose_shipments(
                         "bitrix_shipment_item_id": item.get("shipment_item_id"),
                     }
                 )
-        canceled = bool(raw.get("canceled"))
         deducted = bool(raw.get("deducted"))
-        status = (
-            shipment_service.STATUS_CONFLICT
-            if canceled or allocation_conflict
-            else (
-                shipment_service.STATUS_DISPATCHED
-                if deducted
-                else (
-                    shipment_service.STATUS_READY
-                    if str(raw.get("tracking_number") or "").strip()
-                    else shipment_service.STATUS_PLANNED
-                )
-            )
-        )
-        result.append(
-            {
-                "shipment_key": str(raw.get("shipment_key") or "").strip()
-                or f"bitrix:{raw.get('shipment_id')}",
-                "bitrix_shipment_id": raw.get("shipment_id"),
-                "delivery_service_id": raw.get("delivery_service_id"),
-                "carrier": raw.get("delivery_service_id"),
-                "tracking_number": raw.get("tracking_number"),
-                "status": status,
-                "dispatched_at": raw.get("date_deducted") if deducted else None,
-                "source_revision": raw.get("revision"),
-                "items": items,
-            }
-        )
-    return result
+        if canceled:
+            status = shipment_service.STATUS_CONFLICT
+        elif deducted:
+            status = shipment_service.STATUS_DISPATCHED
+        elif str(raw.get("tracking_number") or "").strip():
+            status = shipment_service.STATUS_READY
+        else:
+            status = shipment_service.STATUS_PLANNED
+        if allocation_conflict and status != shipment_service.STATUS_PLANNED:
+            status = shipment_service.STATUS_CONFLICT
+        composed[index] = {
+            "shipment_key": str(raw.get("shipment_key") or "").strip()
+            or f"bitrix:{raw.get('shipment_id')}",
+            "bitrix_shipment_id": raw.get("shipment_id"),
+            "delivery_service_id": raw.get("delivery_service_id"),
+            "carrier": raw.get("delivery_service_id"),
+            "tracking_number": raw.get("tracking_number"),
+            "status": status,
+            "dispatched_at": raw.get("date_deducted") if deducted else None,
+            "source_revision": raw.get("revision"),
+            "items": items,
+        }
+    return [composed[index] for index, _raw in raw_shipments]
 
 
 def shipment_operational_metrics(session: Session) -> dict[str, Any]:

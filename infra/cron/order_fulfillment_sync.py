@@ -2357,7 +2357,7 @@ def query_multi_shipment_onec_snapshots(
         mapping = getattr(row, "_mapping", row)
         order_number = clean_csv_value(mapping["site_order_number"])
         item = {
-            "product_ref": clean_csv_value(mapping["product_ref"]),
+            "product_ref": normalize_onec_rref(mapping["product_ref"]),
             "quantity": str(mapping["quantity"]),
         }
         result.setdefault(order_number, {"expected_items": [], "rtus": []})[
@@ -2382,7 +2382,7 @@ def query_multi_shipment_onec_snapshots(
             },
         )
         item = {
-            "product_ref": clean_csv_value(mapping["product_ref"]),
+            "product_ref": normalize_onec_rref(mapping["product_ref"]),
             "quantity": str(mapping["quantity"]),
         }
         rtu["items"].append(item)
@@ -2733,6 +2733,37 @@ def read_csv_dicts(path_value: Any) -> list[dict[str, str]]:
 
 def clean_csv_value(value: Any) -> str:
     return fulfillment._clean_string(value)  # noqa: SLF001 - cron shares CSV normalizer.
+
+
+def normalize_onec_rref(value: Any) -> str:
+    """Convert a UT 10.3 binary RRef to the canonical UUID used by Bitrix.
+
+    SQL Server exposes a 1C reference as five byte groups in storage order:
+    ``2 + 6 + 2 + 2 + 4``.  CommerceML/Bitrix uses the canonical GUID order
+    ``4 + 2 + 2 + 2 + 6``.  Invalid values are preserved so allocation remains
+    fail-closed instead of guessing a product identity.
+    """
+
+    original = clean_csv_value(value)
+    compact = original[2:] if original.lower().startswith("0x") else original
+    compact = compact.replace("-", "")
+    if len(compact) != 32:
+        return original
+    try:
+        raw = bytes.fromhex(compact)
+    except ValueError:
+        return original
+    canonical = raw[12:16] + raw[10:12] + raw[8:10] + raw[0:2] + raw[2:8]
+    encoded = canonical.hex()
+    return "-".join(
+        (
+            encoded[0:8],
+            encoded[8:12],
+            encoded[12:16],
+            encoded[16:20],
+            encoded[20:32],
+        )
+    )
 
 
 def unique_values(values: Any) -> list[str]:

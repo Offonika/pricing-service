@@ -362,9 +362,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 57. Для `tasks/build_ved_akb_master_register.py` разрешены push ветки и создание
     отдельного PR после локальных проверок. Merge и production release требуют
     отдельных подтверждений.
+58. После зелёного CI разрешён merge PR №124. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-30 — разрешён merge PR №124; production release оставлен отдельным
+  решением.
 - 2026-08-30 — разрешена подготовка VED AKB master register read-only slice с
   push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-30 — `tasks/build_ved_akb_master_register.py` переведён на central

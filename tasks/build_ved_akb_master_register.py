@@ -17,7 +17,8 @@ from openpyxl.styles import Font, PatternFill
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
-from app.infrastructure.db.engines import build_engine
+from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine, session_scope
 from app.models import Product
 from app.services.sku import generate_sku_for_product
 
@@ -202,17 +203,24 @@ def main() -> None:
         raise SystemExit("DATABASE_URL is not configured")
     if not onec_database_url:
         raise SystemExit("ONEC_DATABASE_URL is not configured")
+    settings = get_settings()
 
     current_rows = _load_current_ds_rows(args.current_xlsx)
     old_sku_rows = _load_csv_by_code(args.old_sku_csv)
     old_tech_rows = _load_csv_by_code(args.old_tech_csv)
     old_normalization_rows = _load_csv_by_code(args.old_normalization_csv)
 
-    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
-    onec_lines = _fetch_onec_order_lines(onec_engine, args.order_number)
+    onec_engine = build_onec_engine(
+        onec_database_url,
+        query_timeout_seconds=settings.onec_query_timeout_seconds,
+        login_timeout_seconds=settings.onec_login_timeout_seconds,
+    )
+    try:
+        onec_lines = _fetch_onec_order_lines(onec_engine, args.order_number)
+    finally:
+        onec_engine.dispose()
 
-    app_engine = build_engine(database_url, pool_pre_ping=True)
-    with Session(app_engine) as session:
+    with session_scope(read_only=True) as session:
         products_by_code = _load_products_by_code(
             session,
             codes=[_clean(row.get("onec_item_code")) for row in onec_lines],

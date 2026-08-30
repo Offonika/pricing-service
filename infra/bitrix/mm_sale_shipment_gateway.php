@@ -463,8 +463,14 @@ try {
     $configPath = $documentRoot . '/local/php_interface/mm_sale_shipment_gateway.config.php';
     $config = is_file($configPath) ? include $configPath : [];
     $configuredToken = mmShipmentString(is_array($config) ? ($config['token'] ?? '') : '');
-    $authorization = mmShipmentString($_SERVER['HTTP_AUTHORIZATION'] ?? '');
+    $authorization = mmShipmentString(
+        $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? ''
+    );
     $providedToken = str_starts_with($authorization, 'Bearer ') ? substr($authorization, 7) : '';
+    if ($providedToken === '') {
+        // Apache mod_fcgid commonly strips Authorization unless CGIPassAuth is enabled.
+        $providedToken = mmShipmentString($_SERVER['HTTP_X_MM_SHIPMENT_TOKEN'] ?? '');
+    }
     if ($configuredToken === '' || $providedToken === '' || !hash_equals($configuredToken, $providedToken)) {
         throw new MmShipmentGatewayException('unauthorized', 401);
     }

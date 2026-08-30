@@ -78,6 +78,7 @@ class BitrixSaleShipmentGatewayClient:
             json={"action": action, **dict(payload)},
             headers={
                 "Authorization": f"Bearer {self._token}",
+                "X-MM-Shipment-Token": self._token,
                 "Content-Type": "application/json",
             },
             timeout=self._timeout,

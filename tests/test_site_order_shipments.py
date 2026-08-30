@@ -129,6 +129,7 @@ def test_shipment_gateway_uses_bearer_and_exact_shipment_id() -> None:
 
     assert session.trust_env is False
     assert session.calls[0]["headers"]["Authorization"] == "Bearer local-secret"
+    assert session.calls[0]["headers"]["X-MM-Shipment-Token"] == "local-secret"
     assert session.calls[0]["json"] == {"action": "list", "order_id": 777}
     assert session.calls[1]["json"] == {
         "action": "update_tracking",

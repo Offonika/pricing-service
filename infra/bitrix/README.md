@@ -6,6 +6,9 @@
 - `mm_sale_shipment_gateway.php` устанавливается как
   `local/tools/mm_sale_shipment_gateway.php`. Bearer token хранится только в
   `local/php_interface/mm_sale_shipment_gateway.config.php` и не коммитится.
+  Клиент дублирует тот же секрет в `X-MM-Shipment-Token` для Apache `mod_fcgid`,
+  который по умолчанию удаляет `Authorization`; gateway принимает fallback только
+  после той же exact `hash_equals`-проверки.
   Read-only действие `snapshot` ищет заказ по точному `ACCOUNT_NUMBER`. Для
   structured audit в конфиге задаётся `log_file` вне публичного web-root.
 - `mm_site_cdek_track_sync.php` заменяет текущий CLI-мост после backup и dry-run.

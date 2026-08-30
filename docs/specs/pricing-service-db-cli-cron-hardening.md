@@ -350,9 +350,14 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 54. После зелёного CI разрешён merge PR №116. Production migration, deploy и
     cutover в это решение не входят.
+55. Для `tasks/build_missing_onec_subject_updates.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-30 — разрешена подготовка missing 1C subject updates read-only slice с
+  push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-30 — `tasks/build_missing_onec_subject_updates.py` переведён на central
   read-only session scope и role-specific 1С factory с bounded timeout и
   гарантированным dispose; классификация предметов, аргументы и JSON/XML-контракты

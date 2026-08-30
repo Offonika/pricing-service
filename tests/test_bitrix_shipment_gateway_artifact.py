@@ -9,6 +9,8 @@ def test_shipment_gateway_is_authenticated_idempotent_and_exact() -> None:
     source = GATEWAY.read_text(encoding="utf-8")
 
     assert "hash_equals($configuredToken, $providedToken)" in source
+    assert "REDIRECT_HTTP_AUTHORIZATION" in source
+    assert "HTTP_X_MM_SHIPMENT_TOKEN" in source
     assert "mmShipmentHandleEnsure" in source
     assert "shipment_key_conflict" in source
     assert "mmShipmentWithLock('ensure:' . $orderId . ':' . $shipmentKey" in source

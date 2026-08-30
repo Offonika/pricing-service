@@ -617,6 +617,56 @@ def test_rtu_allocation_is_strict(line: dict, expected_reason: str) -> None:
     assert reason == expected_reason
 
 
+def test_planned_shipment_may_wait_for_rtu_allocation() -> None:
+    reason = shipments.validate_rtu_allocations(
+        rtus=[_rtu("rtu-1", [_line("phone", "1")])],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id=None)],
+                status=shipments.STATUS_PLANNED,
+            )
+        ],
+    )
+
+    assert reason is None
+
+
+def test_dispatched_shipment_requires_concrete_rtu() -> None:
+    reason = shipments.validate_rtu_allocations(
+        rtus=[_rtu("rtu-1", [_line("phone", "1")])],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id=None)],
+                status=shipments.STATUS_DISPATCHED,
+            )
+        ],
+    )
+
+    assert reason == "shipment_rtu_allocation_missing"
+
+
+def test_same_rtu_quantity_cannot_be_allocated_twice() -> None:
+    reason = shipments.validate_rtu_allocations(
+        rtus=[_rtu("rtu-1", [_line("phone", "1")])],
+        shipments=[
+            _shipment(
+                "shipment-1",
+                [_line("phone", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_READY,
+            ),
+            _shipment(
+                "shipment-2",
+                [_line("phone", "1", rtu_external_id="rtu-1")],
+                status=shipments.STATUS_DISPATCHED,
+            ),
+        ],
+    )
+
+    assert reason == "shipment_rtu_quantity_excess"
+
+
 def test_internal_pickup_routes_to_pickup_transit() -> None:
     expected = [_line("phone", "1")]
     decision = shipments.derive_shipment_stage(

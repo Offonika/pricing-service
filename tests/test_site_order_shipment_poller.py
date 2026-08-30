@@ -147,6 +147,122 @@ def test_compose_snapshot_routes_pickup_and_fails_closed_on_product_mismatch() -
     assert snapshot["shipments"][0]["items"][0]["rtu_external_id"] is None
 
 
+def test_planned_full_shipment_does_not_conflict_with_partial_assembly() -> None:
+    onec_snapshot = _onec_snapshot()
+    onec_snapshot["rtus"][1]["assembled_at"] = None
+    snapshot = poller.compose_snapshot(
+        deal=_deal("СДЭК"),
+        site_order_number="242800",
+        onec_snapshot=onec_snapshot,
+        bitrix_order={
+            "order_id": 8101,
+            "revision": "bitrix-revision-1",
+            "shipments": [
+                {
+                    "shipment_id": 51,
+                    "shipment_key": "planned-full-order",
+                    "deducted": False,
+                    "tracking_number": "",
+                    "items": [
+                        {
+                            "shipment_item_id": 501,
+                            "basket_item_id": 701,
+                            "product_xml_id": "product-a",
+                            "product_id": 901,
+                            "quantity": "2",
+                        }
+                    ],
+                }
+            ],
+        },
+        observed_at=datetime(2026, 8, 29, 12, 5),
+    )
+
+    coverage = shipments.evaluate_assembly_coverage(
+        snapshot["expected_items"],
+        [item for rtu in snapshot["rtus"] if rtu["assembled_at"] for item in rtu["items"]],
+    )
+    decision = shipments.derive_shipment_stage(
+        current_stage="EXECUTING",
+        coverage=coverage,
+        expected_lines=snapshot["expected_items"],
+        shipments=snapshot["shipments"],
+        delivery_kind=snapshot["delivery_kind"],
+    )
+
+    assert snapshot["shipments"][0]["status"] == shipments.STATUS_PLANNED
+    assert (
+        shipments.validate_rtu_allocations(rtus=snapshot["rtus"], shipments=snapshot["shipments"])
+        is None
+    )
+    assert decision.action == "noop"
+    assert decision.reason == "already_executing"
+
+
+def test_planned_placeholder_does_not_consume_rtu_from_dispatched_part() -> None:
+    onec_snapshot = _onec_snapshot()
+    onec_snapshot["rtus"][1]["assembled_at"] = None
+    snapshot = poller.compose_snapshot(
+        deal=_deal("СДЭК"),
+        site_order_number="242800",
+        onec_snapshot=onec_snapshot,
+        bitrix_order={
+            "order_id": 8101,
+            "revision": "bitrix-revision-1",
+            "shipments": [
+                {
+                    "shipment_id": 51,
+                    "shipment_key": "planned-full-order",
+                    "deducted": False,
+                    "tracking_number": "",
+                    "items": [
+                        {
+                            "shipment_item_id": 501,
+                            "basket_item_id": 701,
+                            "product_xml_id": "product-a",
+                            "product_id": 901,
+                            "quantity": "2",
+                        }
+                    ],
+                },
+                {
+                    "shipment_id": 52,
+                    "shipment_key": "physical-part",
+                    "deducted": True,
+                    "tracking_number": "track-1",
+                    "items": [
+                        {
+                            "shipment_item_id": 502,
+                            "basket_item_id": 702,
+                            "product_xml_id": "product-a",
+                            "product_id": 901,
+                            "quantity": "1",
+                        }
+                    ],
+                },
+            ],
+        },
+        observed_at=datetime(2026, 8, 29, 12, 5),
+    )
+
+    assert snapshot["shipments"][0]["status"] == shipments.STATUS_PLANNED
+    assert snapshot["shipments"][1]["status"] == shipments.STATUS_DISPATCHED
+    assert snapshot["shipments"][1]["items"] == [
+        {
+            "product_ref": "product-a",
+            "product_code": "901",
+            "quantity": "1",
+            "rtu_external_id": "rtu-1",
+            "basket_item_id": 702,
+            "bitrix_shipment_item_id": 502,
+        }
+    ]
+    assert (
+        shipments.validate_rtu_allocations(rtus=snapshot["rtus"], shipments=snapshot["shipments"])
+        is None
+    )
+
+
 def test_operational_metrics_expose_source_freshness_and_conflict_queues(db_session) -> None:
     metrics = poller.shipment_operational_metrics(db_session)
 

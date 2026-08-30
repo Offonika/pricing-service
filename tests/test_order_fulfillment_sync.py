@@ -34,6 +34,28 @@ def test_load_env_files_uses_later_files_only_as_fallback(tmp_path: Path) -> Non
     }
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "0xA01F0025901E48EE11EDD836014C4EDA",
+            "014c4eda-d836-11ed-a01f-0025901e48ee",
+        ),
+        (
+            "0x9E79002590803DAF11EFEAC20A909912",
+            "0a909912-eac2-11ef-9e79-002590803daf",
+        ),
+        (
+            "0xAC00002590803DAF11EEF8C0276D8052",
+            "276d8052-f8c0-11ee-ac00-002590803daf",
+        ),
+        ("not-a-reference", "not-a-reference"),
+    ],
+)
+def test_normalize_onec_rref_matches_bitrix_xml_id(raw: str, expected: str) -> None:
+    assert sync.normalize_onec_rref(raw) == expected
+
+
 class FakeBitrixClient:
     def __init__(self, deals: dict[int, service.BitrixDealSnapshot]) -> None:
         self.deals = deals

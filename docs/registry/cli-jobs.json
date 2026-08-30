@@ -54,6 +54,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "build_assortment_lifecycle_facts.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "build_display_working_confirmation_overrides.py": {
       "owner": "procurement",
       "kind": "export",

@@ -17,6 +17,7 @@ related_tests:
   - tests/test_analyze_site_defect_working_cases_script.py
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
+  - tests/test_build_assortment_lifecycle_facts_task.py
   - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
@@ -201,6 +202,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/build_ved_akb_master_register.py` на central read-only
   session scope и role-specific 1С factory с bounded timeout и гарантированным
   dispose, сохранив SQL, аргументы и XLSX-контракт.
+- [x] Перевести `tasks/build_assortment_lifecycle_facts.py` на central read-only
+  session scope и role-specific 1С factory с bounded timeout и гарантированным
+  dispose, сохранив аргументы, offline SQLite fixture и JSON-контракт.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -364,9 +368,18 @@ JSON/CSV/XLSX артефактов сохраняются.
     отдельных подтверждений.
 58. После зелёного CI разрешён merge PR №124. Production migration, deploy и
     cutover в это решение не входят.
+59. Для `tasks/build_assortment_lifecycle_facts.py` разрешены push ветки и
+    создание отдельного PR после локальных проверок. Merge и production release
+    требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-30 — разрешена подготовка assortment lifecycle facts read-only slice
+  с push и отдельным PR; merge и production оставлены отдельными решениями.
+- 2026-08-30 — `tasks/build_assortment_lifecycle_facts.py` переведён на central
+  read-only session scope и role-specific 1С factory с bounded timeout и
+  гарантированным dispose; аргументы, offline SQLite fixture и JSON-контракт
+  сохранены.
 - 2026-08-30 — разрешён merge PR №124; production release оставлен отдельным
   решением.
 - 2026-08-30 — разрешена подготовка VED AKB master register read-only slice с

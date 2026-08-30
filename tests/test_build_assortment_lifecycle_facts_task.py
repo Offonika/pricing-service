@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, text
 
+from tasks import build_assortment_lifecycle_facts as task
 from tasks.build_assortment_lifecycle_facts import _default_history_months, _default_limit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +32,111 @@ def test_build_assortment_lifecycle_facts_task_uses_safe_default_limit(
 
     monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
     assert _default_limit() == 1200
+
+
+def test_build_assortment_lifecycle_facts_uses_role_specific_read_only_db_access(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    onec_engine_calls: list[tuple[str, int, int]] = []
+    scope_calls: list[bool] = []
+    application_engines: list[object] = []
+
+    class FakeOnecEngine:
+        disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    class FakeSession:
+        def get_bind(self) -> object:
+            engine = object()
+            application_engines.append(engine)
+            return engine
+
+    onec_engine = FakeOnecEngine()
+
+    def fake_build_onec_engine(
+        database_url: str,
+        *,
+        query_timeout_seconds: int,
+        login_timeout_seconds: int,
+    ) -> FakeOnecEngine:
+        onec_engine_calls.append((database_url, query_timeout_seconds, login_timeout_seconds))
+        return onec_engine
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        scope_calls.append(read_only)
+        yield FakeSession()
+
+    args = SimpleNamespace(
+        folder="дисплеи",
+        history_months=36,
+        today=date(2026, 8, 30),
+        limit=100,
+        onec_database_url="",
+        input_json=None,
+        warehouse_policy_json=tmp_path / "warehouse-policy.json",
+        supplier_order_mapping_json=tmp_path / "supplier-mapping.json",
+        receipt_mapping_json=tmp_path / "receipt-mapping.json",
+        manual_overrides_json=None,
+        manager_signals_json=None,
+        output_json=None,
+        json=False,
+    )
+    nomenclature_rows = [{"nomenclature_code": "РБ0001"}]
+    facts = [{"nomenclature_code": "РБ0001", "product_ref": "0xA"}]
+
+    monkeypatch.setattr(task, "load_ut103_env_file", lambda: None)
+    monkeypatch.setattr(task, "_parse_args", lambda: args)
+    monkeypatch.setattr(
+        task,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database_url="postgresql://application-snapshot",
+            onec_database_url="mssql+pyodbc://onec-snapshot",
+            onec_query_timeout_seconds=45,
+            onec_login_timeout_seconds=7,
+        ),
+    )
+    monkeypatch.setattr(task, "validate_warehouse_policy", lambda _payload: object())
+    monkeypatch.setattr(task, "_load_json_object", lambda _path: {})
+    monkeypatch.setattr(task, "_load_document_line_mapping", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(task, "build_onec_engine", fake_build_onec_engine)
+    monkeypatch.setattr(task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        task,
+        "fetch_onec_lifecycle_source_rows",
+        lambda engine, **_kwargs: ((nomenclature_rows, [], []) if engine is onec_engine else None),
+    )
+    monkeypatch.setattr(task, "fetch_first_sale_dates", lambda engine, **_kwargs: {})
+    monkeypatch.setattr(task, "fetch_sales_window_totals", lambda engine, **_kwargs: {})
+    monkeypatch.setattr(
+        task,
+        "enrich_nomenclature_rows_with_product_snapshot",
+        lambda engine, rows: list(rows),
+    )
+    monkeypatch.setattr(task, "physical_sales_point_codes", lambda _policy: ())
+    monkeypatch.setattr(task, "fetch_days_in_sale_by_code", lambda engine, **_kwargs: {})
+    monkeypatch.setattr(task, "fetch_previous_statuses", lambda engine: {})
+    monkeypatch.setattr(
+        task,
+        "build_assortment_lifecycle_fact_records",
+        lambda **_kwargs: (facts, {"ready": 1}),
+    )
+    monkeypatch.setattr(
+        task,
+        "attach_effective_availability_shadow_to_facts",
+        lambda engine, rows, **_kwargs: list(rows),
+    )
+
+    assert task.main() == 0
+
+    assert onec_engine_calls == [("mssql+pyodbc://onec-snapshot", 45, 7)]
+    assert onec_engine.disposed is True
+    assert scope_calls == [True, True]
+    assert len(application_engines) == 2
 
 
 def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path) -> None:

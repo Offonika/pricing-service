@@ -102,17 +102,24 @@ def build_onec_engine(
         # pyodbc's connect-level ``timeout`` is a login timeout.  Its statement
         # timeout belongs to the cursor and is installed below.
         connect_args = {"timeout": max(1, ceil(login_timeout))}
-    else:
+    elif driver_name.startswith("mssql"):
         # python-tds documents ``timeout`` as the query timeout and
         # ``login_timeout`` as the connection/login timeout.
         connect_args = {
             "timeout": query_timeout,
             "login_timeout": login_timeout,
         }
+    elif driver_name == "sqlite":
+        # SQLite is used by offline CLI contract tests.  MSSQL-only timeout
+        # keywords are invalid for its DBAPI and must not leak into the fixture.
+        connect_args = {}
+    else:
+        raise ValueError("1C source must use MSSQL or an SQLite test fixture")
     engine_options: dict[str, object] = {
-        "connect_args": connect_args,
         "pool_pre_ping": True,
     }
+    if connect_args:
+        engine_options["connect_args"] = connect_args
     if poolclass is not None:
         engine_options["poolclass"] = poolclass
     engine = sqlalchemy_create_engine(database_url, **engine_options)

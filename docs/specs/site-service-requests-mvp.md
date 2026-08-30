@@ -946,6 +946,12 @@ ID существует, активен и соответствует ожида
   `command-files-v1`; подключить 90-дневную очистку к штатному worker.
 - [x] Добавить dry-run ensure для `CRM_DYNAMIC_1134_DETAIL_TAB` с обязательным
   readback после bind; не выполнять bind при локальной разработке.
+- [x] Выполнять `placement.get/bind` только через OAuth application context:
+  webhook используется лишь для fail-closed проверки домена портала, а временный
+  access token передаётся процессу через
+  `SITE_SERVICE_REQUESTS_UI_BITRIX_APP_ACCESS_TOKEN`. Токен запрещено сохранять
+  в `.env`, передавать аргументом CLI или выводить в лог; после запуска переменную
+  окружения нужно удалить.
 - [ ] После отдельного разрешения применить migration, собрать UI, привязать
   вкладку, выполнить адресный snapshot backfill и controlled smoke; затем
   включить UI/attachments только после успешного readback.
@@ -1071,6 +1077,12 @@ Rollback:
 
 # Changelog
 
+- 2026-08-30 — production backend переключён на merge commit `cc02ca8`, Alembic
+  применён до `e4a6c8d0f2b4`, release-smoke и GitHub CI прошли; UI/attachments
+  flags, placement bind и snapshot backfill не включались. Read-only rollout
+  выявил, что Bitrix запрещает `placement.*` для webhook с
+  `WRONG_AUTH_TYPE`; ensure переведён на краткоживущий OAuth application context
+  без хранения или логирования access token.
 - 2026-08-30 — утверждена встроенная вкладка «Переписка с клиентом» для процесса
   1134: ответ без перехода на сайт, имя сотрудника внутри CRM, единый бренд для
   клиента, исходящие вложения и внутренние заметки; encrypted read-model хранится

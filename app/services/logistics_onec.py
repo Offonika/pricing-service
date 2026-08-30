@@ -79,6 +79,7 @@ class RtuSourceRow:
     source_warehouse_external_id: str | None
     source_warehouse_name: str | None
     source_warehouse_code: str | None
+    delivery_code: str | None
     site_delivery_method: str | None
     address_candidates: tuple[str, ...]
     raw: dict[str, Any] = field(default_factory=dict)
@@ -404,8 +405,26 @@ def sync_ready_rtu_units(
             )
             continue
 
-        if _is_external_delivery_method(row.site_delivery_method):
-            if external_carrier_flow:
+        if _requires_delivery_code_manual_review(row.delivery_code):
+            _record_skip(
+                session,
+                report,
+                RtuSkippedRow(
+                    review_type=REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED,
+                    reason="RTU delivery code requires manual review",
+                    source_external_id=row.rtu_external_id,
+                    site_order_number=row.site_order_number,
+                    payload=row.raw,
+                ),
+                dry_run=dry_run,
+            )
+            continue
+
+        if _is_external_delivery_method(row.delivery_code, row.site_delivery_method):
+            if external_carrier_flow and _allows_legacy_external_carrier_handoff(
+                row.delivery_code,
+                row.site_delivery_method,
+            ):
                 lookup_code = make_rtu_lookup_code(row.rtu_external_id, row.site_order_number or "")
                 unit_payloads.append(
                     _rtu_unit_payload(
@@ -548,6 +567,7 @@ def normalize_rtu_source_rows(rows: Iterable[dict[str, Any] | Any]) -> RtuNormal
                 or None,
                 source_warehouse_name=_clean_string(row.get("source_warehouse_name")) or None,
                 source_warehouse_code=_clean_string(row.get("source_warehouse_code")) or None,
+                delivery_code=_clean_string(row.get("delivery_code")) or None,
                 site_delivery_method=_clean_string(row.get("site_delivery_method")) or None,
                 address_candidates=_address_candidates(row),
                 raw=row,
@@ -632,6 +652,7 @@ def _rtu_unit_payload(
         "onec_order_number": row.onec_order_number,
         "source_warehouse_code": row.source_warehouse_code,
         "source_warehouse_name": row.source_warehouse_name,
+        "delivery_code": row.delivery_code,
         "site_delivery_method": row.site_delivery_method,
         "address_candidates": list(row.address_candidates),
         "target_resolution": target_resolution,
@@ -640,7 +661,10 @@ def _rtu_unit_payload(
         payload.update(
             {
                 "external_carrier_flow": True,
-                "external_carrier_name": _external_carrier_name(row.site_delivery_method),
+                "external_carrier_name": _external_carrier_name(
+                    row.delivery_code,
+                    row.site_delivery_method,
+                ),
                 "external_carrier_terminal": _first_address_candidate(row),
             }
         )
@@ -702,11 +726,12 @@ def _apply_external_carrier_handoffs(
         result = logistics.handoff_to_external_carrier_from_sync(
             session,
             transfer_id=transfer.id,
-            carrier_name=_external_carrier_name(row.site_delivery_method),
+            carrier_name=_external_carrier_name(row.delivery_code, row.site_delivery_method),
             carrier_terminal=_first_address_candidate(row),
             comment="1C RTU external carrier sync",
             idempotency_key=f"1c_rtu_external_carrier:{external_id}",
             meta={
+                "delivery_code": row.delivery_code,
                 "site_delivery_method": row.site_delivery_method,
                 "site_order_number": row.site_order_number,
                 "source_external_id": external_id,
@@ -1166,19 +1191,76 @@ def _warehouse_kind(name: str | None) -> str:
     return "store"
 
 
-def _is_external_delivery_method(value: str | None) -> bool:
+_DELIVERY_CODE_CARRIER_NAMES = {
+    "CDEK_PVZ": "СДЭК",
+    "CDEK_COURIER": "СДЭК",
+    "RUSSIAN_POST": "Почта России",
+    "MM_COURIER": "Курьер Master Mobile",
+    "DOSTAVISTA": "Dostavista",
+    "YANDEX_TAXI": "Яндекс/такси",
+    "MARSHRUTKA_PTG": "Маршрутка Пятигорска",
+}
+_KNOWN_DELIVERY_CODES = {"PICKUP", "OTHER", *_DELIVERY_CODE_CARRIER_NAMES}
+_LEGACY_EXTERNAL_DELIVERY_MARKERS = (
+    "сдэк",
+    "почта",
+    "курьер",
+    "доставка",
+    "достависта",
+    "dostavista",
+    "маршрутка",
+    "яндекс",
+    "такси",
+)
+
+
+def _normalize_delivery_code(value: str | None) -> str:
+    return _clean_string(value).upper()
+
+
+def _requires_delivery_code_manual_review(delivery_code: str | None) -> bool:
+    normalized_code = _normalize_delivery_code(delivery_code)
+    return bool(normalized_code) and (
+        normalized_code == "OTHER" or normalized_code not in _KNOWN_DELIVERY_CODES
+    )
+
+
+def _is_external_delivery_method(
+    delivery_code: str | None,
+    value: str | None,
+) -> bool:
+    normalized_code = _normalize_delivery_code(delivery_code)
+    if normalized_code:
+        return normalized_code in _DELIVERY_CODE_CARRIER_NAMES
     normalized = _normalize_text(value or "")
-    return any(marker in normalized for marker in ("сдэк", "почта", "курьер", "доставка"))
+    return any(marker in normalized for marker in _LEGACY_EXTERNAL_DELIVERY_MARKERS)
+
+
+def _allows_legacy_external_carrier_handoff(
+    delivery_code: str | None,
+    value: str | None,
+) -> bool:
+    normalized_code = _normalize_delivery_code(delivery_code)
+    if normalized_code:
+        return normalized_code in {"CDEK_PVZ", "CDEK_COURIER", "RUSSIAN_POST"}
+    normalized = _normalize_text(value or "")
+    return any(marker in normalized for marker in ("сдэк", "почта"))
 
 
 def _use_source_warehouse_for_empty_pickup_address(row: RtuSourceRow) -> bool:
     if row.address_candidates:
         return False
     normalized = _normalize_text(row.site_delivery_method or "")
-    return "самовывоз" in normalized and not _is_external_delivery_method(row.site_delivery_method)
+    return "самовывоз" in normalized and not _is_external_delivery_method(
+        row.delivery_code,
+        row.site_delivery_method,
+    )
 
 
-def _external_carrier_name(value: str | None) -> str:
+def _external_carrier_name(delivery_code: str | None, value: str | None) -> str:
+    normalized_code = _normalize_delivery_code(delivery_code)
+    if normalized_code:
+        return _DELIVERY_CODE_CARRIER_NAMES.get(normalized_code, normalized_code)
     normalized = _normalize_text(value or "")
     if "сдэк" in normalized:
         return "СДЭК"
@@ -1186,6 +1268,12 @@ def _external_carrier_name(value: str | None) -> str:
         return "Почта России"
     if "курьер" in normalized:
         return "Курьерская доставка"
+    if "достависта" in normalized:
+        return "Dostavista"
+    if "маршрутка" in normalized:
+        return "Маршрутка Пятигорска"
+    if "яндекс" in normalized or "такси" in normalized:
+        return "Яндекс/такси"
     if "доставка" in normalized:
         return "Внешняя доставка"
     return _clean_string(value) or "Внешний перевозчик"

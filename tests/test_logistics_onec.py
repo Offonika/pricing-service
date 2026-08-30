@@ -67,6 +67,79 @@ def test_normalize_rtu_source_rows_applies_readiness_gate() -> None:
     ]
 
 
+def test_normalize_rtu_source_rows_preserves_delivery_code() -> None:
+    normalized = logistics_onec.normalize_rtu_source_rows(
+        [_rtu_row(delivery_code="MARSHRUTKA_PTG")]
+    )
+
+    assert normalized.ready[0].delivery_code == "MARSHRUTKA_PTG"
+
+
+def test_delivery_code_has_priority_over_legacy_name() -> None:
+    assert not logistics_onec._is_external_delivery_method("PICKUP", "СДЭК курьер")
+    assert logistics_onec._external_carrier_name("MARSHRUTKA_PTG", "СДЭК") == (
+        "Маршрутка Пятигорска"
+    )
+
+
+def test_known_delivery_codes_are_classified_without_string_fallback() -> None:
+    external_codes = (
+        "CDEK_PVZ",
+        "CDEK_COURIER",
+        "RUSSIAN_POST",
+        "MM_COURIER",
+        "DOSTAVISTA",
+        "YANDEX_TAXI",
+        "MARSHRUTKA_PTG",
+    )
+
+    assert all(
+        logistics_onec._is_external_delivery_method(code, "Самовывоз")
+        for code in external_codes
+    )
+    assert not logistics_onec._is_external_delivery_method("PICKUP", "Доставка")
+
+
+def test_legacy_delivery_names_remain_supported_without_code() -> None:
+    for value in ("Dostavista", "Достависта", "Маршрутка", "Яндекс", "Такси"):
+        assert logistics_onec._is_external_delivery_method(None, value)
+
+
+def test_unknown_delivery_code_does_not_fall_back_to_known_name() -> None:
+    assert logistics_onec._requires_delivery_code_manual_review("NEW_CARRIER")
+    assert logistics_onec._requires_delivery_code_manual_review("OTHER")
+    assert not logistics_onec._is_external_delivery_method("NEW_CARRIER", "СДЭК")
+
+
+def test_unknown_delivery_code_routes_rtu_to_manual_review() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        delivery_code="NEW_CARRIER",
+                        site_delivery_method="СДЭК (Самовывоз)",
+                    )
+                ],
+                dry_run=False,
+                external_carrier_flow=True,
+            )
+
+            assert report["synced_created"] == 0
+            assert report["manual_review_created"] == 1
+            review = session.scalar(select(LogisticsManualReview))
+            assert review is not None
+            assert review.review_type == "rtu_external_carrier_unmapped"
+            assert review.payload["delivery_code"] == "NEW_CARRIER"
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_resolve_target_warehouse_uses_payload_aliases() -> None:
     engine, path = setup_db()
     try:

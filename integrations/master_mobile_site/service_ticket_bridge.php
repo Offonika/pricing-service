@@ -446,6 +446,7 @@ namespace MasterMobile\SiteServiceRequests {
             $ticketId = (int) $ticketId;
             $result = $DB->Query(
                 "SELECT `ID` FROM `b_ticket_message` WHERE `TICKET_ID` = {$ticketId} "
+                . "AND `IS_LOG` = 'N' "
                 . "ORDER BY `ID` DESC LIMIT 1"
             );
             if (!$result) {
@@ -733,6 +734,7 @@ namespace MasterMobile\SiteServiceRequests {
             $result = $DB->Query(
                 "SELECT `ID`, `DATE_CREATE`, `MESSAGE`, `MESSAGE_BY_SUPPORT_TEAM`, `IS_HIDDEN` "
                 . "FROM `b_ticket_message` WHERE `TICKET_ID` = " . (int) $ticketId
+                . " AND `IS_LOG` = 'N'"
                 . " AND `ID` <= " . (int) $throughMessageId
                 . " ORDER BY `ID` ASC"
             );

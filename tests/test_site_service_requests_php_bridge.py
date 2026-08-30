@@ -37,6 +37,7 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "'support-team'" in source
     assert "'isVisibleToCustomer'" in source
     assert "`IS_HIDDEN`" in source
+    assert source.count("`IS_LOG` = 'N'") == 2
     assert " AND `ID` <= " in source
     assert "'leaseToken' => $leaseToken" in source
     assert "payloadFileIsUnavailable" in source
@@ -196,6 +197,14 @@ def test_php_source_lints(path: Path) -> None:
                 "zeroDate": False,
                 "closed": True,
                 "malformedError": "ticket_date_close_invalid",
+            },
+        ),
+        (
+            "ticket_log_filter_fixture.php",
+            {
+                "latestMessageId": 1780,
+                "historyMessageIds": [1780],
+                "historyAuthorKinds": ["customer"],
             },
         ),
     ],

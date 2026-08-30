@@ -64,6 +64,10 @@ from app.api.reports import router as reports_router
 from app.api.site_defect_archive import page_router as site_defect_archive_page_router
 from app.api.site_defect_archive import router as site_defect_archive_router
 from app.api.site_service_requests import router as site_service_requests_router
+from app.api.site_service_requests_ui import (
+    page_router as site_service_requests_ui_page_router,
+)
+from app.api.site_service_requests_ui import router as site_service_requests_ui_router
 from app.api.sms_journal import router as sms_journal_router
 from app.api.staffing import router as staffing_router
 from app.api.telegram import router as telegram_router
@@ -173,6 +177,7 @@ app.include_router(bitrix_logistics_page_router)
 app.include_router(bitrix_receivables_page_router)
 app.include_router(logistics_web_page_router)
 app.include_router(site_defect_archive_page_router)
+app.include_router(site_service_requests_ui_page_router)
 app.include_router(receivable_workplace_page_router)
 app.include_router(procurement_labels_page_router)
 app.include_router(procurement_assortment_page_router)
@@ -203,6 +208,10 @@ app.include_router(site_defect_archive_router, prefix="/api/site-defects")
 app.include_router(
     site_service_requests_router,
     prefix="/api/internal/site-service-requests",
+)
+app.include_router(
+    site_service_requests_ui_router,
+    prefix="/api/site-service-requests/ui",
 )
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")

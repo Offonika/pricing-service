@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import urllib.parse
 from email.message import Message
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -13,16 +16,19 @@ from app.api.dependencies import (
     require_site_service_request_signature,
 )
 from app.core.config import Settings
+from app.models.site_service_requests import SiteServiceRequestCase
 from app.schemas.site_service_requests import (
     SiteServiceEmailEventPayload,
     SiteServiceRequestCommandAckPayload,
     SiteServiceRequestCommandAckResponse,
+    SiteServiceRequestCommandFilePayload,
     SiteServiceRequestCommandPayload,
     SiteServiceRequestCommandsResponse,
     SiteServiceRequestEventAcceptedResponse,
     SiteServiceRequestEventPayload,
     SiteServiceRequestFileStagedResponse,
     SiteServiceRequestHealthResponse,
+    SiteServiceRequestSnapshotAcceptedResponse,
 )
 from app.services.site_service_requests import (
     SiteServiceRequestConfigurationError,
@@ -38,11 +44,58 @@ from app.services.site_service_requests import (
     cleanup_unreferenced_site_service_request_file,
     fail_site_service_request_file,
     lease_site_service_request_commands,
+    read_site_service_request_command_file,
+    reconcile_site_service_request_conversation_snapshot,
     stage_site_service_request_file,
 )
 from app.services.site_service_requests_auth import VerifiedSiteRequest
 
 router = APIRouter()
+
+
+@router.post(
+    "/snapshots",
+    response_model=SiteServiceRequestSnapshotAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def accept_conversation_snapshot(
+    payload: SiteServiceRequestEventPayload,
+    _verified: VerifiedSiteRequest = Depends(require_site_service_request_signature),
+    settings: Settings = Depends(get_site_service_request_settings),
+    db: Session = Depends(get_db),
+) -> SiteServiceRequestSnapshotAcceptedResponse:
+    if not settings.site_service_requests_ingest_enabled:
+        raise HTTPException(status_code=503, detail="ingest_disabled")
+    try:
+        case = db.scalar(
+            select(SiteServiceRequestCase)
+            .where(SiteServiceRequestCase.source_ticket_id == payload.ticket.id)
+            .with_for_update()
+        )
+        if case is None or case.source_kind != "site_ticket":
+            raise HTTPException(status_code=404, detail="service_case_not_found")
+        reconcile_site_service_request_conversation_snapshot(
+            db,
+            case=case,
+            payload=payload,
+            cipher=build_site_service_request_cipher(settings),
+            retention_days=settings.site_service_requests_conversation_retention_days,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except SiteServiceRequestConfigurationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="snapshot_encryption_unavailable") from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="snapshot_storage_unavailable") from exc
+    return SiteServiceRequestSnapshotAcceptedResponse(
+        ticketId=payload.ticket.id,
+        snapshotMessageId=max(message.message_id for message in payload.history),
+        status="accepted",
+    )
 
 
 @router.post(
@@ -121,6 +174,9 @@ def accept_event(
             payload_sha256=verified.content_sha256,
             cipher=build_site_service_request_cipher(settings),
             max_file_bytes=settings.site_service_requests_max_file_bytes,
+            conversation_retention_days=(
+                settings.site_service_requests_conversation_retention_days
+            ),
         )
         db.commit()
     except SiteServiceRequestConflictError as exc:
@@ -264,6 +320,7 @@ def upload_event_file(
 )
 def get_commands(
     _verified: VerifiedSiteRequest = Depends(require_site_service_request_signature),
+    capabilities: Annotated[str | None, Header(alias="X-MM-Site-Capabilities")] = None,
     settings: Settings = Depends(get_site_service_request_settings),
     db: Session = Depends(get_db),
 ) -> SiteServiceRequestCommandsResponse:
@@ -275,6 +332,10 @@ def get_commands(
             cipher=build_site_service_request_cipher(settings),
             enabled=True,
             lease_seconds=settings.site_service_requests_command_lease_seconds,
+            include_attachments=(
+                settings.site_service_requests_command_attachments_enabled
+                and "command-files-v1" in (capabilities or "").split(",")
+            ),
         )
         db.commit()
     except SiteServiceRequestConfigurationError as exc:
@@ -293,9 +354,73 @@ def get_commands(
                 reply_text=command.reply_text,
                 lease_until=command.lease_until,
                 lease_token=command.lease_token,
+                files=[
+                    SiteServiceRequestCommandFilePayload(
+                        fileId=file.file_id,
+                        name=file.name,
+                        mimeType=file.mime_type,
+                        size=file.byte_size,
+                        sha256=file.sha256,
+                        downloadPath=(
+                            f"/api/internal/site-service-requests/commands/"
+                            f"{command.command_id}/files/{file.file_id}"
+                        ),
+                    )
+                    for file in command.files
+                ],
             )
             for command in commands
         ]
+    )
+
+
+@router.get(
+    "/commands/{command_id}/files/{file_id}",
+    response_class=Response,
+    responses={
+        200: {"description": "Encrypted command attachment decrypted for the active lease"},
+        401: {"description": "Invalid or missing site HMAC authentication"},
+        404: {"description": "Command attachment is unavailable"},
+        409: {"description": "Command lease or attachment payload conflict"},
+        503: {"description": "Command encryption is unavailable"},
+    },
+)
+def get_command_file(
+    command_id: int,
+    file_id: int,
+    lease_token: Annotated[
+        str, Header(alias="X-MM-Command-Lease-Token", min_length=32, max_length=128)
+    ],
+    _verified: VerifiedSiteRequest = Depends(require_site_service_request_signature),
+    settings: Settings = Depends(get_site_service_request_settings),
+    db: Session = Depends(get_db),
+) -> Response:
+    if not settings.site_service_requests_command_attachments_enabled:
+        raise HTTPException(status_code=404, detail="command_file_not_found")
+    try:
+        file, body = read_site_service_request_command_file(
+            db,
+            command_id=command_id,
+            file_id=file_id,
+            lease_token=lease_token,
+            cipher=build_site_service_request_cipher(settings),
+        )
+    except SiteServiceRequestNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.code) from exc
+    except SiteServiceRequestConflictError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    except SiteServiceRequestConfigurationError as exc:
+        raise HTTPException(status_code=503, detail="command_encryption_unavailable") from exc
+    return Response(
+        content=body,
+        media_type=file.mime_type,
+        headers={
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''" + urllib.parse.quote(file.safe_filename)
+            ),
+            "X-MM-Content-SHA256": file.sha256,
+            "Cache-Control": "private, no-store",
+        },
     )
 
 

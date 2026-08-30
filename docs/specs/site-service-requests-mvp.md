@@ -8,17 +8,24 @@ owner: "engineering-and-operations"
 source_of_truth: true
 related_code:
   - app/api/site_service_requests.py
+  - app/api/site_service_requests_ui.py
   - app/models/site_service_requests.py
+  - app/services/site_service_request_conversations.py
   - app/services/site_service_requests.py
   - app/services/site_service_requests_worker.py
+  - app/services/site_service_requests_ui_auth.py
   - integrations/master_mobile_site/service_ticket_bridge.php
   - scripts/ensure_site_service_requests_bitrix_process.py
+  - scripts/ensure_site_service_requests_ui_placement.py
   - tasks/site_service_requests_worker.py
 related_tests:
+  - tests/test_ensure_site_service_requests_ui_placement.py
+  - tests/test_site_service_request_conversations.py
   - tests/test_site_service_requests_api.py
   - tests/test_site_service_requests_auth.py
   - tests/test_site_service_requests_models.py
   - tests/test_site_service_requests_php_bridge.py
+  - tests/test_site_service_requests_ui_api.py
   - tests/test_site_service_requests_worker.py
 contracts:
   - openapi.yaml
@@ -343,6 +350,18 @@ fail-closed и не связывают обращение с компанией.
 В карточке сотрудник заполняет многострочное поле «Ответ клиенту» и выбирает
 действие «Отправить клиенту». Worker создаёт ровно одну command-запись и меняет
 статус на «Ожидает отправки».
+
+Основным рабочим местом сотрудника становится встроенная вкладка
+`CRM_DYNAMIC_1134_DETAIL_TAB` «Переписка с клиентом» в карточке процесса 1134.
+В ней сообщения клиента показываются слева, ответы поддержки справа, доступен
+постоянный composer, шаблоны, исходящие вложения и отдельный режим внутренней
+заметки. Внутри CRM ответ подписывается именем сотрудника и ролью поддержки;
+клиент на сайте видит единый бренд «Поддержка MASTER MOBILE». Ссылка на исходный
+тикет остаётся вторичным действием «Открыть оригинал», а переход на сайт для
+штатного ответа не требуется. Каноническая история остаётся на сайте; backend
+хранит зашифрованную read-model и очищает её через 90 дней после подтверждённого
+закрытия. Существующие поля ответа и action сохраняются как fallback до отдельного
+решения об их удалении.
 
 Для защиты от конкурентного редактирования outbound worker использует hash-guard
 до и после очистки действия. Если текст изменился, `SEND` восстанавливается, а
@@ -922,6 +941,14 @@ ID существует, активен и соответствует ожида
 - [x] Добавить метрики, безопасные error codes и alert на lag/dead-letter.
 - [x] Обновить OpenAPI после реализации API.
 - [x] Добавить unit, API, worker, contract и static PHP tests.
+- [x] Добавить encrypted conversation read-model, item-scoped UI session,
+  вкладку CRM с ответами/заметками/исходящими файлами и capability
+  `command-files-v1`; подключить 90-дневную очистку к штатному worker.
+- [x] Добавить dry-run ensure для `CRM_DYNAMIC_1134_DETAIL_TAB` с обязательным
+  readback после bind; не выполнять bind при локальной разработке.
+- [ ] После отдельного разрешения применить migration, собрать UI, привязать
+  вкладку, выполнить адресный snapshot backfill и controlled smoke; затем
+  включить UI/attachments только после успешного readback.
 - [x] Провести входящий controlled live smoke на тикетах 743–745: создать и
   перечитать карточки 373–375, назначить временно Тимуру при закрытой смене,
   доставить и проверить SHA-256 двух файлов тикета 744.
@@ -1044,6 +1071,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-30 — утверждена встроенная вкладка «Переписка с клиентом» для процесса
+  1134: ответ без перехода на сайт, имя сотрудника внутри CRM, единый бренд для
+  клиента, исходящие вложения и внутренние заметки; encrypted read-model хранится
+  90 дней после подтверждённого закрытия, старые CRM-поля остаются fallback.
 - 2026-08-30 — утверждён и выполнен production-пилот двустороннего обмена:
   активированы site Agent/intake/outbound и backend outbound, ответ CRM -> тикет
   `760` применён без дубля, обратное событие обработано; после `IS_LOG`-фикса

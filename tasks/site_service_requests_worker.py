@@ -20,6 +20,7 @@ from app.services.site_service_request_email_worker import (
 from app.services.site_service_requests import (
     SiteServiceRequestCipher,
     build_site_service_request_cipher,
+    purge_expired_site_service_request_conversations,
     record_site_service_request_worker_failure,
     record_site_service_request_worker_started,
     record_site_service_request_worker_success,
@@ -130,6 +131,14 @@ def _run_worker(
     if not check["ready"]:
         raise SystemExit("site service request worker configuration is incomplete")
 
+    purged_conversations = 0
+    if args.apply:
+        with session_scope_factory(read_only=False) as purge_session:
+            purged_conversations = purge_expired_site_service_request_conversations(
+                purge_session,
+                limit=args.limit or settings.site_service_requests_worker_batch_size,
+            )
+
     resolved_api = api or BitrixRestClient(
         str(settings.site_service_requests_bitrix_webhook_url),
         retry_transient_html_403=True,
@@ -222,6 +231,7 @@ def _run_worker(
                 "files": files,
                 "commands": commands,
                 "dailyReport": daily_report,
+                "purgedConversations": purged_conversations,
                 "userPreflight": user_preflight,
             }
         else:

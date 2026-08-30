@@ -97,6 +97,42 @@ namespace MasterMobile\SiteServiceRequests {
                 : array();
         }
 
+        public static function customerMessageAuthorLabel(array $message)
+        {
+            return (string) ($message['MESSAGE_BY_SUPPORT_TEAM'] ?? '') === 'Y'
+                ? 'Поддержка MASTER MOBILE'
+                : 'Вы';
+        }
+
+        public static function backfillConversationSnapshot($ticketId)
+        {
+            $ticketId = (int) $ticketId;
+            $messageId = self::latestMessageId($ticketId);
+            if ($ticketId <= 0 || $messageId <= 0) {
+                throw new BridgeFailure('event_message_missing');
+            }
+            $eventKey = 'site-support:' . $ticketId . ':' . $messageId;
+            $payload = self::buildEventPayload(
+                $ticketId,
+                $messageId,
+                $eventKey,
+                'message.created'
+            );
+            $response = self::signedRequest(
+                'POST',
+                '/api/internal/site-service-requests/snapshots',
+                self::encodeJson($payload),
+                array('Content-Type: application/json')
+            );
+            if ($response['status'] !== 202) {
+                throw new BridgeFailure(
+                    'snapshot_http_' . $response['status'],
+                    $response['status']
+                );
+            }
+            return self::decodeJson($response['body']);
+        }
+
         public static function extractEventReference($eventName, array $arguments)
         {
             $ids = array('ticketId' => 0, 'messageId' => 0);
@@ -977,7 +1013,10 @@ namespace MasterMobile\SiteServiceRequests {
                 'GET',
                 '/api/internal/site-service-requests/commands',
                 '',
-                array('Accept: application/json')
+                array(
+                    'Accept: application/json',
+                    'X-MM-Site-Capabilities: command-files-v1',
+                )
             );
             if ($response['status'] !== 200) {
                 throw new BridgeFailure('commands_http_' . $response['status'], $response['status']);
@@ -1038,39 +1077,154 @@ namespace MasterMobile\SiteServiceRequests {
                 // command remains retryable and will be returned with a new token.
                 throw new BridgeFailure('command_lease_expired');
             }
+            $files = array();
             try {
-                $messageId = self::applyCommand(
-                    $commandId,
-                    $ticketId,
-                    $replyText,
-                    (int) $leaseUntilTimestamp
-                );
-                $ack = array(
-                    'schemaVersion' => 1,
-                    'leaseToken' => $leaseToken,
-                    'status' => 'applied',
-                    'ticketId' => $ticketId,
-                    'messageId' => $messageId,
-                    'appliedAt' => date(DATE_ATOM),
-                );
-            } catch (BridgeFailure $error) {
-                $allowed = array(
-                    'ticket_not_found',
-                    'support_user_invalid',
-                    'message_write_failed',
-                );
-                if (!in_array($error->errorCode(), $allowed, true)) {
-                    throw $error;
+                try {
+                    $files = self::downloadCommandFiles(
+                        $commandId,
+                        $leaseToken,
+                        $command['files'] ?? array()
+                    );
+                    $messageId = self::applyCommand(
+                        $commandId,
+                        $ticketId,
+                        $replyText,
+                        (int) $leaseUntilTimestamp,
+                        $files
+                    );
+                    $ack = array(
+                        'schemaVersion' => 1,
+                        'leaseToken' => $leaseToken,
+                        'status' => 'applied',
+                        'ticketId' => $ticketId,
+                        'messageId' => $messageId,
+                        'appliedAt' => date(DATE_ATOM),
+                    );
+                } catch (BridgeFailure $error) {
+                    $allowed = array(
+                        'ticket_not_found',
+                        'support_user_invalid',
+                        'message_write_failed',
+                        'attachment_download_failed',
+                        'attachment_write_failed',
+                    );
+                    if (!in_array($error->errorCode(), $allowed, true)) {
+                        throw $error;
+                    }
+                    $errorCode = $error->errorCode();
+                    $ack = array(
+                        'schemaVersion' => 1,
+                        'leaseToken' => $leaseToken,
+                        'status' => 'failed',
+                        'errorCode' => $errorCode,
+                    );
                 }
-                $errorCode = $error->errorCode();
-                $ack = array(
-                    'schemaVersion' => 1,
-                    'leaseToken' => $leaseToken,
-                    'status' => 'failed',
-                    'errorCode' => $errorCode,
-                );
+            } finally {
+                self::cleanupCommandFiles($files);
             }
             self::ackCommand($commandId, $ack);
+        }
+
+        private static function downloadCommandFiles($commandId, $leaseToken, $rows)
+        {
+            if (!is_array($rows) || count($rows) > 20) {
+                throw new BridgeFailure('commands_response_invalid', 200);
+            }
+            $files = array();
+            $seenFileIds = array();
+            $totalSize = 0;
+            try {
+                foreach ($rows as $row) {
+                    if (
+                        !is_array($row)
+                        || !is_int($row['fileId'] ?? null)
+                        || (int) $row['fileId'] <= 0
+                        || !is_string($row['name'] ?? null)
+                        || trim($row['name']) === ''
+                        || basename(str_replace('\\', '/', $row['name'])) !== $row['name']
+                        || strlen($row['name']) > 255
+                        || !is_string($row['mimeType'] ?? null)
+                        || trim($row['mimeType']) === ''
+                        || !is_int($row['size'] ?? null)
+                        || (int) $row['size'] < 0
+                        || (int) $row['size'] > 10 * 1024 * 1024
+                        || !is_string($row['sha256'] ?? null)
+                        || preg_match('/^[0-9a-f]{64}$/D', $row['sha256']) !== 1
+                        || !is_string($row['downloadPath'] ?? null)
+                        || $row['downloadPath'] !== '/api/internal/site-service-requests/commands/'
+                            . (int) $commandId . '/files/' . (int) $row['fileId']
+                    ) {
+                        throw new BridgeFailure('commands_response_invalid', 200);
+                    }
+                    $fileId = (int) $row['fileId'];
+                    if (isset($seenFileIds[$fileId])) {
+                        throw new BridgeFailure('commands_response_invalid', 200);
+                    }
+                    $seenFileIds[$fileId] = true;
+                    $totalSize += (int) $row['size'];
+                    if ($totalSize > 20 * 1024 * 1024) {
+                        throw new BridgeFailure('commands_response_invalid', 200);
+                    }
+                    $response = self::signedRequest(
+                        'GET',
+                        $row['downloadPath'],
+                        '',
+                        array(
+                            'Accept: application/octet-stream',
+                            'X-MM-Command-Lease-Token: ' . $leaseToken,
+                        )
+                    );
+                    if ($response['status'] !== 200) {
+                        throw new BridgeFailure('attachment_download_failed');
+                    }
+                    $body = (string) $response['body'];
+                    if (
+                        strlen($body) !== (int) $row['size']
+                        || !hash_equals($row['sha256'], hash('sha256', $body))
+                    ) {
+                        throw new BridgeFailure('attachment_download_failed');
+                    }
+                    $temporaryPath = tempnam(sys_get_temp_dir(), 'mm-ssr-');
+                    if (
+                        !is_string($temporaryPath)
+                        || file_put_contents($temporaryPath, $body, LOCK_EX) !== strlen($body)
+                    ) {
+                        if (is_string($temporaryPath)) {
+                            @unlink($temporaryPath);
+                        }
+                        throw new BridgeFailure('attachment_download_failed');
+                    }
+                    @chmod($temporaryPath, 0600);
+                    $files[] = array(
+                        'sha256' => $row['sha256'],
+                        'upload' => array(
+                            'name' => $row['name'],
+                            'type' => $row['mimeType'],
+                            'tmp_name' => $temporaryPath,
+                            'error' => 0,
+                            'size' => (int) $row['size'],
+                            'MODULE_ID' => 'support',
+                        ),
+                    );
+                }
+                return $files;
+            } catch (\Throwable $error) {
+                self::cleanupCommandFiles($files);
+                if ($error instanceof BridgeFailure) {
+                    throw $error;
+                }
+                throw new BridgeFailure('attachment_download_failed');
+            }
+        }
+
+        private static function cleanupCommandFiles(array $files)
+        {
+            foreach ($files as $file) {
+                $path = $file['upload']['tmp_name'] ?? '';
+                if (is_string($path) && $path !== '') {
+                    @unlink($path);
+                }
+            }
         }
 
         public static function commandMarker($commandId)
@@ -1097,7 +1251,8 @@ namespace MasterMobile\SiteServiceRequests {
             $commandId,
             $ticketId,
             $replyText,
-            $leaseUntilTimestamp
+            $leaseUntilTimestamp,
+            array $commandFiles = array()
         )
         {
             global $DB;
@@ -1107,7 +1262,8 @@ namespace MasterMobile\SiteServiceRequests {
             $lockName = self::acquireCommandLock($commandId);
             try {
                 $messageId = self::findExistingCommandMessageId($ticketId, $marker);
-                if ($messageId > 0) {
+                $missingFiles = self::missingCommandFiles($messageId, $commandFiles);
+                if ($messageId > 0 && !$missingFiles) {
                     return $messageId;
                 }
                 if ((int) $leaseUntilTimestamp <= time()) {
@@ -1139,11 +1295,22 @@ namespace MasterMobile\SiteServiceRequests {
                     'EXTERNAL_FIELD_1' => $marker,
                     'HIDDEN' => 'N',
                 );
+                if ($commandFiles) {
+                    $fields['FILES'] = array_map(
+                        static function ($file) {
+                            return $file['upload'];
+                        },
+                        $messageId > 0 ? $missingFiles : $commandFiles
+                    );
+                }
                 try {
-                    self::callTicketSet($fields, $ticketId);
+                    self::callTicketSet($fields, $ticketId, $messageId);
                 } catch (BridgeFailure $error) {
                     $messageId = self::findExistingCommandMessageId($ticketId, $marker);
-                    if ($messageId > 0) {
+                    if (
+                        $messageId > 0
+                        && !self::missingCommandFiles($messageId, $commandFiles)
+                    ) {
                         return $messageId;
                     }
                     throw $error;
@@ -1151,6 +1318,9 @@ namespace MasterMobile\SiteServiceRequests {
                 $messageId = self::findExistingCommandMessageId($ticketId, $marker);
                 if ($messageId <= 0) {
                     throw new BridgeFailure('message_write_failed');
+                }
+                if (self::missingCommandFiles($messageId, $commandFiles)) {
+                    throw new BridgeFailure('attachment_write_failed');
                 }
                 return $messageId;
             } finally {
@@ -1188,7 +1358,45 @@ namespace MasterMobile\SiteServiceRequests {
             }
         }
 
-        private static function callTicketSet(array $fields, $ticketId)
+        private static function missingCommandFiles($messageId, array $commandFiles)
+        {
+            global $DB;
+            if (!$commandFiles || (int) $messageId <= 0) {
+                return $commandFiles;
+            }
+            $actualHashes = array();
+            $result = $DB->Query(
+                "SELECT F.`ID`, F.`FILE_NAME`, F.`CONTENT_TYPE`, F.`FILE_SIZE` "
+                . "FROM `b_ticket_message_2_file` MF "
+                . "INNER JOIN `b_file` F ON F.`ID` = MF.`FILE_ID` "
+                . "WHERE MF.`MESSAGE_ID` = " . (int) $messageId
+            );
+            if (!$result) {
+                throw new BridgeFailure('site_database_unavailable');
+            }
+            while ($row = $result->Fetch()) {
+                try {
+                    $metadata = self::fileMetadata($row);
+                    $hash = $metadata['sha256'];
+                    $actualHashes[$hash] = (int) ($actualHashes[$hash] ?? 0) + 1;
+                } catch (BridgeFailure $error) {
+                    // An unreadable attachment cannot prove delivery; keep the
+                    // expected hash in the retry set.
+                }
+            }
+            $missing = array();
+            foreach ($commandFiles as $file) {
+                $hash = $file['sha256'];
+                if ((int) ($actualHashes[$hash] ?? 0) > 0) {
+                    $actualHashes[$hash]--;
+                    continue;
+                }
+                $missing[] = $file;
+            }
+            return $missing;
+        }
+
+        private static function callTicketSet(array $fields, $ticketId, $existingMessageId = 0)
         {
             if (!class_exists('CTicket') || !method_exists('CTicket', 'Set')) {
                 throw new BridgeFailure('message_write_failed');
@@ -1202,7 +1410,7 @@ namespace MasterMobile\SiteServiceRequests {
             if (!$method->isStatic() || count($parameters) < 2) {
                 throw new BridgeFailure('message_write_failed');
             }
-            $messageId = 0;
+            $messageId = (int) $existingMessageId;
             $checkRights = 'N';
             $sendEmailToAuthor = 'N';
             $sendEmailToTechsupport = 'N';
@@ -1592,6 +1800,14 @@ namespace {
         function mm_site_service_ticket_agent()
         {
             return \MasterMobile\SiteServiceRequests\ServiceTicketBridge::runAgent();
+        }
+    }
+    if (!function_exists('mm_site_service_ticket_author_label')) {
+        function mm_site_service_ticket_author_label(array $message)
+        {
+            return \MasterMobile\SiteServiceRequests\ServiceTicketBridge::customerMessageAuthorLabel(
+                $message
+            );
         }
     }
 }

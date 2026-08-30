@@ -12,6 +12,7 @@ import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
 import { CustomerPriceTypesWorkspace } from "./components/CustomerPriceTypesWorkspace";
+import { SiteServiceRequestConversation } from "./components/SiteServiceRequestConversation";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
@@ -23,6 +24,7 @@ import {
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
   initializeBitrixReceivablesSession,
+  initializeBitrixSiteServiceRequestsSession,
   isBitrixCustomerPriceTypesRoute,
   isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
@@ -31,6 +33,7 @@ import {
   isBitrixProcurementOrderFormationRoute,
   isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
+  isBitrixSiteServiceRequestsRoute,
   type BitrixCustomerPriceTypesSessionResponse,
   type BitrixReceivablesSessionResponse,
   type BitrixExecutiveDashboardSessionResponse,
@@ -1307,6 +1310,7 @@ function ProcurementOrderFormationBitrixApp() {
 }
 
 function App() {
+  if (isBitrixSiteServiceRequestsRoute()) return <SiteServiceRequestsBitrixApp />;
   if (isBitrixLogisticsRoute()) return <BitrixLogisticsApp />;
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
   if (isBitrixProcurementOrderFormationRoute()) return <ProcurementOrderFormationBitrixApp />;
@@ -1320,6 +1324,43 @@ function App() {
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   if (isBitrixCustomerPriceTypesRoute()) return <CustomerPriceTypesApp />;
   return <MatchingApp />;
+}
+
+function SiteServiceRequestsBitrixApp() {
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "error"; message: string }
+    | { status: "ready"; itemId: number }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixSiteServiceRequestsSession()
+      .then((session) => {
+        if (!cancelled) setState({ status: "ready", itemId: session.itemId });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message: error instanceof Error ? error.message : "Не удалось открыть переписку",
+          });
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (state.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Переписка с клиентом</h1>
+          {state.status === "loading" ? <p>Подключение к Bitrix24…</p> : <><p>Нет доступа к переписке.</p><small>{state.message}</small></>}
+        </div>
+      </div>
+    );
+  }
+  return <SiteServiceRequestConversation itemId={state.itemId} />;
 }
 
 export default App;

@@ -169,8 +169,28 @@ class Settings(BaseSettings):
     site_service_requests_email_ingest_enabled: bool = False
     site_service_requests_bitrix_writes_enabled: bool = False
     site_service_requests_outbound_replies_enabled: bool = False
+    site_service_requests_ui_enabled: bool = False
+    site_service_requests_command_attachments_enabled: bool = False
     site_service_requests_hmac_secret: str | None = None
     site_service_requests_event_encryption_key: str | None = None
+    site_service_requests_ui_session_secret: str | None = None
+    site_service_requests_ui_handler_url: str | None = None
+    site_service_requests_ui_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    site_service_requests_ui_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    site_service_requests_ui_allowed_user_ids: list[int] = Field(default_factory=list)
+    site_service_requests_ui_session_ttl_seconds: int = Field(default=900, ge=300, le=3600)
+    site_service_requests_conversation_retention_days: int = Field(default=90, ge=1, le=3650)
+    site_service_requests_ui_max_files_per_reply: int = Field(default=5, ge=1, le=20)
+    site_service_requests_ui_max_file_bytes: int = Field(
+        default=10 * 1024 * 1024, ge=1, le=10 * 1024 * 1024
+    )
+    site_service_requests_ui_max_total_file_bytes: int = Field(
+        default=20 * 1024 * 1024, ge=1, le=20 * 1024 * 1024
+    )
     site_service_requests_bitrix_webhook_url: str | None = None
     site_service_requests_bitrix_entity_type_id: int = 1134
     site_service_requests_bitrix_working_category_id: int = 55
@@ -822,6 +842,8 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "site_service_requests_ui_allowed_domains",
+        "site_service_requests_ui_allowed_member_ids",
         "logistics_bitrix_allowed_domains",
         "logistics_bitrix_allowed_member_ids",
         "logistics_stage_pilot_warehouse_external_ids",
@@ -965,6 +987,31 @@ class Settings(BaseSettings):
                 return [int(item) for item in parsed if item not in (None, "")]
             return [int(chunk.strip()) for chunk in stripped.split(",") if chunk.strip()]
         raise ValueError("unsupported list value")
+
+    @field_validator("site_service_requests_ui_allowed_user_ids", mode="before")
+    @classmethod
+    def _parse_site_service_request_ui_user_ids(cls, value: Any) -> list[int]:
+        if value in (None, ""):
+            return []
+        parsed = (
+            json.loads(value) if isinstance(value, str) and value.strip().startswith("[") else value
+        )
+        if isinstance(parsed, str):
+            parsed = [chunk.strip() for chunk in parsed.split(",") if chunk.strip()]
+        if not isinstance(parsed, list):
+            raise ValueError("expected user ID array")
+        result: list[int] = []
+        for item in parsed:
+            if type(item) is int:
+                user_id = item
+            elif isinstance(item, str) and item.isascii() and item.isdigit():
+                user_id = int(item)
+            else:
+                raise ValueError("user IDs must be positive integers")
+            if user_id <= 0:
+                raise ValueError("user IDs must be positive integers")
+            result.append(user_id)
+        return result
 
 
 @lru_cache(maxsize=1)

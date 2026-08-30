@@ -70,6 +70,12 @@ def test_bridge_is_inert_until_explicit_rollout_calls() -> None:
     assert "`DATE_CLOSE`" in source
     assert "$ticket['CLOSED']" not in source
     assert "ticketDateIsClosed($ticket['DATE_CLOSE'] ?? null)" in source
+    assert "X-MM-Site-Capabilities: command-files-v1" in source
+    assert "X-MM-Command-Lease-Token" in source
+    assert "missingCommandFiles" in source
+    assert "attachment_write_failed" in source
+    assert "backfillConversationSnapshot" in source
+    assert "Поддержка MASTER MOBILE" in source
 
 
 def test_bridge_hardening_keeps_ambiguous_writes_and_field_repair_idempotent() -> None:

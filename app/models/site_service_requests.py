@@ -74,6 +74,11 @@ class SiteServiceRequestCase(Base):
             "source_kind",
             "source_key",
         ),
+        Index(
+            "ix_site_service_request_case_conversation_purge",
+            "conversation_purge_after",
+            "id",
+        ),
     )
 
     source_ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -134,6 +139,13 @@ class SiteServiceRequestCase(Base):
 
     latest_inbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latest_outbound_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversation_snapshot_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversation_closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    conversation_purge_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     base_sync_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -187,6 +199,10 @@ class SiteServiceRequestCase(Base):
         cascade="all, delete-orphan",
     )
     commands: Mapped[list[SiteServiceRequestCommand]] = relationship(
+        back_populates="case",
+        cascade="all, delete-orphan",
+    )
+    messages: Mapped[list[SiteServiceRequestMessage]] = relationship(
         back_populates="case",
         cascade="all, delete-orphan",
     )
@@ -434,6 +450,11 @@ class SiteServiceRequestCommand(Base):
             "ix_site_service_request_command_case",
             "case_id",
         ),
+        UniqueConstraint(
+            "case_id",
+            "client_request_id",
+            name="uq_site_service_request_command_client_request",
+        ),
     )
 
     case_id: Mapped[int] = mapped_column(
@@ -441,6 +462,9 @@ class SiteServiceRequestCommand(Base):
         nullable=False,
     )
     command_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_bitrix_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reply_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     reply_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
@@ -476,6 +500,116 @@ class SiteServiceRequestCommand(Base):
     )
 
     case: Mapped[SiteServiceRequestCase] = relationship(back_populates="commands")
+    attachments: Mapped[list[SiteServiceRequestCommandFile]] = relationship(
+        back_populates="command",
+        cascade="all, delete-orphan",
+    )
+
+
+class SiteServiceRequestMessage(Base):
+    __tablename__ = "site_service_request_message"
+    __table_args__ = (
+        UniqueConstraint(
+            "case_id",
+            "source_message_id",
+            name="uq_site_service_request_message_source",
+        ),
+        UniqueConstraint(
+            "case_id",
+            "client_request_id",
+            name="uq_site_service_request_message_client_request",
+        ),
+        CheckConstraint(
+            "message_kind IN ('site_message', 'internal_note')",
+            name="ck_site_service_request_message_kind",
+        ),
+        CheckConstraint(
+            "direction IN ('inbound', 'outbound', 'internal')",
+            name="ck_site_service_request_message_direction",
+        ),
+        Index(
+            "ix_site_service_request_message_case_order",
+            "case_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    case_id: Mapped[int] = mapped_column(
+        ForeignKey("site_service_request_case.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    author_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    author_bitrix_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_visible_to_customer: Mapped[bool] = mapped_column(nullable=False, default=True)
+    text_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    text_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_snapshot_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    case: Mapped[SiteServiceRequestCase] = relationship(back_populates="messages")
+
+
+class SiteServiceRequestCommandFile(Base):
+    __tablename__ = "site_service_request_command_file"
+    __table_args__ = (
+        UniqueConstraint(
+            "command_id",
+            "client_file_id",
+            name="uq_site_service_request_command_file_client",
+        ),
+        CheckConstraint(
+            "byte_size >= 0",
+            name="ck_site_service_request_command_file_byte_size",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'leased', 'applied', 'failed')",
+            name="ck_site_service_request_command_file_status",
+        ),
+        Index(
+            "ix_site_service_request_command_file_command",
+            "command_id",
+            "id",
+        ),
+    )
+
+    command_id: Mapped[int] = mapped_column(
+        ForeignKey("site_service_request_command.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    client_file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    safe_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    command: Mapped[SiteServiceRequestCommand] = relationship(back_populates="attachments")
 
 
 class SiteServiceRequestNonce(Base):

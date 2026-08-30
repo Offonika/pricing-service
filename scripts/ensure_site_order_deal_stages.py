@@ -17,6 +17,11 @@ DEFAULT_ENTITY_ID = "DEAL_STAGE"
 DEFAULT_ENV_FILE = Path(".env")
 REQUIRED_STAGES = (
     {
+        "STATUS_ID": "PARTIALLY_SHIPPED",
+        "NAME": "Частично отправлен",
+        "SORT": 52,
+    },
+    {
         "STATUS_ID": "PICKUP_TRANSIT",
         "NAME": "В пути на точку самовывоза",
         "SORT": 55,
@@ -38,6 +43,24 @@ REQUIRED_STAGES = (
     },
 )
 REQUIRED_USER_FIELDS = (
+    {
+        "FIELD_NAME": "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT",
+        "EDIT_FORM_LABEL": "Полная сборка подтверждена",
+        "LIST_COLUMN_LABEL": "Полная сборка подтверждена",
+        "USER_TYPE_ID": "datetime",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_SHIPMENT_COUNT",
+        "EDIT_FORM_LABEL": "Количество физических отправлений",
+        "LIST_COLUMN_LABEL": "Количество физических отправлений",
+        "USER_TYPE_ID": "integer",
+    },
+    {
+        "FIELD_NAME": "UF_CRM_MM_FULL_ASSEMBLY_STATUS",
+        "EDIT_FORM_LABEL": "Статус полноты сборки",
+        "LIST_COLUMN_LABEL": "Статус полноты сборки",
+        "USER_TYPE_ID": "string",
+    },
     {
         "FIELD_NAME": "UF_CRM_MM_PICKUP_READY_EVENT_ID",
         "EDIT_FORM_LABEL": "Событие приёмки для SMS",

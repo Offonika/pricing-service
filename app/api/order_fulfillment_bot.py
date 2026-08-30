@@ -20,6 +20,7 @@ from app.models.site_order_fulfillment import (
 from app.services import pickup_control
 from app.services import site_order_execution_reconciliation as execution_reconciliation
 from app.services import site_order_fulfillment_bot as bot
+from app.services import site_order_shipment_poller as shipment_poller
 
 router = APIRouter()
 internal_router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
@@ -377,6 +378,8 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         settings=settings,
     )
     execution_metrics = execution_reconciliation.execution_reconciliation_metrics(db)
+    shipment_metrics = shipment_poller.shipment_operational_metrics(db)
+    shipment_configuration_issues = shipment_poller.shipment_configuration_issues(settings)
     return {
         "enabled": settings.order_fulfillment_bot_enabled,
         "apply_enabled": runtime_apply_enabled,
@@ -417,6 +420,18 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
             if settings.order_fulfillment_execution_cutover_at is not None
             else None
         ),
+        "shipments_master_enabled": settings.order_fulfillment_shipments_master_enabled,
+        "shipments_poller_enabled": settings.order_fulfillment_shipments_poller_enabled,
+        "shipments_ingest_enabled": settings.order_fulfillment_shipments_ingest_enabled,
+        "shipments_stage_apply_enabled": (settings.order_fulfillment_shipments_stage_apply_enabled),
+        "shipments_gateway_apply_enabled": (
+            settings.order_fulfillment_shipments_gateway_apply_enabled
+        ),
+        "shipments_notifications_enabled": (
+            settings.order_fulfillment_shipments_notifications_enabled
+        ),
+        "shipments_configuration_ready": not shipment_configuration_issues,
+        "shipments_configuration_issues": shipment_configuration_issues,
         "candidate_count": candidates,
         "outbox_pending": pending,
         "outbox_processing": processing,
@@ -425,6 +440,7 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "oldest_active_outbox_age_seconds": oldest_active_age_seconds,
         **pickup_metrics,
         **execution_metrics,
+        **shipment_metrics,
         "pickup_warehouse_allowlist": (settings.order_fulfillment_pickup_warehouse_external_ids),
         "pickup_warehouse_alias_count": len(settings.order_fulfillment_pickup_warehouse_aliases),
         "task_route_count": len(settings.order_fulfillment_point_task_routes),

@@ -1140,6 +1140,10 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "25,55 * * * *" in cron_source
     assert "0 11 * * *" in cron_source
     assert "ORDER_FULFILLMENT_SYNC_MODE=daily" in cron_source
+    assert "ORDER_FULFILLMENT_SYNC_MODE=shipments" in cron_source
+    shipment_line = next(line for line in cron_source.splitlines() if "SYNC_MODE=shipments" in line)
+    assert "ORDER_FULFILLMENT_NOTIFY_ENABLED=false" in shipment_line
+    assert "ORDER_FULFILLMENT_SYNC_APPLY=true" in shipment_line
     daily_line = next(line for line in cron_source.splitlines() if "SYNC_MODE=daily" in line)
     assert "ORDER_FULFILLMENT_NOTIFY_ENABLED=false" in daily_line
     assert "ORDER_FULFILLMENT_SYNC_MODE=all" not in cron_source
@@ -1149,6 +1153,7 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "REPO_DIR=/opt/MM/pricing-service-task43-current" in cron_source
     assert "flock -w 600" in wrapper_source
     assert "flock -n" in wrapper_source
+    assert '"${PYTHON_BIN}" -m tasks.order_fulfillment_sync' in wrapper_source
     assert 'source "${REPO_DIR}/.env"' not in bot_wrapper_source
     assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS=//p" in bot_wrapper_source
     assert 'WORKER_TIMEOUT_SECONDS="${WORKER_TIMEOUT_SECONDS:-600}"' in bot_wrapper_source
@@ -1156,6 +1161,176 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "--kill-after=30s" in bot_wrapper_source
     assert '"${WORKER_TIMEOUT_SECONDS}s"' in bot_wrapper_source
     assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS=600" in env_example
+
+
+def test_shipment_poller_uses_cursor_and_overlapping_recent_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cursor_path = tmp_path / "shipment-cursor.json"
+    cursor_path.write_text(json.dumps({"last_deal_id": 2}), encoding="utf-8")
+    settings = Settings(
+        _env_file=None,
+        order_fulfillment_shipments_poller_enabled=True,
+        order_fulfillment_shipments_poller_limit=1,
+        order_fulfillment_shipments_poller_overlap=1,
+        order_fulfillment_shipments_poller_cursor_path=str(cursor_path),
+        order_fulfillment_shipments_master_enabled=False,
+        order_fulfillment_shipments_ingest_enabled=False,
+        order_fulfillment_shipments_gateway_url="https://example.invalid",
+        order_fulfillment_shipments_gateway_token="secret",
+    )
+    monkeypatch.setattr(sync, "get_settings", lambda: settings)
+
+    class Client:
+        def list_deals_by_stages(self, stage_ids, *, limit):
+            assert "PARTIALLY_SHIPPED" in stage_ids
+            assert limit >= 2
+            return [
+                service.BitrixDealSnapshot(
+                    deal_id=deal_id,
+                    stage_id="FINAL_INVOICE",
+                    delivery="СДЭК",
+                    raw={service.CRM_ORDER_NUMBER_FIELD: str(242800 + deal_id)},
+                )
+                for deal_id in (1, 2, 3, 4)
+            ]
+
+    order_snapshots = {
+        str(242800 + deal_id): {
+            "source_revision": f"onec-{deal_id}",
+            "expected_items": [{"product_ref": "product-a", "quantity": "1"}],
+            "rtus": [
+                {
+                    "external_id": f"rtu-{deal_id}",
+                    "posted": True,
+                    "assembled_at": datetime(2026, 8, 29, 10, 0),
+                    "items": [{"product_ref": "product-a", "quantity": "1"}],
+                }
+            ],
+        }
+        for deal_id in (3, 4)
+    }
+    monkeypatch.setattr(
+        sync,
+        "query_multi_shipment_onec_snapshots",
+        lambda order_numbers: {
+            order: order_snapshots[order] for order in order_numbers if order in order_snapshots
+        },
+    )
+
+    class Gateway:
+        def __init__(self, **kwargs):
+            assert kwargs["token"] == "secret"
+
+        def get_order_snapshot(self, *, site_order_number):
+            return {
+                "order_id": int(site_order_number),
+                "revision": f"bitrix-{site_order_number}",
+                "shipments": [],
+            }
+
+    monkeypatch.setattr(sync.shipment_service, "BitrixSaleShipmentGatewayClient", Gateway)
+    captured: list[dict] = []
+
+    def fake_sync_order_shipments(session, **kwargs):
+        del session
+        captured.append(kwargs)
+        return sync.shipment_service.ShipmentSyncResult(
+            snapshot_id=kwargs["snapshot_id"],
+            site_order_number=kwargs["site_order_number"],
+            coverage_status="complete",
+            full_assembly=True,
+            shipment_count=0,
+            target_stage="FINAL_INVOICE",
+            action="noop",
+            reason="already_final_invoice",
+        )
+
+    monkeypatch.setattr(
+        sync.shipment_service,
+        "sync_order_shipments",
+        fake_sync_order_shipments,
+    )
+
+    class Session:
+        def rollback(self):
+            raise AssertionError("poller must not roll back a successful shadow cycle")
+
+    class SessionScope:
+        def __enter__(self):
+            return Session()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(sync, "session_scope", SessionScope)
+
+    summary = sync.run_shipment_poller_sync(client=Client(), apply=True)
+
+    assert summary["persist"] is False
+    assert summary["processed"] == 2
+    assert [item["site_order_number"] for item in captured] == ["242803", "242804"]
+    assert all(item["enqueue_gateway"] is False for item in captured)
+    assert json.loads(cursor_path.read_text(encoding="utf-8"))["last_deal_id"] == 3
+
+
+def test_shipment_poller_advances_cursor_past_failed_order(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cursor_path = tmp_path / "shipment-cursor.json"
+    settings = Settings(
+        _env_file=None,
+        order_fulfillment_shipments_poller_enabled=True,
+        order_fulfillment_shipments_poller_limit=1,
+        order_fulfillment_shipments_poller_overlap=1,
+        order_fulfillment_shipments_poller_cursor_path=str(cursor_path),
+        order_fulfillment_shipments_master_enabled=False,
+        order_fulfillment_shipments_ingest_enabled=False,
+        order_fulfillment_shipments_gateway_url="https://example.invalid",
+        order_fulfillment_shipments_gateway_token="secret",
+    )
+    monkeypatch.setattr(sync, "get_settings", lambda: settings)
+
+    class Client:
+        def list_deals_by_stages(self, stage_ids, *, limit):
+            del stage_ids, limit
+            return [
+                service.BitrixDealSnapshot(
+                    deal_id=7,
+                    stage_id="FINAL_INVOICE",
+                    delivery="СДЭК",
+                    raw={service.CRM_ORDER_NUMBER_FIELD: "242807"},
+                )
+            ]
+
+    monkeypatch.setattr(sync, "query_multi_shipment_onec_snapshots", lambda order_numbers: {})
+
+    class Gateway:
+        def __init__(self, **kwargs):
+            assert kwargs["token"] == "secret"
+
+    monkeypatch.setattr(sync.shipment_service, "BitrixSaleShipmentGatewayClient", Gateway)
+
+    class Session:
+        def rollback(self):
+            return None
+
+    class SessionScope:
+        def __enter__(self):
+            return Session()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(sync, "session_scope", SessionScope)
+
+    summary = sync.run_shipment_poller_sync(client=Client(), apply=False)
+
+    assert summary["processed"] == 0
+    assert summary["errors"][0]["site_order_number"] == "242807"
+    assert json.loads(cursor_path.read_text(encoding="utf-8"))["last_deal_id"] == 7
 
 
 def _notify_settings(

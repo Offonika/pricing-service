@@ -9046,6 +9046,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/shipments/sync:
+    post:
+      summary: Sync Order Shipments
+      operationId: sync_order_shipments_api_order_fulfillment_shipments_sync_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderShipmentsSyncRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderShipmentsSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/order-fulfillment/shipments/notifications/status:
+    post:
+      summary: Update Shipment Notification Status
+      operationId: update_shipment_notification_status_api_order_fulfillment_shipments_notifications_status_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShipmentNotificationStatusRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShipmentNotificationStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/bitrix/messages:
     post:
       summary: Ingest Bitrix Message
@@ -23762,6 +23812,144 @@ components:
       - payment_amount
       - checked_at
       title: OrderPaymentCheckResponse
+    OrderShipmentsSyncRequest:
+      properties:
+        snapshot_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 64
+          - type: 'null'
+          title: Snapshot Id
+        site_order_number:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Site Order Number
+        bitrix_deal_id:
+          type: integer
+          minimum: 1.0
+          title: Bitrix Deal Id
+        bitrix_order_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Bitrix Order Id
+        current_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Stage
+        delivery_kind:
+          type: string
+          enum:
+          - carrier
+          - internal_pickup
+          - unknown
+          title: Delivery Kind
+          default: unknown
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Observed At
+        source_revisions:
+          additionalProperties:
+            type: string
+          type: object
+          title: Source Revisions
+        expected_items:
+          items:
+            $ref: '#/components/schemas/ShipmentLineInput'
+          type: array
+          title: Expected Items
+        rtus:
+          items:
+            $ref: '#/components/schemas/RtuSnapshotInput'
+          type: array
+          title: Rtus
+        shipments:
+          items:
+            $ref: '#/components/schemas/ShipmentSnapshotInput'
+          type: array
+          title: Shipments
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+      type: object
+      required:
+      - site_order_number
+      - bitrix_deal_id
+      - event_at
+      - expected_items
+      title: OrderShipmentsSyncRequest
+    OrderShipmentsSyncResponse:
+      properties:
+        snapshot_id:
+          type: string
+          title: Snapshot Id
+        site_order_number:
+          type: string
+          title: Site Order Number
+        coverage_status:
+          type: string
+          title: Coverage Status
+        full_assembly:
+          type: boolean
+          title: Full Assembly
+        shipment_count:
+          type: integer
+          title: Shipment Count
+        target_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Stage
+        action:
+          type: string
+          title: Action
+        reason:
+          type: string
+          title: Reason
+        event_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Event Id
+        stage_outbox_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Stage Outbox Id
+        notification_count:
+          type: integer
+          title: Notification Count
+          default: 0
+        gateway_operation_count:
+          type: integer
+          title: Gateway Operation Count
+          default: 0
+        conflict:
+          type: boolean
+          title: Conflict
+          default: false
+      type: object
+      required:
+      - snapshot_id
+      - site_order_number
+      - coverage_status
+      - full_assembly
+      - shipment_count
+      - action
+      - reason
+      title: OrderShipmentsSyncResponse
     PaginatedCandidates:
       properties:
         items:
@@ -28928,6 +29116,53 @@ components:
       required:
       - competitor_item_id
       title: RevokeRequest
+    RtuSnapshotInput:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+        posted:
+          type: boolean
+          title: Posted
+          default: false
+        assembled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Assembled At
+        cancelled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cancelled At
+        source_revision:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Source Revision
+        items:
+          items:
+            $ref: '#/components/schemas/ShipmentLineInput'
+          type: array
+          title: Items
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - external_id
+      title: RtuSnapshotInput
     RunClaimRequest:
       properties:
         job_id:
@@ -29097,6 +29332,192 @@ components:
           description: Частота обновления экрана
       type: object
       title: ScreenInfo
+    ShipmentLineInput:
+      properties:
+        product_ref:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Product Ref
+        product_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Code
+        quantity:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        rtu_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rtu External Id
+        bitrix_shipment_item_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Bitrix Shipment Item Id
+        basket_item_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Basket Item Id
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - product_ref
+      - quantity
+      title: ShipmentLineInput
+    ShipmentNotificationStatusRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Idempotency Key
+        status:
+          type: string
+          enum:
+          - submitted
+          - sent
+          - delivered
+          - failed
+          title: Status
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        external_ref:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: External Ref
+        error:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - idempotency_key
+      - status
+      - occurred_at
+      title: ShipmentNotificationStatusRequest
+    ShipmentNotificationStatusResponse:
+      properties:
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        status:
+          type: string
+          title: Status
+        changed:
+          type: boolean
+          title: Changed
+      type: object
+      required:
+      - idempotency_key
+      - status
+      - changed
+      title: ShipmentNotificationStatusResponse
+    ShipmentSnapshotInput:
+      properties:
+        shipment_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Shipment Key
+        bitrix_shipment_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Bitrix Shipment Id
+        delivery_service_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Delivery Service Id
+        carrier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier
+        tracking_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tracking Number
+        status:
+          type: string
+          enum:
+          - planned
+          - ready
+          - dispatched
+          - delivered
+          - returned
+          - conflict
+          title: Status
+          default: planned
+        dispatched_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Dispatched At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        returned_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Returned At
+        source_revision:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Source Revision
+        explicit_split_confirmed:
+          type: boolean
+          title: Explicit Split Confirmed
+          default: false
+        tracking_update_confirmed:
+          type: boolean
+          title: Tracking Update Confirmed
+          default: false
+        items:
+          items:
+            $ref: '#/components/schemas/ShipmentLineInput'
+          type: array
+          title: Items
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      title: ShipmentSnapshotInput
     SiteDefectArchiveCaseDetailResponse:
       properties:
         id:

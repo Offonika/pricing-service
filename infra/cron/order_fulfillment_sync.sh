@@ -56,7 +56,7 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 cmd=(
-  "${PYTHON_BIN}" infra/cron/order_fulfillment_sync.py
+  "${PYTHON_BIN}" -m tasks.order_fulfillment_sync
   --mode "${MODE}"
   --output-dir "${OUTPUT_DIR}"
   --new-limit "${NEW_LIMIT}"

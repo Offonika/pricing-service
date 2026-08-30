@@ -40,6 +40,7 @@ STAGE_ORDER = {
     "PREPAYMENT_INVOICE": 5,
     "EXECUTING": 8,
     "FINAL_INVOICE": 10,
+    "PARTIALLY_SHIPPED": 15,
     CRM_STAGE_PICKUP_TRANSIT: 20,
     CRM_STAGE_PICKUP_WAITING: 30,
     "IN_DELIVERY": 40,
@@ -48,6 +49,13 @@ STAGE_ORDER = {
     "LOSE": 100,
 }
 EXECUTION_TARGET_STAGES = {"PREPAYMENT_INVOICE", "FINAL_INVOICE", "WON", "LOSE"}
+SHIPMENT_TARGET_STAGES = {
+    "FINAL_INVOICE",
+    "PARTIALLY_SHIPPED",
+    "IN_DELIVERY",
+    CRM_STAGE_PICKUP_TRANSIT,
+}
+FULL_ASSEMBLY_FIELD = "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT"
 EXECUTION_HISTORICAL_APPLY_BATCH_LIMIT = 20
 
 
@@ -83,6 +91,17 @@ def _is_historical_execution_row(row: SiteOrderStageOutbox) -> bool:
         payload.get("historical") is True
         or row.source_event_type.startswith("execution_historical_")
     )
+
+
+def _is_shipment_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return payload.get("pipeline") == "shipment_reconciliation" or row.source_event_type.startswith(
+        "shipment_"
+    )
+
+
+def _is_order_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
+    return _is_execution_reconciliation_row(row) or _is_shipment_reconciliation_row(row)
 
 
 def _pilot_warehouse_allowed(
@@ -230,7 +249,7 @@ def _timeline_marker(row: SiteOrderStageOutbox) -> str:
 
 def _timeline_comment(row: SiteOrderStageOutbox) -> str:
     payload = row.payload if isinstance(row.payload, dict) else {}
-    if _is_execution_reconciliation_row(row):
+    if _is_order_reconciliation_row(row):
         decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
         return "\n".join(
             [
@@ -393,7 +412,7 @@ def _mark_manual_review(
     session.add(
         LogisticsManualReview(
             review_type="site_order_stage_conflict",
-            source_document_type=("site_order" if _is_execution_reconciliation_row(row) else "rtu"),
+            source_document_type=("site_order" if _is_order_reconciliation_row(row) else "rtu"),
             source_external_id=row.site_order_number,
             reason=reason,
             payload={
@@ -417,23 +436,59 @@ def _is_terminal_stage(stage: str) -> bool:
 
 
 def _has_blocking_predecessor(session: Session, row: SiteOrderStageOutbox) -> bool:
-    return bool(
-        session.scalar(
-            select(
-                exists().where(
-                    SiteOrderStageOutbox.case_id == row.case_id,
-                    SiteOrderStageOutbox.id < row.id,
-                    SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
-                )
-            )
+    predecessors = session.scalars(
+        select(SiteOrderStageOutbox).where(
+            SiteOrderStageOutbox.case_id == row.case_id,
+            SiteOrderStageOutbox.id < row.id,
+            SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
         )
-    )
+    ).all()
+    for predecessor in predecessors:
+        if (
+            _is_order_reconciliation_row(row)
+            and _is_order_reconciliation_row(predecessor)
+            and row.case.last_evidence_event_id == row.event_id
+            and predecessor.event_id != row.event_id
+        ):
+            continue
+        return True
+    return False
+
+
+def _supersede_stale_shipment_predecessors(
+    session: Session,
+    row: SiteOrderStageOutbox,
+    *,
+    apply: bool,
+    now: datetime,
+) -> None:
+    if (
+        not apply
+        or not _is_shipment_reconciliation_row(row)
+        or row.case.last_evidence_event_id != row.event_id
+    ):
+        return
+    predecessors = session.scalars(
+        select(SiteOrderStageOutbox).where(
+            SiteOrderStageOutbox.case_id == row.case_id,
+            SiteOrderStageOutbox.id < row.id,
+            SiteOrderStageOutbox.status.in_(BLOCKING_PREDECESSOR_STATUSES),
+        )
+    ).all()
+    for predecessor in predecessors:
+        if not _is_shipment_reconciliation_row(predecessor):
+            continue
+        predecessor.status = STATUS_APPLIED
+        predecessor.applied_at = predecessor.applied_at or now
+        predecessor.next_attempt_at = None
+        predecessor.last_error = "superseded_by_newer_evidence"
+        predecessor.updated_at = now
 
 
 def _resolve_deal(
     client: BitrixChatClient, row: SiteOrderStageOutbox
 ) -> tuple[int | None, str | None]:
-    if _is_execution_reconciliation_row(row):
+    if _is_order_reconciliation_row(row):
         deals = client.list_deals_by_site_order(row.site_order_number)
         if not deals:
             return None, "bitrix_deal_not_found"
@@ -464,16 +519,18 @@ def _process_row(
     apply: bool,
     now: datetime,
 ) -> StageOutboxResult:
+    _supersede_stale_shipment_predecessors(session, row, apply=apply, now=now)
     if _has_blocking_predecessor(session, row):
         return _result(row, "waiting_for_predecessor")
     execution_row = _is_execution_reconciliation_row(row)
-    if execution_row and row.case.last_evidence_event_id != row.event_id:
+    shipment_row = _is_shipment_reconciliation_row(row)
+    if (execution_row or shipment_row) and row.case.last_evidence_event_id != row.event_id:
         if apply:
             row.status = STATUS_APPLIED
             row.last_error = "superseded_by_newer_evidence"
             row.updated_at = now
         return _result(row, "superseded_by_newer_evidence")
-    if not execution_row and not _pilot_warehouse_allowed(
+    if not (execution_row or shipment_row) and not _pilot_warehouse_allowed(
         session,
         row,
         settings.logistics_stage_pilot_warehouse_external_ids,
@@ -512,6 +569,22 @@ def _process_row(
                 _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
             return _result(row, "manual_review", live_stage=live_stage, reason=reason)
         expected_stages = {"EXECUTING"}
+    elif shipment_row:
+        if row.target_stage not in SHIPMENT_TARGET_STAGES:
+            reason = f"shipment_target_not_allowed:{row.target_stage or '-'}"
+            if apply:
+                _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
+            return _result(row, "manual_review", live_stage=live_stage, reason=reason)
+        expected_stages = {
+            "FINAL_INVOICE": {"EXECUTING"},
+            "PARTIALLY_SHIPPED": {"EXECUTING", "FINAL_INVOICE"},
+            "IN_DELIVERY": {"EXECUTING", "FINAL_INVOICE", "PARTIALLY_SHIPPED"},
+            CRM_STAGE_PICKUP_TRANSIT: {
+                "EXECUTING",
+                "FINAL_INVOICE",
+                "PARTIALLY_SHIPPED",
+            },
+        }[row.target_stage]
     else:
         expected_stages = {ALLOWED_FROM_STAGE[row.target_stage]}
     if live_stage not in {*expected_stages, row.target_stage}:
@@ -560,6 +633,27 @@ def _process_row(
         return _result(row, "dry_run_ready", live_stage=live_stage)
 
     if live_stage != row.target_stage:
+        if row.target_stage == "FINAL_INVOICE" and (execution_row or shipment_row):
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+            coverage_status = (
+                snapshot.get("line_coverage_status")
+                if execution_row
+                else payload.get("coverage_status")
+            )
+            if coverage_status != "complete":
+                raise RuntimeError("full_assembly_readback_guard_missing")
+            confirmed_at = (
+                snapshot.get("latest_assembled_at")
+                or payload.get("event_at")
+                or (row.event.event_at.isoformat() if row.event.event_at else now.isoformat())
+            )
+            client.update_deal_fields(deal_id, {FULL_ASSEMBLY_FIELD: confirmed_at})
+            assembly_readback = client.get_deal_by_id(deal_id)
+            if assembly_readback is None or _clean(
+                (assembly_readback.raw or {}).get(FULL_ASSEMBLY_FIELD)
+            ) != _clean(confirmed_at):
+                raise RuntimeError("full_assembly_field_readback_mismatch")
         client.update_deal_fields(deal_id, {"STAGE_ID": row.target_stage})
         readback = client.get_deal_by_id(deal_id)
         if readback is None or _clean(readback.stage_id) != row.target_stage:
@@ -586,6 +680,8 @@ def _process_row(
     row.next_attempt_at = None
     row.last_error = None
     row.updated_at = now
+    row.case.current_crm_stage = row.target_stage
+    row.case.updated_at = now
     return _result(row, "applied", live_stage=row.target_stage, applied=True)
 
 
@@ -656,6 +752,14 @@ def process_stage_outbox(
                         results.append(_result(row, "historical_batch_limit"))
                         continue
                     historical_apply_attempts += 1
+            elif _is_shipment_reconciliation_row(row):
+                if not (
+                    settings.order_fulfillment_bot_apply_enabled
+                    and settings.order_fulfillment_shipments_master_enabled
+                    and settings.order_fulfillment_shipments_stage_apply_enabled
+                ):
+                    results.append(_result(row, "shipment_automation_disabled"))
+                    continue
             elif not settings.logistics_stage_automation_enabled:
                 results.append(_result(row, "automation_disabled"))
                 continue

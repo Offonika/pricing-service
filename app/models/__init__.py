@@ -160,6 +160,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionCase,
         SiteOrderExecutionEvent,
         SiteOrderFulfillmentOutbox,
+        SiteOrderRtu,
+        SiteOrderRtuItem,
+        SiteOrderShipment,
+        SiteOrderShipmentItem,
+        SiteOrderShipmentNotification,
         SiteOrderStageOutbox,
     )
     from app.models.site_service_requests import (
@@ -316,6 +321,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "BitrixChatAction",
         "SiteOrderExecutionEvent",
         "SiteOrderFulfillmentOutbox",
+        "SiteOrderRtu",
+        "SiteOrderRtuItem",
+        "SiteOrderShipment",
+        "SiteOrderShipmentItem",
+        "SiteOrderShipmentNotification",
         "SiteOrderStageOutbox",
         "SiteServiceRequestCase",
         "SiteServiceRequestEvent",

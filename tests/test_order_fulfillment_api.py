@@ -17,6 +17,7 @@ from app.models.site_order_fulfillment import (
     SiteOrderExecutionEvent,
 )
 from app.services import site_order_fulfillment as service
+from app.services import site_order_shipments as shipment_service
 
 SITE_ORDER_TABLES = [
     SiteOrderExecutionCase.__table__,
@@ -95,6 +96,148 @@ def test_order_fulfillment_message_endpoint_dry_run_parses_without_db(monkeypatc
         "218014",
         "217624",
     ]
+
+
+def test_shipment_sync_dry_run_reports_partial_assembly_without_db(monkeypatch) -> None:
+    _configure(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/order-fulfillment/shipments/sync",
+        json={
+            "site_order_number": "242685",
+            "bitrix_deal_id": 39001,
+            "current_stage": "EXECUTING",
+            "event_at": "2026-08-29T12:00:00+03:00",
+            "expected_items": [
+                {"product_ref": "phone", "quantity": "1"},
+                {"product_ref": "case", "quantity": "1"},
+            ],
+            "rtus": [
+                {
+                    "external_id": "rtu-1",
+                    "posted": True,
+                    "assembled_at": "2026-08-29T11:00:00+03:00",
+                    "items": [{"product_ref": "phone", "quantity": "1"}],
+                }
+            ],
+            "shipments": [],
+            "dry_run": True,
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["coverage_status"] == "partial"
+    assert payload["full_assembly"] is False
+    assert payload["action"] == "noop"
+
+
+def test_shipment_sync_persist_is_feature_gated(monkeypatch) -> None:
+    _configure(monkeypatch)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/order-fulfillment/shipments/sync",
+        json={
+            "site_order_number": "242685",
+            "bitrix_deal_id": 39001,
+            "event_at": "2026-08-29T12:00:00+03:00",
+            "expected_items": [{"product_ref": "phone", "quantity": "1"}],
+            "dry_run": False,
+        },
+        headers=_headers(),
+    )
+
+    assert response.status_code == 409
+
+
+def test_shipment_sync_enqueues_only_explicit_missing_part_for_gateway(
+    monkeypatch,
+) -> None:
+    _configure(monkeypatch)
+    monkeypatch.setenv("ORDER_FULFILLMENT_SHIPMENTS_MASTER_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FULFILLMENT_SHIPMENTS_INGEST_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FULFILLMENT_SHIPMENTS_GATEWAY_APPLY_ENABLED", "true")
+    monkeypatch.setenv("ORDER_FULFILLMENT_SHIPMENTS_GATEWAY_URL", "https://example.invalid")
+    monkeypatch.setenv("ORDER_FULFILLMENT_SHIPMENTS_GATEWAY_TOKEN", "secret")
+    get_settings.cache_clear()
+    captured: dict = {}
+
+    def fake_sync(db, **kwargs):
+        del db
+        captured["sync"] = kwargs
+        return shipment_service.ShipmentSyncResult(
+            snapshot_id="a" * 64,
+            site_order_number=kwargs["site_order_number"],
+            coverage_status="complete",
+            full_assembly=True,
+            shipment_count=2,
+            target_stage="FINAL_INVOICE",
+            action="update_stage",
+            reason="all_order_quantities_assembled",
+            gateway_operation_count=1,
+        )
+
+    monkeypatch.setattr(shipment_service, "sync_order_shipments", fake_sync)
+    engine = create_engine("sqlite://", poolclass=StaticPool)
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/api/order-fulfillment/shipments/sync",
+            json={
+                "site_order_number": "242685",
+                "bitrix_deal_id": 39001,
+                "bitrix_order_id": 7001,
+                "current_stage": "EXECUTING",
+                "event_at": "2026-08-29T12:00:00+03:00",
+                "expected_items": [
+                    {"product_ref": "phone", "quantity": "1"},
+                    {"product_ref": "case", "quantity": "1"},
+                ],
+                "rtus": [],
+                "shipments": [
+                    {
+                        "shipment_key": "part-1",
+                        "bitrix_shipment_id": 51,
+                        "delivery_service_id": 11,
+                        "items": [
+                            {
+                                "product_ref": "phone",
+                                "basket_item_id": 701,
+                                "quantity": "1",
+                            }
+                        ],
+                    },
+                    {
+                        "shipment_key": "part-2",
+                        "delivery_service_id": 11,
+                        "explicit_split_confirmed": True,
+                        "items": [
+                            {
+                                "product_ref": "case",
+                                "basket_item_id": 702,
+                                "quantity": "1",
+                            }
+                        ],
+                    },
+                ],
+                "dry_run": False,
+            },
+            headers=_headers(),
+        )
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["gateway_operation_count"] == 1
+    assert captured["sync"]["enqueue_gateway"] is True
+    assert captured["sync"]["shipments"][0]["bitrix_shipment_id"] == 51
+    assert captured["sync"]["shipments"][1]["explicit_split_confirmed"] is True
+    assert captured["sync"]["shipments"][1]["bitrix_shipment_id"] is None
 
 
 def test_order_fulfillment_persisted_courier_ocr_creates_recommendation(

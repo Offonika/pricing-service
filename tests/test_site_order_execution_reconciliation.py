@@ -95,6 +95,46 @@ def test_partial_multi_rtu_assembly_or_issue_never_advances_whole_order() -> Non
     assert all_issued.target_stage == "WON"
 
 
+def test_item_coverage_blocks_order_even_when_all_existing_rtus_are_assembled() -> None:
+    partial = reconciliation.decide_execution_stage(
+        _snapshot(
+            rtu_count=1,
+            assembled_rtu_count=1,
+            line_coverage_status="partial",
+            expected_item_quantity=Decimal("3"),
+            assembled_item_quantity=Decimal("1"),
+            missing_item_count=1,
+        )
+    )
+    complete = reconciliation.decide_execution_stage(
+        _snapshot(
+            rtu_count=2,
+            assembled_rtu_count=2,
+            line_coverage_status="complete",
+            expected_item_quantity=Decimal("3"),
+            assembled_item_quantity=Decimal("3"),
+        )
+    )
+
+    assert partial.action == reconciliation.ACTION_NOOP
+    assert partial.reason == "waiting_for_full_order_item_assembly"
+    assert complete.target_stage == "FINAL_INVOICE"
+
+
+def test_item_coverage_excess_or_unavailable_fails_closed() -> None:
+    conflict = reconciliation.decide_execution_stage(
+        _snapshot(line_coverage_status="conflict", excess_item_count=1)
+    )
+    unavailable = reconciliation.decide_execution_stage(
+        _snapshot(line_coverage_status="unavailable")
+    )
+
+    assert conflict.reason == "assembly_line_quantity_conflict"
+    assert unavailable.reason == "assembly_line_coverage_unavailable"
+    assert conflict.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert unavailable.action == reconciliation.ACTION_MANUAL_REVIEW
+
+
 def test_impossible_rtu_evidence_counts_are_blocked() -> None:
     decision = reconciliation.decide_execution_stage(_snapshot(rtu_count=1, assembled_rtu_count=2))
 

@@ -216,6 +216,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `scripts/validate_receivables_release.py` на central read-only
   session scope с сохранением fail-closed UI, bundle, open-debt checks, JSON и
   exit code контрактов.
+- [x] Перевести `scripts/validate_executive_dashboard_release.py` на central
+  read-only session scope с сохранением UI, routes, snapshots, Alembic revision,
+  JSON и exit code контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -403,9 +406,25 @@ JSON/CSV/XLSX артефактов сохраняются.
     отдельных подтверждений.
 67. После зелёного CI разрешён merge PR №133. Production migration, deploy и
     cutover в это решение не входят.
+68. Следующим локальным read-only срезом Release B выбран
+    `scripts/validate_executive_dashboard_release.py`; разрешена реализация в
+    отдельной clean worktree. Commit, push, создание PR и production release
+    требуют отдельных подтверждений.
+69. Для `scripts/validate_executive_dashboard_release.py` разрешены commit
+    проверенного среза, push ветки и создание отдельного PR. Merge и production
+    release требуют отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-31 — разрешены commit проверенного read-only среза
+  `scripts/validate_executive_dashboard_release.py`, push ветки и создание отдельного
+  PR; merge и production release оставлены отдельными решениями.
+- 2026-08-31 — `scripts/validate_executive_dashboard_release.py` переведён на
+  central read-only session scope; UI, routes, snapshots, Alembic revision, JSON
+  и exit code контракты сохранены и покрыты профильным тестом.
+- 2026-08-31 — следующим локальным read-only срезом Release B выбран
+  `scripts/validate_executive_dashboard_release.py`; commit, push, PR и production
+  release оставлены отдельными решениями.
 - 2026-08-31 — разрешён merge PR №133; production release оставлен отдельным
   решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза

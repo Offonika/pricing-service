@@ -42,6 +42,9 @@ def _rtu_row(**overrides):
         "source_warehouse_external_id": "0xSOURCE1",
         "source_warehouse_code": "SRC",
         "source_warehouse_name": "Склад РТУ",
+        "pickup_department_external_id": None,
+        "pickup_department_code": None,
+        "pickup_department_name": None,
         "is_marked": 0,
         "is_posted": 1,
         "has_printed": 1,
@@ -75,6 +78,31 @@ def test_normalize_rtu_source_rows_preserves_delivery_code() -> None:
     assert normalized.ready[0].delivery_code == "MARSHRUTKA_PTG"
 
 
+def test_normalize_rtu_source_rows_preserves_exact_pickup_department() -> None:
+    normalized = logistics_onec.normalize_rtu_source_rows(
+        [
+            _rtu_row(
+                pickup_department_external_id="0xA520",
+                pickup_department_code="РБ0000028",
+                pickup_department_name="МСК-028 ТЦ Гранд Юг",
+            )
+        ]
+    )
+
+    row = normalized.ready[0]
+    assert row.pickup_department_external_id == "0xa520"
+    assert row.pickup_department_code == "РБ0000028"
+    assert row.pickup_department_name == "МСК-028 ТЦ Гранд Юг"
+
+
+def test_normalize_rtu_source_rows_treats_zero_pickup_ref_as_empty() -> None:
+    normalized = logistics_onec.normalize_rtu_source_rows(
+        [_rtu_row(pickup_department_external_id="0x" + "0" * 32)]
+    )
+
+    assert normalized.ready[0].pickup_department_external_id is None
+
+
 def test_delivery_code_has_priority_over_legacy_name() -> None:
     assert not logistics_onec._is_external_delivery_method("PICKUP", "СДЭК курьер")
     assert logistics_onec._external_carrier_name("MARSHRUTKA_PTG", "СДЭК") == (
@@ -94,8 +122,7 @@ def test_known_delivery_codes_are_classified_without_string_fallback() -> None:
     )
 
     assert all(
-        logistics_onec._is_external_delivery_method(code, "Самовывоз")
-        for code in external_codes
+        logistics_onec._is_external_delivery_method(code, "Самовывоз") for code in external_codes
     )
     assert not logistics_onec._is_external_delivery_method("PICKUP", "Доставка")
 
@@ -339,6 +366,100 @@ def test_sync_ready_rtu_units_creates_and_updates_logistics_unit() -> None:
             )
             assert second_report["synced_updated"] == 1
             assert session.query(LogisticsTransfer).count() == 1
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_ready_rtu_units_prefers_exact_pickup_department_over_address() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    LogisticsWarehouse(
+                        external_id="0xSOURCE1",
+                        name="Пресня",
+                        kind="store",
+                        payload={"address_aliases": ["Адрес Пресни"]},
+                    ),
+                    LogisticsWarehouse(
+                        external_id="0xGRAND",
+                        name="Гранд Юг",
+                        kind="store",
+                        payload={
+                            "onec_departments": [
+                                {
+                                    "external_id": "0xA520",
+                                    "code": "РБ0000028",
+                                    "name": "МСК-028 ТЦ Гранд Юг",
+                                }
+                            ]
+                        },
+                    ),
+                ]
+            )
+            session.commit()
+
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        site_delivery_addition="Адрес Пресни",
+                        pickup_department_external_id="0xA520",
+                        pickup_department_code="РБ0000028",
+                    )
+                ],
+                dry_run=False,
+            )
+
+            assert report["synced_created"] == 1
+            transfer = session.scalar(select(LogisticsTransfer))
+            assert transfer is not None
+            assert transfer.target_warehouse.external_id == "0xGRAND"
+            assert transfer.payload["target_resolution"][0]["match_type"] == (
+                "pickup_department_exact"
+            )
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_ready_rtu_units_does_not_fallback_when_pickup_department_is_unknown() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add(
+                LogisticsWarehouse(
+                    external_id="0xSOURCE1",
+                    name="Пресня",
+                    kind="store",
+                    payload={"address_aliases": ["Адрес Пресни"]},
+                )
+            )
+            session.commit()
+
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        site_delivery_addition="Адрес Пресни",
+                        pickup_department_external_id="0xUNKNOWN",
+                        pickup_department_code="РБ0000999",
+                    )
+                ],
+                dry_run=False,
+            )
+
+            assert report["synced_created"] == 0
+            review = session.scalar(select(LogisticsManualReview))
+            assert review is not None
+            assert review.review_type == "rtu_target_warehouse_unresolved"
+            assert "Pickup department did not match" in review.reason
     finally:
         engine.dispose()
         if os.path.exists(path):

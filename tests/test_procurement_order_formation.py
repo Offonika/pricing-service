@@ -56,6 +56,7 @@ from app.services.procurement_order_formation import (
     record_property_update_exchange_result,
     reject_classification_proposal,
     select_line_main_supplier,
+    serialize_order_label_source,
     transmit_order,
     update_order_line,
 )
@@ -1233,6 +1234,55 @@ def test_onec_order_result_marks_card_transmitted(db_session) -> None:
     assert refreshed is not None
     assert refreshed.status == "transmitted"
     assert refreshed.onec_document_number == "РБ000001"
+
+
+def test_onec_order_result_without_document_number_requires_reconciliation(db_session) -> None:
+    order = _order(db_session)
+    order.onec_message_id = "proc-order-result-without-number"
+    order.onec_status = "pending"
+    order.status = "transmitting"
+    db_session.commit()
+
+    refreshed = record_order_exchange_result(
+        db_session,
+        ProcurementSupplierOrderExchangeResult(
+            message_id="proc-order-result-without-number",
+            status="success",
+            processed_at="2026-07-10T12:00:00",
+            loaded=1,
+            failed=0,
+            errors="",
+            item_results=(
+                ProcurementSupplierOrderItemResult(
+                    idempotency_key="order-key-without-number",
+                    result="created",
+                    onec_document_ref="Заказ поставщику от 10.07.2026",
+                    onec_document_number="",
+                    onec_document_date="2026-07-10",
+                ),
+            ),
+        ),
+    )
+
+    assert refreshed is not None
+    assert refreshed.status == "error"
+    assert refreshed.onec_status == "error"
+    assert refreshed.onec_document_number is None
+    assert "reconciliation" in (refreshed.onec_error or "")
+
+
+def test_exchange_label_source_has_priority_over_manual_link(db_session) -> None:
+    order = _order(db_session)
+    order.label_onec_document_number = "РБГУ0000496"
+    order.label_onec_document_date = date(2026, 8, 1)
+    order.onec_document_number = "РБГУ0000543"
+    order.onec_document_date = date(2026, 8, 3)
+
+    source = serialize_order_label_source(order)
+
+    assert source is not None
+    assert source["origin"] == "exchange"
+    assert source["onec_number"] == "РБГУ0000543"
 
 
 def test_onec_property_conflict_is_kept_for_manual_resolution(db_session) -> None:

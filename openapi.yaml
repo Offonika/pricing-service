@@ -11208,6 +11208,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/labels/source:
+    put:
+      summary: Attach Order Label Source
+      operationId: attach_order_label_source_api_procurement_order_formation_orders__order_id__labels_source_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderLabelSourceLinkRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderLabelSourceLinkResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders/{order_id}/labels.pdf:
     get:
       summary: Download Order Labels Pdf
@@ -11221,6 +11253,15 @@ paths:
         schema:
           type: integer
           title: Order Id
+      - name: source_checksum
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: ^[0-9a-f]{64}$
+          title: Source Checksum
       - name: size
         in: query
         required: false
@@ -11250,6 +11291,15 @@ paths:
         schema:
           type: integer
           title: Order Id
+      - name: source_checksum
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: ^[0-9a-f]{64}$
+          title: Source Checksum
       - name: size
         in: query
         required: false
@@ -27824,6 +27874,10 @@ components:
           - type: string
           - type: 'null'
           title: Onec Error
+        label_source:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementOrderLabelSourceRead'
+          - type: 'null'
         blockers:
           items:
             type: string
@@ -27935,9 +27989,19 @@ components:
         onec_number:
           type: string
           title: Onec Number
+        onec_date:
+          type: string
+          format: date
+          title: Onec Date
         label_size:
           type: string
           title: Label Size
+        source_checksum:
+          type: string
+          title: Source Checksum
+        max_page_count:
+          type: integer
+          title: Max Page Count
         position_count:
           type: integer
           title: Position Count
@@ -27967,7 +28031,10 @@ components:
       required:
       - order_id
       - onec_number
+      - onec_date
       - label_size
+      - source_checksum
+      - max_page_count
       - position_count
       - product_label_count
       - separator_count
@@ -28003,6 +28070,63 @@ components:
       - barcode
       - quantity
       title: ProcurementOrderLabelRowRead
+    ProcurementOrderLabelSourceLinkRequest:
+      properties:
+        onec_number:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Onec Number
+        label_size:
+          type: string
+          enum:
+          - 50x40
+          - 40x30
+          title: Label Size
+          default: 50x40
+      type: object
+      required:
+      - onec_number
+      title: ProcurementOrderLabelSourceLinkRequest
+    ProcurementOrderLabelSourceLinkResponse:
+      properties:
+        label_source:
+          $ref: '#/components/schemas/ProcurementOrderLabelSourceRead'
+        preview:
+          $ref: '#/components/schemas/ProcurementOrderLabelPreviewRead'
+      type: object
+      required:
+      - label_source
+      - preview
+      title: ProcurementOrderLabelSourceLinkResponse
+    ProcurementOrderLabelSourceRead:
+      properties:
+        origin:
+          type: string
+          enum:
+          - exchange
+          - manual
+          title: Origin
+        onec_number:
+          type: string
+          title: Onec Number
+        onec_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Onec Date
+        linked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Linked At
+      type: object
+      required:
+      - origin
+      - onec_number
+      title: ProcurementOrderLabelSourceRead
     ProcurementOrderLineUpdateRequest:
       properties:
         expected_order_version:

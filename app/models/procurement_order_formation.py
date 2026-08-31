@@ -77,6 +77,9 @@ class ProcurementOrderFormation(Base):
     onec_document_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     onec_document_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     onec_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    label_onec_document_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    label_onec_document_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    label_source_linked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(

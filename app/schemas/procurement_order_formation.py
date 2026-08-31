@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -27,10 +27,25 @@ class ProcurementOrderLabelRowRead(BaseModel):
     quantity: int
 
 
+class ProcurementOrderLabelSourceRead(BaseModel):
+    origin: Literal["exchange", "manual"]
+    onec_number: str
+    onec_date: date | None = None
+    linked_at: datetime | None = None
+
+
+class ProcurementOrderLabelSourceLinkRequest(BaseModel):
+    onec_number: str = Field(min_length=1, max_length=64)
+    label_size: Literal["50x40", "40x30"] = "50x40"
+
+
 class ProcurementOrderLabelPreviewRead(BaseModel):
     order_id: int
     onec_number: str
+    onec_date: date
     label_size: str
+    source_checksum: str
+    max_page_count: int
     position_count: int
     product_label_count: int
     separator_count: int
@@ -38,6 +53,11 @@ class ProcurementOrderLabelPreviewRead(BaseModel):
     ready: bool
     blockers: list[str] = Field(default_factory=list)
     rows: list[ProcurementOrderLabelRowRead] = Field(default_factory=list)
+
+
+class ProcurementOrderLabelSourceLinkResponse(BaseModel):
+    label_source: ProcurementOrderLabelSourceRead
+    preview: ProcurementOrderLabelPreviewRead
 
 
 class ProcurementOrderFormationSessionResponse(BaseModel):
@@ -322,6 +342,7 @@ class ProcurementOrderFormationRead(BaseModel):
     onec_document_number: str | None = None
     onec_document_date: date | None = None
     onec_error: str | None = None
+    label_source: ProcurementOrderLabelSourceRead | None = None
     blockers: list[str] = Field(default_factory=list)
     blocker_details: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
     total_amount: Decimal = Decimal("0")

@@ -866,6 +866,7 @@ def fetch_onec_supplier_order_lines(engine: Engine, onec_number: str) -> list[di
         )
         SELECT
           LTRIM(RTRIM(doc._Number)) AS order_number,
+          CAST(doc._Date_Time AS date) AS order_date,
           vt._LineNo2516 AS line_no,
           CONVERT(varchar(34), item._IDRRef, 1) AS item_ref_hex,
           item._Code AS onec_item_code,

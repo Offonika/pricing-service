@@ -871,6 +871,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       {openedClassification === line.id && (
                         <div className="order-formation__classification">
                           <select
+                            aria-label={`Новая классификация ${line.nomenclature_name}`}
                             disabled={locked || line.removed}
                             value={classification.status}
                             onChange={(event) => setClassificationEdits((current) => ({

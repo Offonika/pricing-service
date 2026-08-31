@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     sms_journal_phone_hash_key: str | None = None
     sms_journal_export_allowed_actors: str = ""
     logistics_internal_api_token: str | None = None
+    customer_return_bitrix_writes_enabled: bool = False
+    customer_return_bitrix_webhook_url: str | None = None
+    customer_return_bitrix_group_id: int | None = Field(default=None, ge=1)
+    customer_return_bitrix_created_by_user_id: int | None = Field(default=None, ge=1)
+    customer_return_bitrix_responsible_user_id: int | None = Field(default=None, ge=1)
+    customer_return_bitrix_accomplice_user_ids: list[int] = Field(default_factory=list)
+    customer_return_bitrix_auditor_user_ids: list[int] = Field(default_factory=list)
+    customer_return_worker_batch_size: int = Field(default=25, ge=1, le=200)
+    customer_return_worker_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    customer_return_worker_max_attempts: int = Field(default=5, ge=1, le=20)
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None
     expertise_onec_sql_file: str | None = None
@@ -969,6 +979,8 @@ class Settings(BaseSettings):
         "order_fulfillment_bot_excluded_user_ids",
         "site_service_requests_first_line_user_ids",
         "order_fulfillment_pickup_notification_confirmer_ids",
+        "customer_return_bitrix_accomplice_user_ids",
+        "customer_return_bitrix_auditor_user_ids",
         mode="before",
     )
     @classmethod

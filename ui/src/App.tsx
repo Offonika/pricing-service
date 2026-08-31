@@ -1,18 +1,7 @@
 import "./App.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
-import { CameraScanner } from "./components/LogisticsWorkspace";
-import { BitrixLogisticsApp } from "./BitrixLogisticsApp";
-import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
-import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
-import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
-import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
-import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
-import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
-import { CustomerPriceTypesWorkspace } from "./components/CustomerPriceTypesWorkspace";
-import { SiteServiceRequestConversation } from "./components/SiteServiceRequestConversation";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
@@ -40,6 +29,51 @@ import {
 } from "./api/bitrix";
 import type { ProductFacets, ProductRow, ProductSort } from "./api/types";
 import { useSelectedProduct } from "./store/useSelectionStore";
+
+const CompatibilityMappingSettings = lazy(async () => {
+  const module = await import("./components/CompatibilityMappingSettings");
+  return { default: module.CompatibilityMappingSettings };
+});
+const PropertyMappingSettings = lazy(async () => {
+  const module = await import("./components/PropertyMappingSettings");
+  return { default: module.PropertyMappingSettings };
+});
+const CameraScanner = lazy(async () => {
+  const module = await import("./components/LogisticsWorkspace");
+  return { default: module.CameraScanner };
+});
+const BitrixLogisticsApp = lazy(async () => {
+  const module = await import("./BitrixLogisticsApp");
+  return { default: module.BitrixLogisticsApp };
+});
+const ExecutiveDashboard = lazy(async () => {
+  const module = await import("./components/ExecutiveDashboard");
+  return { default: module.ExecutiveDashboard };
+});
+const ProcurementAssortmentWorkspace = lazy(async () => {
+  const module = await import("./components/ProcurementAssortmentWorkspace");
+  return { default: module.ProcurementAssortmentWorkspace };
+});
+const ProcurementOrderFormationWorkspace = lazy(async () => {
+  const module = await import("./components/ProcurementOrderFormationWorkspace");
+  return { default: module.ProcurementOrderFormationWorkspace };
+});
+const ProcurementLabelsApp = lazy(async () => {
+  const module = await import("./components/ProcurementLabelsApp");
+  return { default: module.ProcurementLabelsApp };
+});
+const ReceivablesWorkplace = lazy(async () => {
+  const module = await import("./components/ReceivablesWorkplace");
+  return { default: module.ReceivablesWorkplace };
+});
+const CustomerPriceTypesWorkspace = lazy(async () => {
+  const module = await import("./components/CustomerPriceTypesWorkspace");
+  return { default: module.CustomerPriceTypesWorkspace };
+});
+const SiteServiceRequestConversation = lazy(async () => {
+  const module = await import("./components/SiteServiceRequestConversation");
+  return { default: module.SiteServiceRequestConversation };
+});
 
 const STATUS_OPTIONS = [
   { value: "", label: "Все статусы" },
@@ -639,8 +673,6 @@ export function LogisticsFallbackApp() {
     </div>
   );
 }
-
-export { BitrixLogisticsApp };
 
 function MatchingApp() {
   const bitrixMode = isBitrixMatchingRoute();
@@ -1309,7 +1341,7 @@ function ProcurementOrderFormationBitrixApp() {
   return <ProcurementOrderFormationWorkspace bitrixUserName={authState.userName} />;
 }
 
-function App() {
+function AppRoute() {
   if (isBitrixSiteServiceRequestsRoute()) return <SiteServiceRequestsBitrixApp />;
   if (isBitrixLogisticsRoute()) return <BitrixLogisticsApp />;
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
@@ -1324,6 +1356,23 @@ function App() {
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   if (isBitrixCustomerPriceTypesRoute()) return <CustomerPriceTypesApp />;
   return <MatchingApp />;
+}
+
+function App() {
+  return (
+    <Suspense
+      fallback={(
+        <div className="app app--center">
+          <div className="app-state">
+            <h1>Загрузка</h1>
+            <p>Открываем раздел…</p>
+          </div>
+        </div>
+      )}
+    >
+      <AppRoute />
+    </Suspense>
+  );
 }
 
 function SiteServiceRequestsBitrixApp() {

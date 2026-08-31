@@ -28,6 +28,8 @@ from app.models import (
     LogisticsWebLaunchToken,
 )
 from app.schemas.bitrix_logistics import (
+    BitrixCustomerReturnCreateRequest,
+    BitrixCustomerReturnPickupRequest,
     BitrixLogisticsBootstrapResponse,
     BitrixLogisticsDraftCancelRequest,
     BitrixLogisticsDraftConfirmRequest,
@@ -39,6 +41,13 @@ from app.schemas.bitrix_logistics import (
     BitrixLogisticsSessionRequest,
     BitrixLogisticsSessionResponse,
 )
+from app.schemas.customer_returns import (
+    CustomerReturnCarrier,
+    CustomerReturnDetailResponse,
+    CustomerReturnRegistrationResponse,
+    CustomerReturnShipmentResponse,
+    CustomerReturnStatus,
+)
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
     LogisticsDraftResponse,
@@ -46,6 +55,7 @@ from app.schemas.logistics import (
     LogisticsHistoryEventResponse,
     LogisticsMonitorResponse,
 )
+from app.services import customer_returns as customer_return_service
 from app.services import logistics as logistics_service
 from app.services.bitrix_logistics_auth import (
     LogisticsBitrixSession,
@@ -55,10 +65,12 @@ from app.services.bitrix_logistics_auth import (
     verify_logistics_bitrix_session,
     verify_logistics_bitrix_session_token,
 )
+from app.services.customer_return_carriers import CustomerReturnCarrierError
 
 router = APIRouter(prefix="/bitrix/logistics")
 page_router = APIRouter()
-ALLOWED_LOGISTICS_ROLES = {"sender", "receiver", "logist", "admin"}
+ALLOWED_LOGISTICS_ROLES = {"sender", "receiver", "logist", "returns", "admin"}
+CUSTOMER_RETURN_ROLES = {"returns", "admin"}
 BITRIX_SESSION_COOKIE_NAME = "mm_logistics_bitrix_session"
 _LOGISTICS_INDEX_PATHS = (
     Path(__file__).resolve().parents[2] / "ui" / "dist" / "logistics.html",
@@ -209,6 +221,16 @@ def _require_role(actor: LogisticsUser, allowed: set[str]) -> None:
         raise HTTPException(status_code=403, detail="operation is not allowed for logistics role")
 
 
+def _raise_customer_return_http_error(exc: Exception) -> None:
+    if isinstance(exc, customer_return_service.CustomerReturnNotFound):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, customer_return_service.CustomerReturnConflict):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, CustomerReturnCarrierError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    raise exc
+
+
 def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:
     actual_type = db.scalar(select(LogisticsDraft.draft_type).where(LogisticsDraft.id == draft_id))
     if actual_type is None:
@@ -335,7 +357,16 @@ def bootstrap(
         "sender": ["handoff", "monitor", "history"],
         "receiver": ["receipt", "expected", "monitor", "history"],
         "logist": ["expected", "monitor", "history", "errors"],
-        "admin": ["handoff", "receipt", "expected", "monitor", "history", "errors"],
+        "returns": ["customer_returns"],
+        "admin": [
+            "handoff",
+            "receipt",
+            "expected",
+            "monitor",
+            "history",
+            "errors",
+            "customer_returns",
+        ],
     }.get(actor.role, [])
     settings = get_settings()
     warehouses = logistics_service.list_warehouses(
@@ -356,6 +387,96 @@ def bootstrap(
             actor_user_id=actor.id,
         ),
     )
+
+
+@router.post(
+    "/customer-returns",
+    response_model=CustomerReturnRegistrationResponse,
+)
+def register_bitrix_customer_return(
+    payload: BitrixCustomerReturnCreateRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    try:
+        shipment, created = customer_return_service.register_return(
+            db,
+            carrier=payload.carrier,
+            tracking_number=payload.tracking_number,
+            source="bitrix_ui",
+            source_ref=payload.source_ref,
+            bitrix_case_id=payload.bitrix_case_id,
+            site_ticket_id=payload.site_ticket_id,
+            onec_order_ref=payload.onec_order_ref,
+            created_by_bitrix_user_id=str(actor.bitrix_user_id),
+        )
+    except (
+        customer_return_service.CustomerReturnConflict,
+        CustomerReturnCarrierError,
+    ) as exc:
+        _raise_customer_return_http_error(exc)
+    return {"created": created, "shipment": shipment}
+
+
+@router.get(
+    "/customer-returns",
+    response_model=list[CustomerReturnShipmentResponse],
+)
+def list_bitrix_customer_returns(
+    carrier: CustomerReturnCarrier | None = Query(default=None),
+    status: CustomerReturnStatus | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    return customer_return_service.list_returns(
+        db,
+        carrier=carrier,
+        status=status,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/customer-returns/{shipment_id}",
+    response_model=CustomerReturnDetailResponse,
+)
+def get_bitrix_customer_return(
+    shipment_id: int,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    try:
+        return customer_return_service.get_return(db, shipment_id)
+    except customer_return_service.CustomerReturnNotFound as exc:
+        _raise_customer_return_http_error(exc)
+
+
+@router.post(
+    "/customer-returns/{shipment_id}/pickup",
+    response_model=CustomerReturnDetailResponse,
+)
+def confirm_bitrix_customer_return_pickup(
+    shipment_id: int,
+    payload: BitrixCustomerReturnPickupRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    try:
+        return customer_return_service.confirm_pickup(
+            db,
+            shipment_id,
+            actor_bitrix_user_id=str(actor.bitrix_user_id),
+            occurred_at=datetime.now(UTC),
+            idempotency_key=payload.idempotency_key,
+            comment=payload.comment,
+        )
+    except customer_return_service.CustomerReturnNotFound as exc:
+        _raise_customer_return_http_error(exc)
 
 
 @router.post("/handoffs/draft", response_model=LogisticsDraftResponse)

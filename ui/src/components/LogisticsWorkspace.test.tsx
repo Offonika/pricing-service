@@ -59,7 +59,21 @@ const adminBootstrap = {
     default_warehouse_id: null,
     default_warehouse_name: null,
   },
-  capabilities: ["handoff", "receipt", "expected", "monitor", "history", "errors"],
+  capabilities: ["handoff", "receipt", "expected", "monitor", "history", "errors", "customer_returns"],
+};
+
+const returnsBootstrap = {
+  ...bootstrap,
+  profile: {
+    id: 4,
+    full_name: "Андрей Платонов",
+    role: "returns",
+    default_warehouse_id: null,
+    default_warehouse_name: null,
+  },
+  warehouses: [],
+  drivers: [],
+  capabilities: ["customer_returns"],
 };
 
 describe("LogisticsWorkspace", () => {
@@ -98,6 +112,7 @@ describe("LogisticsWorkspace", () => {
     expect(screen.getByRole("button", { name: "В пути" })).toBeVisible();
     expect(screen.getByRole("button", { name: "История" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Разбор" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Возвраты" })).toBeVisible();
 
     fireEvent.change(screen.getByRole("combobox", { name: "Операция" }), {
       target: { value: "receipt" },
@@ -113,6 +128,26 @@ describe("LogisticsWorkspace", () => {
         comment: null,
       }, undefined)
     );
+  });
+
+  it("открывает сотруднику онлайн-отдела только единый реестр возвратов", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/bootstrap") return { data: returnsBootstrap };
+      if (path === "/bitrix/logistics/customer-returns") return { data: [] };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<LogisticsWorkspace />);
+
+    expect(await screen.findByText("Онлайн-отдел")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Возвраты" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(screen.getByText("Единый реестр перевозчиков")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Добавить возврат" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Сканер" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Открыть мониторинг в браузере")).not.toBeInTheDocument();
   });
 
   it("фильтрует монитор администратора по выбранному складу пилота", async () => {

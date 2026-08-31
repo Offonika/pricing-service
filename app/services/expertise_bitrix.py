@@ -887,6 +887,7 @@ class BitrixRestClient:
         deadline: datetime | None,
         accomplice_ids: list[int],
         auditor_ids: list[int],
+        group_id: int | None = None,
     ) -> str:
         params: list[tuple[str, str]] = [
             ("fields[TITLE]", title),
@@ -895,6 +896,8 @@ class BitrixRestClient:
         ]
         if created_by_id is not None:
             params.append(("fields[CREATED_BY]", str(created_by_id)))
+        if group_id is not None:
+            params.append(("fields[GROUP_ID]", str(group_id)))
         deadline_value = _format_datetime(deadline)
         if deadline_value:
             params.append(("fields[DEADLINE]", deadline_value))

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAxiosError } from "axios";
 import { logisticsApi as api } from "../api/logistics";
 import type { BitrixLogisticsProfile } from "../api/bitrix";
+import { CustomerReturnsWorkspace } from "./CustomerReturnsWorkspace";
 
 type Warehouse = {
   id: number;
@@ -94,7 +95,7 @@ type Bootstrap = {
   open_draft?: Draft | null;
 };
 
-type Screen = "operation" | "expected" | "transit" | "history" | "errors";
+type Screen = "operation" | "expected" | "transit" | "history" | "errors" | "returns";
 type Operation = "handoff" | "receipt";
 
 type BarcodeDetectorResult = { rawValue?: string };
@@ -136,6 +137,7 @@ const ROLE_LABELS: Record<string, string> = {
   sender: "Отправитель",
   receiver: "Получатель",
   logist: "Логист",
+  returns: "Онлайн-отдел",
   admin: "Администратор",
 };
 
@@ -605,7 +607,7 @@ export function LogisticsWorkspace() {
           (data.capabilities.includes("handoff") ? "handoff" : "receipt");
         setOperation(initialOperation);
         if (!data.capabilities.includes("handoff") && !data.capabilities.includes("receipt")) {
-          setScreen("transit");
+          setScreen(data.capabilities.includes("customer_returns") ? "returns" : "transit");
         }
         setDraft(data.open_draft || null);
         setConfirmKey(data.open_draft ? newIdempotencyKey() : "");
@@ -780,16 +782,19 @@ export function LogisticsWorkspace() {
     { id: "transit", label: "В пути", show: capabilities.has("monitor") },
     { id: "history", label: "История", show: capabilities.has("history") },
     { id: "errors", label: "Разбор", show: capabilities.has("errors") },
+    { id: "returns", label: "Возвраты", show: capabilities.has("customer_returns") },
   ];
 
   return (
     <div className="app logistics logistics--bitrix">
       <header className="logistics-header">
         <div>
-          <span className="logistics-header__eyebrow">Внутренние перемещения</span>
+          <span className="logistics-header__eyebrow">
+            {screen === "returns" ? "Клиентские возвраты" : "Внутренние перемещения"}
+          </span>
           <h1>Логистика</h1>
           <p>
-            {selectedWarehouse?.name ||
+            {screen === "returns" ? "Единый реестр перевозчиков" : selectedWarehouse?.name ||
               bootstrap.profile.default_warehouse_name ||
               "Склад не выбран"}
           </p>
@@ -1113,12 +1118,16 @@ export function LogisticsWorkspace() {
           </section>
         )}
 
+        {screen === "returns" && <CustomerReturnsWorkspace />}
+
         {message && <div className="logistics-toast" role="status">{message}</div>}
-        <button className="logistics-fallback-link" type="button" disabled={busy} onClick={openFallback}>
-          {capabilities.has("handoff") || capabilities.has("receipt")
-            ? "Открыть сканер в браузере"
-            : "Открыть мониторинг в браузере"}
-        </button>
+        {(capabilities.has("handoff") || capabilities.has("receipt") || capabilities.has("monitor")) && (
+          <button className="logistics-fallback-link" type="button" disabled={busy} onClick={openFallback}>
+            {capabilities.has("handoff") || capabilities.has("receipt")
+              ? "Открыть сканер в браузере"
+              : "Открыть мониторинг в браузере"}
+          </button>
+        )}
       </main>
       {cameraOpen && (
         <CameraScanner

@@ -80,7 +80,15 @@ def sync_assembly_queue(
 
     for payload in payloads:
         deal_id = _required_int(payload.get("ID"), field="ID")
+        if deal_id in active_deal_ids:
+            raise AssemblyQueuePayloadError(f"duplicate deal ID: {deal_id}")
         active_deal_ids.add(deal_id)
+        crm_stage = _clean_string(payload.get("STAGE_ID"))
+        if crm_stage != ASSEMBLY_STAGE_ID:
+            raise AssemblyQueuePayloadError(f"unexpected deal stage: {crm_stage!r}")
+        order_number = _clean_string(payload.get(CRM_ORDER_NUMBER_FIELD))
+        if not order_number:
+            raise AssemblyQueuePayloadError("customer order number is empty")
         item = existing.get(deal_id)
         moved_time = _parse_datetime(payload.get("MOVED_TIME"))
         if moved_time is None:
@@ -91,8 +99,8 @@ def sync_assembly_queue(
             json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         values = {
-            "order_number": _clean_string(payload.get(CRM_ORDER_NUMBER_FIELD)),
-            "crm_stage": _clean_string(payload.get("STAGE_ID")) or ASSEMBLY_STAGE_ID,
+            "order_number": order_number,
+            "crm_stage": crm_stage,
             "stage_entered_at": moved_time,
             "delivery_method": _optional_string(payload.get(CRM_DELIVERY_FIELD)),
             "payment_status": _optional_string(payload.get(CRM_PAYMENT_FIELD)),

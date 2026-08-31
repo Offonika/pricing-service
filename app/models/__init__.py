@@ -85,15 +85,15 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         MatchingPropertyValueMap,
     )
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
-    from app.models.order_assembly_queue import (
-        OrderAssemblyQueueItem,
-        OrderAssemblyQueueSyncState,
-    )
     from app.models.orchestration import (
         OrchestrationApiRequest,
         OrchestrationDeliveryAttempt,
         OrchestrationDeliveryIntent,
         OrchestrationJobRun,
+    )
+    from app.models.order_assembly_queue import (
+        OrderAssemblyQueueItem,
+        OrderAssemblyQueueSyncState,
     )
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion

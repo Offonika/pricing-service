@@ -248,3 +248,31 @@ def test_missing_bitrix_config_is_fail_closed_xml(monkeypatch) -> None:
     assert response.status_code == 503
     root = ElementTree.fromstring(response.content)
     assert root.attrib["code"] == "bitrix_not_configured"
+
+
+def test_invalid_crm_row_is_fail_closed(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = _engine()
+    invalid = _deal(40, "")
+    invalid["STAGE_ID"] = "NEW"
+
+    def fake_call(self, method: str, params: dict | None = None):
+        return {"result": [invalid]}
+
+    monkeypatch.setattr(site_order_fulfillment.BitrixChatClient, "call", fake_call)
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    try:
+        response = client.get(
+            "/api/order-fulfillment/assembly-queue",
+            headers=_headers(),
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 503
+    root = ElementTree.fromstring(response.content)
+    assert root.attrib["code"] == "bitrix_invalid_payload"
+    assert root.attrib["stale"] == "true"
+    with Session(engine) as session:
+        assert session.scalars(select(OrderAssemblyQueueItem)).all() == []

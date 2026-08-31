@@ -29,10 +29,10 @@ updated_at: "2026-08-31"
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|
-| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | релиз |
+| `pricing-assortment-lifecycle-classification` | ежедневно 00:12 | релиз |
 | `pricing-sku-result-sync-ut103` | ежечасно в :45 | релиз |
 | `onec_assembly_crm_reconciler` | каждые 30 минут | релиз |
-| `order_fulfillment_sync` | каждые 30 минут, ежечасно в :10, ежедневно 11:00 | релиз |
+| `order_fulfillment_sync` | лёгкий quick в :25/:55 кроме 01:00–01:59; nightly 01:25; chat в :10; daily 11:00 | релиз |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
 | `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | релиз |
 | `pricing-sku-generation-ut103` | ежедневно 02:30 | релиз |
@@ -68,9 +68,10 @@ production-canary как лёгкие, разрешены только в окн
 `order_fulfillment_sync.query_rtu_signal_by_orders` и полному обновлению
 классификации ассортимента.
 
-### Подготовленное целевое расписание
+### Активное расписание тяжёлых контуров
 
-Кандидат ещё не активирован в production:
+Расписание активировано 2026-08-31 в release
+`ut103-night-heavy-queries-20260831-5dea094`:
 
 - `order_fulfillment_sync --mode quick`: `:25/:55`, кроме часа `01:00–01:59`;
 - `order_fulfillment_sync --mode nightly`: ежедневно `01:25`, с программным
@@ -157,9 +158,10 @@ controller при следующей production-сборке.
 ## Changelog
 
 - 2026-08-31 — тяжёлые запросы к production `Ekama` ограничены окном
-  `00:00–06:00 МСК`; подготовлено, но не активировано разделение дневного `quick`
-  и ночного `nightly`, классификация ассортимента перенесена в целевом шаблоне на
-  `00:12`.
+  `00:00–06:00 МСК`; через PR №132 и guarded release активировано разделение
+  дневного `quick` и ночного `nightly`, классификация ассортимента перенесена на
+  `00:12`. Production-smoke подтвердил `scanned=0`,
+  `deferred_to_nightly=true`, отсутствие широкого РТУ-сигнала и блокировок SQL.
 - 2026-08-24 — Устранение runtime split-brain назначено приоритетом №1; принят
   поэтапный перевод всех активных jobs на единый immutable release source.
 - 2026-08-24 — API monitor, expertise timers, competitor matching, 1С assembly,

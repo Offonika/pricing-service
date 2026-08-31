@@ -398,9 +398,10 @@ documents:
     status: implemented
     owner: engineering
     source_of_truth: true
+    updated_at: "2026-08-31"
     related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
     related_tests: [tests/test_order_payment_control.py]
-    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
+    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, reservation, warehouse-xml-id, confirmed-ready-at, bitrix-task-1414, bitrix-task-3520]
   - path: docs/specs/sms-journal-api.md
     title: Encrypted SMS Journal API
     doc_type: spec

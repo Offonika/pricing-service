@@ -22957,12 +22957,28 @@ components:
             maxLength: 128
           - type: 'null'
           title: Payment Id
+        region_xml_id:
+          type: string
+          format: uuid
+          title: Region Xml Id
+        source_warehouse_xml_id:
+          type: string
+          format: uuid
+          title: Source Warehouse Xml Id
+        availability_snapshot_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Availability Snapshot Id
       type: object
       required:
       - site_order_number
       - site_amount
       - payment_amount
       - stage
+      - region_xml_id
+      - source_warehouse_xml_id
       title: OrderPaymentCheckRequest
     OrderPaymentCheckResponse:
       properties:
@@ -22975,7 +22991,7 @@ components:
         reason:
           type: string
           enum:
-          - amount_match
+          - amount_and_full_reservation_match
           - site_payment_mismatch
           - onec_order_not_found
           - onec_order_deleted
@@ -22984,6 +23000,13 @@ components:
           - onec_order_closed
           - onec_amount_invalid
           - onec_amount_mismatch
+          - onec_warehouse_missing
+          - onec_warehouse_mismatch
+          - onec_lines_missing
+          - onec_line_placement_mismatch
+          - onec_reservation_none
+          - onec_reservation_partial
+          - onec_reservation_mismatch
           title: Reason
         site_order_number:
           type: string
@@ -23027,6 +23050,35 @@ components:
           - type: string
           - type: 'null'
           title: Onec Closure Reason
+        reservation_state:
+          type: string
+          enum:
+          - FULL
+          - NONE
+          - PARTIAL
+          - MISMATCH
+          title: Reservation State
+        reservation_quantity_match:
+          type: boolean
+          title: Reservation Quantity Match
+        source_warehouse_xml_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Source Warehouse Xml Id
+        reservation_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reservation Confirmed At
+        confirmed_ready_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Confirmed Ready At
         checked_at:
           type: string
           format: date-time
@@ -23039,6 +23091,8 @@ components:
       - site_order_number
       - site_amount
       - payment_amount
+      - reservation_state
+      - reservation_quantity_match
       - checked_at
       title: OrderPaymentCheckResponse
     PaginatedCandidates:

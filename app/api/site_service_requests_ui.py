@@ -197,6 +197,11 @@ def _require_item(session: SiteServiceRequestUiSession, item_id: int) -> None:
         raise HTTPException(status_code=403, detail="ui_session_item_mismatch")
 
 
+def _require_ui_writes(settings: Settings) -> None:
+    if not settings.site_service_requests_ui_replies_enabled:
+        raise HTTPException(status_code=503, detail="ui_replies_disabled")
+
+
 @router.get(
     "/items/{item_id}/conversation",
     response_model=SiteServiceRequestConversationResponse,
@@ -220,7 +225,9 @@ def conversation(
             site_base_url=settings.site_service_requests_site_base_url,
         )
         data["canReply"] = bool(
-            data["canReply"] and settings.site_service_requests_outbound_replies_enabled
+            data["canReply"]
+            and settings.site_service_requests_ui_replies_enabled
+            and settings.site_service_requests_outbound_replies_enabled
         )
     except SiteServiceRequestNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.code) from exc
@@ -265,6 +272,7 @@ async def create_reply(
     db: Session = Depends(get_db),
 ) -> SiteServiceRequestConversationMutationResponse:
     _require_item(ui_session, item_id)
+    _require_ui_writes(settings)
     if not settings.site_service_requests_outbound_replies_enabled:
         raise HTTPException(status_code=503, detail="outbound_replies_disabled")
     uploads = files or []
@@ -331,6 +339,7 @@ def create_note(
     db: Session = Depends(get_db),
 ) -> SiteServiceRequestConversationMutationResponse:
     _require_item(ui_session, item_id)
+    _require_ui_writes(settings)
     try:
         note, duplicate = create_site_service_request_internal_note(
             db,
@@ -371,6 +380,7 @@ def retry_reply(
     db: Session = Depends(get_db),
 ) -> SiteServiceRequestConversationMutationResponse:
     _require_item(ui_session, item_id)
+    _require_ui_writes(settings)
     if not settings.site_service_requests_outbound_replies_enabled:
         raise HTTPException(status_code=503, detail="outbound_replies_disabled")
     try:

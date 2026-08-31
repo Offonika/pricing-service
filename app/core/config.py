@@ -170,6 +170,7 @@ class Settings(BaseSettings):
     site_service_requests_bitrix_writes_enabled: bool = False
     site_service_requests_outbound_replies_enabled: bool = False
     site_service_requests_ui_enabled: bool = False
+    site_service_requests_ui_replies_enabled: bool = False
     site_service_requests_command_attachments_enabled: bool = False
     site_service_requests_hmac_secret: str | None = None
     site_service_requests_event_encryption_key: str | None = None

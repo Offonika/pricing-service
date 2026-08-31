@@ -32,7 +32,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-30"
+updated_at: "2026-08-31"
 ---
 
 # Назначение
@@ -952,6 +952,10 @@ ID существует, активен и соответствует ожида
   `SITE_SERVICE_REQUESTS_UI_BITRIX_APP_ACCESS_TOKEN`. Токен запрещено сохранять
   в `.env`, передавать аргументом CLI или выводить в лог; после запуска переменную
   окружения нужно удалить.
+- [x] Разделить показ вкладки и UI-записи флагами `UI_ENABLED` и
+  `UI_REPLIES_ENABLED`: первый допускает read-only историю, второй отдельно
+  разрешает ответы, retry и внутренние заметки. Общий outbound не использовать
+  как единственный UI write-gate.
 - [ ] После отдельного разрешения применить migration, собрать UI, привязать
   вкладку, выполнить адресный snapshot backfill и controlled smoke; затем
   включить UI/attachments только после успешного readback.
@@ -1077,6 +1081,10 @@ Rollback:
 
 # Changelog
 
+- 2026-08-31 — разрешён UI-only rollout вкладки процесса 1134: настроить
+  production env, выполнить bind и readback, включить историю только для чтения;
+  UI-ответы, внутренние заметки, вложения, backfill и новые отправки клиентам
+  остаются выключены отдельным `UI_REPLIES_ENABLED=false`.
 - 2026-08-30 — production backend переключён на merge commit `cc02ca8`, Alembic
   применён до `e4a6c8d0f2b4`, release-smoke и GitHub CI прошли; UI/attachments
   flags, placement bind и snapshot backfill не включались. Read-only rollout

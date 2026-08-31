@@ -413,9 +413,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 69. Для `scripts/validate_executive_dashboard_release.py` разрешены commit
     проверенного среза, push ветки и создание отдельного PR. Merge и production
     release требуют отдельных подтверждений.
+70. После зелёного CI разрешён merge PR №137. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-31 — разрешён merge PR №137; production release оставлен отдельным
+  решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза
   `scripts/validate_executive_dashboard_release.py`, push ветки и создание отдельного
   PR; merge и production release оставлены отдельными решениями.

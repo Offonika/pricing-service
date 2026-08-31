@@ -3,14 +3,17 @@ from __future__ import annotations
 import argparse
 import tempfile
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select, text
-from sqlalchemy.orm import Session
+from sqlalchemy.engine import Engine
 
-from app.infrastructure.db.engines import build_engine
+from app.core.config import get_settings
+from app.infrastructure.db import build_application_engine, build_onec_engine, session_scope
 from app.models import Base, ReceivableBalanceSnapshot
 from app.services.receivables import (
     OneCReceivableLedgerExtractor,
@@ -20,6 +23,24 @@ from app.services.receivables import (
     sync_receivable_ledger,
 )
 from app.services.staffing import StaffMemberRow, upsert_staff_members
+
+
+@contextmanager
+def _onec_engine_scope(
+    database_url: str,
+    *,
+    query_timeout_seconds: int | float,
+    login_timeout_seconds: int | float,
+) -> Iterator[Engine]:
+    engine = build_onec_engine(
+        database_url,
+        query_timeout_seconds=query_timeout_seconds,
+        login_timeout_seconds=login_timeout_seconds,
+    )
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -154,6 +175,8 @@ def build_temp_snapshots(
     window_end: datetime | None,
     snapshot_date: date | None,
     onec_url: str,
+    onec_query_timeout_seconds: int | float,
+    onec_login_timeout_seconds: int | float,
     contract_kind_names: set[str] | None = None,
     source_layer: str | None = None,
 ) -> tuple[
@@ -161,18 +184,22 @@ def build_temp_snapshots(
     dict[str, Decimal],
     dict[str, list[dict[str, Decimal | str | None]]],
 ]:
-    onec_engine = build_engine(onec_url)
-    employee_refs = fetch_employee_counterparty_refs_from_onec(onec_engine)
-    staff_rows = [
-        StaffMemberRow.from_mapping(item, default_source="onec_physical_person")
-        for item in fetch_staff_members_from_onec(onec_engine)
-    ]
-    extractor = OneCReceivableLedgerExtractor(onec_engine, operations_sql=operations_sql)
-    events = extractor.fetch_receivable_events(
-        window_start=window_start,
-        window_end=window_end,
-        opening_balance_date=opening_balance_date,
-    )
+    with _onec_engine_scope(
+        onec_url,
+        query_timeout_seconds=onec_query_timeout_seconds,
+        login_timeout_seconds=onec_login_timeout_seconds,
+    ) as onec_engine:
+        employee_refs = fetch_employee_counterparty_refs_from_onec(onec_engine)
+        staff_rows = [
+            StaffMemberRow.from_mapping(item, default_source="onec_physical_person")
+            for item in fetch_staff_members_from_onec(onec_engine)
+        ]
+        extractor = OneCReceivableLedgerExtractor(onec_engine, operations_sql=operations_sql)
+        events = extractor.fetch_receivable_events(
+            window_start=window_start,
+            window_end=window_end,
+            opening_balance_date=opening_balance_date,
+        )
     events = filter_ledger_events(
         events,
         contract_kind_names=contract_kind_names,
@@ -194,9 +221,13 @@ def build_temp_snapshots(
             ] += Decimal(event.amount_delta)
 
     with tempfile.NamedTemporaryFile(prefix="receivables-compare-", suffix=".sqlite") as tmp:
-        app_engine = build_engine(f"sqlite:///{tmp.name}")
-        Base.metadata.create_all(app_engine)
-        with Session(app_engine) as session:
+        temporary_database_url = f"sqlite:///{tmp.name}"
+        schema_engine = build_application_engine(temporary_database_url)
+        try:
+            Base.metadata.create_all(schema_engine)
+        finally:
+            schema_engine.dispose()
+        with session_scope(database_url=temporary_database_url) as session:
             upsert_staff_members(session, staff_rows)
             sync_receivable_ledger(
                 session,
@@ -204,7 +235,6 @@ def build_temp_snapshots(
                 snapshot_date=snapshot_date,
                 employee_counterparty_refs=employee_refs,
             )
-            session.commit()
 
             snapshot_by_name: dict[str, Decimal] = {}
             if snapshot_date is not None:
@@ -249,11 +279,12 @@ def build_temp_snapshots(
 def fetch_employee_summary_opening_breakdown(
     *,
     onec_url: str,
+    onec_query_timeout_seconds: int | float,
+    onec_login_timeout_seconds: int | float,
     opening_balance_date: date,
     counterparty_names: list[str],
     contract_kind_names: set[str] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
-    engine = build_engine(onec_url)
     sql = text("""
 SELECT
   c._Description AS counterparty_name,
@@ -302,23 +333,30 @@ ORDER BY
   t._Fld7616_RTRef
         """)
     result: dict[str, list[dict[str, object]]] = {}
-    with engine.connect() as conn:
-        for counterparty_name in counterparty_names:
-            rows = [
-                dict(row)
-                for row in conn.execute(
-                    sql,
-                    {
-                        "opening_period": datetime.combine(
-                            opening_balance_date, datetime.min.time()
-                        ),
-                        "counterparty_name": counterparty_name,
-                    },
-                ).mappings()
-            ]
-            if contract_kind_names:
-                rows = [row for row in rows if row.get("contract_kind_name") in contract_kind_names]
-            result[counterparty_name] = rows
+    with _onec_engine_scope(
+        onec_url,
+        query_timeout_seconds=onec_query_timeout_seconds,
+        login_timeout_seconds=onec_login_timeout_seconds,
+    ) as engine:
+        with engine.connect() as conn:
+            for counterparty_name in counterparty_names:
+                rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        sql,
+                        {
+                            "opening_period": datetime.combine(
+                                opening_balance_date, datetime.min.time()
+                            ),
+                            "counterparty_name": counterparty_name,
+                        },
+                    ).mappings()
+                ]
+                if contract_kind_names:
+                    rows = [
+                        row for row in rows if row.get("contract_kind_name") in contract_kind_names
+                    ]
+                result[counterparty_name] = rows
     return result
 
 
@@ -392,12 +430,8 @@ def main() -> None:
     if not report_path.exists():
         raise SystemExit(f"Report file not found: {report_path}")
 
-    if args.onec_url is None:
-        from app.core.config import get_settings
-
-        onec_url = get_settings().onec_database_url
-    else:
-        onec_url = args.onec_url
+    settings = get_settings()
+    onec_url = args.onec_url or settings.onec_database_url
 
     if not onec_url:
         raise SystemExit("ONEC_DATABASE_URL is not configured")
@@ -413,6 +447,8 @@ def main() -> None:
         window_end=_parse_datetime(args.window_end),
         snapshot_date=_parse_date(args.snapshot_date),
         onec_url=onec_url,
+        onec_query_timeout_seconds=settings.onec_query_timeout_seconds,
+        onec_login_timeout_seconds=settings.onec_login_timeout_seconds,
         contract_kind_names=contract_kind_names or None,
         source_layer=args.source_layer,
     )
@@ -479,6 +515,8 @@ def main() -> None:
             raise SystemExit("--opening-breakdown requires --opening-balance-date")
         rows_by_name = fetch_employee_summary_opening_breakdown(
             onec_url=onec_url,
+            onec_query_timeout_seconds=settings.onec_query_timeout_seconds,
+            onec_login_timeout_seconds=settings.onec_login_timeout_seconds,
             opening_balance_date=opening_balance_date,
             counterparty_names=opening_breakdown_names,
             contract_kind_names=contract_kind_names or None,

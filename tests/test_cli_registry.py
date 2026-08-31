@@ -44,3 +44,13 @@ def test_manual_matching_commands_require_central_read_only_db_access() -> None:
     for filename in ("manual_matching_control.py", "manual_matching_bitrix_tasks.py"):
         metadata = effective_metadata(filename, registry)
         assert metadata["db_access"] == "application_read_only"
+
+
+def test_compare_employee_receivable_report_declares_onec_read_only_access() -> None:
+    metadata = effective_metadata("compare_employee_receivable_report.py", load_registry())
+
+    assert metadata["kind"] == "report"
+    assert metadata["dry_run"] == "not_applicable"
+    assert metadata["idempotency"] == "read_only"
+    assert metadata["side_effect_level"] == "read_only"
+    assert metadata["db_access"] == "onec_read_only"

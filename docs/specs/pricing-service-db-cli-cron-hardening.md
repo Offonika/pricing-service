@@ -13,6 +13,7 @@ related_code:
   - scripts/validate_cli_registry.py
   - docs/registry/cli-jobs.json
 related_tests:
+  - tests/test_compare_employee_receivable_report.py
   - tests/test_analyze_pickup_contract_settlements_script.py
   - tests/test_analyze_site_defect_working_cases_script.py
   - tests/test_analyze_manual_matching_feedback_task.py
@@ -208,6 +209,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/check_logistics_stage_outbox_health.py` на central
   read-only session scope с сохранением `--max-delay-seconds`, JSON-контракта и
   exit code для critical status.
+- [x] Перевести `tasks/compare_employee_receivable_report.py` на role-specific
+  read-only 1С factory с bounded timeout и гарантированным dispose, сохранив
+  `--onec-url`, фильтры, временный SQLite snapshot и TSV-контракт.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -381,9 +385,25 @@ JSON/CSV/XLSX артефактов сохраняются.
     Merge и production release требуют отдельных подтверждений.
 62. После зелёного CI разрешён merge PR №128. Production migration, deploy и
     cutover в это решение не входят.
+63. Для `tasks/compare_employee_receivable_report.py` разрешены commit проверенного
+    среза, push ветки и создание отдельного PR. Merge и production release требуют
+    отдельных подтверждений.
+64. После зелёного CI разрешён merge PR №129. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-31 — разрешён merge PR №129; production release оставлен отдельным
+  решением.
+- 2026-08-31 — разрешены commit проверенного read-only среза
+  `compare_employee_receivable_report.py`, push ветки и создание отдельного PR;
+  merge и production release оставлены отдельными решениями.
+- 2026-08-31 — `tasks/compare_employee_receivable_report.py` переведён на
+  role-specific read-only 1С factory с bounded timeout и гарантированным dispose;
+  временный SQLite snapshot переведён на central session scope, CLI и TSV-контракт
+  сохранены.
+- 2026-08-31 — следующим read-only срезом Release B выбран
+  `compare_employee_receivable_report.py`; production и расписания не затрагиваются.
 - 2026-08-31 — разрешён merge PR №128; production release оставлен отдельным
   решением.
 - 2026-08-30 — `tasks/check_logistics_stage_outbox_health.py` переведён на

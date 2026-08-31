@@ -10767,6 +10767,97 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/labels/preview:
+    get:
+      summary: Preview Order Labels
+      operationId: preview_order_labels_api_procurement_order_formation_orders__order_id__labels_preview_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: string
+          default: 50x40
+          title: Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderLabelPreviewRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/labels.pdf:
+    get:
+      summary: Download Order Labels Pdf
+      operationId: download_order_labels_pdf_api_procurement_order_formation_orders__order_id__labels_pdf_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: string
+          default: 50x40
+          title: Size
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/labels.xlsx:
+    get:
+      summary: Download Order Labels Xlsx
+      operationId: download_order_labels_xlsx_api_procurement_order_formation_orders__order_id__labels_xlsx_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: size
+        in: query
+        required: false
+        schema:
+          type: string
+          default: 50x40
+          title: Size
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders/{order_id}/lines/{line_id}:
     patch:
       summary: Change Order Line
@@ -26772,6 +26863,82 @@ components:
       required:
       - user_id
       title: ProcurementOrderFormationUser
+    ProcurementOrderLabelPreviewRead:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        onec_number:
+          type: string
+          title: Onec Number
+        label_size:
+          type: string
+          title: Label Size
+        position_count:
+          type: integer
+          title: Position Count
+        product_label_count:
+          type: integer
+          title: Product Label Count
+        separator_count:
+          type: integer
+          title: Separator Count
+        total_page_count:
+          type: integer
+          title: Total Page Count
+        ready:
+          type: boolean
+          title: Ready
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        rows:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderLabelRowRead'
+          type: array
+          title: Rows
+      type: object
+      required:
+      - order_id
+      - onec_number
+      - label_size
+      - position_count
+      - product_label_count
+      - separator_count
+      - total_page_count
+      - ready
+      title: ProcurementOrderLabelPreviewRead
+    ProcurementOrderLabelRowRead:
+      properties:
+        line_no:
+          type: integer
+          title: Line No
+        onec_item_code:
+          type: string
+          title: Onec Item Code
+        item_name:
+          type: string
+          title: Item Name
+        article_1c:
+          type: string
+          title: Article 1C
+          default: ''
+        barcode:
+          type: string
+          title: Barcode
+        quantity:
+          type: integer
+          title: Quantity
+      type: object
+      required:
+      - line_no
+      - onec_item_code
+      - item_name
+      - barcode
+      - quantity
+      title: ProcurementOrderLabelRowRead
     ProcurementOrderLineUpdateRequest:
       properties:
         expected_order_version:

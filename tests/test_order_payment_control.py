@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from app.api import order_payment_control as api
 from app.api.dependencies import require_order_payment_control_internal_token
 from app.core.config import get_settings
+from app.infrastructure.db.engines import DatabaseNotConfiguredError
 from app.schemas.order_payment_control import OrderPaymentCheckRequest
 from app.services import order_payment_control as service
 
@@ -276,6 +277,7 @@ def test_payment_control_denies_local_site_payment_mismatch_without_onec_query()
     [
         ([], "NONE", "onec_reservation_none"),
         ([_reserve_row(quantity="0.500")], "PARTIAL", "onec_reservation_partial"),
+        ([_reserve_row(quantity="-0.100")], "MISMATCH", "onec_reservation_mismatch"),
         ([_reserve_row(quantity="1.002")], "MISMATCH", "onec_reservation_mismatch"),
         (
             [_reserve_row(warehouse_ref=OTHER_WAREHOUSE_REF)],
@@ -393,3 +395,12 @@ def test_payment_control_endpoint_fails_closed_when_onec_is_unavailable(monkeypa
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["code"] == "onec_unavailable"
+
+
+def test_confirmed_ready_at_unconfigured_source_stays_nullable(monkeypatch) -> None:
+    def fail():
+        raise DatabaseNotConfiguredError("application database is unavailable")
+
+    monkeypatch.setattr(api, "get_application_engine", fail)
+
+    assert api._confirmed_ready_at("225550", datetime.now(timezone.utc)) is None

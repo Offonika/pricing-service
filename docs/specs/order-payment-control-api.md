@@ -20,7 +20,7 @@ depends_on:
   - docs/IntegrationContract.OrderAssemblyQueue1C.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-31"
+updated_at: "2026-09-01"
 ---
 
 # Назначение
@@ -243,6 +243,9 @@ updated_at: "2026-08-31"
 
 # Changelog
 
+- 2026-09-01 — повторно пройдены focused regression-тесты, Ruff/Black и проверка
+  OpenAPI после обработки отрицательного резерва как `MISMATCH` и nullable
+  CRM-срока при недоступной application DB.
 - 2026-08-31 — по задаче №3520 контракт ужесточён до обязательного полного резерва,
   UUID склада, nullable подтверждённого CRM-срока и новой причины allow; реализация
   и тесты готовы локально, production release не выполнялся.

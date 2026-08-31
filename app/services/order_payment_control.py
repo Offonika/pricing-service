@@ -404,10 +404,10 @@ def evaluate_reservation(
     positive_actual = {
         key: quantity for key, quantity in actual.items() if quantity > RESERVATION_TOLERANCE
     }
-    if not positive_actual:
-        return "NONE", False, "onec_reservation_none"
     if any(quantity < -RESERVATION_TOLERANCE for quantity in actual.values()):
         return "MISMATCH", False, "onec_reservation_mismatch"
+    if not positive_actual:
+        return "NONE", False, "onec_reservation_none"
     if set(positive_actual) - set(expected):
         return "MISMATCH", False, "onec_reservation_mismatch"
 

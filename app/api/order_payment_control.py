@@ -31,7 +31,7 @@ def _confirmed_ready_at(site_order_number: str, checked_at: datetime) -> datetim
             site_order_number=site_order_number,
             checked_at=checked_at,
         )
-    except SQLAlchemyError:
+    except (DatabaseNotConfiguredError, SQLAlchemyError):
         # Точный срок — nullable-данные CRM. Его недоступность не может ослаблять
         # проверку резерва и не должна превращать корректный FULL в 503.
         logger.warning(

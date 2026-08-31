@@ -2,8 +2,10 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
 
-# Frequent contours refresh state silently before the 11:00 daily digest.
-25,55 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=quick ORDER_FULFILLMENT_SYNC_APPLY=true ORDER_FULFILLMENT_SYNC_NEW_LIMIT=200 /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
+# Frequent contours refresh bounded state silently before the 11:00 daily digest.
+# Heavy 1C reconciliation is isolated in the guarded nightly mode (00:00-06:00 MSK).
+25,55 0,2-23 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=quick ORDER_FULFILLMENT_SYNC_APPLY=true ORDER_FULFILLMENT_SYNC_NEW_LIMIT=200 /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
+25 1 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=nightly ORDER_FULFILLMENT_SYNC_APPLY=true ORDER_FULFILLMENT_SYNC_NEW_LIMIT=200 /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
 10 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=chat ORDER_FULFILLMENT_SYNC_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
 8,23,38,53 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current ORDER_FULFILLMENT_NOTIFY_ENABLED=false ORDER_FULFILLMENT_SYNC_MODE=shipments ORDER_FULFILLMENT_SYNC_APPLY=true /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_sync.sh >> /var/log/pricing/order_fulfillment_sync.cron.log 2>&1
 */2 * * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/order_fulfillment_bot_outbox.sh >> /var/log/pricing/order_fulfillment_bot_outbox.cron.log 2>&1

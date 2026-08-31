@@ -69,6 +69,9 @@ PROCESS_STAGES = (
     "LOSE",
     "APOLOGY",
 )
+NIGHTLY_HEAVY_WINDOW_START_HOUR = 0
+NIGHTLY_HEAVY_WINDOW_END_HOUR = 6
+MOSCOW_TIMEZONE = ZoneInfo("Europe/Moscow")
 NEW_REVIEW_FIELDS = (
     "site_order_number",
     "bitrix_deal_id",
@@ -1263,12 +1266,14 @@ def run_quick_sync(
     stamp: str,
     apply: bool,
     limit: int,
+    include_heavy_onec: bool = False,
 ) -> dict[str, Any]:
     settings = get_settings()
-    execution_enabled = bool(
+    execution_configured = bool(
         settings.order_fulfillment_execution_master_enabled
         and settings.order_fulfillment_execution_reconciliation_enabled
     )
+    execution_enabled = bool(execution_configured and include_heavy_onec)
     execution_scan: ExecutingDealScan | None = None
     cursor_path = Path(settings.order_fulfillment_execution_cursor_path)
     if not cursor_path.is_absolute():
@@ -1419,7 +1424,9 @@ def run_quick_sync(
     stage_summary = fetch_stage_summary(client)
     stage_path = output_dir / f"quick-stage-summary-{stamp}.csv"
     write_dict_csv(stage_path, stage_summary)
-    rtu_signal_rows = query_rtu_without_assembled_for_deals(deals)
+    rtu_signal_rows = (
+        query_rtu_without_assembled_for_deals(deals) if include_heavy_onec else []
+    )
     rtu_signal_path = output_dir / f"executing-rtu-without-assembled-{stamp}.csv"
     write_dict_csv(rtu_signal_path, rtu_signal_rows, fieldnames=list(RTU_SIGNAL_CSV_FIELDS))
     monitoring_rows = build_operational_monitoring_rows(
@@ -1437,7 +1444,7 @@ def run_quick_sync(
     monitoring_path = output_dir / f"quick-operational-monitoring-{stamp}.csv"
     write_dict_csv(monitoring_path, monitoring_rows, fieldnames=list(MONITORING_CSV_FIELDS))
     summary = {
-        "mode": "quick",
+        "mode": "nightly" if include_heavy_onec else "quick",
         "deals": len(deals),
         "review": str(review_path),
         "outbox": str(outbox_path),
@@ -1456,6 +1463,8 @@ def run_quick_sync(
         "rtu_without_assembled_rows": len(rtu_signal_rows),
         "executing_reconciliation": {
             "enabled": execution_enabled,
+            "configured": execution_configured,
+            "deferred_to_nightly": bool(execution_configured and not include_heavy_onec),
             "ingest_enabled": bool(
                 settings.order_fulfillment_execution_master_enabled
                 and settings.order_fulfillment_execution_ingest_enabled
@@ -3861,7 +3870,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("quick", "chat", "shipments", "daily", "all"),
+        choices=("quick", "nightly", "chat", "shipments", "daily", "all"),
         default="all",
     )
     parser.add_argument("--apply", action="store_true", help="Actually update Bitrix stages.")
@@ -3874,11 +3883,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def nightly_heavy_window_is_open(current_dt: datetime | None = None) -> bool:
+    now_moscow = current_dt or datetime.now(MOSCOW_TIMEZONE)
+    if now_moscow.tzinfo is None:
+        now_moscow = now_moscow.replace(tzinfo=MOSCOW_TIMEZONE)
+    else:
+        now_moscow = now_moscow.astimezone(MOSCOW_TIMEZONE)
+    return NIGHTLY_HEAVY_WINDOW_START_HOUR <= now_moscow.hour < NIGHTLY_HEAVY_WINDOW_END_HOUR
+
+
+def require_nightly_heavy_window(current_dt: datetime | None = None) -> None:
+    if nightly_heavy_window_is_open(current_dt):
+        return
+    raise SystemExit(
+        "ORDER_FULFILLMENT_SYNC_MODE=nightly is allowed only from 00:00 to 06:00 "
+        "Europe/Moscow"
+    )
+
+
 def main() -> int:
     apply_env_defaults(load_env_files())
     get_settings.cache_clear()
     args = parse_args()
     settings = get_settings()
+    if args.mode == "nightly":
+        require_nightly_heavy_window()
     output_dir = args.output_dir or Path(settings.order_fulfillment_artifact_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -3897,6 +3926,18 @@ def main() -> int:
                 stamp=stamp,
                 apply=args.apply,
                 limit=args.new_limit,
+                include_heavy_onec=False,
+            )
+        )
+    if args.mode == "nightly":
+        summaries.append(
+            run_quick_sync(
+                client=client,
+                output_dir=output_dir,
+                stamp=stamp,
+                apply=args.apply,
+                limit=args.new_limit,
+                include_heavy_onec=True,
             )
         )
     if args.mode in {"chat", "all"}:

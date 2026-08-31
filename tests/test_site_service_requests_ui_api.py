@@ -15,9 +15,10 @@ from app.services.site_service_requests_ui_auth import (
 
 
 @contextmanager
-def _ui_dependencies(db_session, *, item_id: int = 391):
+def _ui_dependencies(db_session, *, item_id: int = 391, replies_enabled: bool = True):
     settings = Settings(
         site_service_requests_ui_enabled=True,
+        site_service_requests_ui_replies_enabled=replies_enabled,
         site_service_requests_outbound_replies_enabled=True,
         site_service_requests_command_attachments_enabled=True,
         site_service_requests_event_encryption_key=base64.urlsafe_b64encode(b"u" * 32).decode(
@@ -91,3 +92,33 @@ def test_ui_reply_note_conversation_and_item_scope(client, db_session):
         "internal",
     ]
     assert forbidden.status_code == 403
+
+
+def test_ui_read_only_gate_blocks_all_mutations(client, db_session):
+    case = SiteServiceRequestCase(
+        source_ticket_id=761,
+        source_kind="site_ticket",
+        source_key="site-support-ticket:761",
+        bitrix_item_id=392,
+        first_seen_at=datetime.now(UTC),
+    )
+    db_session.add(case)
+    db_session.commit()
+
+    with _ui_dependencies(db_session, item_id=392, replies_enabled=False):
+        conversation = client.get("/api/site-service-requests/ui/items/392/conversation")
+        reply = client.post(
+            "/api/site-service-requests/ui/items/392/replies",
+            data={"clientRequestId": "request-readonly", "text": "Не отправлять"},
+        )
+        note = client.post(
+            "/api/site-service-requests/ui/items/392/notes",
+            json={"clientRequestId": "note-readonly", "text": "Не сохранять"},
+        )
+        retry = client.post("/api/site-service-requests/ui/items/392/replies/1/retry")
+
+    assert conversation.status_code == 200
+    assert conversation.json()["canReply"] is False
+    for response in (reply, note, retry):
+        assert response.status_code == 503
+        assert response.json()["detail"] == "ui_replies_disabled"

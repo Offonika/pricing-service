@@ -9,6 +9,7 @@ IMMUTABLE_RUNTIME_ROOT = "/opt/MM/pricing-service-task43-current"
 MUTABLE_CODE_ROOT = "/opt/MM/pricing-service/"
 
 RUNTIME_TEMPLATES = (
+    "infra/cron/assortment_lifecycle_classification.cron",
     "infra/cron/manual_matching_bitrix_tasks.cron",
     "infra/cron/sync_open_procurement_supplier_orders_to_bitrix.cron",
     "infra/cron/competitor_matching_nightly.cron",
@@ -62,3 +63,13 @@ def test_bronze_inventory_schedule_sets_import_path() -> None:
     )
 
     assert f"PYTHONPATH={IMMUTABLE_RUNTIME_ROOT}" in text
+
+
+def test_assortment_lifecycle_classification_runs_once_in_nightly_window() -> None:
+    text = (REPO_ROOT / "infra/cron/assortment_lifecycle_classification.cron").read_text(
+        encoding="utf-8"
+    )
+    schedule_lines = [line for line in text.splitlines() if line and not line.startswith("CRON_TZ")]
+
+    assert len(schedule_lines) == 1
+    assert schedule_lines[0].startswith("12 0 * * * root ")

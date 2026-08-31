@@ -1180,7 +1180,9 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     )
     env_example = (sync.REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    assert "25,55 * * * *" in cron_source
+    assert "25,55 0,2-23 * * *" in cron_source
+    assert "25 1 * * *" in cron_source
+    assert "ORDER_FULFILLMENT_SYNC_MODE=nightly" in cron_source
     assert "0 11 * * *" in cron_source
     assert "ORDER_FULFILLMENT_SYNC_MODE=daily" in cron_source
     assert "ORDER_FULFILLMENT_SYNC_MODE=shipments" in cron_source
@@ -1204,6 +1206,124 @@ def test_order_fulfillment_cron_avoids_daily_collision() -> None:
     assert "--kill-after=30s" in bot_wrapper_source
     assert '"${WORKER_TIMEOUT_SECONDS}s"' in bot_wrapper_source
     assert "ORDER_FULFILLMENT_BOT_WORKER_TIMEOUT_SECONDS=600" in env_example
+
+
+def test_nightly_heavy_window_is_limited_to_moscow_midnight_through_six() -> None:
+    moscow = sync.ZoneInfo("Europe/Moscow")
+
+    assert sync.nightly_heavy_window_is_open(datetime(2026, 8, 31, 0, 0, tzinfo=moscow))
+    assert sync.nightly_heavy_window_is_open(datetime(2026, 8, 31, 5, 59, tzinfo=moscow))
+    assert not sync.nightly_heavy_window_is_open(datetime(2026, 8, 31, 6, 0, tzinfo=moscow))
+    assert not sync.nightly_heavy_window_is_open(datetime(2026, 8, 31, 23, 59, tzinfo=moscow))
+
+
+def test_nightly_heavy_window_guard_fails_closed_during_day() -> None:
+    with pytest.raises(SystemExit, match="allowed only from 00:00 to 06:00"):
+        sync.require_nightly_heavy_window(datetime(2026, 8, 31, 12, 0))
+
+
+def test_daytime_quick_sync_skips_heavy_onec_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Client:
+        @staticmethod
+        def list_deal_stage_ids() -> set[str]:
+            return set(sync.PROCESS_STAGES)
+
+    settings = Settings(
+        _env_file=None,
+        order_fulfillment_execution_master_enabled=True,
+        order_fulfillment_execution_reconciliation_enabled=True,
+    )
+    monkeypatch.setattr(sync, "get_settings", lambda: settings)
+    monkeypatch.setattr(sync, "fetch_new_deals", lambda *args, **kwargs: [])
+    monkeypatch.setattr(sync, "fetch_sale_order_statuses", lambda *args, **kwargs: {})
+    monkeypatch.setattr(sync, "fetch_onec_order_settlements", lambda *args, **kwargs: {})
+    monkeypatch.setattr(sync, "fetch_stage_summary", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        sync,
+        "fetch_executing_deal_scan",
+        lambda *args, **kwargs: pytest.fail("daytime quick started the executing-deal scan"),
+    )
+    monkeypatch.setattr(
+        sync,
+        "query_rtu_without_assembled_for_deals",
+        lambda *args, **kwargs: pytest.fail("daytime quick started the wide RTU query"),
+    )
+
+    summary = sync.run_quick_sync(
+        client=Client(),  # type: ignore[arg-type]
+        output_dir=tmp_path,
+        stamp="20260831-120000",
+        apply=False,
+        limit=200,
+        include_heavy_onec=False,
+    )
+
+    assert summary["mode"] == "quick"
+    assert summary["executing_reconciliation"]["enabled"] is False
+    assert summary["executing_reconciliation"]["configured"] is True
+    assert summary["executing_reconciliation"]["deferred_to_nightly"] is True
+
+
+def test_nightly_sync_runs_heavy_onec_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class Client:
+        @staticmethod
+        def list_deal_stage_ids() -> set[str]:
+            return set(sync.PROCESS_STAGES)
+
+    calls = {"scan": 0, "rtu": 0, "states": 0, "monitoring_rtu": 0}
+    settings = Settings(
+        _env_file=None,
+        onec_database_url="mssql://placeholder",
+        order_fulfillment_execution_master_enabled=True,
+        order_fulfillment_execution_reconciliation_enabled=True,
+        order_fulfillment_execution_ingest_enabled=False,
+    )
+    scan = sync.ExecutingDealScan([], set(), set(), 0, 0, True)
+
+    def fetch_scan(*args, **kwargs):
+        calls["scan"] += 1
+        return scan
+
+    def query_rtu(*args, **kwargs):
+        calls["rtu"] += 1
+        return {}
+
+    def query_states(*args, **kwargs):
+        calls["states"] += 1
+        return {}
+
+    def query_monitoring_rtu(*args, **kwargs):
+        calls["monitoring_rtu"] += 1
+        return []
+
+    monkeypatch.setattr(sync, "get_settings", lambda: settings)
+    monkeypatch.setattr(sync, "fetch_new_deals", lambda *args, **kwargs: [])
+    monkeypatch.setattr(sync, "fetch_executing_deal_scan", fetch_scan)
+    monkeypatch.setattr(sync, "fetch_sale_order_statuses", lambda *args, **kwargs: {})
+    monkeypatch.setattr(sync, "fetch_onec_order_settlements", lambda *args, **kwargs: {})
+    monkeypatch.setattr(sync, "query_rtu_signal_by_orders", query_rtu)
+    monkeypatch.setattr(sync, "query_onec_order_states_by_orders", query_states)
+    monkeypatch.setattr(sync, "query_rtu_without_assembled_for_deals", query_monitoring_rtu)
+    monkeypatch.setattr(sync, "fetch_stage_summary", lambda *args, **kwargs: [])
+
+    summary = sync.run_quick_sync(
+        client=Client(),  # type: ignore[arg-type]
+        output_dir=tmp_path,
+        stamp="20260831-012500",
+        apply=False,
+        limit=200,
+        include_heavy_onec=True,
+    )
+
+    assert summary["mode"] == "nightly"
+    assert summary["executing_reconciliation"]["enabled"] is True
+    assert calls == {"scan": 1, "rtu": 1, "states": 1, "monitoring_rtu": 1}
 
 
 def test_shipment_poller_uses_cursor_and_overlapping_recent_window(

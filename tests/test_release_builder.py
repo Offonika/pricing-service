@@ -81,9 +81,11 @@ def test_receivables_release_validator_uses_read_only_session_scope(
     component_path = tmp_path / "ui" / "src" / "components" / "ReceivablesWorkplace.tsx"
     component_path.parent.mkdir(parents=True)
     component_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
-    asset_path = tmp_path / "ui" / "dist" / "assets" / "app.js"
+    asset_path = tmp_path / "ui" / "dist" / "assets" / "main.js"
     asset_path.parent.mkdir(parents=True)
-    asset_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
+    asset_path.write_text("lazy entry", encoding="utf-8")
+    lazy_asset_path = asset_path.parent / "ReceivablesWorkplace-lazy.js"
+    lazy_asset_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
     (tmp_path / "ui" / "dist" / "index.html").write_text(
         '<script src="/assets/app.js"></script>',
         encoding="utf-8",
@@ -92,8 +94,49 @@ def test_receivables_release_validator_uses_read_only_session_scope(
     report = validator.validate_release(tmp_path, snapshot_date=snapshot_date)
 
     assert report["ok"] is True
+    assert report["checks"]["ui_bundle"]["scanned_asset_count"] == 2
+    assert report["checks"]["ui_bundle"]["path"] == str(lazy_asset_path)
     assert session_scope_calls == [True]
     assert freshness_calls == [(session, snapshot_date)]
+
+
+def test_receivables_release_validator_rejects_forbidden_text_in_any_chunk(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    validator = _load_receivables_release_validator()
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        assert read_only is True
+        yield object()
+
+    monkeypatch.setattr("app.infrastructure.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.evaluate_open_debt_source_freshness",
+        lambda _session, *, snapshot_date: SimpleNamespace(
+            source_status="cache_ready",
+            source_max_document_date=snapshot_date,
+            source_lag_days=0,
+        ),
+    )
+
+    component_path = tmp_path / "ui" / "src" / "components" / "ReceivablesWorkplace.tsx"
+    component_path.parent.mkdir(parents=True)
+    component_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
+    asset_dir = tmp_path / "ui" / "dist" / "assets"
+    asset_dir.mkdir(parents=True)
+    (asset_dir / "ReceivablesWorkplace.js").write_text(
+        validator.REQUIRED_UI_TEXT,
+        encoding="utf-8",
+    )
+    forbidden_path = asset_dir / "legacy.js"
+    forbidden_path.write_text(validator.FORBIDDEN_UI_TEXT, encoding="utf-8")
+
+    report = validator.validate_release(tmp_path, snapshot_date=date(2026, 8, 31))
+
+    assert report["ok"] is False
+    assert report["checks"]["ui_bundle"]["forbidden_paths"] == [str(forbidden_path)]
 
 
 def _git(source: Path, *args: str) -> None:

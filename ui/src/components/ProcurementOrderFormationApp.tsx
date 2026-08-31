@@ -4,6 +4,8 @@ import {
   applyProcurementSupplierDistribution,
   approveProcurementClassification,
   createProcurementClassification,
+  downloadProcurementOrderLabels,
+  fetchProcurementOrderLabelPreview,
   fetchProcurementOrder,
   previewProcurementSupplierDistribution,
   searchProcurementSupplierOptions,
@@ -13,6 +15,7 @@ import {
   type ProcurementSupplierDistributionPreview,
   type ProcurementSupplierOption,
   type ProcurementOrderFormation,
+  type ProcurementOrderLabelPreview,
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
@@ -261,6 +264,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const [supplierQueries, setSupplierQueries] = useState<Record<number, string>>({});
   const [supplierOptions, setSupplierOptions] = useState<Record<number, ProcurementSupplierOption[]>>({});
   const [distributionPreview, setDistributionPreview] = useState<ProcurementSupplierDistributionPreview | null>(null);
+  const [labelSize, setLabelSize] = useState<"50x40" | "40x30">("50x40");
+  const [labelPreview, setLabelPreview] = useState<ProcurementOrderLabelPreview | null>(null);
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
   const removalDialogRef = useRef<HTMLDivElement | null>(null);
   const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
@@ -581,6 +586,42 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       setOrder(result.source_order);
       setDistributionPreview(null);
       toast.success(`Разнесено строк: ${result.moved_line_count}`);
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const previewLabels = async () => {
+    setLoadingKey("labels-preview");
+    try {
+      const preview = await fetchProcurementOrderLabelPreview(order.id, labelSize);
+      setLabelPreview(preview);
+      if (preview.ready) toast.success("Этикетки проверены по строкам заказа 1С");
+    } catch (error: unknown) {
+      setLabelPreview(null);
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
+  const downloadLabels = async (format: "pdf" | "xlsx") => {
+    setLoadingKey(`labels-${format}`);
+    try {
+      const { blob, filename } = await downloadProcurementOrderLabels(
+        order.id,
+        labelSize,
+        format
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`${format.toUpperCase()} сформирован`);
     } catch (error: unknown) {
       toast.error(errorText(error));
     } finally {
@@ -1146,6 +1187,68 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
           </div>
         </div>
       )}
+
+      <section className="order-formation__labels" aria-label="Массовые этикетки">
+        <div>
+          <strong>Этикетки поставщику</strong>
+          <span>
+            {order.onec_document_number
+              ? `Заказ 1С: ${order.onec_document_number}`
+              : "Доступно после получения номера черновика из 1С"}
+          </span>
+        </div>
+        <label>
+          Размер
+          <select
+            disabled={Boolean(loadingKey)}
+            onChange={(event) => {
+              setLabelSize(event.target.value as "50x40" | "40x30");
+              setLabelPreview(null);
+            }}
+            value={labelSize}
+          >
+            <option value="50x40">50×40 мм</option>
+            <option value="40x30">40×30 мм</option>
+          </select>
+        </label>
+        <button
+          className="btn btn--ghost"
+          disabled={!order.onec_document_number || Boolean(loadingKey)}
+          onClick={() => void previewLabels()}
+          type="button"
+        >
+          {loadingKey === "labels-preview" ? "Проверяем..." : "Проверить количество"}
+        </button>
+        {labelPreview && (
+          <div className="order-formation__labels-summary">
+            <span>Позиций: <strong>{labelPreview.position_count}</strong></span>
+            <span>Этикеток: <strong>{labelPreview.product_label_count}</strong></span>
+            <span>Разделителей: <strong>{labelPreview.separator_count}</strong></span>
+            <span>Итого: <strong>{labelPreview.total_page_count}</strong></span>
+          </div>
+        )}
+        {labelPreview?.blockers.length ? (
+          <div className="order-formation__labels-errors">{labelPreview.blockers.join("; ")}</div>
+        ) : null}
+        <div className="order-formation__labels-actions">
+          <button
+            className="btn"
+            disabled={!labelPreview?.ready || Boolean(loadingKey)}
+            onClick={() => void downloadLabels("pdf")}
+            type="button"
+          >
+            {loadingKey === "labels-pdf" ? "Формируем..." : "Скачать PDF"}
+          </button>
+          <button
+            className="btn btn--ghost"
+            disabled={!labelPreview?.ready || Boolean(loadingKey)}
+            onClick={() => void downloadLabels("xlsx")}
+            type="button"
+          >
+            {loadingKey === "labels-xlsx" ? "Формируем..." : "Скачать XLSX"}
+          </button>
+        </div>
+      </section>
 
       <footer className="order-formation__footer">
         <span>{countLabel(activeLines.length, "строка", "строки", "строк")}</span>

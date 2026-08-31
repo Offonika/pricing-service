@@ -354,6 +354,18 @@ export interface ProcurementOrderFormation {
   supplier_profile?: ProcurementSupplierProfile;
 }
 
+export interface ProcurementOrderLabelPreview {
+  order_id: number;
+  onec_number: string;
+  label_size: "50x40" | "40x30" | string;
+  position_count: number;
+  product_label_count: number;
+  separator_count: number;
+  total_page_count: number;
+  ready: boolean;
+  blockers: string[];
+}
+
 export interface ProcurementOrderAssistant {
   updated_at?: string | null;
   summary: {
@@ -572,6 +584,32 @@ export async function fetchProcurementOrder(orderId: number) {
     `/procurement-order-formation/orders/${orderId}`
   );
   return data;
+}
+
+export async function fetchProcurementOrderLabelPreview(
+  orderId: number,
+  size: "50x40" | "40x30"
+) {
+  const { data } = await api.get<ProcurementOrderLabelPreview>(
+    `/procurement-order-formation/orders/${orderId}/labels/preview`,
+    { params: { size } }
+  );
+  return data;
+}
+
+export async function downloadProcurementOrderLabels(
+  orderId: number,
+  size: "50x40" | "40x30",
+  format: "pdf" | "xlsx"
+) {
+  const response = await api.get<Blob>(
+    `/procurement-order-formation/orders/${orderId}/labels.${format}`,
+    { params: { size }, responseType: "blob" }
+  );
+  const disposition = String(response.headers["content-disposition"] || "");
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+    || `supplier-order-${orderId}-labels-${size}.${format}`;
+  return { blob: response.data, filename };
 }
 
 export async function fetchProcurementDashboard() {

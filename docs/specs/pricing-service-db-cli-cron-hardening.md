@@ -37,6 +37,7 @@ related_tests:
   - tests/test_export_receivable_work_report_task.py
   - tests/test_export_sms_journal_xlsx.py
   - tests/test_product_classification.py
+  - tests/test_release_builder.py
   - tests/test_report_display_auto_order_backtest.py
   - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
   - tests/test_report_display_supplier_lead_time_history_task.py
@@ -212,6 +213,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/compare_employee_receivable_report.py` на role-specific
   read-only 1С factory с bounded timeout и гарантированным dispose, сохранив
   `--onec-url`, фильтры, временный SQLite snapshot и TSV-контракт.
+- [x] Перевести `scripts/validate_receivables_release.py` на central read-only
+  session scope с сохранением fail-closed UI, bundle, open-debt checks, JSON и
+  exit code контрактов.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -390,9 +394,25 @@ JSON/CSV/XLSX артефактов сохраняются.
     отдельных подтверждений.
 64. После зелёного CI разрешён merge PR №129. Production migration, deploy и
     cutover в это решение не входят.
+65. Следующим локальным read-only срезом Release B выбран
+    `scripts/validate_receivables_release.py`; разрешена реализация в отдельной
+    clean worktree. Commit, push, создание PR и production release требуют
+    отдельных подтверждений.
+66. Для `scripts/validate_receivables_release.py` разрешены commit проверенного
+    среза, push ветки и создание отдельного PR. Merge и production release требуют
+    отдельных подтверждений.
 
 # Changelog
 
+- 2026-08-31 — разрешены commit проверенного read-only среза
+  `scripts/validate_receivables_release.py`, push ветки и создание отдельного PR;
+  merge и production release оставлены отдельными решениями.
+- 2026-08-31 — `scripts/validate_receivables_release.py` переведён на central
+  read-only session scope; fail-closed UI, bundle, open-debt checks, JSON и exit
+  code контракты сохранены и покрыты профильным тестом.
+- 2026-08-31 — следующим локальным read-only срезом Release B выбран
+  `scripts/validate_receivables_release.py`; commit, push, PR и production release
+  оставлены отдельными решениями.
 - 2026-08-31 — разрешён merge PR №129; production release оставлен отдельным
   решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза

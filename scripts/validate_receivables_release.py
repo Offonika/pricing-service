@@ -10,8 +10,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
 sys.dont_write_bytecode = True
 
 REQUIRED_UI_TEXT = "Долгообразующая накладная"
@@ -27,7 +25,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def validate_release(release_dir: Path, *, snapshot_date: date) -> dict[str, object]:
-    from app.infrastructure.db import get_application_engine
+    from app.infrastructure.db import session_scope
     from app.services.counterparty_folder_recommendations import (
         evaluate_open_debt_source_freshness,
     )
@@ -52,15 +50,11 @@ def validate_release(release_dir: Path, *, snapshot_date: date) -> dict[str, obj
         "path": str(asset_path or ""),
     }
 
-    engine = get_application_engine()
-    try:
-        with Session(engine) as session:
-            freshness = evaluate_open_debt_source_freshness(
-                session,
-                snapshot_date=snapshot_date,
-            )
-    finally:
-        engine.dispose()
+    with session_scope(read_only=True) as session:
+        freshness = evaluate_open_debt_source_freshness(
+            session,
+            snapshot_date=snapshot_date,
+        )
     checks["open_debt_source"] = {
         "ok": freshness.source_status == "cache_ready",
         "source_status": freshness.source_status,

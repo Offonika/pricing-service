@@ -6,7 +6,10 @@ import os
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "scripts" / "build_pricing_service_release.sh"
@@ -27,6 +30,15 @@ def _load_executive_release_validator():
     return module
 
 
+def _load_receivables_release_validator():
+    path = REPO_ROOT / "scripts" / "validate_receivables_release.py"
+    spec = importlib.util.spec_from_file_location("receivables_release_validator", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_executive_release_validator_defers_revision_equality_only_when_requested() -> None:
     validator = _load_executive_release_validator()
 
@@ -35,6 +47,53 @@ def test_executive_release_validator_defers_revision_equality_only_when_requeste
         validator._migration_revision_error("old", "new", skip_database_revision=False)
         == "database revision old does not match code head new"
     )
+
+
+def test_receivables_release_validator_uses_read_only_session_scope(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    validator = _load_receivables_release_validator()
+    snapshot_date = date(2026, 8, 31)
+    session = object()
+    session_scope_calls: list[bool] = []
+    freshness_calls: list[tuple[object, date]] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        session_scope_calls.append(read_only)
+        yield session
+
+    def fake_evaluate_open_debt_source_freshness(actual_session, *, snapshot_date):
+        freshness_calls.append((actual_session, snapshot_date))
+        return SimpleNamespace(
+            source_status="cache_ready",
+            source_max_document_date=snapshot_date,
+            source_lag_days=0,
+        )
+
+    monkeypatch.setattr("app.infrastructure.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "app.services.counterparty_folder_recommendations.evaluate_open_debt_source_freshness",
+        fake_evaluate_open_debt_source_freshness,
+    )
+
+    component_path = tmp_path / "ui" / "src" / "components" / "ReceivablesWorkplace.tsx"
+    component_path.parent.mkdir(parents=True)
+    component_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
+    asset_path = tmp_path / "ui" / "dist" / "assets" / "app.js"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text(validator.REQUIRED_UI_TEXT, encoding="utf-8")
+    (tmp_path / "ui" / "dist" / "index.html").write_text(
+        '<script src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+
+    report = validator.validate_release(tmp_path, snapshot_date=snapshot_date)
+
+    assert report["ok"] is True
+    assert session_scope_calls == [True]
+    assert freshness_calls == [(session, snapshot_date)]
 
 
 def _git(source: Path, *args: str) -> None:

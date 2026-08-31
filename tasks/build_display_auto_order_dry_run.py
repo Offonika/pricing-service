@@ -1772,11 +1772,24 @@ def fetch_return_totals(
     )
     sql = _expanding_text(
         """
+        WITH site_responsible_group AS (
+            SELECT responsible._IDRRef
+            FROM dbo._Reference69 AS responsible WITH (NOLOCK)
+            WHERE LOWER(NULLIF(LTRIM(RTRIM(responsible._Description)), N'')) = N'сайт'
+
+            UNION ALL
+
+            SELECT child._IDRRef
+            FROM dbo._Reference69 AS child WITH (NOLOCK)
+            JOIN site_responsible_group AS parent
+                ON child._ParentIDRRef = parent._IDRRef
+        )
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
             SUM(CAST(return_line._Fld1701 AS decimal(18, 3))) AS return_qty_window,
             SUM(CASE WHEN customer_return._Date_Time >= :batch_error_window_from
                     AND NULLIF(LTRIM(RTRIM(quality._Description)), N'') = :batch_error_return_quality_name
+                    AND site_responsible._IDRRef IS NULL
                 THEN CAST(return_line._Fld1701 AS decimal(18, 3)) ELSE 0 END)
                 AS batch_error_return_qty,
             SUM(CASE WHEN customer_return._Date_Time >= :defect_rate_window_from
@@ -1792,6 +1805,8 @@ def fetch_return_totals(
             ON warehouse._IDRRef = return_line._Fld1716RRef
         LEFT JOIN dbo._Reference48 AS quality WITH (NOLOCK)
             ON quality._IDRRef = return_line._Fld1715RRef
+        LEFT JOIN site_responsible_group AS site_responsible
+            ON site_responsible._IDRRef = customer_return._Fld1689RRef
         WHERE customer_return._Marked = 0x00
           AND customer_return._Posted = 0x01
           AND customer_return._Date_Time >= :date_from
@@ -1800,6 +1815,7 @@ def fetch_return_totals(
           AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
           AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :sellable_codes
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        OPTION (MAXRECURSION 20)
         """,
         codes=codes,
         sellable_codes=sellable_codes,

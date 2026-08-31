@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-26"
+updated_at: "2026-08-31"
 ---
 
 # Инвентарь заданий по расписанию
@@ -29,10 +29,10 @@ updated_at: "2026-08-26"
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|
-| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | релиз |
+| `pricing-assortment-lifecycle-classification` | ежедневно 00:12 | релиз |
 | `pricing-sku-result-sync-ut103` | ежечасно в :45 | релиз |
 | `onec_assembly_crm_reconciler` | каждые 30 минут | релиз |
-| `order_fulfillment_sync` | каждые 30 минут, ежечасно в :10, ежедневно 11:00 | релиз |
+| `order_fulfillment_sync` | лёгкий quick в :25/:55 кроме 01:00–01:59; nightly 01:25; chat в :10; daily 11:00 | релиз |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
 | `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | релиз |
 | `pricing-sku-generation-ut103` | ежедневно 02:30 | релиз |
@@ -50,6 +50,38 @@ updated_at: "2026-08-26"
 | `pricing-executive-dashboard-monitor` | каждые 5 минут | релиз |
 
 Логи всех заданий — в `/var/log/pricing/`, имя файла совпадает с именем задания.
+
+## Политика нагрузки на production 1С
+
+Боевая `Ekama` является рабочей OLTP-базой `1С`. Read-only-доступ сам по себе
+не делает запрос безопасным для дневного выполнения. Полные сканирования,
+массовые агрегации, исторические сверки и запросы, не подтверждённые
+production-canary как лёгкие, разрешены только в окне `00:00–06:00 МСК`.
+
+Вне этого окна разрешены только ограниченные инкрементальные чтения по
+индексируемым ключам, с фиксированной небольшой партией, timeout и защитой от
+параллельного запуска. Если job совмещает оперативную и тяжёлую части, тяжёлая
+часть выносится в отдельный ночной режим. Неподтверждённо лёгкий запрос считается
+тяжёлым и днём не запускается.
+
+В первую очередь правило применяется к
+`order_fulfillment_sync.query_rtu_signal_by_orders` и полному обновлению
+классификации ассортимента.
+
+### Активное расписание тяжёлых контуров
+
+Расписание активировано 2026-08-31 в release
+`ut103-night-heavy-queries-20260831-5dea094`:
+
+- `order_fulfillment_sync --mode quick`: `:25/:55`, кроме часа `01:00–01:59`;
+- `order_fulfillment_sync --mode nightly`: ежедневно `01:25`, с программным
+  fail-closed запретом запуска вне `00:00–06:00 МСК`;
+- `pricing-assortment-lifecycle-classification`: один раз в сутки в `00:12`
+  вместо ежечасного полного запуска.
+
+Дневной `quick` не сканирует исторические сделки `EXECUTING`, не вызывает широкую
+сверку РТУ/состояний заказов и не строит полный сигнал
+`executing-rtu-without-assembled`. Эти операции выполняет только `nightly`.
 
 `onec_assembly_crm_reconciler` поддерживает два транспорта. До отдельного
 production-cutover используется `legacy-php`. Целевой `service-db` сохраняет
@@ -125,6 +157,11 @@ controller при следующей production-сборке.
 
 ## Changelog
 
+- 2026-08-31 — тяжёлые запросы к production `Ekama` ограничены окном
+  `00:00–06:00 МСК`; через PR №132 и guarded release активировано разделение
+  дневного `quick` и ночного `nightly`, классификация ассортимента перенесена на
+  `00:12`. Production-smoke подтвердил `scanned=0`,
+  `deferred_to_nightly=true`, отсутствие широкого РТУ-сигнала и блокировок SQL.
 - 2026-08-24 — Устранение runtime split-brain назначено приоритетом №1; принят
   поэтапный перевод всех активных jobs на единый immutable release source.
 - 2026-08-24 — API monitor, expertise timers, competitor matching, 1С assembly,

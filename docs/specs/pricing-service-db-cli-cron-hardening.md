@@ -47,7 +47,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-30"
+updated_at: "2026-08-31"
 ---
 
 # Назначение
@@ -205,6 +205,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `tasks/build_assortment_lifecycle_facts.py` на central read-only
   session scope и role-specific 1С factory с bounded timeout и гарантированным
   dispose, сохранив аргументы, offline SQLite fixture и JSON-контракт.
+- [x] Перевести `tasks/check_logistics_stage_outbox_health.py` на central
+  read-only session scope с сохранением `--max-delay-seconds`, JSON-контракта и
+  exit code для critical status.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -373,9 +376,21 @@ JSON/CSV/XLSX артефактов сохраняются.
     требуют отдельных подтверждений.
 60. После зелёного CI разрешён merge PR №125. Production migration, deploy и
     cutover в это решение не входят.
+61. Для `tasks/check_logistics_stage_outbox_health.py` разрешены реализация в
+    отдельной ветке, push и создание отдельного PR после локальных проверок.
+    Merge и production release требуют отдельных подтверждений.
+62. После зелёного CI разрешён merge PR №128. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-31 — разрешён merge PR №128; production release оставлен отдельным
+  решением.
+- 2026-08-30 — `tasks/check_logistics_stage_outbox_health.py` переведён на
+  central read-only session scope; `--max-delay-seconds`, JSON-контракт и
+  critical exit code сохранены, DB access зафиксирован в CLI registry.
+- 2026-08-30 — разрешена подготовка logistics stage-outbox health read-only
+  slice с push и отдельным PR; merge и production оставлены отдельными решениями.
 - 2026-08-30 — разрешён merge PR №125; production release оставлен отдельным
   решением.
 - 2026-08-30 — разрешена подготовка assortment lifecycle facts read-only slice

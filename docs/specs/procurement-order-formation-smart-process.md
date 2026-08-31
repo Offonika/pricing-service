@@ -20,6 +20,7 @@ related_code:
   - app/services/procurement_order_metrics.py
   - app/services/procurement_order_metrics_backfill.py
   - app/services/procurement_order_product_media.py
+  - app/services/procurement_order_labels.py
   - app/services/procurement_supplier_profiles.py
   - tasks/backfill_procurement_order_metrics.py
   - tasks/backfill_procurement_order_product_media.py
@@ -44,6 +45,7 @@ related_tests:
   - tests/test_procurement_order_metrics.py
   - tests/test_procurement_order_metrics_backfill.py
   - tests/test_procurement_order_product_media.py
+  - tests/test_procurement_order_labels.py
   - tests/test_procurement_supplier_profiles.py
 contracts:
   - openapi.yaml
@@ -52,7 +54,7 @@ depends_on:
   - docs/specs/assortment-lifecycle-policy.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-23"
+updated_at: "2026-08-31"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
@@ -108,6 +110,11 @@ updated_at: "2026-08-23"
 - 1С остаётся источником товарных фактов и получает только непроведённые черновики `ЗаказПоставщику` с `draft_only=true`.
 - Товар связывается только по нормализованному `XML_ID = GUID номенклатуры 1С`.
 - Розничная цена каталога не читается и не изменяется. Закупочная цена хранится только в строке заказа.
+- Массовые этикетки формируются в карточке существующего заказа поставщику после
+  readback номера непроведённого `ЗаказПоставщику` из фактических строк УТ 10.3.
+  Поддерживаются размеры `50×40` и `40×30` мм и форматы PDF/XLSX; каждая
+  товарная этикетка повторяется по целому количеству строки, между позициями
+  вставляется одна пустая этикетка, после последней позиции разделителя нет.
 - `BitrixItemUrl` в пакете 1С необязателен для проектов OAuth-приложения без
   legacy-карточки; контроль подтверждения сохраняют обязательные
   `ConfirmationId`, `CalculationId` и `ApprovedBy`.
@@ -1105,6 +1112,10 @@ cd ui && npm run lint && npm run build
   Склад`; штатный расчёт больше не зависит от истории поставщика для заполнения
   склада. Подтверждено, что общий гейт передачи уже блокирует активные
   проблемные строки и показывает закупщику их номера.
+- 2026-08-31 — формирование массовых этикеток `50×40`/`40×30` в PDF/XLSX
+  включено в существующий контур «Формирование заказа». Источник — фактические
+  строки непроведённого `ЗаказПоставщику` из УТ 10.3 после readback номера;
+  отдельный контур заказов не создаётся, production-флаги записи в 1С не меняются.
 
 # Acceptance Criteria
 
@@ -1116,6 +1127,9 @@ cd ui && npm run lint && npm run build
 - [x] Расчёт заказов скачивается в Excel с классификацией и текущими фильтрами.
 - [x] Метрики содержат период, источник, надёжность и честное разделение брака.
 - [x] Профиль поставщика защищён optimistic version и правами согласующего.
+- [x] Из карточки заказа с readback-номером формируются PDF/XLSX этикетки
+  `50×40` и `40×30` по целому количеству строк, с одним пустым разделителем
+  между позициями и без разделителя после последней.
 - [x] Автор не может принять или отклонить своё предложение; причина отклонения обязательна.
 - [x] Backfill метрик поддерживает dry-run, apply, повторный запуск и rollback-manifest.
 

@@ -29,6 +29,7 @@ from tasks.build_display_auto_order_dry_run import (
     fetch_active_customer_order_totals,
     fetch_days_in_sale_totals,
     fetch_reserved_totals,
+    fetch_return_totals,
     fetch_sales_totals,
     fetch_stock_totals,
     load_auto_order_items_with_scope_audit,
@@ -122,6 +123,27 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "sales_qty_window_short" in sales_sql
     assert "window_medium_from" in sales_sql
     assert "window_short_from" in sales_sql
+
+
+def test_new_quality_returns_exclude_site_responsible_group() -> None:
+    engine = _CaptureEngine()
+
+    fetch_return_totals(
+        engine,
+        codes=["RB1"],
+        sellable_codes=("SALE",),
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 7, 30),
+    )
+
+    (returns_sql,) = engine.statements
+    assert "site_responsible_group" in returns_sql
+    assert "_Reference69 AS responsible" in returns_sql
+    assert "responsible._Description" in returns_sql
+    assert "child._ParentIDRRef = parent._IDRRef" in returns_sql
+    assert "customer_return._Fld1689RRef" in returns_sql
+    assert "site_responsible._IDRRef IS NULL" in returns_sql
+    assert "OPTION (MAXRECURSION 20)" in returns_sql
 
 
 def test_active_customer_order_query_uses_positive_open_balances_without_name_filter() -> None:

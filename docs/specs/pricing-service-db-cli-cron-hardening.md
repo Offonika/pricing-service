@@ -388,9 +388,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 63. Для `tasks/compare_employee_receivable_report.py` разрешены commit проверенного
     среза, push ветки и создание отдельного PR. Merge и production release требуют
     отдельных подтверждений.
+64. После зелёного CI разрешён merge PR №129. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-31 — разрешён merge PR №129; production release оставлен отдельным
+  решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза
   `compare_employee_receivable_report.py`, push ветки и создание отдельного PR;
   merge и production release оставлены отдельными решениями.

@@ -90,6 +90,9 @@ class RtuSourceRow:
     source_warehouse_external_id: str | None
     source_warehouse_name: str | None
     source_warehouse_code: str | None
+    pickup_department_external_id: str | None
+    pickup_department_code: str | None
+    pickup_department_name: str | None
     site_delivery_method: str | None
     address_candidates: tuple[str, ...]
     raw: dict[str, Any] = field(default_factory=dict)
@@ -514,7 +517,14 @@ def sync_ready_rtu_units(
             )
             continue
 
-        if _use_source_warehouse_for_empty_pickup_address(row):
+        if row.pickup_department_external_id or row.pickup_department_code:
+            resolution = resolve_target_warehouse_by_department(
+                session,
+                department_external_id=row.pickup_department_external_id,
+                department_code=row.pickup_department_code,
+                warehouses=active_warehouses,
+            )
+        elif _use_source_warehouse_for_empty_pickup_address(row):
             lookup_code = make_rtu_lookup_code(row.rtu_external_id, row.site_order_number or "")
             unit_payloads.append(
                 _rtu_unit_payload(
@@ -535,12 +545,12 @@ def sync_ready_rtu_units(
                 )
             )
             continue
-
-        resolution = resolve_target_warehouse(
-            session,
-            row.address_candidates,
-            warehouses=active_warehouses,
-        )
+        else:
+            resolution = resolve_target_warehouse(
+                session,
+                row.address_candidates,
+                warehouses=active_warehouses,
+            )
         if resolution.warehouse is None:
             _record_skip(
                 session,
@@ -653,6 +663,11 @@ def normalize_rtu_source_rows(rows: Iterable[dict[str, Any] | Any]) -> RtuNormal
                 or None,
                 source_warehouse_name=_clean_string(row.get("source_warehouse_name")) or None,
                 source_warehouse_code=_clean_string(row.get("source_warehouse_code")) or None,
+                pickup_department_external_id=(
+                    _clean_ref(row.get("pickup_department_external_id")) or None
+                ),
+                pickup_department_code=(_clean_string(row.get("pickup_department_code")) or None),
+                pickup_department_name=(_clean_string(row.get("pickup_department_name")) or None),
                 site_delivery_method=_clean_string(row.get("site_delivery_method")) or None,
                 address_candidates=_address_candidates(row),
                 raw=row,
@@ -736,6 +751,69 @@ def resolve_target_warehouse(
     return WarehouseResolution(None, "RTU address did not match any warehouse", [])
 
 
+def resolve_target_warehouse_by_department(
+    session: Session,
+    *,
+    department_external_id: str | None,
+    department_code: str | None,
+    warehouses: Iterable[LogisticsWarehouse] | None = None,
+) -> WarehouseResolution:
+    external_id = _clean_ref(department_external_id).casefold()
+    code = _clean_string(department_code).casefold()
+    matches: dict[int, dict[str, Any]] = {}
+    warehouse_rows = (
+        list(warehouses)
+        if warehouses is not None
+        else session.scalars(
+            select(LogisticsWarehouse)
+            .where(LogisticsWarehouse.is_active.is_(True))
+            .order_by(LogisticsWarehouse.id.asc())
+        ).all()
+    )
+    warehouses_by_id = {warehouse.id: warehouse for warehouse in warehouse_rows}
+    for warehouse in warehouse_rows:
+        payload = warehouse.payload if isinstance(warehouse.payload, dict) else {}
+        departments = payload.get("onec_departments")
+        if not isinstance(departments, list):
+            continue
+        for department in departments:
+            if not isinstance(department, dict):
+                continue
+            candidate_external_id = _clean_ref(department.get("external_id")).casefold()
+            candidate_code = _clean_string(department.get("code")).casefold()
+            if (external_id and candidate_external_id == external_id) or (
+                code and candidate_code == code
+            ):
+                matches[warehouse.id] = {
+                    "warehouse_id": warehouse.id,
+                    "warehouse_external_id": warehouse.external_id,
+                    "warehouse_name": warehouse.name,
+                    "department_external_id": department.get("external_id"),
+                    "department_code": department.get("code"),
+                    "match_type": "pickup_department_exact",
+                }
+                break
+
+    if len(matches) == 1:
+        warehouse_id = next(iter(matches))
+        return WarehouseResolution(
+            warehouses_by_id[warehouse_id],
+            None,
+            list(matches.values()),
+        )
+    if len(matches) > 1:
+        return WarehouseResolution(
+            None,
+            "Pickup department matched multiple warehouses",
+            list(matches.values()),
+        )
+    return WarehouseResolution(
+        None,
+        "Pickup department did not match a logistics warehouse",
+        [],
+    )
+
+
 def make_rtu_lookup_code(rtu_external_id: str, site_order_number: str) -> str:
     return f"MMLOG1|rtu|{rtu_external_id}|{site_order_number}"
 
@@ -755,6 +833,9 @@ def _rtu_unit_payload(
         "onec_order_number": row.onec_order_number,
         "source_warehouse_code": row.source_warehouse_code,
         "source_warehouse_name": row.source_warehouse_name,
+        "pickup_department_external_id": row.pickup_department_external_id,
+        "pickup_department_code": row.pickup_department_code,
+        "pickup_department_name": row.pickup_department_name,
         "site_delivery_method": row.site_delivery_method,
         "address_candidates": list(row.address_candidates),
         "target_resolution": target_resolution,
@@ -910,6 +991,9 @@ def _fetch_rtu_source_rows(
             LTRIM(RTRIM(ord._Number)) AS onec_order_number,
             NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
             NULLIF(LTRIM(RTRIM(ord._Fld9266)), N'') AS site_delivery_method,
+            CONVERT(varchar(34), ord._Fld10203RRef, 1) AS pickup_department_external_id,
+            NULLIF(LTRIM(RTRIM(pickup_dep._Code)), N'') AS pickup_department_code,
+            NULLIF(LTRIM(RTRIM(pickup_dep._Description)), N'') AS pickup_department_name,
             CAST(ord._Fld2422 AS nvarchar(max)) AS site_delivery_addition,
             CAST(ord._Fld2395 AS nvarchar(max)) AS site_delivery_address,
             CAST(rtu._Fld4965 AS nvarchar(max)) AS rtu_delivery_addition,
@@ -941,6 +1025,8 @@ def _fetch_rtu_source_rows(
         FROM dbo._Document203 AS rtu WITH (NOLOCK)
         JOIN dbo._Document132 AS ord WITH (NOLOCK)
             ON ord._IDRRef = rtu._Fld4939_RRRef
+        LEFT JOIN dbo._Reference68 AS pickup_dep WITH (NOLOCK)
+            ON pickup_dep._IDRRef = ord._Fld10203RRef
         LEFT JOIN dbo._Reference80 AS wh WITH (NOLOCK)
             ON wh._IDRRef = rtu._Fld4940RRef
         WHERE rtu._Fld4939_RRRef IS NOT NULL
@@ -960,6 +1046,9 @@ def _fetch_rtu_source_rows(
             onec_order_number,
             site_order_number,
             site_delivery_method,
+            pickup_department_external_id,
+            pickup_department_code,
+            pickup_department_name,
             site_delivery_addition,
             site_delivery_address,
             rtu_delivery_addition,
@@ -1555,6 +1644,8 @@ def _clean_ref(value: Any) -> str:
     if clean.lower().startswith("0x") and all(
         symbol in "0123456789abcdefABCDEF" for symbol in clean[2:]
     ):
+        if clean[2:] and set(clean[2:]) == {"0"}:
+            return ""
         return clean.lower()
     return clean
 

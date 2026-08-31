@@ -365,6 +365,8 @@ def test_rtu_source_query_uses_stable_pagination_and_targeted_filters() -> None:
     assert "print_event._Fld9449_RTRef = 0x000000CB" in captured["statement"]
     assert "assembled_event._Fld9449_TYPE = 0x08" in captured["statement"]
     assert "assembled_event._Fld9449_RTRef = 0x000000CB" in captured["statement"]
+    assert "ord._Fld10203RRef" in captured["statement"]
+    assert "LEFT JOIN dbo._Reference68 AS pickup_dep" in captured["statement"]
     assert ":site_order_number" in captured["statement"]
     assert ":rtu_external_id" in captured["statement"]
     assert captured["params"]["page_offset"] == 500
@@ -546,6 +548,64 @@ def test_resolve_target_warehouse_uses_payload_aliases() -> None:
             )
             assert ambiguous.warehouse is None
             assert ambiguous.reason == "RTU address matched multiple warehouses"
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_resolve_target_warehouse_by_department_uses_exact_onec_mapping() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    LogisticsWarehouse(
+                        external_id="target-presnya",
+                        name="Электроника на Пресне В-46",
+                        kind="store",
+                        payload={
+                            "onec_departments": [
+                                {
+                                    "external_id": "0x11111111111111111111111111111111",
+                                    "code": "РБ0000027",
+                                }
+                            ]
+                        },
+                    ),
+                    LogisticsWarehouse(
+                        external_id="target-grand",
+                        name="Гранд Юг В-34",
+                        kind="store",
+                        payload={
+                            "onec_departments": [
+                                {
+                                    "external_id": "0x22222222222222222222222222222222",
+                                    "code": "РБ0000028",
+                                }
+                            ]
+                        },
+                    ),
+                ]
+            )
+            session.commit()
+
+            resolved = logistics_onec.resolve_target_warehouse_by_department(
+                session,
+                department_external_id="0x22222222222222222222222222222222",
+                department_code="РБ0000028",
+            )
+            assert resolved.warehouse is not None
+            assert resolved.warehouse.external_id == "target-grand"
+            assert resolved.matches[0]["match_type"] == "pickup_department_exact"
+
+            unresolved = logistics_onec.resolve_target_warehouse_by_department(
+                session,
+                department_external_id="0x33333333333333333333333333333333",
+                department_code="РБ0000099",
+            )
+            assert unresolved.warehouse is None
+            assert unresolved.reason == ("Pickup department did not match a logistics warehouse")
     finally:
         engine.dispose()
         if os.path.exists(path):
@@ -929,6 +989,113 @@ def test_sync_ready_rtu_units_uses_source_for_empty_pickup_address() -> None:
         engine.dispose()
         if os.path.exists(path):
             os.remove(path)
+
+
+def test_sync_ready_rtu_units_prefers_pickup_department_over_address() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    LogisticsWarehouse(
+                        external_id="target-address",
+                        name="Савеловский",
+                        kind="store",
+                        payload={"address_aliases": ["Савеловский Мобильный пав. Т-103 | Т-105"]},
+                    ),
+                    LogisticsWarehouse(
+                        external_id="target-pickup",
+                        name="Гранд Юг В-34",
+                        kind="store",
+                        payload={
+                            "onec_departments": [
+                                {
+                                    "external_id": "0x22222222222222222222222222222222",
+                                    "code": "РБ0000028",
+                                }
+                            ]
+                        },
+                    ),
+                ]
+            )
+            session.commit()
+
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        pickup_department_external_id=("0x22222222222222222222222222222222"),
+                        pickup_department_code="РБ0000028",
+                        pickup_department_name="Гранд Юг",
+                    )
+                ],
+                dry_run=False,
+            )
+
+            assert report["synced_created"] == 1
+            transfer = session.scalar(select(LogisticsTransfer))
+            assert transfer is not None
+            assert transfer.target_warehouse.external_id == "target-pickup"
+            assert transfer.payload["pickup_department_code"] == "РБ0000028"
+            assert transfer.payload["target_resolution"][0]["match_type"] == (
+                "pickup_department_exact"
+            )
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_ready_rtu_units_fails_closed_for_unknown_pickup_department() -> None:
+    engine, path = setup_db()
+    try:
+        with Session(engine) as session:
+            session.add(
+                LogisticsWarehouse(
+                    external_id="target-address",
+                    name="Савеловский",
+                    kind="store",
+                    payload={"address_aliases": ["Савеловский Мобильный пав. Т-103 | Т-105"]},
+                )
+            )
+            session.commit()
+
+            report = logistics_onec.sync_ready_rtu_units(
+                session,
+                onec_engine=None,
+                source_rows=[
+                    _rtu_row(
+                        pickup_department_external_id=("0x33333333333333333333333333333333"),
+                        pickup_department_code="РБ0000099",
+                    )
+                ],
+                dry_run=False,
+            )
+
+            assert report["synced_created"] == 0
+            assert report["manual_review_created"] == 1
+            review = session.scalar(select(LogisticsManualReview))
+            assert review is not None
+            assert review.reason == ("Pickup department did not match a logistics warehouse")
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_normalize_rtu_source_rows_treats_zero_pickup_ref_as_empty() -> None:
+    normalized = logistics_onec.normalize_rtu_source_rows(
+        [
+            _rtu_row(
+                pickup_department_external_id="0x00000000000000000000000000000000",
+                pickup_department_code=None,
+            )
+        ]
+    )
+
+    assert len(normalized.ready) == 1
+    assert normalized.ready[0].pickup_department_external_id is None
 
 
 def test_sync_ready_rtu_units_can_apply_external_carrier_flow() -> None:

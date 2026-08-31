@@ -85,6 +85,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         MatchingPropertyValueMap,
     )
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
+    from app.models.order_assembly_queue import (
+        OrderAssemblyQueueItem,
+        OrderAssemblyQueueSyncState,
+    )
     from app.models.orchestration import (
         OrchestrationApiRequest,
         OrchestrationDeliveryAttempt,
@@ -238,6 +242,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsRouteRunItem",
         "LogisticsManualReview",
         "OneCSalesDailyKpi",
+        "OrderAssemblyQueueItem",
+        "OrderAssemblyQueueSyncState",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",
         "SmsJournalApiRequest",

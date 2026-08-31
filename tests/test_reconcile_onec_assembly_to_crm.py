@@ -28,6 +28,8 @@ def test_send_to_crm_uses_issued_payload_for_printed_scanned_pickup(monkeypatch)
         event_key="issued-scan:0x01",
         crm_status="issued",
         event_at=datetime(2026, 5, 1, 19, 0, 0),
+        assembly_source="rtu",
+        assembly_ref="0xrtu",
         rtu_external_id="0xrtu",
         rtu_number="РБГУ0197082",
         rtu_date=datetime(2026, 5, 1, 18, 57, 28),
@@ -51,6 +53,9 @@ def test_send_to_crm_uses_issued_payload_for_printed_scanned_pickup(monkeypatch)
     assert payload["rtu"] == "РБГУ0197082"
     assert payload["issued_at"] == "2026-05-01 19:00:00"
     assert payload["document_amount"] == "1560.00"
+    assert payload["assembly_source"] == "rtu"
+    assert payload["assembly_ref"] == "0xrtu"
+    assert payload["idempotency_key"] == "issued-scan:0x01"
     assert payload["dry_run"] == "1"
     assert "assembled_at" not in payload
 
@@ -65,12 +70,14 @@ def test_send_to_crm_keeps_assembled_payload_for_assembly_event(monkeypatch) -> 
     monkeypatch.setattr(task.requests, "post", fake_post)
 
     event = task.AssemblyEvent(
-        event_key="assembled:0x01",
+        event_key="assembled-order:0x01",
         crm_status="assembled",
         event_at=datetime(2026, 5, 1, 18, 59, 0),
-        rtu_external_id="0xrtu",
-        rtu_number="РБГУ0197082",
-        rtu_date=datetime(2026, 5, 1, 18, 57, 28),
+        assembly_source="customer_order",
+        assembly_ref="0xorder",
+        rtu_external_id=None,
+        rtu_number=None,
+        rtu_date=None,
         onec_order_number="РБГУ0033819",
         site_order_number="214577",
         is_posted=True,
@@ -86,4 +93,8 @@ def test_send_to_crm_keeps_assembled_payload_for_assembly_event(monkeypatch) -> 
     payload = captured["data"]
     assert payload["status"] == "assembled"
     assert payload["assembled_at"] == "2026-05-01 18:59:00"
+    assert payload["assembly_source"] == "customer_order"
+    assert payload["assembly_ref"] == "0xorder"
+    assert payload["idempotency_key"] == "assembled-order:0x01"
+    assert "rtu" not in payload
     assert "issued_at" not in payload

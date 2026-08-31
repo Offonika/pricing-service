@@ -29,8 +29,10 @@ class AssemblyEvent:
     event_key: str
     crm_status: str
     event_at: datetime
-    rtu_external_id: str
-    rtu_number: str
+    assembly_source: str
+    assembly_ref: str
+    rtu_external_id: str | None
+    rtu_number: str | None
     rtu_date: datetime | None
     onec_order_number: str
     site_order_number: str
@@ -106,8 +108,10 @@ def _event_from_row(row: Any) -> AssemblyEvent:
         event_key=event_key,
         crm_status=(data["crm_status"] or "assembled").strip(),
         event_at=data["event_at"],
-        rtu_external_id=(data["rtu_external_id"] or "").strip(),
-        rtu_number=(data["rtu_number"] or "").strip(),
+        assembly_source=(data["assembly_source"] or "customer_order").strip(),
+        assembly_ref=(data["assembly_ref"] or "").strip(),
+        rtu_external_id=(data["rtu_external_id"] or "").strip() or None,
+        rtu_number=(data["rtu_number"] or "").strip() or None,
         rtu_date=data["rtu_date"],
         onec_order_number=(data["onec_order_number"] or "").strip(),
         site_order_number=(data["site_order_number"] or "").strip(),
@@ -125,25 +129,25 @@ def fetch_assembly_events(
     statement = text(f"""
         WITH crm_events AS (
             SELECT
-                'assembled:' + CONVERT(varchar(34), hist._SimpleKey, 1) AS event_key,
+                'assembled-order:' + CONVERT(varchar(34), hist._SimpleKey, 1) AS event_key,
                 'assembled' AS crm_status,
                 hist._Fld9450 AS event_at,
-                CONVERT(varchar(34), rtu._IDRRef, 1) AS rtu_external_id,
-                LTRIM(RTRIM(rtu._Number)) AS rtu_number,
-                rtu._Date_Time AS rtu_date,
+                'customer_order' AS assembly_source,
+                CONVERT(varchar(34), ord._IDRRef, 1) AS assembly_ref,
+                CAST(NULL AS varchar(34)) AS rtu_external_id,
+                CAST(NULL AS nvarchar(32)) AS rtu_number,
+                CAST(NULL AS datetime) AS rtu_date,
                 LTRIM(RTRIM(ord._Number)) AS onec_order_number,
                 NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
-                CASE WHEN rtu._Posted = 0x01 THEN 1 ELSE 0 END AS is_posted,
+                CASE WHEN ord._Posted = 0x01 THEN 1 ELSE 0 END AS is_posted,
                 CAST(NULL AS decimal(18, 2)) AS document_amount
             FROM dbo._InfoRg9448 AS hist WITH (NOLOCK)
-            JOIN dbo._Document203 AS rtu WITH (NOLOCK)
-                ON rtu._IDRRef = hist._Fld9449_RRRef
             JOIN dbo._Document132 AS ord WITH (NOLOCK)
-                ON ord._IDRRef = rtu._Fld4939_RRRef
+                ON ord._IDRRef = hist._Fld9449_RRRef
             WHERE hist._Fld9454 = N'Собран'
-              AND hist._Fld9449_RTRef = 0x000000CB
+              AND hist._Fld9449_RTRef = 0x00000084
               AND hist._Fld9450 >= :since
-              AND rtu._Marked = 0x00
+              AND ord._Marked = 0x00
               AND NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') IS NOT NULL
 
             UNION ALL
@@ -152,6 +156,8 @@ def fetch_assembly_events(
                 'issued-scan:' + CONVERT(varchar(34), scan_event._SimpleKey, 1) AS event_key,
                 'issued' AS crm_status,
                 scan_event._Fld9450 AS event_at,
+                'rtu' AS assembly_source,
+                CONVERT(varchar(34), rtu._IDRRef, 1) AS assembly_ref,
                 CONVERT(varchar(34), rtu._IDRRef, 1) AS rtu_external_id,
                 LTRIM(RTRIM(rtu._Number)) AS rtu_number,
                 rtu._Date_Time AS rtu_date,
@@ -183,6 +189,8 @@ def fetch_assembly_events(
             event_key,
             crm_status,
             event_at,
+            assembly_source,
+            assembly_ref,
             rtu_external_id,
             rtu_number,
             rtu_date,
@@ -234,7 +242,7 @@ def record_processed(
             event.event_key,
             _format_dt(datetime.now()),
             event.site_order_number,
-            event.rtu_number,
+            event.rtu_number or "",
             json.dumps(crm_response, ensure_ascii=False, sort_keys=True),
         ),
     )
@@ -252,8 +260,12 @@ def send_to_crm(
         "token": token,
         "order": event.site_order_number,
         "status": event.crm_status,
-        "rtu": event.rtu_number,
+        "assembly_source": event.assembly_source,
+        "assembly_ref": event.assembly_ref,
+        "idempotency_key": event.event_key,
     }
+    if event.rtu_number:
+        payload["rtu"] = event.rtu_number
     if event.crm_status == "issued":
         payload["issued_at"] = _format_dt(event.event_at)
         if event.document_amount:
@@ -284,7 +296,9 @@ def print_event_result(
         "event_at": _format_dt(event.event_at),
         "site_order": event.site_order_number,
         "onec_order": event.onec_order_number,
-        "rtu": event.rtu_number,
+        "assembly_source": event.assembly_source,
+        "assembly_ref": event.assembly_ref,
+        "rtu": event.rtu_number or "",
         "posted": event.is_posted,
     }
     if crm_response is not None:

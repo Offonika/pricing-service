@@ -1105,7 +1105,7 @@ Legacy-переходы v2 до cutover бота (для `pickup_*` после c
 сохранении персональных уведомлений можно задать
 `ORDER_FULFILLMENT_NOTIFY_SITE_DIALOG_ID=-`.
 
-После отдельного production-cutover штатные quick- и chat-проходы выполняются
+После production-cutover 2026-08-31 штатные quick- и chat-проходы выполняются
 каждые 30 и 60 минут, но
 запускаются с `ORDER_FULFILLMENT_NOTIFY_ENABLED=false` и не отправляют сообщения
 в рабочий чат. Quick запускается в `:25/:55`, кроме часа ночной сверки;
@@ -1425,7 +1425,9 @@ Smoke:
 
 - 2026-08-31 — тяжёлая сверка `EXECUTING` и широкие запросы РТУ вынесены из
   дневного `quick` в отдельный `nightly` с fail-closed окном
-  `00:00–06:00 МСК`; production cutover расписания ещё не выполнялся.
+  `00:00–06:00 МСК`; PR №132 слит, guarded release
+  `ut103-night-heavy-queries-20260831-5dea094` активирован, production-smoke
+  подтвердил отсутствие дневного execution scan и широкого РТУ-запроса.
 
 - 2026-08-29 — для v1 выбран read-only backend-poller вместо обязательной
   доработки production `УТ 10.3`; publisher 1С отложен до следующего этапа,

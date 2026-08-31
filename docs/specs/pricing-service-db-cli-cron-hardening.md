@@ -401,9 +401,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 66. Для `scripts/validate_receivables_release.py` разрешены commit проверенного
     среза, push ветки и создание отдельного PR. Merge и production release требуют
     отдельных подтверждений.
+67. После зелёного CI разрешён merge PR №133. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-08-31 — разрешён merge PR №133; production release оставлен отдельным
+  решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза
   `scripts/validate_receivables_release.py`, push ветки и создание отдельного PR;
   merge и production release оставлены отдельными решениями.

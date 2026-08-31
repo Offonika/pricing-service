@@ -1424,9 +1424,7 @@ def run_quick_sync(
     stage_summary = fetch_stage_summary(client)
     stage_path = output_dir / f"quick-stage-summary-{stamp}.csv"
     write_dict_csv(stage_path, stage_summary)
-    rtu_signal_rows = (
-        query_rtu_without_assembled_for_deals(deals) if include_heavy_onec else []
-    )
+    rtu_signal_rows = query_rtu_without_assembled_for_deals(deals) if include_heavy_onec else []
     rtu_signal_path = output_dir / f"executing-rtu-without-assembled-{stamp}.csv"
     write_dict_csv(rtu_signal_path, rtu_signal_rows, fieldnames=list(RTU_SIGNAL_CSV_FIELDS))
     monitoring_rows = build_operational_monitoring_rows(
@@ -3896,8 +3894,7 @@ def require_nightly_heavy_window(current_dt: datetime | None = None) -> None:
     if nightly_heavy_window_is_open(current_dt):
         return
     raise SystemExit(
-        "ORDER_FULFILLMENT_SYNC_MODE=nightly is allowed only from 00:00 to 06:00 "
-        "Europe/Moscow"
+        "ORDER_FULFILLMENT_SYNC_MODE=nightly is allowed only from 00:00 to 06:00 " "Europe/Moscow"
     )
 
 

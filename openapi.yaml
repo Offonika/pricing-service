@@ -2858,6 +2858,147 @@ paths:
                 $ref: '#/components/schemas/BitrixLogisticsBootstrapResponse'
       security:
       - HTTPBearer: []
+  /api/bitrix/logistics/customer-returns:
+    post:
+      summary: Register Bitrix Customer Return
+      operationId: register_bitrix_customer_return_api_bitrix_logistics_customer_returns_post
+      security:
+      - HTTPBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCustomerReturnCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnRegistrationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: List Bitrix Customer Returns
+      operationId: list_bitrix_customer_returns_api_bitrix_logistics_customer_returns_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: carrier
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - russian_post
+            - cdek
+            type: string
+          - type: 'null'
+          title: Carrier
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - registered
+            - in_transit
+            - arrived_at_pickup_point
+            - picked_up
+            - onec_return_confirmed
+            - cancelled
+            - exception
+            type: string
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CustomerReturnShipmentResponse'
+                title: Response List Bitrix Customer Returns Api Bitrix Logistics Customer Returns Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-returns/{shipment_id}:
+    get:
+      summary: Get Bitrix Customer Return
+      operationId: get_bitrix_customer_return_api_bitrix_logistics_customer_returns__shipment_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-returns/{shipment_id}/pickup:
+    post:
+      summary: Confirm Bitrix Customer Return Pickup
+      operationId: confirm_bitrix_customer_return_pickup_api_bitrix_logistics_customer_returns__shipment_id__pickup_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCustomerReturnPickupRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/handoffs/draft:
     post:
       summary: Create Handoff Draft
@@ -6049,6 +6190,273 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeQualityMetricsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns:
+    post:
+      summary: Register Customer Return
+      operationId: register_customer_return_api_customer_returns_post
+      security:
+      - HTTPBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnRegistrationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: List Customer Returns
+      operationId: list_customer_returns_api_customer_returns_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: carrier
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Carrier
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CustomerReturnShipmentResponse'
+                title: Response List Customer Returns Api Customer Returns Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/actions/due:
+    get:
+      summary: List Due Customer Return Actions
+      operationId: list_due_customer_return_actions_api_customer_returns_actions_due_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: as_of
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          title: As Of
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CustomerReturnActionResponse'
+                title: Response List Due Customer Return Actions Api Customer Returns Actions Due Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/actions/{action_id}/complete:
+    post:
+      summary: Complete Customer Return Action
+      operationId: complete_customer_return_action_api_customer_returns_actions__action_id__complete_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: action_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Action Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnActionCompleteRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnActionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/{shipment_id}:
+    get:
+      summary: Get Customer Return
+      operationId: get_customer_return_api_customer_returns__shipment_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/{shipment_id}/carrier-events:
+    post:
+      summary: Ingest Customer Return Carrier Event
+      operationId: ingest_customer_return_carrier_event_api_customer_returns__shipment_id__carrier_events_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnCarrierEventRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/{shipment_id}/pickup:
+    post:
+      summary: Confirm Customer Return Pickup
+      operationId: confirm_customer_return_pickup_api_customer_returns__shipment_id__pickup_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnPickupRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-returns/{shipment_id}/onec-confirmation:
+    post:
+      summary: Confirm Customer Return In Onec
+      operationId: confirm_customer_return_in_onec_api_customer_returns__shipment_id__onec_confirmation_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerReturnOneCConfirmationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
         '422':
           description: Validation Error
           content:
@@ -12374,6 +12782,71 @@ components:
       - message_id
       - parse_status
       title: BitrixChatMessageIngestResponse
+    BitrixCustomerReturnCreateRequest:
+      properties:
+        carrier:
+          type: string
+          enum:
+          - russian_post
+          - cdek
+          title: Carrier
+        tracking_number:
+          type: string
+          maxLength: 64
+          minLength: 5
+          title: Tracking Number
+        source_ref:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Source Ref
+        bitrix_case_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Bitrix Case Id
+        site_ticket_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Site Ticket Id
+        onec_order_ref:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Onec Order Ref
+      additionalProperties: false
+      type: object
+      required:
+      - carrier
+      - tracking_number
+      title: BitrixCustomerReturnCreateRequest
+    BitrixCustomerReturnPickupRequest:
+      properties:
+        idempotency_key:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Idempotency Key
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Comment
+      additionalProperties: false
+      type: object
+      title: BitrixCustomerReturnPickupRequest
     BitrixExecutiveDashboardSessionRequest:
       properties:
         access_token:
@@ -16936,6 +17409,597 @@ components:
       - ruleset_version
       - source_status
       title: CustomerPriceTypeWorklistsResponse
+    CustomerReturnActionCompleteRequest:
+      properties:
+        external_reference:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: External Reference
+        completed_at:
+          type: string
+          format: date-time
+          title: Completed At
+      type: object
+      required:
+      - external_reference
+      title: CustomerReturnActionCompleteRequest
+    CustomerReturnActionResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        shipment_id:
+          type: integer
+          title: Shipment Id
+        action_type:
+          type: string
+          title: Action Type
+        status:
+          type: string
+          title: Status
+        due_at:
+          type: string
+          format: date-time
+          title: Due At
+        next_attempt_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Attempt At
+        leased_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Leased Until
+        external_reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Reference
+        attempt_count:
+          type: integer
+          title: Attempt Count
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - shipment_id
+      - action_type
+      - status
+      - due_at
+      - attempt_count
+      - created_at
+      - updated_at
+      title: CustomerReturnActionResponse
+    CustomerReturnCarrierEventRequest:
+      properties:
+        status_code:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Status Code
+        status_text:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Status Text
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        external_event_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: External Event Id
+        idempotency_key:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Idempotency Key
+        storage_deadline_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Storage Deadline At
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - status_code
+      title: CustomerReturnCarrierEventRequest
+    CustomerReturnCreateRequest:
+      properties:
+        carrier:
+          type: string
+          enum:
+          - russian_post
+          - cdek
+          title: Carrier
+        tracking_number:
+          type: string
+          maxLength: 64
+          minLength: 5
+          title: Tracking Number
+        source:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Source
+          default: manual
+        source_ref:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Source Ref
+        bitrix_case_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Bitrix Case Id
+        site_ticket_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Site Ticket Id
+        onec_order_ref:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Onec Order Ref
+        created_by_bitrix_user_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+            minLength: 1
+          - type: 'null'
+          title: Created By Bitrix User Id
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - carrier
+      - tracking_number
+      title: CustomerReturnCreateRequest
+    CustomerReturnDetailResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        carrier:
+          type: string
+          title: Carrier
+        tracking_number:
+          type: string
+          title: Tracking Number
+        status:
+          type: string
+          enum:
+          - registered
+          - in_transit
+          - arrived_at_pickup_point
+          - picked_up
+          - onec_return_confirmed
+          - cancelled
+          - exception
+          title: Status
+        status_changed_at:
+          type: string
+          format: date-time
+          title: Status Changed At
+        source:
+          type: string
+          title: Source
+        source_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref
+        bitrix_case_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Case Id
+        site_ticket_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Ticket Id
+        onec_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Ref
+        onec_return_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Return Ref
+        created_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By Bitrix User Id
+        picked_up_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Picked Up By Bitrix User Id
+        carrier_last_status_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Last Status Code
+        carrier_last_status_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Last Status Text
+        carrier_last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Carrier Last Event At
+        storage_deadline_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Storage Deadline At
+        arrived_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Arrived At
+        picked_up_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Picked Up At
+        onec_return_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Onec Return Confirmed At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        events:
+          items:
+            $ref: '#/components/schemas/CustomerReturnEventResponse'
+          type: array
+          title: Events
+        actions:
+          items:
+            $ref: '#/components/schemas/CustomerReturnActionResponse'
+          type: array
+          title: Actions
+      type: object
+      required:
+      - id
+      - carrier
+      - tracking_number
+      - status
+      - status_changed_at
+      - source
+      - created_at
+      - updated_at
+      - events
+      - actions
+      title: CustomerReturnDetailResponse
+    CustomerReturnEventIngestResponse:
+      properties:
+        event_created:
+          type: boolean
+          title: Event Created
+        shipment:
+          $ref: '#/components/schemas/CustomerReturnDetailResponse'
+      type: object
+      required:
+      - event_created
+      - shipment
+      title: CustomerReturnEventIngestResponse
+    CustomerReturnEventResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        event_type:
+          type: string
+          title: Event Type
+        source:
+          type: string
+          title: Source
+        normalized_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Normalized Status
+        carrier_status_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Status Code
+        carrier_status_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Status Text
+        external_event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Event Id
+        actor_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Bitrix User Id
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - event_type
+      - source
+      - occurred_at
+      - created_at
+      title: CustomerReturnEventResponse
+    CustomerReturnOneCConfirmationRequest:
+      properties:
+        onec_return_ref:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Onec Return Ref
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        idempotency_key:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      required:
+      - onec_return_ref
+      title: CustomerReturnOneCConfirmationRequest
+    CustomerReturnPickupRequest:
+      properties:
+        actor_bitrix_user_id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Actor Bitrix User Id
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        idempotency_key:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Idempotency Key
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Comment
+      type: object
+      required:
+      - actor_bitrix_user_id
+      title: CustomerReturnPickupRequest
+    CustomerReturnRegistrationResponse:
+      properties:
+        created:
+          type: boolean
+          title: Created
+        shipment:
+          $ref: '#/components/schemas/CustomerReturnDetailResponse'
+      type: object
+      required:
+      - created
+      - shipment
+      title: CustomerReturnRegistrationResponse
+    CustomerReturnShipmentResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        carrier:
+          type: string
+          title: Carrier
+        tracking_number:
+          type: string
+          title: Tracking Number
+        status:
+          type: string
+          enum:
+          - registered
+          - in_transit
+          - arrived_at_pickup_point
+          - picked_up
+          - onec_return_confirmed
+          - cancelled
+          - exception
+          title: Status
+        status_changed_at:
+          type: string
+          format: date-time
+          title: Status Changed At
+        source:
+          type: string
+          title: Source
+        source_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref
+        bitrix_case_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Case Id
+        site_ticket_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Ticket Id
+        onec_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Ref
+        onec_return_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Return Ref
+        created_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Created By Bitrix User Id
+        picked_up_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Picked Up By Bitrix User Id
+        carrier_last_status_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Last Status Code
+        carrier_last_status_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Last Status Text
+        carrier_last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Carrier Last Event At
+        storage_deadline_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Storage Deadline At
+        arrived_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Arrived At
+        picked_up_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Picked Up At
+        onec_return_confirmed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Onec Return Confirmed At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - carrier
+      - tracking_number
+      - status
+      - status_changed_at
+      - source
+      - created_at
+      - updated_at
+      title: CustomerReturnShipmentResponse
     CustomerSettlementEligibilityResponse:
       properties:
         status:

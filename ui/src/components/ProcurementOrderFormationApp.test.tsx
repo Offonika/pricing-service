@@ -94,7 +94,9 @@ async function proposeClassification() {
 
 async function proposePension() {
   fireEvent.click(screen.getByRole("button", { name: "Изменить классификацию" }));
-  fireEvent.change(screen.getByRole("combobox"), { target: { value: "pension" } });
+  fireEvent.change(screen.getByRole("combobox", {
+    name: "Новая классификация Дисплей для Huawei P10 Lite",
+  }), { target: { value: "pension" } });
   fireEvent.change(screen.getByPlaceholderText("Обязательная причина"), {
     target: { value: "ведём аналог дешевле" },
   });
@@ -306,7 +308,9 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
 
     fireEvent.click(screen.getByRole("button", { name: "Указать «Взамен ведём»" }));
 
-    expect(screen.getByRole("combobox")).toHaveValue("replace_candidate");
+    expect(screen.getByRole("combobox", {
+      name: "Новая классификация Дисплей для Huawei P10 Lite",
+    })).toHaveValue("replace_candidate");
     expect(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)")).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "Ручной минимум Дисплей для Huawei P10 Lite" }))
       .toHaveAttribute("step", "1");

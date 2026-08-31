@@ -286,7 +286,9 @@ Web Fallback UI
 - `telegram_user_id`
 - `username`
 - `full_name`
-- `role` (`sender`, `receiver`, `logist`, `admin`)
+- `role` (`sender`, `receiver`, `logist`, `returns`, `admin`); роль `returns`
+  использует ту же Bitrix24 session-auth схему для входящих клиентских возвратов,
+  не требует склада и не даёт доступ к операциям внутренних перемещений;
 - `default_warehouse_id`
 - `is_active`
 - `created_at`

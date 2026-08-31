@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { initializeBitrixLogisticsSession } from "./api/bitrix";
-import { BitrixLogisticsApp } from "./App";
+import { BitrixLogisticsApp } from "./BitrixLogisticsApp";
 
 vi.mock("./api/bitrix", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/bitrix")>();

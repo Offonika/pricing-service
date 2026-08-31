@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.customer_returns import CustomerReturnCarrier
 from app.schemas.logistics import (
     LogisticsDraftResponse,
     LogisticsDriverResponse,
@@ -32,6 +33,24 @@ class BitrixLogisticsBootstrapResponse(BaseModel):
     drivers: list[LogisticsDriverResponse]
     capabilities: list[str]
     open_draft: LogisticsDraftResponse | None = None
+
+
+class BitrixCustomerReturnCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    carrier: CustomerReturnCarrier
+    tracking_number: str = Field(min_length=5, max_length=64)
+    source_ref: str | None = Field(default=None, min_length=1, max_length=128)
+    bitrix_case_id: str | None = Field(default=None, min_length=1, max_length=64)
+    site_ticket_id: str | None = Field(default=None, min_length=1, max_length=64)
+    onec_order_ref: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class BitrixCustomerReturnPickupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class BitrixLogisticsManualReviewItem(BaseModel):

@@ -37,6 +37,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
+    from app.models.customer_return import (
+        CustomerReturnAction,
+        CustomerReturnEvent,
+        CustomerReturnShipment,
+    )
     from app.models.customer_settlement import (
         CustomerAccount,
         CustomerAccountSiteBinding,
@@ -230,6 +235,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CustomerPriceTypeQualitySample",
         "CustomerPriceTypeReviewBatch",
         "CustomerPriceTypeReviewBatchItem",
+        "CustomerReturnShipment",
+        "CustomerReturnEvent",
+        "CustomerReturnAction",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",

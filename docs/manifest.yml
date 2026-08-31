@@ -546,6 +546,16 @@ documents:
     related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
     related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
     keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
+  - path: docs/specs/customer-return-carrier-control.md
+    title: Customer Return Carrier Control
+    doc_type: spec
+    domain: customer-return-logistics
+    status: implemented
+    owner: engineering-and-online-sales
+    source_of_truth: true
+    related_code: [app/api/bitrix_logistics.py, app/api/customer_returns.py, app/models/customer_return.py, app/schemas/bitrix_logistics.py, app/schemas/customer_returns.py, app/services/customer_return_bitrix.py, app/services/customer_returns.py, app/services/customer_return_carriers.py, tasks/customer_return_bitrix_worker.py, ui/src/App.css, ui/src/components/CustomerReturnsWorkspace.tsx, ui/src/components/LogisticsWorkspace.tsx]
+    related_tests: [tests/test_bitrix_customer_returns.py, tests/test_bitrix_logistics.py, tests/test_customer_return_bitrix_worker.py, tests/test_customer_returns_api.py, tests/test_customer_return_carriers.py, tests/test_customer_returns_migration.py, ui/src/components/CustomerReturnsWorkspace.test.tsx, ui/src/components/LogisticsWorkspace.test.tsx]
+    keywords: [customer-return, inbound-return, carrier, tracking, russian-post, cdek, yandex-delivery, bitrix24, onec, task-3507, возврат, трек, перевозчик]
   - path: docs/specs/transfer-assistant-readonly-v1.md
     title: Transfer Assistant Readonly V1
     doc_type: spec

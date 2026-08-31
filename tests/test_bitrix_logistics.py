@@ -499,6 +499,7 @@ def test_admin_can_handoff_and_receive_at_selected_warehouses(
             "monitor",
             "history",
             "errors",
+            "customer_returns",
         ]
         assert {warehouse["external_id"] for warehouse in bootstrap.json()["warehouses"]} == {
             "central",

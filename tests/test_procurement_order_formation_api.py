@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
+import app.api.procurement_order_formation as api_module
+from app.api.procurement_order_formation import _content_disposition
 from app.core.config import Settings
 from app.main import app
 from app.schemas.procurement_order_formation import (
     ProcurementLifecycleTransitionApprovalRequest,
+    ProcurementOrderLabelSourceLinkRequest,
 )
 from app.services.bitrix_procurement_labels_auth import (
     create_procurement_labels_session_token,
 )
 from app.services.bitrix_procurement_order_formation_auth import (
+    ProcurementOrderFormationSession,
     create_procurement_order_formation_session_token,
     verify_procurement_order_formation_session_token,
 )
@@ -94,9 +101,106 @@ def test_order_excel_export_is_exposed_as_xlsx() -> None:
 def test_order_label_exports_are_exposed_in_existing_order_application() -> None:
     paths = app.openapi()["paths"]
 
+    assert "/api/procurement-order-formation/orders/{order_id}/labels/source" in paths
     assert "/api/procurement-order-formation/orders/{order_id}/labels/preview" in paths
     assert "/api/procurement-order-formation/orders/{order_id}/labels.pdf" in paths
     assert "/api/procurement-order-formation/orders/{order_id}/labels.xlsx" in paths
+    pdf_parameters = paths["/api/procurement-order-formation/orders/{order_id}/labels.pdf"]["get"][
+        "parameters"
+    ]
+    checksum = next(item for item in pdf_parameters if item["name"] == "source_checksum")
+    assert checksum["required"] is True
+
+
+def test_order_label_content_disposition_supports_russian_onec_number() -> None:
+    disposition = _content_disposition(
+        order_id=14,
+        onec_number="РБГУ0000543",
+        size="50x40",
+        format_="pdf",
+    )
+
+    disposition.encode("latin-1")
+    assert 'filename="supplier-order-14-labels-50x40.pdf"' in disposition
+    assert "filename*=UTF-8''supplier-order-%D0%A0%D0%91%D0%93%D0%A3" in disposition
+
+
+def test_manual_label_source_endpoint_commits_audit_event(monkeypatch) -> None:
+    class FakeDb:
+        committed = False
+        rolled_back = False
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def rollback(self) -> None:
+            self.rolled_back = True
+
+    db = FakeDb()
+    recorded: dict = {}
+    source = {
+        "origin": "manual",
+        "onec_number": "РБГУ0000543",
+        "onec_date": date(2026, 8, 3),
+        "linked_at": datetime(2026, 8, 31, 12, 0),
+    }
+    preview = {
+        "order_id": 14,
+        "onec_number": "РБГУ0000543",
+        "onec_date": date(2026, 8, 3),
+        "label_size": "50x40",
+        "source_checksum": "a" * 64,
+        "max_page_count": 1000,
+        "position_count": 1,
+        "product_label_count": 1,
+        "separator_count": 0,
+        "total_page_count": 1,
+        "ready": True,
+        "blockers": [],
+        "rows": [
+            {
+                "line_no": 1,
+                "onec_item_code": "062852",
+                "item_name": "Дисплей",
+                "article_1c": "062852",
+                "barcode": "2900000636873",
+                "quantity": 1,
+            }
+        ],
+    }
+    monkeypatch.setattr(api_module, "get_order", lambda _db, order_id: SimpleNamespace(id=order_id))
+    monkeypatch.setattr(api_module, "serialize_order_label_source", lambda _order: None)
+    monkeypatch.setattr(
+        api_module,
+        "link_order_label_source",
+        lambda *_args, **_kwargs: (source, preview),
+    )
+    monkeypatch.setattr(
+        api_module,
+        "record_event",
+        lambda *_args, **kwargs: recorded.update(kwargs),
+    )
+    session = ProcurementOrderFormationSession(
+        actor="bitrix:member:115204",
+        domain="crm.example.test",
+        member_id="member-1",
+        user_id="115204",
+        expires_at=datetime.now(UTC),
+        user_name="Арсений",
+    )
+
+    result = api_module.attach_order_label_source(
+        14,
+        ProcurementOrderLabelSourceLinkRequest(onec_number="РБГУ0000543", label_size="50x40"),
+        db,
+        session,
+    )
+
+    assert db.committed is True
+    assert db.rolled_back is False
+    assert recorded["event_type"] == "label_source_linked"
+    assert recorded["after"] == source
+    assert result.preview.source_checksum == "a" * 64
 
 
 def test_lifecycle_approval_schema_limits_batch_to_100() -> None:

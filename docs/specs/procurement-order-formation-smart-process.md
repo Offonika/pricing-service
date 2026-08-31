@@ -28,6 +28,7 @@ related_code:
   - tasks/build_display_auto_order_dry_run.py
   - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
   - tasks/sync_procurement_order_formation_results.py
+  - tasks/reconcile_procurement_order_missing_number.py
   - tasks/export_manual_status_overrides.py
   - tasks/export_management_marks.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
@@ -46,6 +47,7 @@ related_tests:
   - tests/test_procurement_order_metrics_backfill.py
   - tests/test_procurement_order_product_media.py
   - tests/test_procurement_order_labels.py
+  - tests/test_reconcile_procurement_order_missing_number_task.py
   - tests/test_procurement_supplier_profiles.py
 contracts:
   - openapi.yaml
@@ -115,6 +117,10 @@ updated_at: "2026-08-31"
   Поддерживаются размеры `50×40` и `40×30` мм и форматы PDF/XLSX; каждая
   товарная этикетка повторяется по целому количеству строки, между позициями
   вставляется одна пустая этикетка, после последней позиции разделителя нет.
+- **Решение `2026-08-31`:** ошибки массовых этикеток исправляются одним
+  stabilization-релизом; существующий заказ 1С подключается к карточке через
+  отдельную read-only привязку; внутри этикетки печатается
+  `ДД.ММ.ГГ/последние четыре цифры номера`.
 - `BitrixItemUrl` в пакете 1С необязателен для проектов OAuth-приложения без
   legacy-карточки; контроль подтверждения сохраняют обязательные
   `ConfirmationId`, `CalculationId` и `ApprovedBy`.
@@ -1135,6 +1141,8 @@ cd ui && npm run lint && npm run build
 - 2026-08-31 — возвраты качества `Новый` с ответственным из группы `Сайт`
   исключены из `batch_error_suspected`; общий возврат и подтверждённый брак не
   изменяются, ложные блокеры снимаются только полным штатным пересчётом.
+- 2026-08-31 — утверждены единый stabilization-релиз, read-only привязка
+  существующих заказов 1С и макет номера/даты по образцу.
 
 # Acceptance Criteria
 

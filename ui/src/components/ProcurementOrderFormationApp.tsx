@@ -7,6 +7,7 @@ import {
   downloadProcurementOrderLabels,
   fetchProcurementOrderLabelPreview,
   fetchProcurementOrder,
+  linkProcurementOrderLabelSource,
   previewProcurementSupplierDistribution,
   searchProcurementSupplierOptions,
   selectProcurementLineMainSupplier,
@@ -266,6 +267,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const [distributionPreview, setDistributionPreview] = useState<ProcurementSupplierDistributionPreview | null>(null);
   const [labelSize, setLabelSize] = useState<"50x40" | "40x30">("50x40");
   const [labelPreview, setLabelPreview] = useState<ProcurementOrderLabelPreview | null>(null);
+  const [labelOnecNumber, setLabelOnecNumber] = useState(
+    initialOrder.label_source?.onec_number || initialOrder.onec_document_number || ""
+  );
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
   const removalDialogRef = useRef<HTMLDivElement | null>(null);
   const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
@@ -607,20 +611,43 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     }
   };
 
+  const attachLabelSource = async () => {
+    const onecNumber = labelOnecNumber.trim();
+    if (!onecNumber) return;
+    setLoadingKey("labels-source");
+    try {
+      const result = await linkProcurementOrderLabelSource(order.id, onecNumber, labelSize);
+      setOrder((current) => ({ ...current, label_source: result.label_source }));
+      setLabelOnecNumber(result.label_source.onec_number);
+      setLabelPreview(result.preview);
+      toast.success(`Заказ 1С ${result.label_source.onec_number} подключён и проверен`);
+    } catch (error: unknown) {
+      setLabelPreview(null);
+      toast.error(errorText(error));
+    } finally {
+      setLoadingKey("");
+    }
+  };
+
   const downloadLabels = async (format: "pdf" | "xlsx") => {
     setLoadingKey(`labels-${format}`);
     try {
       const { blob, filename } = await downloadProcurementOrderLabels(
         order.id,
         labelSize,
-        format
+        format,
+        labelPreview?.source_checksum || ""
       );
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(url);
+      }, 1000);
       toast.success(`${format.toUpperCase()} сформирован`);
     } catch (error: unknown) {
       toast.error(errorText(error));
@@ -628,6 +655,137 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       setLoadingKey("");
     }
   };
+
+  const labelSource = order.label_source || (order.onec_document_number
+    ? {
+        origin: "exchange" as const,
+        onec_number: order.onec_document_number,
+        onec_date: null,
+        linked_at: null,
+      }
+    : null);
+  const canAttachLabelSource = labelSource?.origin !== "exchange";
+  const labelsSection = (
+    <section className="order-formation__labels" aria-label="Массовые этикетки">
+      <div className="order-formation__labels-heading">
+        <strong>Этикетки поставщику</strong>
+        <span>
+          {labelSource
+            ? `Заказ 1С: ${labelSource.onec_number}${labelSource.onec_date ? ` от ${labelSource.onec_date}` : ""}`
+            : "Подключите существующий заказ 1С или создайте черновик из приложения"}
+        </span>
+      </div>
+      {canAttachLabelSource && (
+        <form
+          className="order-formation__labels-source"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void attachLabelSource();
+          }}
+        >
+          <label>
+            Полный номер заказа 1С
+            <input
+              aria-label="Полный номер заказа 1С для этикеток"
+              disabled={Boolean(loadingKey)}
+              onChange={(event) => {
+                setLabelOnecNumber(event.target.value);
+                setLabelPreview(null);
+              }}
+              placeholder="РБГУ0000543"
+              value={labelOnecNumber}
+            />
+          </label>
+          <button
+            className="btn btn--ghost"
+            disabled={!labelOnecNumber.trim() || Boolean(loadingKey)}
+            type="submit"
+          >
+            {loadingKey === "labels-source"
+              ? "Подключаем..."
+              : labelSource
+                ? "Перепривязать и проверить"
+                : "Подключить и проверить"}
+          </button>
+        </form>
+      )}
+      <label>
+        Размер
+        <select
+          aria-label="Размер этикетки"
+          disabled={Boolean(loadingKey)}
+          onChange={(event) => {
+            setLabelSize(event.target.value as "50x40" | "40x30");
+            setLabelPreview(null);
+          }}
+          value={labelSize}
+        >
+          <option value="50x40">50×40 мм</option>
+          <option value="40x30">40×30 мм</option>
+        </select>
+      </label>
+      <button
+        className="btn btn--ghost"
+        disabled={!labelSource || Boolean(loadingKey)}
+        onClick={() => void previewLabels()}
+        type="button"
+      >
+        {loadingKey === "labels-preview" ? "Проверяем..." : "Проверить количество"}
+      </button>
+      {labelPreview && (
+        <div className="order-formation__labels-summary">
+          <span>Позиций: <strong>{labelPreview.position_count}</strong></span>
+          <span>Этикеток: <strong>{labelPreview.product_label_count}</strong></span>
+          <span>Разделителей: <strong>{labelPreview.separator_count}</strong></span>
+          <span>
+            Страниц: <strong>{labelPreview.total_page_count} / {labelPreview.max_page_count}</strong>
+          </span>
+        </div>
+      )}
+      {labelPreview?.blockers.length ? (
+        <ul className="order-formation__labels-errors">
+          {labelPreview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+        </ul>
+      ) : null}
+      {labelPreview?.rows.length ? (
+        <details className="order-formation__labels-rows">
+          <summary>Состав этикеток по позициям</summary>
+          <div>
+            <table>
+              <thead><tr><th>Строка</th><th>Товар</th><th>Количество</th></tr></thead>
+              <tbody>
+                {labelPreview.rows.map((row) => (
+                  <tr key={`${row.line_no}-${row.onec_item_code}`}>
+                    <td>{row.line_no}</td>
+                    <td><strong>{row.onec_item_code}</strong> · {row.item_name}</td>
+                    <td>{row.quantity}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      ) : null}
+      <div className="order-formation__labels-actions">
+        <button
+          className="btn"
+          disabled={!labelPreview?.ready || Boolean(loadingKey)}
+          onClick={() => void downloadLabels("pdf")}
+          type="button"
+        >
+          {loadingKey === "labels-pdf" ? "Формируем..." : "Скачать PDF"}
+        </button>
+        <button
+          className="btn btn--ghost"
+          disabled={!labelPreview?.ready || Boolean(loadingKey)}
+          onClick={() => void downloadLabels("xlsx")}
+          type="button"
+        >
+          {loadingKey === "labels-xlsx" ? "Формируем..." : "Скачать XLSX"}
+        </button>
+      </div>
+    </section>
+  );
 
   return (
     <div className="app order-formation">
@@ -650,6 +808,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         <div><span>Партия</span><strong>{order.batch_id}</strong></div>
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
+
+      {labelsSection}
 
       {supplierReviewRoom && !locked && (
         <section className="order-formation__supplier-room">
@@ -1188,68 +1348,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
           </div>
         </div>
       )}
-
-      <section className="order-formation__labels" aria-label="Массовые этикетки">
-        <div>
-          <strong>Этикетки поставщику</strong>
-          <span>
-            {order.onec_document_number
-              ? `Заказ 1С: ${order.onec_document_number}`
-              : "Доступно после получения номера черновика из 1С"}
-          </span>
-        </div>
-        <label>
-          Размер
-          <select
-            disabled={Boolean(loadingKey)}
-            onChange={(event) => {
-              setLabelSize(event.target.value as "50x40" | "40x30");
-              setLabelPreview(null);
-            }}
-            value={labelSize}
-          >
-            <option value="50x40">50×40 мм</option>
-            <option value="40x30">40×30 мм</option>
-          </select>
-        </label>
-        <button
-          className="btn btn--ghost"
-          disabled={!order.onec_document_number || Boolean(loadingKey)}
-          onClick={() => void previewLabels()}
-          type="button"
-        >
-          {loadingKey === "labels-preview" ? "Проверяем..." : "Проверить количество"}
-        </button>
-        {labelPreview && (
-          <div className="order-formation__labels-summary">
-            <span>Позиций: <strong>{labelPreview.position_count}</strong></span>
-            <span>Этикеток: <strong>{labelPreview.product_label_count}</strong></span>
-            <span>Разделителей: <strong>{labelPreview.separator_count}</strong></span>
-            <span>Итого: <strong>{labelPreview.total_page_count}</strong></span>
-          </div>
-        )}
-        {labelPreview?.blockers.length ? (
-          <div className="order-formation__labels-errors">{labelPreview.blockers.join("; ")}</div>
-        ) : null}
-        <div className="order-formation__labels-actions">
-          <button
-            className="btn"
-            disabled={!labelPreview?.ready || Boolean(loadingKey)}
-            onClick={() => void downloadLabels("pdf")}
-            type="button"
-          >
-            {loadingKey === "labels-pdf" ? "Формируем..." : "Скачать PDF"}
-          </button>
-          <button
-            className="btn btn--ghost"
-            disabled={!labelPreview?.ready || Boolean(loadingKey)}
-            onClick={() => void downloadLabels("xlsx")}
-            type="button"
-          >
-            {loadingKey === "labels-xlsx" ? "Формируем..." : "Скачать XLSX"}
-          </button>
-        </div>
-      </section>
 
       <footer className="order-formation__footer">
         <span>{countLabel(activeLines.length, "строка", "строки", "строк")}</span>

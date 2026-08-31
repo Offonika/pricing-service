@@ -87,6 +87,9 @@ STATUS_APPROVED_BY_PROPERTY_NAME = "Утвердил статус ассорти
 MANUAL_MINIMUM_PROPERTY_NAME = "Ручной минимальный остаток"
 REVIEW_DATE_PROPERTY_NAME = "Дата пересмотра правила наличия"
 PROPERTY_UPDATE_SOURCE = "pricing-service:procurement-order-formation"
+MISSING_ONEC_DOCUMENT_NUMBER_ERROR = (
+    "1С подтвердила обработку, но не вернула номер документа; требуется reconciliation"
+)
 
 
 class VersionConflictError(ValueError):
@@ -456,6 +459,7 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "onec_document_number": order.onec_document_number,
         "onec_document_date": order.onec_document_date,
         "onec_error": order.onec_error,
+        "label_source": serialize_order_label_source(order),
         "blockers": order_blockers(order),
         "blocker_details": order_blocker_details(order),
         "total_amount": total_amount,
@@ -463,6 +467,26 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "manual_status_options": manual_status_screen_options(),
         "supplier_profile": supplier_profile(order),
     }
+
+
+def serialize_order_label_source(order: ProcurementOrderFormation) -> dict[str, Any] | None:
+    exchange_number = str(order.onec_document_number or "").strip()
+    if exchange_number:
+        return {
+            "origin": "exchange",
+            "onec_number": exchange_number,
+            "onec_date": order.onec_document_date,
+            "linked_at": None,
+        }
+    manual_number = str(order.label_onec_document_number or "").strip()
+    if manual_number:
+        return {
+            "origin": "manual",
+            "onec_number": manual_number,
+            "onec_date": order.label_onec_document_date,
+            "linked_at": order.label_source_linked_at,
+        }
+    return None
 
 
 def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
@@ -1100,21 +1124,71 @@ def record_order_exchange_result(
     if order is None:
         return None
     item = result.item_results[0] if result.item_results else None
-    if result.ok and item is not None:
+    document_number = str(item.onec_document_number or "").strip() if item else ""
+    document_date = (
+        date.fromisoformat(item.onec_document_date)
+        if item is not None and item.onec_document_date
+        else None
+    )
+    if result.ok and item is not None and document_number:
         order.status = "transmitted"
         order.onec_status = "transmitted"
         order.onec_document_ref = item.onec_document_ref or None
-        order.onec_document_number = item.onec_document_number or None
-        order.onec_document_date = (
-            date.fromisoformat(item.onec_document_date) if item.onec_document_date else None
-        )
+        order.onec_document_number = document_number
+        order.onec_document_date = document_date
         order.onec_error = None
     else:
         order.status = "error"
         order.onec_status = "error"
-        order.onec_error = result.errors or (item.message if item else "1C transfer failed")
+        if item is not None:
+            order.onec_document_ref = item.onec_document_ref or None
+            order.onec_document_date = document_date
+        order.onec_document_number = None
+        if result.ok and item is not None and not document_number:
+            order.onec_error = MISSING_ONEC_DOCUMENT_NUMBER_ERROR
+        else:
+            order.onec_error = result.errors or (item.message if item else "1C transfer failed")
     db.commit()
     return get_order(db, order.id)
+
+
+def mark_transmitted_order_for_number_reconciliation(
+    db: Session, order_id: int
+) -> tuple[ProcurementOrderFormation, dict[str, Any], dict[str, Any], bool]:
+    order = get_order(db, order_id)
+    if str(order.onec_document_number or "").strip():
+        raise ValueError("У заказа уже заполнен номер документа 1С")
+    if (
+        order.status == "error"
+        and order.onec_status == "error"
+        and order.onec_error == MISSING_ONEC_DOCUMENT_NUMBER_ERROR
+    ):
+        state = {
+            "status": order.status,
+            "onec_status": order.onec_status,
+            "onec_document_number": order.onec_document_number,
+            "onec_error": order.onec_error,
+        }
+        return order, state, state, False
+    if order.status != "transmitted" and order.onec_status != "transmitted":
+        raise ValueError("Заказ не находится в ошибочном статусе transmitted без номера")
+    before = {
+        "status": order.status,
+        "onec_status": order.onec_status,
+        "onec_document_number": order.onec_document_number,
+        "onec_error": order.onec_error,
+    }
+    order.status = "error"
+    order.onec_status = "error"
+    order.onec_error = MISSING_ONEC_DOCUMENT_NUMBER_ERROR
+    db.flush()
+    after = {
+        "status": order.status,
+        "onec_status": order.onec_status,
+        "onec_document_number": order.onec_document_number,
+        "onec_error": order.onec_error,
+    }
+    return order, before, after, True
 
 
 def record_property_update_exchange_result(

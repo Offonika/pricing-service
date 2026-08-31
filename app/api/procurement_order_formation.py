@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,8 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderFormationSessionResponse,
     ProcurementOrderFormationUser,
     ProcurementOrderLabelPreviewRead,
+    ProcurementOrderLabelSourceLinkRequest,
+    ProcurementOrderLabelSourceLinkResponse,
     ProcurementOrderLineUpdateRequest,
     ProcurementOrderListResponse,
     ProcurementOrderTransmissionResponse,
@@ -66,6 +69,7 @@ from app.services.procurement_order_formation import (
     reject_classification_proposal,
     select_line_main_supplier,
     serialize_order,
+    serialize_order_label_source,
     serialize_proposal,
     transmit_order,
     update_order_conditions,
@@ -85,7 +89,10 @@ from app.services.procurement_order_formation_workspace import (
     record_event,
 )
 from app.services.procurement_order_labels import (
+    LabelSourceChangedError,
     build_order_label_preview,
+    ensure_label_source_checksum,
+    link_order_label_source,
 )
 from app.services.procurement_order_labels import (
     build_pdf as build_order_labels_pdf,
@@ -128,7 +135,7 @@ async def bitrix_procurement_order_formation_page(request: Request) -> HTMLRespo
 
 
 def _service_error(exc: Exception) -> HTTPException:
-    if isinstance(exc, VersionConflictError):
+    if isinstance(exc, (VersionConflictError, LabelSourceChangedError)):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, LookupError):
         return HTTPException(status_code=404, detail=str(exc))
@@ -541,25 +548,86 @@ def preview_order_labels(
         raise _service_error(exc) from exc
 
 
-def _order_label_download(order_id: int, size: str, format_: str, db: Session) -> Response:
+@router.put(
+    "/orders/{order_id}/labels/source",
+    response_model=ProcurementOrderLabelSourceLinkResponse,
+)
+def attach_order_label_source(
+    order_id: int,
+    payload: ProcurementOrderLabelSourceLinkRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementOrderLabelSourceLinkResponse:
+    try:
+        order = get_order(db, order_id)
+        before = serialize_order_label_source(order)
+        label_source, preview = link_order_label_source(
+            db,
+            order_id,
+            onec_number=payload.onec_number,
+            label_size=payload.label_size,
+            settings=get_settings(),
+        )
+        record_event(
+            db,
+            entity_type="procurement_order_label_source",
+            entity_id=order_id,
+            event_type="label_source_linked",
+            session=session,
+            order_id=order_id,
+            before=before,
+            after=label_source,
+        )
+        db.commit()
+        return ProcurementOrderLabelSourceLinkResponse.model_validate(
+            {"label_source": label_source, "preview": preview}
+        )
+    except Exception as exc:
+        db.rollback()
+        raise _service_error(exc) from exc
+
+
+def _content_disposition(*, order_id: int, onec_number: str, size: str, format_: str) -> str:
+    fallback = f"supplier-order-{order_id}-labels-{size}.{format_}"
+    unicode_filename = f"supplier-order-{onec_number}-labels-{size}.{format_}"
+    return (
+        f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(unicode_filename, safe="")}'
+    )
+
+
+def _order_label_download(
+    order_id: int,
+    size: str,
+    format_: str,
+    source_checksum: str,
+    db: Session,
+) -> Response:
     preview = build_order_label_preview(db, order_id, label_size=size, settings=get_settings())
+    ensure_label_source_checksum(preview, source_checksum)
     if format_ == "pdf":
         content = build_order_labels_pdf(preview)
         media_type = "application/pdf"
     else:
         content = build_order_labels_xlsx(preview)
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    filename = f"supplier-order-{preview['onec_number']}-labels-{size}.{format_}"
     return Response(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": _content_disposition(
+                order_id=order_id,
+                onec_number=preview["onec_number"],
+                size=size,
+                format_=format_,
+            )
+        },
     )
 
 
 @router.get("/orders/{order_id}/labels.pdf", response_class=Response)
 def download_order_labels_pdf(
     order_id: int,
+    source_checksum: str = Query(min_length=64, max_length=64, pattern="^[0-9a-f]{64}$"),
     size: str = "50x40",
     db: Session = Depends(get_db),
     _session: ProcurementOrderFormationSession = Depends(
@@ -567,7 +635,7 @@ def download_order_labels_pdf(
     ),
 ) -> Response:
     try:
-        return _order_label_download(order_id, size, "pdf", db)
+        return _order_label_download(order_id, size, "pdf", source_checksum, db)
     except Exception as exc:
         raise _service_error(exc) from exc
 
@@ -575,6 +643,7 @@ def download_order_labels_pdf(
 @router.get("/orders/{order_id}/labels.xlsx", response_class=Response)
 def download_order_labels_xlsx(
     order_id: int,
+    source_checksum: str = Query(min_length=64, max_length=64, pattern="^[0-9a-f]{64}$"),
     size: str = "50x40",
     db: Session = Depends(get_db),
     _session: ProcurementOrderFormationSession = Depends(
@@ -582,7 +651,7 @@ def download_order_labels_xlsx(
     ),
 ) -> Response:
     try:
-        return _order_label_download(order_id, size, "xlsx", db)
+        return _order_label_download(order_id, size, "xlsx", source_checksum, db)
     except Exception as exc:
         raise _service_error(exc) from exc
 

@@ -346,6 +346,7 @@ export interface ProcurementOrderFormation {
   onec_status: string;
   onec_document_number?: string | null;
   onec_error?: string | null;
+  label_source?: ProcurementOrderLabelSource | null;
   blockers: string[];
   blocker_details?: ProcurementBlockerDetail[];
   total_amount: string;
@@ -354,16 +355,41 @@ export interface ProcurementOrderFormation {
   supplier_profile?: ProcurementSupplierProfile;
 }
 
+export interface ProcurementOrderLabelSource {
+  origin: "exchange" | "manual";
+  onec_number: string;
+  onec_date?: string | null;
+  linked_at?: string | null;
+}
+
+export interface ProcurementOrderLabelRow {
+  line_no: number;
+  onec_item_code: string;
+  item_name: string;
+  article_1c: string;
+  barcode: string;
+  quantity: number;
+}
+
 export interface ProcurementOrderLabelPreview {
   order_id: number;
   onec_number: string;
+  onec_date: string;
   label_size: "50x40" | "40x30" | string;
+  source_checksum: string;
+  max_page_count: number;
   position_count: number;
   product_label_count: number;
   separator_count: number;
   total_page_count: number;
   ready: boolean;
   blockers: string[];
+  rows: ProcurementOrderLabelRow[];
+}
+
+export interface ProcurementOrderLabelSourceLinkResponse {
+  label_source: ProcurementOrderLabelSource;
+  preview: ProcurementOrderLabelPreview;
 }
 
 export interface ProcurementOrderAssistant {
@@ -597,18 +623,45 @@ export async function fetchProcurementOrderLabelPreview(
   return data;
 }
 
+export async function linkProcurementOrderLabelSource(
+  orderId: number,
+  onecNumber: string,
+  size: "50x40" | "40x30"
+) {
+  const { data } = await api.put<ProcurementOrderLabelSourceLinkResponse>(
+    `/procurement-order-formation/orders/${orderId}/labels/source`,
+    { onec_number: onecNumber, label_size: size }
+  );
+  return data;
+}
+
+export function filenameFromContentDisposition(disposition: string, fallback: string) {
+  const utf8Match = disposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      // Некорректный filename* не должен блокировать скачивание по ASCII fallback.
+    }
+  }
+  return disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallback;
+}
+
 export async function downloadProcurementOrderLabels(
   orderId: number,
   size: "50x40" | "40x30",
-  format: "pdf" | "xlsx"
+  format: "pdf" | "xlsx",
+  sourceChecksum: string
 ) {
   const response = await api.get<Blob>(
     `/procurement-order-formation/orders/${orderId}/labels.${format}`,
-    { params: { size }, responseType: "blob" }
+    { params: { size, source_checksum: sourceChecksum }, responseType: "blob" }
   );
   const disposition = String(response.headers["content-disposition"] || "");
-  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1]
-    || `supplier-order-${orderId}-labels-${size}.${format}`;
+  const filename = filenameFromContentDisposition(
+    disposition,
+    `supplier-order-${orderId}-labels-${size}.${format}`
+  );
   return { blob: response.data, filename };
 }
 

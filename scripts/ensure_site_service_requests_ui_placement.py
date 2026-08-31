@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import get_settings
@@ -10,6 +12,22 @@ from app.services.expertise_bitrix import BitrixRestClient
 
 PLACEMENT = "CRM_DYNAMIC_1134_DETAIL_TAB"
 TITLE = "Переписка с клиентом"
+APP_ACCESS_TOKEN_ENV = "SITE_SERVICE_REQUESTS_UI_BITRIX_APP_ACCESS_TOKEN"
+
+
+class _JsonApi(Protocol):
+    def call_json(self, method: str, payload: dict[str, object]) -> dict[str, object]: ...
+
+
+class _ApplicationApi:
+    def __init__(self, *, portal_domain: str, access_token: str):
+        self._client = BitrixRestClient(f"https://{portal_domain}/rest")
+        self._access_token = access_token
+
+    def call_json(self, method: str, payload: dict[str, object]) -> dict[str, object]:
+        if "auth" in payload:
+            raise RuntimeError("site_service_requests_ui_application_payload_invalid")
+        return self._client.call_json(method, {**payload, "auth": self._access_token})
 
 
 def _normalized_url(value: str) -> str:
@@ -34,7 +52,40 @@ def _normalized_url(value: str) -> str:
     )
 
 
-def _placements(api: BitrixRestClient) -> list[dict[str, object]]:
+def _portal_domain(webhook_url: str) -> str:
+    parsed = urlsplit(webhook_url.strip())
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("site_service_requests_ui_portal_invalid") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("site_service_requests_ui_portal_invalid")
+    try:
+        hostname.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError("site_service_requests_ui_portal_invalid") from exc
+    return hostname.lower()
+
+
+def _application_api(*, webhook_url: str, access_token: str) -> _JsonApi:
+    if not access_token or access_token != access_token.strip():
+        raise RuntimeError("site_service_requests_ui_application_context_not_configured")
+    return _ApplicationApi(
+        portal_domain=_portal_domain(webhook_url),
+        access_token=access_token,
+    )
+
+
+def _placements(api: _JsonApi) -> list[dict[str, object]]:
     payload = api.call_json("placement.get", {})
     result = payload.get("result")
     if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
@@ -42,13 +93,10 @@ def _placements(api: BitrixRestClient) -> list[dict[str, object]]:
     return result
 
 
-def ensure(*, apply: bool) -> dict[str, object]:
-    settings = get_settings()
-    webhook = str(settings.site_service_requests_bitrix_webhook_url or "").strip()
-    handler = str(settings.site_service_requests_ui_handler_url or "").strip()
-    if not webhook or not handler.startswith("https://"):
+def ensure(*, apply: bool, api: _JsonApi, handler: str) -> dict[str, object]:
+    handler = handler.strip()
+    if not handler:
         raise RuntimeError("site_service_requests_ui_placement_not_configured")
-    api = BitrixRestClient(webhook)
     normalized_handler = _normalized_url(handler)
 
     def matches(item: dict[str, object]) -> bool:
@@ -99,8 +147,25 @@ def ensure(*, apply: bool) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ensure the #3223 CRM chat placement.")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--handler",
+        help="Public HTTPS handler. Defaults to SITE_SERVICE_REQUESTS_UI_HANDLER_URL.",
+    )
     args = parser.parse_args()
-    print(json.dumps(ensure(apply=args.apply), ensure_ascii=False, indent=2))
+    settings = get_settings()
+    webhook = str(settings.site_service_requests_bitrix_webhook_url or "").strip()
+    handler = args.handler or str(settings.site_service_requests_ui_handler_url or "")
+    api = _application_api(
+        webhook_url=webhook,
+        access_token=os.environ.get(APP_ACCESS_TOKEN_ENV, ""),
+    )
+    print(
+        json.dumps(
+            ensure(apply=args.apply, api=api, handler=handler),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

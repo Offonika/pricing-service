@@ -18,6 +18,28 @@ class ProcurementOrderFormationUser(BaseModel):
     name: str | None = None
 
 
+class ProcurementOrderLabelRowRead(BaseModel):
+    line_no: int
+    onec_item_code: str
+    item_name: str
+    article_1c: str = ""
+    barcode: str
+    quantity: int
+
+
+class ProcurementOrderLabelPreviewRead(BaseModel):
+    order_id: int
+    onec_number: str
+    label_size: str
+    position_count: int
+    product_label_count: int
+    separator_count: int
+    total_page_count: int
+    ready: bool
+    blockers: list[str] = Field(default_factory=list)
+    rows: list[ProcurementOrderLabelRowRead] = Field(default_factory=list)
+
+
 class ProcurementOrderFormationSessionResponse(BaseModel):
     session_token: str
     token_type: str = "bearer"

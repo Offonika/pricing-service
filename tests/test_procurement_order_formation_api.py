@@ -91,6 +91,14 @@ def test_order_excel_export_is_exposed_as_xlsx() -> None:
     )
 
 
+def test_order_label_exports_are_exposed_in_existing_order_application() -> None:
+    paths = app.openapi()["paths"]
+
+    assert "/api/procurement-order-formation/orders/{order_id}/labels/preview" in paths
+    assert "/api/procurement-order-formation/orders/{order_id}/labels.pdf" in paths
+    assert "/api/procurement-order-formation/orders/{order_id}/labels.xlsx" in paths
+
+
 def test_lifecycle_approval_schema_limits_batch_to_100() -> None:
     item = {
         "proposal_id": 1,

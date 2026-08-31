@@ -28,6 +28,7 @@ related_code:
   - tasks/export_management_marks.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+  - app/services/procurement_order_labels.py
 related_tests:
   - tests/test_procurement_order_formation.py
   - tests/test_procurement_order_formation_workspace.py
@@ -40,6 +41,7 @@ related_tests:
   - tests/test_procurement_order_metrics_backfill.py
   - tests/test_procurement_order_product_media.py
   - tests/test_procurement_supplier_profiles.py
+  - tests/test_procurement_order_labels.py
 contracts:
   - openapi.yaml
 depends_on:
@@ -47,7 +49,7 @@ depends_on:
   - docs/specs/assortment-lifecycle-policy.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-30"
+updated_at: "2026-08-31"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
@@ -106,6 +108,12 @@ updated_at: "2026-08-30"
 - `BitrixItemUrl` в пакете 1С необязателен для проектов OAuth-приложения без
   legacy-карточки; контроль подтверждения сохраняют обязательные
   `ConfirmationId`, `CalculationId` и `ApprovedBy`.
+- **Решение `2026-08-31`:** массовые этикетки формируются в этом же приложении
+  только после получения номера и readback фактических строк непроведённого
+  `ЗаказПоставщику` из 1С. Поддерживаются размеры `50×40` и `40×30`, выходы
+  `PDF` и `XLSX`; товарная этикетка повторяется по целому количеству строки,
+  между соседними позициями добавляется одна пустая этикетка, после последней
+  позиции разделитель не добавляется. Отдельный контур заказов не создаётся.
 
 ## OAuth и права
 
@@ -1200,6 +1208,8 @@ cd ui && npm run lint && npm run build
   показателей для решения без ручного поиска в `1С`; качество `Новый` отделено
   от структурированной причины возврата, прежний ложный блокер по одной доле
   `Новый` отменён на примере заказа №94.
+- `2026-08-31`: формирование массовых этикеток `50×40`/`40×30` в PDF/XLSX
+  включено в приложение формирования заказа с readback строк из 1С.
 
 # Acceptance Criteria
 
@@ -1208,6 +1218,8 @@ cd ui && npm run lint && npm run build
 - [x] Устаревшие версии и изменённые строки блокируются до повторного подтверждения.
 - [x] 1С получает только `draft_only` payload; браузер не может включить apply.
 - [x] Действующие API, workspace и dry-run сценарии покрыты тестами.
+- [x] После readback заказа 1С приложение показывает контрольное количество и
+      формирует PDF/XLSX с повторами и пустыми разделителями между позициями.
 - [x] Расчёт заказов скачивается в Excel с классификацией и текущими фильтрами.
 - [x] Метрики содержат период, источник, надёжность и честное разделение брака.
 - [x] Профиль поставщика защищён optimistic version и правами согласующего.

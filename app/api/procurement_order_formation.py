@@ -32,6 +32,7 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderFormationSessionRequest,
     ProcurementOrderFormationSessionResponse,
     ProcurementOrderFormationUser,
+    ProcurementOrderLabelPreviewRead,
     ProcurementOrderLineUpdateRequest,
     ProcurementOrderListResponse,
     ProcurementOrderTransmissionResponse,
@@ -73,6 +74,15 @@ from app.services.procurement_order_formation_workspace import (
     list_lifecycle_transitions,
     list_orders,
     record_event,
+)
+from app.services.procurement_order_labels import (
+    build_order_label_preview,
+)
+from app.services.procurement_order_labels import (
+    build_pdf as build_order_labels_pdf,
+)
+from app.services.procurement_order_labels import (
+    build_xlsx as build_order_labels_xlsx,
 )
 from app.services.procurement_supplier_profiles import (
     empty_supplier_profile,
@@ -481,6 +491,69 @@ def read_order(
         return ProcurementOrderFormationRead.model_validate(
             serialize_order(get_order(db, order_id))
         )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get("/orders/{order_id}/labels/preview", response_model=ProcurementOrderLabelPreviewRead)
+def preview_order_labels(
+    order_id: int,
+    size: str = "50x40",
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementOrderLabelPreviewRead:
+    try:
+        return ProcurementOrderLabelPreviewRead.model_validate(
+            build_order_label_preview(db, order_id, label_size=size, settings=get_settings())
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+def _order_label_download(order_id: int, size: str, format_: str, db: Session) -> Response:
+    preview = build_order_label_preview(db, order_id, label_size=size, settings=get_settings())
+    if format_ == "pdf":
+        content = build_order_labels_pdf(preview)
+        media_type = "application/pdf"
+    else:
+        content = build_order_labels_xlsx(preview)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    filename = f"supplier-order-{preview['onec_number']}-labels-{size}.{format_}"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/orders/{order_id}/labels.pdf", response_class=Response)
+def download_order_labels_pdf(
+    order_id: int,
+    size: str = "50x40",
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> Response:
+    try:
+        return _order_label_download(order_id, size, "pdf", db)
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get("/orders/{order_id}/labels.xlsx", response_class=Response)
+def download_order_labels_xlsx(
+    order_id: int,
+    size: str = "50x40",
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> Response:
+    try:
+        return _order_label_download(order_id, size, "xlsx", db)
     except Exception as exc:
         raise _service_error(exc) from exc
 

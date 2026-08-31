@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -38,16 +37,16 @@ def validate_release(release_dir: Path, *, snapshot_date: date) -> dict[str, obj
         "path": str(component_path),
     }
 
-    index_path = release_dir / "ui" / "dist" / "index.html"
-    index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-    asset_match = re.search(r'src="(?:\./|/)?(assets/[^\"]+\.js)"', index_text)
-    asset_path = release_dir / "ui" / "dist" / asset_match.group(1) if asset_match else None
-    asset_text = (
-        asset_path.read_text(encoding="utf-8") if asset_path and asset_path.exists() else ""
-    )
+    asset_dir = release_dir / "ui" / "dist" / "assets"
+    asset_paths = sorted(asset_dir.glob("*.js")) if asset_dir.exists() else []
+    asset_texts = {path: path.read_text(encoding="utf-8", errors="replace") for path in asset_paths}
+    required_assets = [path for path, text in asset_texts.items() if REQUIRED_UI_TEXT in text]
+    forbidden_assets = [path for path, text in asset_texts.items() if FORBIDDEN_UI_TEXT in text]
     checks["ui_bundle"] = {
-        "ok": REQUIRED_UI_TEXT in asset_text and FORBIDDEN_UI_TEXT not in asset_text,
-        "path": str(asset_path or ""),
+        "ok": bool(required_assets) and not forbidden_assets,
+        "path": ",".join(str(path) for path in required_assets),
+        "scanned_asset_count": len(asset_paths),
+        "forbidden_paths": [str(path) for path in forbidden_assets],
     }
 
     with session_scope(read_only=True) as session:

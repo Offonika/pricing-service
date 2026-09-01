@@ -374,6 +374,29 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     ])).toBe("2 блокера · 4 строки");
   });
 
+  it("не показывает технический английский текст старого блокера семейства дисплеев", () => {
+    const code = "display_family_recommendation_review_required";
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      blockers: [`line_1:${code}`],
+      blocker_details: [{
+        code,
+        scope: "order",
+        severity: "hard",
+        line_id: 40,
+        line_number: 1,
+        message: "display family recommendation review required",
+        evidence: {},
+        resolution_actions: [],
+      }],
+      lines: [line({ blockers: [code] })],
+    })} />);
+
+    expect(screen.getByText(
+      "Требуется проверить и подтвердить распределение заказа внутри семейства дисплеев — строки 1"
+    )).toBeInTheDocument();
+    expect(screen.queryByText(/display family recommendation review required/i)).not.toBeInTheDocument();
+  });
+
   it("показывает доказательства блокера и исключает строку только с причиной", async () => {
     const blockedLine = line({
       blockers: ["batch_error_suspected"],

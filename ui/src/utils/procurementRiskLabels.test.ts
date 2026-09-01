@@ -28,6 +28,12 @@ describe("procurementRiskLabel", () => {
     );
   });
 
+  it("translates the legacy display-family blocker from saved projects", () => {
+    expect(procurementRiskLabel("line_2:display_family_recommendation_review_required")).toBe(
+      "Требуется проверить и подтвердить распределение заказа внутри семейства дисплеев"
+    );
+  });
+
   it("names the status that blocks the purchase", () => {
     expect(procurementRiskLabel("classification_blocks_order:pension")).toBe(
       "Статус «Допродаём (Пенсия)» запрещает закупку"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -34,11 +35,43 @@ _INDEX_PATHS = (
 def _read_matching_index() -> str:
     for path in _INDEX_PATHS:
         if path.exists():
-            # Keep Vite entrypoints external. An inline module resolves relative
-            # split-chunk imports against /bitrix/matching/ instead of the
-            # /bitrix/matching/assets/ directory that Nginx exposes.
-            return path.read_text(encoding="utf-8")
+            return _inline_matching_assets(path.read_text(encoding="utf-8"), index_path=path)
     return "<!doctype html><html><body>Matching UI is not built</body></html>"
+
+
+def _inline_matching_assets(index_html: str, *, index_path: Path) -> str:
+    assets_root = index_path.parent
+
+    def inline_script(match: re.Match[str]) -> str:
+        src = match.group("src")
+        if not src.startswith("./assets/"):
+            return match.group(0)
+        asset_path = assets_root / src.removeprefix("./")
+        if not asset_path.exists():
+            return match.group(0)
+        script = asset_path.read_text(encoding="utf-8").replace("</script", "<\\/script")
+        return f'<script type="module">{script}</script>'
+
+    def inline_stylesheet(match: re.Match[str]) -> str:
+        href = match.group("href")
+        if not href.startswith("./assets/"):
+            return match.group(0)
+        asset_path = assets_root / href.removeprefix("./")
+        if not asset_path.exists():
+            return match.group(0)
+        stylesheet = asset_path.read_text(encoding="utf-8").replace("</style", "<\\/style")
+        return f"<style>{stylesheet}</style>"
+
+    html = re.sub(
+        r'<script(?P<attrs>[^>]*?)\ssrc="(?P<src>\./assets/[^"]+\.js)"(?P<tail>[^>]*)></script>',
+        inline_script,
+        index_html,
+    )
+    return re.sub(
+        r'<link(?P<attrs>[^>]*?)\shref="(?P<href>\./assets/[^"]+\.css)"(?P<tail>[^>]*)>',
+        inline_stylesheet,
+        html,
+    )
 
 
 def _first(values: dict[str, list[str]], key: str) -> str | None:

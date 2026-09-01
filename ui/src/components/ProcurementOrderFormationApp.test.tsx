@@ -879,6 +879,7 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
             onec_date: "2026-08-31",
           },
           blockers: ["supplier_contract_missing", "warehouse_missing"],
+          lines: [line({ bitrix_product_id: null, source_kind: "onec_import" })],
         })}
       />
     );
@@ -888,6 +889,7 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
     );
     expect(screen.queryByText("onec-РБГУ0000590")).not.toBeInTheDocument();
     expect(screen.queryByText("Передача заблокирована")).not.toBeInTheDocument();
+    expect(screen.getByText("Связь с каталогом Bitrix24 обновляется")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Проверить и создать черновик в 1С" })
     ).not.toBeInTheDocument();

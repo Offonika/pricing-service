@@ -989,7 +989,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                     <td>
                       <strong>{line.nomenclature_name}</strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
-                      <small>Товар Bitrix24: {line.bitrix_product_id || "не найден"}</small>
+                      <small>
+                        {importedFromOnec && !line.bitrix_product_id
+                          ? "Связь с каталогом Bitrix24 обновляется"
+                          : `Товар Bitrix24: ${line.bitrix_product_id || "не найден"}`}
+                      </small>
                       {line.quality && <small>Качество: {line.quality}</small>}
                       {supplierReviewRoom && !line.removed && (
                         <div className="order-formation__supplier-picker">

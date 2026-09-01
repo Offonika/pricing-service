@@ -179,6 +179,7 @@ describe("LifecycleQueue manual decision", () => {
 
 describe("OrdersRegistry", () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     vi.mocked(fetchProcurementOrders).mockReset();
     vi.mocked(fetchProcurementOrders).mockResolvedValue({
       total: 1,
@@ -234,6 +235,79 @@ describe("OrdersRegistry", () => {
 
     await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
       expect.objectContaining({ contour: "ordinary", page: 1, page_size: 100 })
+    ));
+  });
+
+  it("выделяет проект с блокерами и показывает число причин", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      summary: { ...initial.summary, by_status: { draft: 1 } },
+      items: [{
+        ...initial.items[0],
+        origin: "generated",
+        status: "draft",
+        lifecycle_status: "draft",
+        lifecycle_status_label: "Черновик",
+        onec_document_number: null,
+        onec_document_date: null,
+        blockers: ["line_1:catalog_product_missing", "line_2:quantity_must_be_positive"],
+      }],
+    });
+
+    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+
+    const project = await screen.findByText("Проект №543");
+    expect(screen.getByText("С блокерами: 2")).toBeInTheDocument();
+    expect(project.closest("tr")).toHaveClass("order-registry__row--blocked");
+  });
+
+  it("восстанавливает фильтры и страницу после открытия заказа и возврата", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({ ...initial, total: 201 });
+    const onOpenOrder = vi.fn();
+    const firstView = render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
+
+    await screen.findByText("РБГУ0000543");
+    fireEvent.change(screen.getByPlaceholderText("Поставщик"), {
+      target: { value: "Поставщик 1С" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Все контуры"), {
+      target: { value: "ordinary" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Все проверки"), {
+      target: { value: "with" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Вперёд" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть" }));
+
+    expect(onOpenOrder).toHaveBeenCalledWith(543);
+    await waitFor(() => expect(JSON.parse(
+      window.sessionStorage.getItem("pricing.procurement.orders-registry-view.v1") || "{}"
+    )).toEqual(expect.objectContaining({
+      page: 2,
+      supplier: "Поставщик 1С",
+      contour: "ordinary",
+      blockers: "with",
+    })));
+
+    firstView.unmount();
+    vi.mocked(fetchProcurementOrders).mockClear();
+    render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
+
+    expect(await screen.findByPlaceholderText("Поставщик")).toHaveValue("Поставщик 1С");
+    expect(screen.getByDisplayValue("Обычный")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("С блокерами")).toBeInTheDocument();
+    await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        supplier: "Поставщик 1С",
+        contour: "ordinary",
+        blockers: "with",
+        page: 2,
+        page_size: 100,
+      })
     ));
   });
 

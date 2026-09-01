@@ -1679,6 +1679,13 @@ _BLOCKER_MESSAGES = {
     "quantity_must_be_positive": "Количество должно быть больше нуля.",
     "purchase_price_must_be_positive": "Закупочная цена должна быть больше нуля.",
     "classification_approval_pending": "Ожидается решение по классификации.",
+    "display_family_manual_approval_required": (
+        "Требуется проверить и подтвердить распределение заказа внутри семейства дисплеев."
+    ),
+    # Совместимость с проектами, сохранёнными до унификации имени блокера.
+    "display_family_recommendation_review_required": (
+        "Требуется проверить и подтвердить распределение заказа внутри семейства дисплеев."
+    ),
 }
 
 

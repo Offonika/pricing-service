@@ -1028,6 +1028,18 @@ def test_batch_blocker_details_explain_numbers_and_project_lines(db_session) -> 
     assert "72,7%" in detail["message"]
 
 
+def test_legacy_display_family_blocker_has_russian_message(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.blockers = ["display_family_recommendation_review_required"]
+
+    detail = line_blocker_details(line)[0]
+
+    assert detail["message"] == (
+        "Требуется проверить и подтвердить распределение заказа внутри семейства дисплеев."
+    )
+
+
 def test_batch_blocker_without_evidence_becomes_technical(db_session) -> None:
     order = _order(db_session)
     line = order.lines[0]

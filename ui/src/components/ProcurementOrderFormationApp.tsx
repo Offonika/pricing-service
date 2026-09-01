@@ -157,7 +157,12 @@ function blockerSummaryMessage(detail: ProcurementBlockerDetail) {
   if (detail.code === "defect_rate_suspected") return "Подтверждённый высокий процент брака";
   if (detail.code === "supplier_defect_over_10_pct_reliable") return "Брак поставщика выше порога";
   if (detail.code === "purchase_price_change_over_10_pct") return "Изменение закупочной цены требует проверки";
-  return detail.message;
+  const message = detail.message.trim();
+  const technicalMessage = detail.code.replaceAll("_", " ");
+  if (!message || message === detail.code || message.toLocaleLowerCase() === technicalMessage) {
+    return procurementRiskLabel(detail.code);
+  }
+  return message;
 }
 
 function profitabilityText(line: ProcurementOrderFormationLine) {

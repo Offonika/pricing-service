@@ -40,10 +40,19 @@ class _Connection:
         self.engine = engine
 
     def __enter__(self):
+        self.engine.active_connections += 1
         return self
 
     def __exit__(self, *_args):
+        self.engine.active_connections -= 1
         return None
+
+    def execution_options(self, **options):
+        self.engine.isolation_options.append(options)
+        return self
+
+    def begin(self):
+        return _Transaction(self.engine)
 
     def execute(self, statement, params=None):
         sql = str(statement)
@@ -66,14 +75,32 @@ class _Connection:
         return _Mappings(self.engine.header_rows)
 
 
+class _Transaction:
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __enter__(self):
+        self.engine.active_transactions += 1
+        return self
+
+    def __exit__(self, *_args):
+        self.engine.active_transactions -= 1
+        return None
+
+
 class _Engine:
     def __init__(self, rows, *, closure_rows=(), line_rows=None, reserve_rows=None):
         self.header_rows = list(rows)
         self.closure_rows = list(closure_rows)
         self.line_rows = list(line_rows if line_rows is not None else [_line_row()])
         self.reserve_rows = list(reserve_rows if reserve_rows is not None else [_reserve_row()])
+        self.connect_count = 0
+        self.active_connections = 0
+        self.active_transactions = 0
+        self.isolation_options = []
 
     def connect(self):
+        self.connect_count += 1
         return _Connection(self)
 
 
@@ -197,6 +224,27 @@ def test_payment_control_allows_only_amounts_warehouse_and_full_reservation() ->
     assert decision.reservation_quantity_match is True
     assert decision.reservation_confirmed_at == decision.checked_at
     assert decision.confirmed_ready_at == ready_at
+
+
+def test_payment_control_reads_onec_in_one_serializable_transaction() -> None:
+    engine = _Engine([_row()])
+
+    decision = service.check_order_payment(
+        engine,
+        site_order_number="225550",
+        site_amount=Decimal("5461.95"),
+        payment_amount=Decimal("5461.95"),
+        source_warehouse_xml_id=WAREHOUSE_GUID,
+        confirmed_ready_at_resolver=lambda *_args: (
+            None
+            if engine.active_connections == 0 and engine.active_transactions == 0
+            else pytest.fail("CRM readiness must be read after the 1C transaction closes")
+        ),
+    )
+
+    assert decision.allowed is True
+    assert engine.connect_count == 1
+    assert engine.isolation_options == [{"isolation_level": "SERIALIZABLE"}]
 
 
 @pytest.mark.parametrize(
@@ -395,6 +443,21 @@ def test_payment_control_endpoint_fails_closed_when_onec_is_unavailable(monkeypa
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["code"] == "onec_unavailable"
+
+
+def test_payment_control_endpoint_fails_closed_on_malformed_onec_reference(monkeypatch) -> None:
+    _configure(monkeypatch)
+    monkeypatch.setattr(
+        api,
+        "get_onec_engine",
+        lambda: _Engine([_row(warehouse_ref=b"invalid")]),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        api.check_order_payment(_payload())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["code"] == "onec_invalid_data"
 
 
 def test_confirmed_ready_at_unconfigured_source_stays_nullable(monkeypatch) -> None:

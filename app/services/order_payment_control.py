@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 
 MONEY_QUANTUM = Decimal("0.01")
 RESERVATION_TOLERANCE = Decimal("0.001")
@@ -183,12 +184,18 @@ def _revision(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _connection_scope(source: Engine | Connection):
+    if hasattr(source, "execute"):
+        return nullcontext(source)
+    return source.connect()
+
+
 def fetch_onec_order_payment_snapshots(
-    engine: Engine,
+    source: Engine | Connection,
     *,
     site_order_number: str,
 ) -> list[OneCOrderPaymentSnapshot]:
-    with engine.connect() as connection:
+    with _connection_scope(source) as connection:
         rows = connection.execute(
             ONEC_ORDER_PAYMENT_SQL,
             {"site_order_number": site_order_number},
@@ -230,12 +237,12 @@ def _ref(value: Any) -> bytes:
 
 
 def fetch_onec_order_lines(
-    engine: Engine,
+    source: Engine | Connection,
     *,
     order_ref: bytes,
 ) -> list[OneCOrderLine]:
     statement = _statement_for_order_ref(ONEC_ORDER_LINES_SQL_TEMPLATE, order_ref)
-    with engine.connect() as connection:
+    with _connection_scope(source) as connection:
         rows = connection.execute(statement).mappings()
         return [
             OneCOrderLine(
@@ -255,12 +262,12 @@ def fetch_onec_order_lines(
 
 
 def fetch_onec_order_reserves(
-    engine: Engine,
+    source: Engine | Connection,
     *,
     order_ref: bytes,
 ) -> list[OneCOrderReserve]:
     statement = _statement_for_order_ref(ONEC_ORDER_RESERVES_SQL_TEMPLATE, order_ref)
-    with engine.connect() as connection:
+    with _connection_scope(source) as connection:
         rows = connection.execute(statement).mappings()
         return [
             OneCOrderReserve(
@@ -275,7 +282,7 @@ def fetch_onec_order_reserves(
 
 
 def fetch_confirmed_ready_at(
-    engine: Engine,
+    source: Engine | Connection,
     *,
     site_order_number: str,
     checked_at: datetime,
@@ -283,7 +290,7 @@ def fetch_confirmed_ready_at(
 ) -> datetime | None:
     """Read the exact CRM-owned due time only from one fresh queue row."""
     fresh_after = checked_at - max_age
-    with engine.connect() as connection:
+    with _connection_scope(source) as connection:
         values = list(
             connection.execute(
                 CONFIRMED_READY_AT_SQL,
@@ -315,7 +322,7 @@ def onec_guid_from_ref(value: bytes) -> str:
 
 
 def fetch_onec_order_closures(
-    engine: Engine,
+    source: Engine | Connection,
     *,
     order_ref: bytes,
 ) -> list[OneCOrderClosure]:
@@ -323,7 +330,7 @@ def fetch_onec_order_closures(
     if not ORDER_REF_HEX_PATTERN.match(order_ref_hex):
         raise ValueError("unexpected 1C order reference")
     statement = text(ONEC_ORDER_CLOSURE_SQL_TEMPLATE.format(order_ref_hex=order_ref_hex))
-    with engine.connect() as connection:
+    with _connection_scope(source) as connection:
         rows = connection.execute(statement).mappings()
         return [
             OneCOrderClosure(
@@ -426,8 +433,8 @@ def evaluate_reservation(
     return "FULL", True, "amount_and_full_reservation_match"
 
 
-def check_order_payment(
-    engine: Engine,
+def _check_order_payment_on_source(
+    source: Engine | Connection,
     *,
     site_order_number: str,
     site_amount: Decimal,
@@ -455,7 +462,7 @@ def check_order_payment(
         )
 
     snapshots = fetch_onec_order_payment_snapshots(
-        engine,
+        source,
         site_order_number=site_order_number,
     )
     active = [snapshot for snapshot in snapshots if not snapshot.marked]
@@ -505,7 +512,7 @@ def check_order_payment(
         )
     if closure_blocks_payment and snapshot.order_ref is not None:
         closure = blocking_closure(
-            fetch_onec_order_closures(engine, order_ref=snapshot.order_ref),
+            fetch_onec_order_closures(source, order_ref=snapshot.order_ref),
             allowed_reasons=(
                 closure_allowed_reasons
                 if closure_allowed_reasons is not None
@@ -582,8 +589,8 @@ def check_order_payment(
             checked_at=checked_at,
         )
 
-    lines = fetch_onec_order_lines(engine, order_ref=snapshot.order_ref)
-    reserves = fetch_onec_order_reserves(engine, order_ref=snapshot.order_ref)
+    lines = fetch_onec_order_lines(source, order_ref=snapshot.order_ref)
+    reserves = fetch_onec_order_reserves(source, order_ref=snapshot.order_ref)
     reservation_state, quantity_match, reservation_reason = evaluate_reservation(
         lines,
         reserves,
@@ -620,6 +627,54 @@ def check_order_payment(
         reservation_confirmed_at=checked_at,
         confirmed_ready_at=confirmed_ready_at,
     )
+
+
+def check_order_payment(
+    engine: Engine,
+    *,
+    site_order_number: str,
+    site_amount: Decimal,
+    payment_amount: Decimal,
+    source_warehouse_xml_id: str | UUID,
+    closure_blocks_payment: bool = True,
+    closure_allowed_reasons: list[str] | None = None,
+    confirmed_ready_at_resolver: Callable[[str, datetime], datetime | None] | None = None,
+) -> OrderPaymentDecision:
+    """Read one internally consistent 1C snapshot, then resolve nullable CRM readiness."""
+    normalized_site_amount = normalize_money(site_amount)
+    normalized_payment_amount = normalize_money(payment_amount)
+    if normalized_site_amount != normalized_payment_amount:
+        return _decision(
+            check_id=uuid4().hex,
+            allowed=False,
+            reason="site_payment_mismatch",
+            site_order_number=site_order_number,
+            site_amount=normalized_site_amount,
+            payment_amount=normalized_payment_amount,
+            checked_at=datetime.now(timezone.utc),
+        )
+
+    with engine.connect() as raw_connection:
+        connection = raw_connection.execution_options(isolation_level="SERIALIZABLE")
+        with connection.begin():
+            decision = _check_order_payment_on_source(
+                connection,
+                site_order_number=site_order_number,
+                site_amount=normalized_site_amount,
+                payment_amount=normalized_payment_amount,
+                source_warehouse_xml_id=source_warehouse_xml_id,
+                closure_blocks_payment=closure_blocks_payment,
+                closure_allowed_reasons=closure_allowed_reasons,
+                confirmed_ready_at_resolver=None,
+            )
+
+    if not decision.allowed or confirmed_ready_at_resolver is None:
+        return decision
+    confirmed_ready_at = confirmed_ready_at_resolver(
+        site_order_number,
+        decision.checked_at,
+    )
+    return replace(decision, confirmed_ready_at=confirmed_ready_at)
 
 
 def _decision_from_snapshot(

@@ -79,6 +79,18 @@ def check_order_payment(payload: OrderPaymentCheckRequest) -> OrderPaymentCheckR
             status_code=503,
             detail={"code": "onec_unavailable", "message": "1C source is unavailable"},
         ) from exc
+    except ValueError as exc:
+        logger.warning(
+            "order payment check denied: malformed 1C data",
+            extra={
+                "site_order_number": payload.site_order_number,
+                "stage": payload.stage,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "onec_invalid_data", "message": "1C data is invalid"},
+        ) from exc
 
     logger.info(
         "order payment check completed",

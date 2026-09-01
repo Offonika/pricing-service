@@ -166,13 +166,16 @@ updated_at: "2026-09-01"
 # Invariants
 
 - SQL выполняется через canonical `get_onec_engine()` и ничего не записывает в 1С.
+- Шапка, закрытие, строки и резерв одного решения читаются одним соединением в
+  одной транзакции `SERIALIZABLE`; CRM-срок запрашивается только после завершения
+  транзакции 1С.
 - Каждый `checkout`, `check` и `pay` выполняет свежую проверку; положительный кеш
   не используется.
 - `allowed=true` допустим только при `FULL`, `reservation_quantity_match=true` и
   причине `amount_and_full_reservation_match`.
 - UUID конвертируется в бинарную ссылку 1С и обратно без числовых Bitrix ID.
-- Недоступность 1С возвращает HTTP `503`; потребитель обязан fail-closed блокировать
-  оплату.
+- Недоступность или некорректная бинарная ссылка 1С возвращает HTTP `503`;
+  потребитель обязан fail-closed блокировать оплату.
 - В логи не попадают токены, connection strings и полные платёжные payload.
 
 # Errors / Edge Cases
@@ -185,7 +188,7 @@ updated_at: "2026-09-01"
 - `onec_lines_missing`, `onec_line_placement_mismatch`;
 - `onec_reservation_none`, `onec_reservation_partial`,
   `onec_reservation_mismatch`;
-- `onec_unavailable` / HTTP `503`.
+- `onec_unavailable`, `onec_invalid_data` / HTTP `503`.
 
 # Acceptance Criteria
 
@@ -210,6 +213,8 @@ updated_at: "2026-09-01"
 - [x] Реализовать нормализацию единиц, UUID conversion и допуск `0.001`.
 - [x] Запретить allow без проведённого заказа, ожидаемого склада и `FULL`.
 - [x] Подключить nullable CRM readiness только после полного резерва.
+- [x] Читать весь снимок 1С одной `SERIALIZABLE`-транзакцией и безопасно
+      преобразовывать повреждённые ссылки 1С в fail-closed HTTP `503`.
 - [x] Обновить unit/API regression tests и `openapi.yaml`.
 - [x] Обновить канонический API-spec и project manifest.
 - [ ] Выполнить production release и smoke по отдельной команде.
@@ -224,6 +229,8 @@ updated_at: "2026-09-01"
 - расхождение склада и размещения;
 - недоступность 1С;
 - UUID ↔ binary 1C reference;
+- одно соединение и одна `SERIALIZABLE`-транзакция на согласованный снимок 1С;
+- повреждённая бинарная ссылка 1С → `onec_invalid_data` / HTTP `503`;
 - повторные callbacks;
 - свежий, неоднозначный и устаревший CRM-срок.
 
@@ -243,6 +250,9 @@ updated_at: "2026-09-01"
 
 # Changelog
 
+- 2026-09-01 — guard переведён на один согласованный `SERIALIZABLE`-снимок 1С;
+  повреждённые binary references теперь возвращают безопасный
+  `onec_invalid_data` / HTTP `503`, а CRM-срок читается после закрытия транзакции.
 - 2026-09-01 — повторно пройдены focused regression-тесты, Ruff/Black и проверка
   OpenAPI после обработки отрицательного резерва как `MISMATCH` и nullable
   CRM-срока при недоступной application DB.

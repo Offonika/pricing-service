@@ -233,7 +233,25 @@ describe("OrdersRegistry", () => {
     fireEvent.change(screen.getByDisplayValue("Все контуры"), { target: { value: "ordinary" } });
 
     await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
-      expect.objectContaining({ contour: "ordinary", page_size: 100 })
+      expect.objectContaining({ contour: "ordinary", page: 1, page_size: 100 })
+    ));
+  });
+
+  it("показывает страницы и загружает следующую сотню заказов", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      total: 201,
+    });
+
+    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+
+    expect(await screen.findByText("Страница 1 из 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Вперёд" }));
+
+    await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2, page_size: 100 })
     ));
   });
 });

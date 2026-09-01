@@ -94,6 +94,19 @@ def test_repeated_snapshot_updates_same_order_and_tracks_receipt(db_session) -> 
     assert second.action == "updated"
 
 
+def test_repeated_snapshot_with_numeric_scale_difference_is_noop(db_session) -> None:
+    first = synchronize_onec_snapshots(db_session, [_snapshot(open_qty=Decimal("6"))])[0]
+    order = db_session.get(ProcurementOrderFormation, first.order_id)
+    assert order is not None
+    order.onec_open_quantity = Decimal("6.000")
+    db_session.commit()
+    db_session.expire_all()
+
+    second = synchronize_onec_snapshots(db_session, [_snapshot(open_qty=Decimal("6"))])[0]
+
+    assert second.action == "noop"
+
+
 def test_legacy_exact_identity_attaches_guid_to_same_generated_order(db_session) -> None:
     order = ProcurementOrderFormation(
         stable_key="generated:test",

@@ -826,7 +826,14 @@ def import_order(
     action = "dry_run_update_or_create"
     item_id = existing_id
     if apply:
-        rest_fields = crm_item_rest_fields(fields)
+        # Existing payment state is known before the CRM write, so merge it into
+        # the lifecycle payload. Otherwise every sync briefly moves the card to
+        # the lifecycle stage and then back to payment_work in a second update.
+        payment_update_pending = payment_task_action == "dry_run_create"
+        fields_for_write = dict(fields)
+        if not payment_update_pending:
+            fields_for_write.update(payment_update_fields)
+        rest_fields = crm_item_rest_fields(fields_for_write)
         if existing_id:
             fields_to_update = changed_rest_fields(current_item, rest_fields)
             if fields_to_update:
@@ -882,7 +889,7 @@ def import_order(
                         },
                     )
                 raise
-        if item_id and payment_update_fields:
+        if item_id and payment_update_fields and payment_update_pending:
             payment_rest_fields = crm_item_rest_fields(payment_update_fields)
             if existing_id:
                 payment_rest_fields = changed_rest_fields(current_item, payment_rest_fields)

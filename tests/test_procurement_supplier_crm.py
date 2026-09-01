@@ -619,6 +619,9 @@ def test_import_order_apply_reuses_existing_payment_task_without_duplicate() -> 
     assert result["payment_task_action"] == "exists"
     assert result["payment_task_id"] == "555"
     assert not any(method == "tasks.task.add" for method, _params in api.calls)
+    update_calls = [params for method, params in api.calls if method == "crm.item.update"]
+    assert len(update_calls) == 1
+    assert update_calls[0]["fields"]["stageId"] == "DT1056_53:PAYMENT_WORK"
 
 
 def test_import_order_apply_noops_when_existing_card_already_matches() -> None:

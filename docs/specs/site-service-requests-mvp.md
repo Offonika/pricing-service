@@ -349,8 +349,13 @@ fallback, но не основным сценарием работы в CRM. С�
 
 Старые поля `site_reply_text`, `site_reply_action`, `site_reply_status` и
 `site_history` сохраняются для совместимости и аудита, но скрываются из общей
-формы и списков процесса 1134. Legacy worker обрабатывает `SEND` только при
-явном break-glass флаге `SITE_SERVICE_REQUESTS_LEGACY_FIELD_REPLIES_ENABLED=true`;
+формы процесса 1134. Для существующих dynamic user fields production Bitrix Box
+принудительно сохраняет `showInList=Y` даже после успешного
+`userfieldconfig.update`; поэтому ensure отключает `showFilter` и `editInList`,
+удаляет поля из управляемой формы и возвращает явный advisory для неизменяемого
+`showInList`. Новые технические поля создаются с `showInList=N`. Legacy worker
+обрабатывает `SEND` только при явном break-glass флаге
+`SITE_SERVICE_REQUESTS_LEGACY_FIELD_REPLIES_ENABLED=true`;
 по умолчанию флаг выключен. Перед rollout наличие незавершённых `SEND`
 проверяется read-only, без автоматической отправки или очистки.
 
@@ -1093,6 +1098,11 @@ Rollback:
 
 # Changelog
 
+- 2026-09-01 — production readback выявил ограничение Bitrix Box: для уже
+  существующего dynamic user field портал немедленно возвращает `showInList=Y`
+  после успешного update с `N` или `false`. Ensure сохраняет fail-closed
+  `showFilter=N`, `editInList=N` и удаление legacy-полей из формы, а неизменяемый
+  `showInList` сообщает как advisory; новые поля по-прежнему создаются скрытыми.
 - 2026-08-31 — утверждён единый UX переписки: вкладка процесса 1134 становится
   единственным штатным CRM-каналом, старые поля ответа и полной истории скрываются
   и не обрабатывают `SEND` без отдельного break-glass флага; UI-записи защищены

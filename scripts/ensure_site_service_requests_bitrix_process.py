@@ -494,11 +494,18 @@ def build_plan(
         if field_name in TECHNICAL_FORM_FIELD_NAMES:
             for setting_name, desired_value in (
                 ("showFilter", "N"),
-                ("showInList", "N"),
                 ("editInList", "N"),
             ):
                 if str(field.get(setting_name) or "") != desired_value:
                     ux_mismatches.append(f"field_visibility:{field_name}:{setting_name}")
+            # The production Bitrix Box keeps ``showInList=Y`` for an existing
+            # dynamic user field even when userfieldconfig.update succeeds and
+            # immediately returns the updated field. Treat that immutable portal
+            # property as an explicit advisory: filtering/editing remain disabled
+            # and the field is removed from the managed detail form. New fields
+            # are still created with showInList=N in _field_payload().
+            if str(field.get("showInList") or "") != "N":
+                label_advisories.append(f"field_visibility:{field_name}:showInList_portal_managed")
         if field.get("fieldName") == REQUEST_TYPE_FIELD_NAME:
             request_mapping = _request_type_enum_mapping(field)
             enum_by_id = {_strict_enum_row_id(row): row for row in _require_enum_rows(field)}
@@ -688,7 +695,6 @@ def _field_metadata_update_payload(field: dict[str, Any]) -> dict[str, Any] | No
     if field_name in TECHNICAL_FORM_FIELD_NAMES:
         for key, desired in (
             ("showFilter", "N"),
-            ("showInList", "N"),
             ("editInList", "N"),
         ):
             if str(field.get(key) or "") != desired:

@@ -477,7 +477,7 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     assert all(section["name"] != "site_reply" for section in api.saved_form)
 
 
-def test_reply_and_history_fields_are_hidden_from_lists() -> None:
+def test_reply_and_history_fields_are_read_only_and_filtered_from_lists() -> None:
     for field_name in (
         "UF_CRM_36_SITEHISTORY",
         "UF_CRM_36_SITEREPLYTEXT",
@@ -491,8 +491,44 @@ def test_reply_and_history_fields_are_hidden_from_lists() -> None:
 
         assert update is not None
         assert update["showFilter"] == "N"
-        assert update["showInList"] == "N"
+        assert "showInList" not in update
         assert update["editInList"] == "N"
+
+        plan = bitrix_setup.build_plan(
+            entity_type_id=1134,
+            type_id=36,
+            category_id=55,
+            fields=[field],
+            stages=_stages(),
+        )
+        assert f"field_visibility:{field_name}:showInList_portal_managed" in plan.label_advisories
+
+
+def test_apply_accepts_portal_managed_show_in_list_after_strict_readback() -> None:
+    fields = _all_fields()
+    for field in fields:
+        if field.get("fieldName") in bitrix_setup.TECHNICAL_FORM_FIELD_NAMES:
+            field.update(showFilter="E", showInList="Y", editInList="Y")
+    api = FakeBitrixApi(fields=fields)
+
+    plan = bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert plan.ux_mismatches == ()
+    present_technical_field_names = {
+        str(field["fieldName"])
+        for field in fields
+        if field.get("fieldName") in bitrix_setup.TECHNICAL_FORM_FIELD_NAMES
+    }
+    assert all(
+        f"field_visibility:{field_name}:showInList_portal_managed" in plan.label_advisories
+        for field_name in present_technical_field_names
+    )
+    updates = [
+        payload["field"] for method, payload in api.calls if method == "userfieldconfig.update"
+    ]
+    assert updates
+    assert all("showInList" not in update for update in updates)
+    assert all(section["name"] != "site_reply" for section in api.saved_form)
 
 
 def test_apply_fails_closed_if_legacy_reply_section_survives_form_write() -> None:

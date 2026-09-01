@@ -907,8 +907,13 @@ def import_order(
     fields.update(payment_update_fields)
     return {
         "source_number": source_number(order),
+        "onec_ref": clean_string(order.get("onec_ref")),
+        "onec_date": source_date(order),
         "action": action,
         "item_id": item_id,
+        "entity_type_id": entity_type_id,
+        "category_id": fields.get("categoryId"),
+        "stage_id": fields.get("stageId"),
         "contour": payload["logical_key"],
         "initial_stage_key": payload["stage_key"],
         "stage_key": final_stage_key,

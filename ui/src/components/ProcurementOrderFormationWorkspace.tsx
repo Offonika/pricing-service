@@ -9,6 +9,7 @@ import {
   fetchProcurementEvents,
   fetchProcurementLifecycleTransitions,
   fetchProcurementOrder,
+  fetchProcurementOrderFormation,
   fetchProcurementOrders,
   exportProcurementOrdersExcel,
   type ProcurementClassificationQueue,
@@ -20,6 +21,7 @@ import {
   type ProcurementOrderFormation,
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
+import { openBitrixProcurementProcess } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
@@ -27,6 +29,7 @@ import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
 interface Props {
   bitrixUserName?: string | null;
+  bitrixItemId?: string;
 }
 
 type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "history";
@@ -1140,6 +1143,14 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
     }
   };
 
+  const openProcess = async (itemId: string) => {
+    try {
+      await openBitrixProcurementProcess(itemId);
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    }
+  };
+
   if (error) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!data) return <LoadingState message="Загрузка заказов..." />;
   return (
@@ -1216,7 +1227,16 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
                     <button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button>
-                    {order.bitrix_item_url && <a className="btn btn--ghost btn--small" href={order.bitrix_item_url} rel="noreferrer" target="_blank">Bitrix24</a>}
+                    {order.linked_process?.state === "linked" && order.linked_process.item_id ? (
+                      <>
+                        <button className="btn btn--ghost btn--small" onClick={() => void openProcess(order.linked_process?.item_id || "")} type="button">Открыть процесс</button>
+                        <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
+                      </>
+                    ) : order.linked_process?.state === "broken" ? (
+                      <small className="order-registry__process-error">Связь с процессом требует восстановления</small>
+                    ) : (
+                      <small>Процесс появится после создания документа в 1С</small>
+                    )}
                   </td>
                 </tr>
                 );
@@ -1382,7 +1402,7 @@ function EventHistory() {
   );
 }
 
-export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
+export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemId }: Props) {
   const [route, setRoute] = useState<WorkspaceRoute>(() => routeFromLocation());
   const [dashboard, setDashboard] = useState<ProcurementDashboard | null>(null);
   const [dashboardError, setDashboardError] = useState("");
@@ -1414,7 +1434,7 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
   }, []);
 
   useEffect(() => {
-    if (route.kind !== "tab" || route.tab !== "dashboard") return;
+    if (bitrixItemId || route.kind !== "tab" || route.tab !== "dashboard") return;
     let cancelled = false;
     fetchProcurementDashboard()
       .then((response) => { if (!cancelled) setDashboard(response); })
@@ -1422,16 +1442,31 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
         if (!cancelled) setDashboardError(errorText(requestError));
       });
     return () => { cancelled = true; };
-  }, [route]);
+  }, [bitrixItemId, route]);
 
   useEffect(() => {
-    if (route.kind !== "order") return;
+    if (!bitrixItemId) return;
+    let cancelled = false;
+    fetchProcurementOrderFormation(bitrixItemId)
+      .then((response) => { if (!cancelled) setOrder(response); })
+      .catch((requestError) => { if (!cancelled) setOrderError(errorText(requestError)); });
+    return () => { cancelled = true; };
+  }, [bitrixItemId]);
+
+  useEffect(() => {
+    if (bitrixItemId || route.kind !== "order") return;
     let cancelled = false;
     fetchProcurementOrder(route.orderId)
       .then((response) => { if (!cancelled) setOrder(response); })
       .catch((requestError) => { if (!cancelled) setOrderError(errorText(requestError)); });
     return () => { cancelled = true; };
-  }, [route]);
+  }, [bitrixItemId, route]);
+
+  if (bitrixItemId) {
+    if (orderError) return <ErrorState message={orderError} onRetry={() => window.location.reload()} />;
+    if (!order) return <LoadingState message="Загрузка связанного заказа..." />;
+    return <ProcurementOrderFormationApp bitrixUserName={bitrixUserName} initialOrder={order} />;
+  }
 
   if (route.kind === "lifecycle") {
     return (

@@ -21,6 +21,7 @@ related_code:
   - app/services/procurement_order_metrics_backfill.py
   - app/services/procurement_order_product_media.py
   - app/services/procurement_order_labels.py
+  - app/services/procurement_order_process_link.py
   - app/services/procurement_supplier_profiles.py
   - tasks/backfill_procurement_order_metrics.py
   - tasks/backfill_procurement_order_product_media.py
@@ -29,11 +30,13 @@ related_code:
   - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
   - tasks/sync_procurement_order_formation_results.py
   - tasks/reconcile_procurement_order_missing_number.py
+  - tasks/reconcile_procurement_order_process_links.py
   - tasks/export_manual_status_overrides.py
   - tasks/export_management_marks.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
 related_tests:
+  - tests/test_procurement_order_process_link.py
   - tests/test_procurement_order_formation.py
   - tests/test_procurement_order_formation_workspace.py
   - tests/test_procurement_order_formation_api.py
@@ -56,7 +59,7 @@ depends_on:
   - docs/specs/assortment-lifecycle-policy.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-01"
+updated_at: "2026-09-02"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
@@ -165,6 +168,10 @@ updated_at: "2026-09-01"
 - **Решение `2026-09-01` — stabilization-аудит:** выявленные ошибки единого
   реестра исправляются не более чем за пять крупных операций с обязательным
   аудитом до исправления и повторным production-аудитом после релиза.
+- **Решение `2026-09-01` — единая вкладка процесса:** приложение формирования
+  заказов и смарт-процесс `Закупка/Заказ` используют одну встроенную вкладку
+  `Заказ`; в ней доступны карточка заказа, позиции и этикетки. Отдельная кнопка
+  `Bitrix24` и отдельная вкладка этикеток не используются.
 - `BitrixItemUrl` в пакете 1С необязателен для проектов OAuth-приложения без
   legacy-карточки; контроль подтверждения сохраняют обязательные
   `ConfirmationId`, `CalculationId` и `ApprovedBy`.
@@ -1304,6 +1311,8 @@ XML round-trip с 1С и отдельное бизнес-решение посл
 
 # Changelog
 
+- 2026-09-01 — утверждена единая вкладка `Заказ` для приложения и
+  смарт-процесса `Закупка/Заказ`.
 - 2026-09-01 — утверждён русскоязычный текст причин блокировки в карточке
   заказа, включая старый код проверки семейства дисплеев.
 - 2026-09-01 — утверждены выделение проектов с блокерами и сохранение состояния

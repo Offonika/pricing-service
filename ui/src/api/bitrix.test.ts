@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./client";
 import {
   initializeBitrixLogisticsSession,
+  openBitrixProcurementProcess,
   refreshBitrixAuth,
   refreshBitrixLogisticsSession,
   refreshBitrixReceivablesSession,
@@ -174,6 +175,44 @@ describe("refreshBitrixAuth", () => {
 
     await expect(refreshBitrixAuth()).rejects.toThrow(
       "Bitrix24 SDK не поддерживает обновление OAuth-сессии"
+    );
+  });
+});
+
+describe("openBitrixProcurementProcess", () => {
+  it("opens the canonical process inside the Bitrix shell", async () => {
+    const openPath = vi.fn();
+    window.BX24 = {
+      init: (callback) => callback(),
+      getAuth: vi.fn(() => ({
+        access_token: "token",
+        domain: "portal.example",
+        member_id: "member",
+      })),
+      callMethod: vi.fn(),
+      openPath,
+    };
+
+    await openBitrixProcurementProcess("324");
+
+    expect(openPath).toHaveBeenCalledWith("/crm/type/1056/details/324/");
+  });
+
+  it("uses a safe portal URL when openPath is unavailable", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+    window.BX24 = {
+      init: (callback) => callback(),
+      getAuth: vi.fn(() => false as const),
+      callMethod: vi.fn(),
+    };
+
+    await openBitrixProcurementProcess("324");
+
+    expect(open).toHaveBeenCalledWith(
+      "https://crm.example.test/crm/type/1056/details/324/",
+      "_blank",
+      "noopener,noreferrer"
     );
   });
 });

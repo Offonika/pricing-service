@@ -28,6 +28,7 @@ import {
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
+import { openBitrixProcurementProcess } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
@@ -693,6 +694,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   };
 
   const canAttachLabelSource = labelSource?.origin !== "exchange";
+  const openLinkedProcess = async () => {
+    const itemId = order.linked_process?.item_id;
+    if (!itemId) return;
+    try {
+      await openBitrixProcurementProcess(itemId);
+    } catch (error: unknown) {
+      toast.error(errorText(error));
+    }
+  };
   const labelSourceForm = (
     <form
       className="order-formation__labels-source"
@@ -855,6 +865,33 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
           ? <div><span>Источник</span><strong>Заказ 1С {importedOnecNumber}</strong></div>
           : <div><span>Партия</span><strong>{order.batch_id}</strong></div>}
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
+      </section>
+
+      <section className={`order-formation__linked-process order-formation__linked-process--${order.linked_process?.state || "not_created"}`}>
+        <div>
+          <span>Связанный процесс</span>
+          {order.linked_process?.state === "linked" ? (
+            <>
+              <strong>Закупка/Заказ №{order.linked_process.item_id}</strong>
+              <small>{order.linked_process.stage_name || "Стадия уточняется"}</small>
+            </>
+          ) : order.linked_process?.state === "broken" ? (
+            <>
+              <strong>Связь с процессом требует восстановления</strong>
+              <small>{order.linked_process.error || "Повторите синхронизацию заказа"}</small>
+            </>
+          ) : (
+            <>
+              <strong>Процесс ещё не создан</strong>
+              <small>Он появится после создания документа в 1С</small>
+            </>
+          )}
+        </div>
+        {order.linked_process?.state === "linked" && order.linked_process.item_id && (
+          <button className="btn btn--ghost" onClick={() => void openLinkedProcess()} type="button">
+            Открыть процесс
+          </button>
+        )}
       </section>
 
       {labelsSection}

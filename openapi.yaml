@@ -11210,6 +11210,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/by-bitrix/{item_id}:
+    get:
+      summary: Read Order By Bitrix Item
+      operationId: read_order_by_bitrix_item_api_procurement_order_formation_orders_by_bitrix__item_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders/{order_id}:
     get:
       summary: Read Order
@@ -27095,6 +27121,63 @@ components:
       - supplier_ref
       - supplier_name
       title: ProcurementLineSupplierSelectionRequest
+    ProcurementLinkedProcessRead:
+      properties:
+        state:
+          type: string
+          enum:
+          - not_created
+          - linked
+          - broken
+          title: State
+        process_title:
+          type: string
+          title: Process Title
+          default: Закупка/Заказ
+        entity_type_id:
+          type: integer
+          title: Entity Type Id
+          default: 1056
+        item_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Item Id
+        category_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Category Id
+        category_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category Name
+        stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Id
+        stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Name
+        checked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Checked At
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - state
+      title: ProcurementLinkedProcessRead
     ProcurementMatchingReviewConfirmRequest:
       properties:
         expected_registry_version_number:
@@ -27864,6 +27947,8 @@ components:
           - type: string
           - type: 'null'
           title: Bitrix Item Url
+        linked_process:
+          $ref: '#/components/schemas/ProcurementLinkedProcessRead'
         supplier_ref:
           anyOf:
           - type: string
@@ -28090,6 +28175,7 @@ components:
       - lifecycle_status_label
       - origin
       - version
+      - linked_process
       - supplier_name
       - contract_name
       - warehouse_name
@@ -28450,6 +28536,8 @@ components:
           - type: string
           - type: 'null'
           title: Bitrix Item Url
+        linked_process:
+          $ref: '#/components/schemas/ProcurementLinkedProcessRead'
         expected_receipt_date:
           anyOf:
           - type: string
@@ -28533,6 +28621,7 @@ components:
       - order_date
       - onec_status
       - procurement_contour
+      - linked_process
       - ordered_quantity
       - line_count
       - total_quantity

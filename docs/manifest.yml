@@ -416,6 +416,7 @@ documents:
       - app/services/procurement_order_formation.py
       - app/services/procurement_order_formation_workspace.py
       - app/services/procurement_order_registry.py
+      - app/services/procurement_order_process_link.py
       - app/services/bitrix_procurement_order_formation_auth.py
       - app/services/bitrix_order_formation.py
       - scripts/ensure_procurement_bitrix_process.py
@@ -423,6 +424,7 @@ documents:
       - tasks/build_procurement_order_formation_dry_run.py
       - tasks/sync_procurement_order_formation_results.py
       - tasks/sync_procurement_order_registry.py
+      - tasks/reconcile_procurement_order_process_links.py
       - infra/cron/sync_procurement_order_registry.sh
       - ui/src/components/ProcurementOrderFormationApp.tsx
       - ui/src/components/ProcurementOrderFormationWorkspace.tsx
@@ -432,6 +434,7 @@ documents:
       - tests/test_procurement_order_formation_api.py
       - tests/test_procurement_order_formation_dry_run.py
       - tests/test_procurement_order_registry.py
+      - tests/test_procurement_order_process_link.py
       - tests/test_unified_procurement_registry_migration.py
     keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle, формирование, заказ, поставщик]
   - path: docs/specs/display-auto-order-project-brief.md

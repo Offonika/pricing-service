@@ -1161,7 +1161,7 @@ function ProcurementLabelsBitrixApp() {
               {openedOutsideBitrix && (
                 <div className="app-state__hint">
                   <span>Кнопка должна быть во вкладке карточки:</span>
-                  <strong>Закупка/Заказ - Сформировать этикетки</strong>
+                  <strong>Закупка/Заказ — Заказ</strong>
                   <span>Прямая ссылка без Bitrix24 не передает ID карточки и сессию пользователя.</span>
                 </div>
               )}
@@ -1197,7 +1197,7 @@ function ProcurementLabelsBitrixApp() {
           <p>Приложение открыто из общего меню Bitrix24.</p>
           <div className="app-state__hint">
             <span>Для работы из заказа нужна вкладка в карточке:</span>
-            <strong>Закупка/Заказ - Сформировать этикетки</strong>
+            <strong>Закупка/Заказ — Заказ</strong>
             <span>После закрепления откройте карточку закупки, а не это общее меню приложений.</span>
           </div>
           <button
@@ -1338,7 +1338,12 @@ function ProcurementOrderFormationBitrixApp() {
     );
   }
 
-  return <ProcurementOrderFormationWorkspace bitrixUserName={authState.userName} />;
+  return (
+    <ProcurementOrderFormationWorkspace
+      bitrixItemId={getProcurementLabelsItemId() || undefined}
+      bitrixUserName={authState.userName}
+    />
+  );
 }
 
 function AppRoute() {

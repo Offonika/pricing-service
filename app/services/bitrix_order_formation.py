@@ -28,6 +28,7 @@ from app.services.procurement_order_formation import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+LEGACY_ORDER_FORMATION_ENTITY_TYPE_ID = 1136
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,16 @@ def create_or_update_bitrix_card(
         return {**preview, "dry_run": True}
     if not preview["entity_type_id"]:
         raise RuntimeError("Bitrix entity_type_id is missing in mapping")
+    mapping_is_legacy = preview["entity_type_id"] == LEGACY_ORDER_FORMATION_ENTITY_TYPE_ID
+    existing_link_is_legacy = (
+        bool(order.bitrix_item_id)
+        and order.bitrix_entity_type_id == LEGACY_ORDER_FORMATION_ENTITY_TYPE_ID
+    )
+    if mapping_is_legacy and not existing_link_is_legacy:
+        raise RuntimeError(
+            "legacy Bitrix process 1136 does not accept new links; "
+            "use canonical procurement process 1056"
+        )
     if order.bitrix_item_id:
         bitrix_call(
             "crm.item.update",

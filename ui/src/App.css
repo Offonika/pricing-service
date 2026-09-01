@@ -4509,6 +4509,232 @@
   gap: 12px;
 }
 
+.customer-returns__help-trigger {
+  min-height: 38px;
+  padding-inline: 14px;
+}
+
+.customer-returns-help__backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(12 22 33 / 68%);
+}
+
+.customer-returns-help {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(100%, 760px);
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+  border: 1px solid #d7e0e8;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgb(12 22 33 / 30%);
+}
+
+.customer-returns-help__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #e5ebf0;
+}
+
+.customer-returns-help__header > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.customer-returns-help__header h2,
+.customer-returns-help__header p {
+  margin: 0;
+}
+
+.customer-returns-help__header h2 {
+  font-size: 21px;
+}
+
+.customer-returns-help__header p {
+  margin-top: 4px;
+  color: #526170;
+  font-size: 13px;
+}
+
+.customer-returns-help__tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 20px 0;
+  border-bottom: 1px solid #e5ebf0;
+}
+
+.customer-returns-help__tabs button {
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #526170;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.customer-returns-help__tabs button.is-active {
+  border-bottom-color: #1473e6;
+  color: #1267c9;
+}
+
+.customer-returns-help__tabs button:focus-visible {
+  outline: 2px solid #1473e6;
+  outline-offset: 2px;
+}
+
+.customer-returns-help__body {
+  display: grid;
+  gap: 20px;
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.customer-returns-help__body section {
+  display: grid;
+  gap: 10px;
+}
+
+.customer-returns-help__body h3,
+.customer-returns-help__body p,
+.customer-returns-help__body ol,
+.customer-returns-help__body dl {
+  margin: 0;
+}
+
+.customer-returns-help__body h3 {
+  font-size: 16px;
+}
+
+.customer-returns-help__body ol {
+  display: grid;
+  gap: 7px;
+  padding-left: 22px;
+  color: #344054;
+}
+
+.customer-returns-help__body p {
+  color: #526170;
+  line-height: 1.5;
+}
+
+.customer-returns-help__statuses {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.customer-returns-help__statuses > div {
+  padding: 10px 12px;
+  border: 1px solid #e1e7ed;
+  border-radius: 9px;
+  background: #f9fbfc;
+}
+
+.customer-returns-help__statuses dt {
+  color: #1f2d3d;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.customer-returns-help__statuses dd {
+  margin: 4px 0 0;
+  color: #526170;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.customer-returns-help__notice {
+  padding: 12px 14px;
+  border: 1px solid #f0cc67;
+  border-radius: 9px;
+  background: #fff8dc;
+  color: #704d00;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.customer-returns-help__test-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.customer-returns-help__test-values p {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid #d7e5f4;
+  border-radius: 9px;
+  background: #f4f9ff;
+}
+
+.customer-returns-help__test-values code {
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+  border-radius: 5px;
+  background: #e3effd;
+  color: #194d80;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.customer-returns-help__test-values span {
+  color: #526170;
+  font-size: 12px;
+}
+
+.customer-return-detail__backdrop {
+  position: fixed;
+  z-index: 115;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(12 22 33 / 68%);
+}
+
+.customer-return-detail {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(100%, 760px);
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgb(12 22 33 / 30%);
+}
+
+.customer-return-detail__header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #e5ebf0;
+}
+
+.customer-return-detail__body {
+  padding: 0 20px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .customer-returns__registration {
   display: grid;
   grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.5fr) minmax(150px, 1fr) auto;
@@ -4807,6 +5033,78 @@
 
   .customer-returns__return-heading {
     display: grid;
+  }
+
+  .customer-returns-help__backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .customer-returns-help {
+    width: 100%;
+    max-height: calc(100dvh - 12px);
+    border-radius: 16px 16px 0 0;
+  }
+
+  .customer-returns-help__header {
+    align-items: center;
+    padding: 15px 14px 12px;
+  }
+
+  .customer-returns-help__header > div > .logistics-step {
+    display: none;
+  }
+
+  .customer-returns-help__header h2 {
+    font-size: 18px;
+  }
+
+  .customer-returns-help__header p {
+    font-size: 12px;
+  }
+
+  .customer-returns-help__tabs {
+    padding-inline: 14px;
+  }
+
+  .customer-returns-help__tabs button {
+    flex: 1;
+  }
+
+  .customer-returns-help__body {
+    padding: 16px 14px calc(18px + env(safe-area-inset-bottom));
+  }
+
+  .customer-returns-help__statuses,
+  .customer-returns-help__test-values {
+    grid-template-columns: 1fr;
+  }
+
+  .customer-return-detail__backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .customer-return-detail {
+    width: 100%;
+    max-height: calc(100dvh - 12px);
+    border-radius: 16px 16px 0 0;
+  }
+
+  .customer-return-detail__header {
+    padding: 15px 14px 12px;
+  }
+
+  .customer-return-detail__header .logistics-step {
+    display: none;
+  }
+
+  .customer-return-detail__header h2 {
+    font-size: 18px;
+  }
+
+  .customer-return-detail__body {
+    padding: 0 14px calc(18px + env(safe-area-inset-bottom));
   }
 }
 

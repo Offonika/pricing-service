@@ -32,12 +32,17 @@ class ProcurementOrderFormation(Base):
             name="uq_proc_order_formation_bitrix_item",
         ),
         Index("ix_proc_order_formation_status", "status"),
+        Index("ix_proc_order_formation_lifecycle", "lifecycle_status", "order_date"),
+        Index("ix_proc_order_formation_origin", "origin", "order_date"),
+        Index("ix_proc_order_formation_onec_ref", "onec_document_ref"),
         Index("ix_proc_order_formation_supplier", "supplier_ref", "supplier_code"),
         Index("ix_proc_order_formation_onec_status", "onec_status"),
     )
 
     stable_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="generated")
     version: Mapped[int] = mapped_column(nullable=False, default=1)
 
     bitrix_entity_type_id: Mapped[Optional[int]] = mapped_column(nullable=True)
@@ -77,6 +82,18 @@ class ProcurementOrderFormation(Base):
     onec_document_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     onec_document_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     onec_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    onec_posted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    onec_marked: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    supplier_dispatch_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    cargo_dropoff_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expected_receipt_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    onec_ordered_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
+    onec_open_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
+    onec_received_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
+    onec_snapshot_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_onec_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_onec_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    sync_conflict: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     label_onec_document_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     label_onec_document_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     label_source_linked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -135,6 +152,8 @@ class ProcurementOrderFormationLine(Base):
     )
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=Decimal("0"))
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
+    onec_open_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
+    onec_received_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 3), nullable=True)
 
     source_kind: Mapped[str] = mapped_column(String(64), nullable=False, default="automatic")
     explicit_demand: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

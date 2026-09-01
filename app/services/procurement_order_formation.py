@@ -421,10 +421,20 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
     active_lines = [line for line in order.lines if not line.removed]
     line_payloads = [serialize_line(line) for line in order.lines]
     total_amount = sum((line.amount for line in active_lines), Decimal("0"))
+    blockers = order_blockers(order)
+    from app.services.procurement_order_registry import (
+        LIFECYCLE_STATUS_LABELS,
+        lifecycle_display_status,
+    )
+
+    display_status = lifecycle_display_status(order, blockers)
     return {
         "id": order.id,
         "stable_key": order.stable_key,
         "status": order.status,
+        "lifecycle_status": display_status,
+        "lifecycle_status_label": LIFECYCLE_STATUS_LABELS[display_status],
+        "origin": order.origin,
         "version": order.version,
         "bitrix_entity_type_id": order.bitrix_entity_type_id,
         "bitrix_item_id": order.bitrix_item_id,
@@ -459,8 +469,19 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "onec_document_number": order.onec_document_number,
         "onec_document_date": order.onec_document_date,
         "onec_error": order.onec_error,
+        "onec_posted": order.onec_posted,
+        "onec_marked": order.onec_marked,
+        "supplier_dispatch_date": order.supplier_dispatch_date,
+        "cargo_dropoff_date": order.cargo_dropoff_date,
+        "expected_receipt_date": order.expected_receipt_date,
+        "onec_ordered_quantity": order.onec_ordered_quantity,
+        "onec_open_quantity": order.onec_open_quantity,
+        "onec_received_quantity": order.onec_received_quantity,
+        "last_onec_sync_at": order.last_onec_sync_at,
+        "last_onec_seen_at": order.last_onec_seen_at,
+        "sync_conflict": order.sync_conflict,
         "label_source": serialize_order_label_source(order),
-        "blockers": order_blockers(order),
+        "blockers": blockers,
         "blocker_details": order_blocker_details(order),
         "total_amount": total_amount,
         "lines": line_payloads,
@@ -505,6 +526,8 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "nomenclature_name": line.nomenclature_name,
         "recommended_quantity": line.recommended_quantity,
         "final_quantity": line.final_quantity,
+        "onec_open_quantity": line.onec_open_quantity,
+        "onec_received_quantity": line.onec_received_quantity,
         "purchase_price": line.purchase_price,
         "amount": line.amount,
         "currency": line.currency,
@@ -1049,6 +1072,7 @@ def approve_order(
     if blockers:
         raise ValueError("order has blockers: " + "; ".join(blockers))
     order.status = "approved"
+    order.lifecycle_status = "review"
     order.approved_version = order.version
     order.approved_at = datetime.now(UTC).replace(tzinfo=None)
     order.approved_by_actor = session.actor
@@ -1103,9 +1127,11 @@ def transmit_order(
         exchange_root = resolve_ut103_exchange_root(None)
         written_path = write_procurement_supplier_orders_message(exchange_root, message)
         order.status = "transmitting"
+        order.lifecycle_status = "transmitting"
         order.onec_status = "pending"
     else:
         order.status = "draft"
+        order.lifecycle_status = "draft"
         order.onec_status = "dry_run"
     db.commit()
     order = get_order(db, order_id)
@@ -1130,22 +1156,29 @@ def record_order_exchange_result(
         if item is not None and item.onec_document_date
         else None
     )
-    if result.ok and item is not None and document_number:
+    document_ref = str(item.onec_document_ref or "").strip() if item else ""
+    if result.ok and item is not None and document_number and document_ref:
         order.status = "transmitted"
+        order.lifecycle_status = "active"
         order.onec_status = "transmitted"
-        order.onec_document_ref = item.onec_document_ref or None
+        order.onec_document_ref = document_ref
         order.onec_document_number = document_number
         order.onec_document_date = document_date
         order.onec_error = None
     else:
         order.status = "error"
+        order.lifecycle_status = "review"
         order.onec_status = "error"
         if item is not None:
             order.onec_document_ref = item.onec_document_ref or None
             order.onec_document_date = document_date
         order.onec_document_number = None
-        if result.ok and item is not None and not document_number:
-            order.onec_error = MISSING_ONEC_DOCUMENT_NUMBER_ERROR
+        if result.ok and item is not None and (not document_number or not document_ref):
+            order.onec_error = (
+                MISSING_ONEC_DOCUMENT_NUMBER_ERROR
+                if not document_number
+                else "1С вернула номер заказа без GUID; требуется reconciliation"
+            )
         else:
             order.onec_error = result.errors or (item.message if item else "1C transfer failed")
     db.commit()
@@ -1679,6 +1712,7 @@ def invalidate_order_approval(order: ProcurementOrderFormation) -> None:
     order.approved_by_name = None
     if order.status in {"approved", "review", "transmitting", "error"}:
         order.status = "draft"
+        order.lifecycle_status = "draft"
     if order.onec_status not in {"transmitted"}:
         order.onec_status = "not_sent"
         order.onec_message_id = None

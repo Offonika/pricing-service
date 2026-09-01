@@ -10810,6 +10810,13 @@ paths:
           type: string
           default: ''
           title: Status
+      - name: lifecycle_status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Lifecycle Status
       - name: supplier
         in: query
         required: false
@@ -10817,6 +10824,45 @@ paths:
           type: string
           default: ''
           title: Supplier
+      - name: contour
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Contour
+      - name: onec_number
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Onec Number
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: source
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Source
       - name: blockers
         in: query
         required: false
@@ -11003,6 +11049,13 @@ paths:
           type: string
           default: ''
           title: Status
+      - name: lifecycle_status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Lifecycle Status
       - name: supplier
         in: query
         required: false
@@ -11010,6 +11063,45 @@ paths:
           type: string
           default: ''
           title: Supplier
+      - name: contour
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Contour
+      - name: onec_number
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Onec Number
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: source
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Source
       - name: blockers
         in: query
         required: false
@@ -27395,6 +27487,18 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Final Quantity
+        onec_open_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Open Quantity
+        onec_received_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Received Quantity
         purchase_price:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
@@ -27723,6 +27827,15 @@ components:
         status:
           type: string
           title: Status
+        lifecycle_status:
+          type: string
+          title: Lifecycle Status
+        lifecycle_status_label:
+          type: string
+          title: Lifecycle Status Label
+        origin:
+          type: string
+          title: Origin
         version:
           type: integer
           title: Version
@@ -27874,6 +27987,69 @@ components:
           - type: string
           - type: 'null'
           title: Onec Error
+        onec_posted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Onec Posted
+        onec_marked:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Onec Marked
+        supplier_dispatch_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Supplier Dispatch Date
+        cargo_dropoff_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Cargo Dropoff Date
+        expected_receipt_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Expected Receipt Date
+        onec_ordered_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Ordered Quantity
+        onec_open_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Open Quantity
+        onec_received_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Received Quantity
+        last_onec_sync_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Onec Sync At
+        last_onec_seen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Onec Seen At
+        sync_conflict:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Conflict
         label_source:
           anyOf:
           - $ref: '#/components/schemas/ProcurementOrderLabelSourceRead'
@@ -27910,6 +28086,9 @@ components:
       - id
       - stable_key
       - status
+      - lifecycle_status
+      - lifecycle_status_label
+      - origin
       - version
       - supplier_name
       - contract_name
@@ -28191,6 +28370,15 @@ components:
         status:
           type: string
           title: Status
+        lifecycle_status:
+          type: string
+          title: Lifecycle Status
+        lifecycle_status_label:
+          type: string
+          title: Lifecycle Status Label
+        origin:
+          type: string
+          title: Origin
         version:
           type: integer
           title: Version
@@ -28234,11 +28422,75 @@ components:
           - type: string
           - type: 'null'
           title: Onec Document Number
+        onec_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Ref
+        onec_document_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Onec Document Date
         onec_error:
           anyOf:
           - type: string
           - type: 'null'
           title: Onec Error
+        procurement_contour:
+          type: string
+          title: Procurement Contour
+        bitrix_item_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Item Url
+        expected_receipt_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Expected Receipt Date
+        supplier_dispatch_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Supplier Dispatch Date
+        cargo_dropoff_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Cargo Dropoff Date
+        ordered_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Ordered Quantity
+        open_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Open Quantity
+        received_quantity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Received Quantity
+        last_onec_sync_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Onec Sync At
+        sync_conflict:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sync Conflict
         line_count:
           type: integer
           title: Line Count
@@ -28264,6 +28516,9 @@ components:
       - id
       - stable_key
       - status
+      - lifecycle_status
+      - lifecycle_status_label
+      - origin
       - version
       - supplier_name
       - contract_name
@@ -28273,6 +28528,8 @@ components:
       - batch_id
       - order_date
       - onec_status
+      - procurement_contour
+      - ordered_quantity
       - line_count
       - total_quantity
       - total_amount
@@ -28323,6 +28580,11 @@ components:
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Amount
           default: '0'
+        by_status:
+          additionalProperties:
+            type: integer
+          type: object
+          title: By Status
       type: object
       title: ProcurementOrderListSummary
     ProcurementOrderTransmissionResponse:

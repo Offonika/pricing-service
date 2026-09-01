@@ -6,8 +6,9 @@ import type { ProcurementLifecycleTransitionList } from "../api/procurementAssor
 import {
   decideProcurementLifecycleTransition,
   fetchProcurementLifecycleTransitions,
+  fetchProcurementOrders,
 } from "../api/procurementAssortment";
-import { LifecycleQueue } from "./ProcurementOrderFormationWorkspace";
+import { LifecycleQueue, OrdersRegistry } from "./ProcurementOrderFormationWorkspace";
 
 vi.mock("../api/procurementAssortment", () => ({
   approveProcurementClassification: vi.fn(),
@@ -173,5 +174,66 @@ describe("LifecycleQueue manual decision", () => {
       }
     ));
     expect(screen.queryByPlaceholderText("Код 1С (РБ...)")).not.toBeInTheDocument();
+  });
+});
+
+describe("OrdersRegistry", () => {
+  beforeEach(() => {
+    vi.mocked(fetchProcurementOrders).mockReset();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      total: 1,
+      page: 1,
+      page_size: 100,
+      summary: {
+        orders: 1,
+        lines: 2,
+        quantity: "10",
+        amount: "1000",
+        by_status: { partially_received: 1 },
+      },
+      items: [{
+        id: 543,
+        stable_key: "onec:supplier-order:543",
+        status: "transmitted",
+        lifecycle_status: "partially_received",
+        lifecycle_status_label: "Частично поступил",
+        origin: "onec_import",
+        version: 1,
+        supplier_name: "Поставщик 1С",
+        contract_name: "Основной договор",
+        warehouse_name: "Основной склад",
+        currency: "RUB",
+        route: "ordinary",
+        procurement_contour: "ordinary",
+        batch_id: "onec-543",
+        order_date: "2026-08-31",
+        onec_status: "transmitted",
+        onec_document_number: "РБГУ0000543",
+        onec_document_date: "2026-08-31",
+        line_count: 2,
+        ordered_quantity: "10",
+        received_quantity: "4",
+        open_quantity: "6",
+        total_quantity: "10",
+        total_amount: "1000",
+        blockers: [],
+        updated_at: "2026-09-01T08:00:00",
+      }],
+    });
+  });
+
+  afterEach(cleanup);
+
+  it("показывает импортированный заказ и передаёт фильтры единого реестра", async () => {
+    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+
+    expect(await screen.findByText("РБГУ0000543")).toBeInTheDocument();
+    expect(screen.getAllByText("Частично поступил")).toHaveLength(2);
+    expect(screen.getByText("Источник: 1С")).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue("Все контуры"), { target: { value: "ordinary" } });
+
+    await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
+      expect.objectContaining({ contour: "ordinary", page_size: 100 })
+    ));
   });
 });

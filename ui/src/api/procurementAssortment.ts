@@ -324,6 +324,9 @@ export interface ProcurementOrderFormation {
   id: number;
   stable_key: string;
   status: string;
+  lifecycle_status?: string;
+  lifecycle_status_label?: string;
+  origin?: "generated" | "onec_import";
   version: number;
   bitrix_item_id?: string | null;
   supplier_ref?: string | null;
@@ -345,7 +348,18 @@ export interface ProcurementOrderFormation {
   approved_by_name?: string | null;
   onec_status: string;
   onec_document_number?: string | null;
+  onec_document_ref?: string | null;
+  onec_document_date?: string | null;
   onec_error?: string | null;
+  onec_posted?: boolean | null;
+  supplier_dispatch_date?: string | null;
+  cargo_dropoff_date?: string | null;
+  expected_receipt_date?: string | null;
+  onec_ordered_quantity?: string | null;
+  onec_open_quantity?: string | null;
+  onec_received_quantity?: string | null;
+  last_onec_sync_at?: string | null;
+  sync_conflict?: string | null;
   label_source?: ProcurementOrderLabelSource | null;
   blockers: string[];
   blocker_details?: ProcurementBlockerDetail[];
@@ -529,6 +543,9 @@ export interface ProcurementOrderListItem {
   id: number;
   stable_key: string;
   status: string;
+  lifecycle_status: string;
+  lifecycle_status_label: string;
+  origin: "generated" | "onec_import";
   version: number;
   supplier_name: string;
   contract_name: string;
@@ -541,7 +558,19 @@ export interface ProcurementOrderListItem {
   source_run_id?: string | null;
   onec_status: string;
   onec_document_number?: string | null;
+  onec_document_ref?: string | null;
+  onec_document_date?: string | null;
   onec_error?: string | null;
+  procurement_contour: string;
+  bitrix_item_url?: string | null;
+  expected_receipt_date?: string | null;
+  supplier_dispatch_date?: string | null;
+  cargo_dropoff_date?: string | null;
+  ordered_quantity: string;
+  open_quantity?: string | null;
+  received_quantity?: string | null;
+  last_onec_sync_at?: string | null;
+  sync_conflict?: string | null;
   line_count: number;
   total_quantity: string;
   total_amount: string;
@@ -553,7 +582,7 @@ export interface ProcurementOrderList {
   total: number;
   page: number;
   page_size: number;
-  summary: { orders: number; lines: number; quantity: string; amount: string };
+  summary: { orders: number; lines: number; quantity: string; amount: string; by_status: Record<string, number> };
   items: ProcurementOrderListItem[];
 }
 
@@ -735,7 +764,13 @@ export async function decideProcurementLifecycleTransition(
 export interface ProcurementOrderFilters {
   search?: string;
   status?: string;
+  lifecycle_status?: string;
   supplier?: string;
+  contour?: string;
+  onec_number?: string;
+  date_from?: string;
+  date_to?: string;
+  source?: "" | "generated" | "onec_import";
   blockers?: "all" | "with" | "without";
 }
 

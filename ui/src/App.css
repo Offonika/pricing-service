@@ -8942,7 +8942,27 @@
 .registry-toolbar,
 .queue-toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.registry-toolbar {
+  align-items: end;
+}
+
+.registry-toolbar label {
+  display: grid;
+  flex: 0 1 170px;
+  gap: 4px;
+  color: #58677e;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.registry-toolbar label input {
+  box-sizing: border-box;
+  width: 100%;
+  flex: 0 0 auto;
 }
 
 .registry-toolbar input,
@@ -8961,7 +8981,7 @@
 
 .registry-toolbar input,
 .queue-toolbar input {
-  flex: 1 1 360px;
+  flex: 1 1 220px;
 }
 
 .registry-toolbar select,

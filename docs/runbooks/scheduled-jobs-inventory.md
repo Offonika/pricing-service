@@ -39,7 +39,7 @@ updated_at: "2026-08-31"
 | `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | релиз |
 | `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | релиз |
 | `sync_telephony_mapping` | ежедневно 08:35 | релиз |
-| `sync_open_procurement_supplier_orders_to_bitrix` | каждые 30 минут, 08:00–21:59 | релиз |
+| `sync_procurement_order_registry` | каждые 30 минут, 08:00–21:59 | релиз |
 | `manual_matching_bitrix_tasks` | по будням 09:10 | релиз |
 | `pricing-executive-procurement-snapshot` | ежедневно 10:35 | релиз |
 | `pricing-executive-management-balance` | ежедневно 11:40 | релиз |
@@ -119,8 +119,12 @@ immutable source `/opt/MM/pricing-service-task43-current`. Последние д
   `/opt/MM/pricing-service-task43-current`;
 - `manual_matching_bitrix_tasks` временно остаётся в рабочей папке, потому что его
   текущая команда содержит ещё не выпущенное правило исключения ответственных;
-- `sync_open_procurement_supplier_orders_to_bitrix` временно остаётся в рабочей
-  папке, потому что его downstream lead-time pipeline отличается от release.
+- `sync_procurement_order_registry` выполняет единый read-only импорт заказов 1С
+  в `pricing-service`, после чего обновляет связанные карточки Bitrix24. Прежний
+  прямой `sync_open_procurement_supplier_orders_to_bitrix` после cutover отключён.
+- ОТМЕНЕНО (2026-09-01): временное выполнение
+  `sync_open_procurement_supplier_orders_to_bitrix` заменено единым registry-job;
+  прямой импорт `1С → Bitrix24` больше не является активным расписанием.
 
 Эти контуры нельзя переключать на текущий release механически: manual matching
 потеряет правило исключения ответственных, а procurement pipeline вернётся к другой
@@ -129,7 +133,7 @@ release, после чего пути cron переключаются с тем 
 rollback-порядком.
 
 Решение 2026-08-24: для `manual_matching_bitrix_tasks` и
-`sync_open_procurement_supplier_orders_to_bitrix` собирается отдельный clean
+`sync_procurement_order_registry` собирается отдельный clean
 immutable release, сохраняющий текущее правило исключения ответственных и актуальный
 downstream lead-time pipeline. Кандидат строится от активной production-цепочки,
 проходит адресные и обязательные проверки и выкатывается только через

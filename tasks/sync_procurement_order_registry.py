@@ -15,10 +15,14 @@ from app.infrastructure.db.session import get_application_session_factory
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
     ProcurementOrderFormationEvent,
+    ProcurementOrderFormationLine,
 )
+from app.services.bitrix_order_formation import resolve_catalog_products_by_xml_ids
+from app.services.procurement_order_formation import normalize_guid
 from app.services.procurement_order_registry import (
     decimal_value,
     lifecycle_status_for_snapshot,
+    normalize_onec_ref,
     upsert_onec_order_snapshot,
 )
 from scripts.ensure_procurement_bitrix_process import (
@@ -78,13 +82,54 @@ def _known_refs() -> list[str]:
         session.close()
 
 
+def _catalog_product_ids_for_snapshots(session, snapshots: list[dict[str, Any]]) -> dict[str, str]:
+    refs = {
+        normalize_onec_ref(line.get("item_ref_hex") or line.get("nomenclature_ref"))
+        for snapshot in snapshots
+        for line in snapshot.get("lines") or []
+        if str(line.get("item_ref_hex") or line.get("nomenclature_ref") or "").strip()
+    }
+    known = {
+        normalize_onec_ref(nomenclature_ref): str(product_id)
+        for nomenclature_ref, product_id in session.execute(
+            select(
+                ProcurementOrderFormationLine.nomenclature_ref,
+                ProcurementOrderFormationLine.bitrix_product_id,
+            ).where(
+                ProcurementOrderFormationLine.nomenclature_ref.in_(refs),
+                ProcurementOrderFormationLine.bitrix_product_id.is_not(None),
+            )
+        ).all()
+        if str(product_id or "").strip()
+    }
+    unresolved_refs = refs - known.keys()
+    if not unresolved_refs:
+        return known
+
+    resolved = resolve_catalog_products_by_xml_ids(sorted(unresolved_refs))
+    known.update(
+        {
+            raw_ref: product.product_id
+            for raw_ref in unresolved_refs
+            if (product := resolved.get(normalize_guid(raw_ref))) is not None and product.product_id
+        }
+    )
+    return known
+
+
 def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[dict[str, Any]]:
     session = get_application_session_factory()()
     try:
+        catalog_product_ids = _catalog_product_ids_for_snapshots(session, snapshots)
         synced_at = datetime.now(UTC).replace(tzinfo=None)
         rows = []
         for snapshot in snapshots:
-            result = upsert_onec_order_snapshot(session, snapshot, synced_at=synced_at)
+            result = upsert_onec_order_snapshot(
+                session,
+                snapshot,
+                synced_at=synced_at,
+                catalog_product_ids=catalog_product_ids,
+            )
             rows.append(
                 {
                     "action": result.action,

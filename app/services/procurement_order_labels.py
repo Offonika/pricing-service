@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from typing import Any, Iterable
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
@@ -130,10 +131,6 @@ def build_preview_from_rows(
     total_labels = sum(row["quantity"] for row in result_rows)
     separators = max(0, len(result_rows) - 1)
     total_pages = total_labels + separators
-    if total_pages > max_page_count:
-        blockers.append(
-            f"Слишком много страниц: {total_pages}. Максимум для одного файла — {max_page_count}"
-        )
     preview = {
         "order_id": order_id,
         "onec_number": canonical_number,
@@ -144,6 +141,7 @@ def build_preview_from_rows(
         "product_label_count": total_labels,
         "separator_count": separators,
         "total_page_count": total_pages,
+        "export_file_count": len(_split_rows_for_export(result_rows, max_page_count)),
         "ready": not blockers,
         "blockers": blockers,
         "rows": result_rows,
@@ -153,6 +151,65 @@ def build_preview_from_rows(
     else:
         preview["source_checksum"] = ""
     return preview
+
+
+def _split_rows_for_export(
+    rows: Iterable[dict[str, Any]], max_page_count: int
+) -> list[list[dict[str, Any]]]:
+    if max_page_count <= 0:
+        raise ValueError("Лимит страниц должен быть положительным")
+    chunks: list[list[dict[str, Any]]] = []
+    current_rows: list[dict[str, Any]] = []
+    current_page_count = 0
+
+    for source_row in rows:
+        remaining = int(source_row.get("quantity") or 0)
+        while remaining > 0:
+            separator_pages = 1 if current_rows else 0
+            available = max_page_count - current_page_count - separator_pages
+            if available <= 0:
+                chunks.append(current_rows)
+                current_rows = []
+                current_page_count = 0
+                continue
+
+            quantity = min(remaining, available)
+            if current_rows:
+                current_page_count += 1
+            current_rows.append({**source_row, "quantity": quantity})
+            current_page_count += quantity
+            remaining -= quantity
+
+            if remaining > 0:
+                chunks.append(current_rows)
+                current_rows = []
+                current_page_count = 0
+
+    if current_rows:
+        chunks.append(current_rows)
+    return chunks
+
+
+def split_preview_for_export(preview: dict[str, Any]) -> list[dict[str, Any]]:
+    if not preview["ready"]:
+        raise ValueError("Нельзя сформировать этикетки: исправьте ошибки preview")
+    chunks = _split_rows_for_export(preview["rows"], int(preview["max_page_count"]))
+    result: list[dict[str, Any]] = []
+    for rows in chunks:
+        product_label_count = sum(int(row["quantity"]) for row in rows)
+        separator_count = max(0, len(rows) - 1)
+        result.append(
+            {
+                **preview,
+                "rows": rows,
+                "position_count": len(rows),
+                "product_label_count": product_label_count,
+                "separator_count": separator_count,
+                "total_page_count": product_label_count + separator_count,
+                "export_file_count": 1,
+            }
+        )
+    return result
 
 
 def build_order_label_preview(
@@ -400,4 +457,26 @@ def build_xlsx(preview: dict[str, Any]) -> bytes:
             current += 5
     output = BytesIO()
     workbook.save(output)
+    return output.getvalue()
+
+
+def build_export_archive(preview: dict[str, Any], format_: str) -> bytes:
+    if format_ not in {"pdf", "xlsx"}:
+        raise ValueError("Поддерживаются форматы PDF и XLSX")
+    chunks = split_preview_for_export(preview)
+    if len(chunks) < 2:
+        raise ValueError("Архив нужен только для выгрузки из нескольких файлов")
+
+    output = BytesIO()
+    total = len(chunks)
+    number_width = max(2, len(str(total)))
+    base_name = f"supplier-order-{preview['onec_number']}-labels-{preview['label_size']}"
+    builder = build_pdf if format_ == "pdf" else build_xlsx
+    with ZipFile(output, mode="w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
+        for index, chunk in enumerate(chunks, start=1):
+            filename = (
+                f"{base_name}-part-{index:0{number_width}d}-of-"
+                f"{total:0{number_width}d}.{format_}"
+            )
+            archive.writestr(filename, builder(chunk))
     return output.getvalue()

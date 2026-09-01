@@ -90,6 +90,7 @@ from app.services.procurement_order_formation_workspace import (
 )
 from app.services.procurement_order_labels import (
     LabelSourceChangedError,
+    build_export_archive,
     build_order_label_preview,
     ensure_label_source_checksum,
     link_order_label_source,
@@ -611,9 +612,17 @@ def attach_order_label_source(
         raise _service_error(exc) from exc
 
 
-def _content_disposition(*, order_id: int, onec_number: str, size: str, format_: str) -> str:
-    fallback = f"supplier-order-{order_id}-labels-{size}.{format_}"
-    unicode_filename = f"supplier-order-{onec_number}-labels-{size}.{format_}"
+def _content_disposition(
+    *,
+    order_id: int,
+    onec_number: str,
+    size: str,
+    format_: str,
+    archive: bool = False,
+) -> str:
+    suffix = f"-{format_}.zip" if archive else f".{format_}"
+    fallback = f"supplier-order-{order_id}-labels-{size}{suffix}"
+    unicode_filename = f"supplier-order-{onec_number}-labels-{size}{suffix}"
     return (
         f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(unicode_filename, safe="")}'
     )
@@ -628,7 +637,11 @@ def _order_label_download(
 ) -> Response:
     preview = build_order_label_preview(db, order_id, label_size=size, settings=get_settings())
     ensure_label_source_checksum(preview, source_checksum)
-    if format_ == "pdf":
+    archive = preview["export_file_count"] > 1
+    if archive:
+        content = build_export_archive(preview, format_)
+        media_type = "application/zip"
+    elif format_ == "pdf":
         content = build_order_labels_pdf(preview)
         media_type = "application/pdf"
     else:
@@ -643,6 +656,7 @@ def _order_label_download(
                 onec_number=preview["onec_number"],
                 size=size,
                 format_=format_,
+                archive=archive,
             )
         },
     )

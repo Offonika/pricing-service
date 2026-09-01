@@ -4,12 +4,14 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from app.models.procurement_order_formation import ProcurementOrderFormation
+from app.services.procurement_order_formation import line_blockers
 from app.services.procurement_order_formation_workspace import list_orders
 from app.services.procurement_order_registry import (
     lifecycle_status_for_snapshot,
     synchronize_onec_snapshots,
     upsert_onec_order_snapshot,
 )
+from tasks import sync_procurement_order_registry as registry_sync_task
 
 
 def _snapshot(**overrides):
@@ -80,6 +82,82 @@ def test_imported_order_is_created_without_fake_approval(db_session) -> None:
     assert len(order.lines) == 1
     assert order.lines[0].onec_open_quantity == Decimal("10")
     assert order.lines[0].onec_received_quantity == Decimal("0")
+
+
+def test_imported_order_links_bitrix_product_without_false_catalog_blocker(db_session) -> None:
+    result = upsert_onec_order_snapshot(
+        db_session,
+        _snapshot(),
+        catalog_product_ids={
+            "0xdddddddddddddddddddddddddddddddd": "321",
+        },
+    )
+    db_session.commit()
+
+    order = db_session.get(ProcurementOrderFormation, result.order_id)
+    assert order is not None
+    assert order.lines[0].bitrix_product_id == "321"
+    assert "catalog_product_missing" not in line_blockers(order.lines[0])
+    assert "catalog_xml_id_mismatch" not in line_blockers(order.lines[0])
+    assert any(event.event_type == "onec_import_catalog_links_updated" for event in order.events)
+
+
+def test_catalog_lookup_reuses_known_links_and_resolves_only_missing_refs(
+    db_session, monkeypatch
+) -> None:
+    upsert_onec_order_snapshot(
+        db_session,
+        _snapshot(),
+        catalog_product_ids={
+            "0xdddddddddddddddddddddddddddddddd": "321",
+        },
+    )
+    snapshot = _snapshot(
+        lines=[
+            *_snapshot()["lines"],
+            {
+                "line_no": 2,
+                "item_ref_hex": "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                "onec_item_code": "0002",
+                "item_name": "Новый товар",
+                "quantity": Decimal("1"),
+                "open_quantity": Decimal("1"),
+                "price": Decimal("10"),
+                "amount": Decimal("10"),
+            },
+        ]
+    )
+    requested_refs: list[str] = []
+
+    def resolve_missing(refs):
+        requested_refs.extend(refs)
+        return {
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee": type("Product", (), {"product_id": "654"})()
+        }
+
+    monkeypatch.setattr(
+        registry_sync_task,
+        "resolve_catalog_products_by_xml_ids",
+        resolve_missing,
+    )
+
+    result = registry_sync_task._catalog_product_ids_for_snapshots(db_session, [snapshot])
+
+    assert requested_refs == ["0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]
+    assert result == {
+        "0xdddddddddddddddddddddddddddddddd": "321",
+        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "654",
+    }
+
+
+def test_imported_order_without_catalog_readback_is_not_a_transmission_blocker(db_session) -> None:
+    result = upsert_onec_order_snapshot(db_session, _snapshot())
+    db_session.commit()
+
+    order = db_session.get(ProcurementOrderFormation, result.order_id)
+    assert order is not None
+    assert order.lines[0].bitrix_product_id is None
+    assert "catalog_product_missing" not in line_blockers(order.lines[0])
 
 
 def test_repeated_snapshot_updates_same_order_and_tracks_receipt(db_session) -> None:

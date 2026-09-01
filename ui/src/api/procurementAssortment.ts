@@ -396,6 +396,7 @@ export interface ProcurementOrderLabelPreview {
   product_label_count: number;
   separator_count: number;
   total_page_count: number;
+  export_file_count: number;
   ready: boolean;
   blockers: string[];
   rows: ProcurementOrderLabelRow[];
@@ -687,9 +688,13 @@ export async function downloadProcurementOrderLabels(
     { params: { size, source_checksum: sourceChecksum }, responseType: "blob" }
   );
   const disposition = String(response.headers["content-disposition"] || "");
+  const contentType = String(response.headers["content-type"] || "");
+  const fallbackExtension = contentType.includes("application/zip")
+    ? `${format}.zip`
+    : format;
   const filename = filenameFromContentDisposition(
     disposition,
-    `supplier-order-${orderId}-labels-${size}.${format}`
+    `supplier-order-${orderId}-labels-${size}.${fallbackExtension}`
   );
   return { blob: response.data, filename };
 }

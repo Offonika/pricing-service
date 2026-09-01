@@ -28193,6 +28193,9 @@ components:
         total_page_count:
           type: integer
           title: Total Page Count
+        export_file_count:
+          type: integer
+          title: Export File Count
         ready:
           type: boolean
           title: Ready
@@ -28218,6 +28221,7 @@ components:
       - product_label_count
       - separator_count
       - total_page_count
+      - export_file_count
       - ready
       title: ProcurementOrderLabelPreviewRead
     ProcurementOrderLabelRowRead:

@@ -103,6 +103,7 @@ function labelPreview(overrides: Partial<ProcurementOrderLabelPreview> = {}) {
     product_label_count: 2,
     separator_count: 0,
     total_page_count: 2,
+    export_file_count: 1,
     ready: true,
     blockers: [],
     rows: [
@@ -843,7 +844,7 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
   it("показывает каждый blocker отдельным пунктом и блокирует файлы", async () => {
     vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
       ready: false,
-      blockers: ["строка 1: не найден штрихкод 1С", "Слишком много страниц"],
+      blockers: ["строка 1: не найден штрихкод 1С"],
     }));
     render(
       <ProcurementOrderFormationApp
@@ -857,8 +858,68 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
       />
     );
 
-    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
     expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeDisabled();
     expect(screen.queryByLabelText("Полный номер заказа 1С для этикеток")).not.toBeInTheDocument();
+  });
+
+  it("для импортированного заказа показывает источник и скрывает повторную передачу", async () => {
+    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
+      onec_number: "РБГУ0000590",
+    }));
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          origin: "onec_import",
+          batch_id: "onec-РБГУ0000590",
+          onec_document_number: "РБГУ0000590",
+          label_source: {
+            origin: "exchange",
+            onec_number: "РБГУ0000590",
+            onec_date: "2026-08-31",
+          },
+          blockers: ["supplier_contract_missing", "warehouse_missing"],
+          lines: [line({ bitrix_product_id: null, source_kind: "onec_import" })],
+        })}
+      />
+    );
+
+    expect(screen.getByText("Источник").parentElement).toHaveTextContent(
+      "Заказ 1С РБГУ0000590"
+    );
+    expect(screen.queryByText("onec-РБГУ0000590")).not.toBeInTheDocument();
+    expect(screen.queryByText("Передача заблокирована")).not.toBeInTheDocument();
+    expect(screen.getByText("Связь с каталогом Bitrix24 обновляется")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Проверить и создать черновик в 1С" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("разрешает крупный заказ и предупреждает о ZIP-архиве", async () => {
+    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
+      onec_number: "РБГУ0000590",
+      product_label_count: 5765,
+      separator_count: 248,
+      total_page_count: 6013,
+      export_file_count: 7,
+    }));
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          origin: "onec_import",
+          onec_document_number: "РБГУ0000590",
+          label_source: {
+            origin: "exchange",
+            onec_number: "РБГУ0000590",
+            onec_date: "2026-08-31",
+          },
+        })}
+      />
+    );
+
+    expect(await screen.findByText("7 файлов")).toBeInTheDocument();
+    expect(screen.getByText(/до 1000 страниц каждый/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Скачать XLSX" })).toBeEnabled();
   });
 });

@@ -195,11 +195,18 @@ def _event(
     )
 
 
-def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, Any]]) -> None:
+def _sync_lines(
+    order: ProcurementOrderFormation,
+    lines: Sequence[Mapping[str, Any]],
+    *,
+    catalog_product_ids: Mapping[str, str] | None = None,
+) -> list[int]:
     if not lines:
-        return
+        return []
+    catalog_product_ids = catalog_product_ids or {}
     existing = {line.line_number: line for line in order.lines}
     seen: set[int] = set()
+    linked_line_numbers: list[int] = []
     for index, source in enumerate(lines, start=1):
         line_number = int(source.get("line_no") or source.get("line_number") or index)
         seen.add(line_number)
@@ -207,6 +214,7 @@ def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, A
         item_code = str(
             source.get("onec_item_code") or source.get("nomenclature_code") or ""
         ).strip()
+        catalog_product_id = str(catalog_product_ids.get(item_ref) or "").strip() or None
         quantity = decimal_value(source.get("quantity"))
         price = decimal_value(source.get("price"))
         amount = decimal_value(source.get("amount"), quantity * price)
@@ -221,6 +229,7 @@ def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, A
                 order=order,
                 stable_key=f"{order.stable_key}:onec-line:{line_number}",
                 line_number=line_number,
+                bitrix_product_id=catalog_product_id,
                 bitrix_product_xml_id=item_ref or item_code or f"line-{line_number}",
                 nomenclature_ref=item_ref or item_code or f"line-{line_number}",
                 nomenclature_code=item_code or None,
@@ -234,7 +243,10 @@ def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, A
                 payload={},
             )
             order.lines.append(line)
+            if catalog_product_id:
+                linked_line_numbers.append(line_number)
         else:
+            previous_product_id = str(line.bitrix_product_id or "").strip()
             line.nomenclature_ref = item_ref or line.nomenclature_ref
             line.nomenclature_code = item_code or line.nomenclature_code
             line.nomenclature_name = str(source.get("item_name") or line.nomenclature_name)
@@ -244,6 +256,16 @@ def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, A
             line.amount = amount
             line.currency = order.currency
             line.removed = False
+            if catalog_product_id:
+                line.bitrix_product_id = catalog_product_id
+                line.bitrix_product_xml_id = item_ref
+                line.blockers = [
+                    blocker
+                    for blocker in (line.blockers or [])
+                    if blocker not in {"catalog_product_missing", "catalog_xml_id_mismatch"}
+                ]
+                if previous_product_id != catalog_product_id:
+                    linked_line_numbers.append(line_number)
         line.onec_open_quantity = (
             max(open_quantity, Decimal("0")) if open_quantity is not None else None
         )
@@ -263,6 +285,7 @@ def _sync_lines(order: ProcurementOrderFormation, lines: Sequence[Mapping[str, A
         for line_number, line in existing.items():
             if line_number not in seen:
                 line.removed = True
+    return linked_line_numbers
 
 
 def upsert_onec_order_snapshot(
@@ -270,6 +293,7 @@ def upsert_onec_order_snapshot(
     snapshot: Mapping[str, Any],
     *,
     synced_at: datetime | None = None,
+    catalog_product_ids: Mapping[str, str] | None = None,
 ) -> RegistryUpsertResult:
     synced_at = synced_at or datetime.now(UTC).replace(tzinfo=None)
     onec_ref = normalize_onec_ref(snapshot.get("onec_ref"))
@@ -366,7 +390,51 @@ def upsert_onec_order_snapshot(
     order.last_onec_seen_at = synced_at
     order.onec_error = None
     order.sync_conflict = None
-    _sync_lines(order, snapshot.get("lines") or [])
+    linked_line_numbers = _sync_lines(
+        order,
+        snapshot.get("lines") or [],
+        catalog_product_ids=catalog_product_ids,
+    )
+    if linked_line_numbers:
+        link_checksum = hashlib.sha256(
+            json.dumps(
+                sorted(
+                    (line.line_number, str(line.bitrix_product_id or ""))
+                    for line in order.lines
+                    if line.bitrix_product_id
+                ),
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        link_event_key = f"onec-registry-catalog-links:{order.id}:{link_checksum}"
+        if not db.scalar(
+            select(ProcurementOrderFormationEvent).where(
+                ProcurementOrderFormationEvent.idempotency_key == link_event_key
+            )
+        ):
+            db.add(
+                ProcurementOrderFormationEvent(
+                    order_id=order.id,
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    event_type="onec_import_catalog_links_updated",
+                    actor="system:onec-procurement-registry",
+                    idempotency_key=link_event_key,
+                    before={
+                        "linked_line_count": max(
+                            0,
+                            sum(bool(line.bitrix_product_id) for line in order.lines)
+                            - len(linked_line_numbers),
+                        )
+                    },
+                    after={
+                        "linked_line_count": sum(
+                            bool(line.bitrix_product_id) for line in order.lines
+                        )
+                    },
+                    payload={"line_numbers": linked_line_numbers},
+                )
+            )
     after = {
         "lifecycle_status": order.lifecycle_status,
         "onec_snapshot_hash": checksum,
@@ -391,9 +459,21 @@ def upsert_onec_order_snapshot(
 
 
 def synchronize_onec_snapshots(
-    db: Session, snapshots: Sequence[Mapping[str, Any]], *, synced_at: datetime | None = None
+    db: Session,
+    snapshots: Sequence[Mapping[str, Any]],
+    *,
+    synced_at: datetime | None = None,
+    catalog_product_ids: Mapping[str, str] | None = None,
 ) -> list[RegistryUpsertResult]:
     synced_at = synced_at or datetime.now(UTC).replace(tzinfo=None)
-    results = [upsert_onec_order_snapshot(db, item, synced_at=synced_at) for item in snapshots]
+    results = [
+        upsert_onec_order_snapshot(
+            db,
+            item,
+            synced_at=synced_at,
+            catalog_product_ids=catalog_product_ids,
+        )
+        for item in snapshots
+    ]
     db.commit()
     return results

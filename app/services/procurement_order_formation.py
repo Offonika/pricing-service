@@ -1432,11 +1432,19 @@ def order_blockers(order: ProcurementOrderFormation) -> list[str]:
 
 
 def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
-    blockers = list(line.blockers or [])
-    if not str(line.bitrix_product_id or "").strip():
-        blockers.append("catalog_product_missing")
-    if normalize_guid(line.bitrix_product_xml_id) != normalize_guid(line.nomenclature_ref):
-        blockers.append("catalog_xml_id_mismatch")
+    imported_from_onec = line.source_kind == "onec_import"
+    blockers = [
+        blocker
+        for blocker in (line.blockers or [])
+        if not (
+            imported_from_onec and blocker in {"catalog_product_missing", "catalog_xml_id_mismatch"}
+        )
+    ]
+    if not imported_from_onec:
+        if not str(line.bitrix_product_id or "").strip():
+            blockers.append("catalog_product_missing")
+        if normalize_guid(line.bitrix_product_xml_id) != normalize_guid(line.nomenclature_ref):
+            blockers.append("catalog_xml_id_mismatch")
     if line.final_quantity <= 0:
         blockers.append("quantity_must_be_positive")
     if line.purchase_price <= 0:

@@ -59,6 +59,12 @@ from app.services.procurement_order_formation import (
     serialize_proposal,
     status_label,
 )
+from app.services.procurement_order_registry import (
+    LIFECYCLE_STATUS_LABELS as ORDER_LIFECYCLE_STATUS_LABELS,
+)
+from app.services.procurement_order_registry import (
+    lifecycle_display_status,
+)
 from app.services.procurement_supplier_profiles import (
     empty_supplier_profile,
     serialize_supplier_profile,
@@ -142,6 +148,12 @@ ORDER_CALCULATION_EXPORT_HEADERS = (
     "Сумма",
     "Валюта",
     "Статус",
+    "Номер 1С",
+    "Дата 1С",
+    "Контур",
+    "Источник",
+    "Открытый остаток",
+    "Поступило",
     "Партия",
     "Дата заказа",
 )
@@ -761,7 +773,13 @@ def list_orders(
     *,
     search: str = "",
     status: str = "",
+    lifecycle_status: str = "",
     supplier: str = "",
+    contour: str = "",
+    onec_number: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    source: str = "",
     blockers: str = "all",
     page: int = 1,
     page_size: int = 50,
@@ -770,7 +788,13 @@ def list_orders(
         db,
         search=search,
         status=status,
+        lifecycle_status=lifecycle_status,
         supplier=supplier,
+        contour=contour,
+        onec_number=onec_number,
+        date_from=date_from,
+        date_to=date_to,
+        source=source,
         blockers=blockers,
     )
     summary = _orders_summary(filtered)
@@ -1038,14 +1062,26 @@ def build_order_calculation_excel(
     *,
     search: str = "",
     status: str = "",
+    lifecycle_status: str = "",
     supplier: str = "",
+    contour: str = "",
+    onec_number: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    source: str = "",
     blockers: str = "all",
 ) -> bytes:
     orders = _filtered_orders(
         db,
         search=search,
         status=status,
+        lifecycle_status=lifecycle_status,
         supplier=supplier,
+        contour=contour,
+        onec_number=onec_number,
+        date_from=date_from,
+        date_to=date_to,
+        source=source,
         blockers=blockers,
     )
     active_lines = [line for order in orders for line in order.lines if not line.removed]
@@ -1092,7 +1128,15 @@ def build_order_calculation_excel(
                     line.purchase_price,
                     line.amount,
                     line.currency,
-                    ORDER_STATUS_LABELS.get(order.status, order.status),
+                    ORDER_LIFECYCLE_STATUS_LABELS[
+                        lifecycle_display_status(order, order_blockers(order))
+                    ],
+                    order.onec_document_number or "",
+                    order.onec_document_date,
+                    order.procurement_contour,
+                    order.origin,
+                    order.onec_open_quantity,
+                    order.onec_received_quantity,
                     order.batch_id,
                     order.order_date,
                 )
@@ -1108,6 +1152,9 @@ def build_order_calculation_excel(
         row[9].number_format = "#,##0.0000"
         row[10].number_format = "#,##0.00"
         row[14].number_format = "DD.MM.YYYY"
+        row[17].number_format = "0.000"
+        row[18].number_format = "0.000"
+        row[20].number_format = "DD.MM.YYYY"
     for column_number, column_cells in enumerate(worksheet.columns, start=1):
         width = max(len(str(cell.value or "")) for cell in column_cells)
         worksheet.column_dimensions[get_column_letter(column_number)].width = min(
@@ -1124,21 +1171,46 @@ def _filtered_orders(
     *,
     search: str = "",
     status: str = "",
+    lifecycle_status: str = "",
     supplier: str = "",
+    contour: str = "",
+    onec_number: str = "",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    source: str = "",
     blockers: str = "all",
 ) -> list[ProcurementOrderFormation]:
     statement = _order_list_statement()
     orders = list(db.scalars(statement).unique().all())
     search_key = search.strip().casefold()
     supplier_key = supplier.strip().casefold()
+    contour_key = contour.strip().casefold()
+    onec_number_key = onec_number.strip().casefold()
+    source_key = source.strip().casefold()
     filtered: list[ProcurementOrderFormation] = []
     for order in orders:
         order_blocker_list = order_blockers(order)
+        display_status = lifecycle_display_status(order, order_blocker_list)
         if not status and order.status == "superseded":
             continue
         if status and order.status != status:
             continue
+        if lifecycle_status and display_status != lifecycle_status:
+            continue
         if supplier_key and supplier_key not in order.supplier_name.casefold():
+            continue
+        if contour_key and order.procurement_contour.casefold() != contour_key:
+            continue
+        if (
+            onec_number_key
+            and onec_number_key not in str(order.onec_document_number or "").casefold()
+        ):
+            continue
+        if source_key and order.origin.casefold() != source_key:
+            continue
+        if date_from and order.order_date < date_from:
+            continue
+        if date_to and order.order_date > date_to:
             continue
         if blockers == "without" and order_blocker_list:
             continue
@@ -1149,6 +1221,7 @@ def _filtered_orders(
                 [
                     order.supplier_name,
                     order.contract_name,
+                    str(order.onec_document_number or ""),
                     *(line.nomenclature_name for line in order.lines),
                     *(str(line.nomenclature_code or "") for line in order.lines),
                 ]
@@ -1364,10 +1437,16 @@ def serialize_transition(
 
 def serialize_order_list_item(order: ProcurementOrderFormation) -> dict[str, Any]:
     active_lines = [line for line in order.lines if not line.removed]
+    blockers = order_blockers(order)
+    display_status = lifecycle_display_status(order, blockers)
+    total_quantity = sum((line.final_quantity for line in active_lines), Decimal("0"))
     return {
         "id": order.id,
         "stable_key": order.stable_key,
         "status": order.status,
+        "lifecycle_status": display_status,
+        "lifecycle_status_label": ORDER_LIFECYCLE_STATUS_LABELS[display_status],
+        "origin": order.origin,
         "version": order.version,
         "supplier_name": order.supplier_name,
         "contract_name": order.contract_name,
@@ -1380,11 +1459,23 @@ def serialize_order_list_item(order: ProcurementOrderFormation) -> dict[str, Any
         "source_run_id": order.source_run_id,
         "onec_status": order.onec_status,
         "onec_document_number": order.onec_document_number,
+        "onec_document_ref": order.onec_document_ref,
+        "onec_document_date": order.onec_document_date,
         "onec_error": order.onec_error,
+        "procurement_contour": order.procurement_contour,
+        "bitrix_item_url": order.bitrix_item_url,
+        "expected_receipt_date": order.expected_receipt_date,
+        "supplier_dispatch_date": order.supplier_dispatch_date,
+        "cargo_dropoff_date": order.cargo_dropoff_date,
+        "ordered_quantity": order.onec_ordered_quantity or total_quantity,
+        "open_quantity": order.onec_open_quantity,
+        "received_quantity": order.onec_received_quantity,
+        "last_onec_sync_at": order.last_onec_sync_at,
+        "sync_conflict": order.sync_conflict,
         "line_count": len(active_lines),
-        "total_quantity": sum((line.final_quantity for line in active_lines), Decimal("0")),
+        "total_quantity": total_quantity,
         "total_amount": sum((line.amount for line in active_lines), Decimal("0")),
-        "blockers": order_blockers(order),
+        "blockers": blockers,
         "updated_at": order.updated_at,
     }
 
@@ -1739,11 +1830,15 @@ def _order_list_statement():
 def _orders_summary(orders: Iterable[ProcurementOrderFormation]) -> dict[str, Any]:
     orders_list = list(orders)
     active_lines = [line for order in orders_list for line in order.lines if not line.removed]
+    statuses = Counter(
+        lifecycle_display_status(order, order_blockers(order)) for order in orders_list
+    )
     return {
         "orders": len(orders_list),
         "lines": len(active_lines),
         "quantity": sum((line.final_quantity for line in active_lines), Decimal("0")),
         "amount": sum((line.amount for line in active_lines), Decimal("0")),
+        "by_status": dict(statuses),
     }
 
 

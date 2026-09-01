@@ -13,7 +13,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
+from sqlalchemy.engine import Engine
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -220,6 +221,7 @@ def order_from_open_supplier_order_row(
         "date": order_date,
         "onec_source_date": order_date,
         "posted": bool(row.get("posted")),
+        "marked": bool(row.get("marked")),
         "КонтурЗакупки": contour,
         "procurement_contour_key": logical_key,
         "procurement_stage_key": clean(row.get("procurement_stage_key") or row.get("stage_key")),
@@ -249,6 +251,85 @@ def order_from_open_supplier_order_row(
     order["procurement_stage_key"] = procurement_stage_key(logical_key, order)
     order["title"] = build_title(order)
     return order
+
+
+def fetch_supplier_order_lines_by_refs(
+    engine: Engine, refs: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    statement = text("""
+        WITH open_line AS (
+          SELECT
+            bal._Fld7149RRef AS order_ref,
+            bal._Fld7151RRef AS product_ref,
+            SUM(CAST(bal._Fld7156 AS decimal(18, 3))) AS open_quantity
+          FROM dbo._AccumRgT7160 AS bal WITH (NOLOCK)
+          WHERE bal._Period = :balance_period
+          GROUP BY bal._Fld7149RRef, bal._Fld7151RRef
+        )
+        SELECT
+          LOWER(CONVERT(varchar(34), doc._IDRRef, 1)) AS onec_ref,
+          vt._LineNo2516 AS line_no,
+          CONVERT(varchar(34), item._IDRRef, 1) AS item_ref_hex,
+          item._Code AS onec_item_code,
+          item._Description AS item_name,
+          item._Fld836 AS article_1c,
+          item._Fld9945 AS sku,
+          barcode._Fld6984 AS barcode,
+          unit._Description AS unit,
+          CAST(vt._Fld2520 AS decimal(18, 3)) AS quantity,
+          CAST(COALESCE(open_line.open_quantity, 0) AS decimal(18, 3)) AS open_quantity,
+          CAST(vt._Fld2529 AS decimal(18, 4)) AS price,
+          CAST(vt._Fld2526 AS decimal(18, 2)) AS amount
+        FROM dbo._Document133 AS doc WITH (NOLOCK)
+        JOIN dbo._Document133_VT2515 AS vt WITH (NOLOCK)
+          ON vt._Document133_IDRRef = doc._IDRRef
+        LEFT JOIN dbo._Reference62 AS item WITH (NOLOCK)
+          ON item._IDRRef = vt._Fld2523RRef
+        LEFT JOIN dbo._Reference41 AS unit WITH (NOLOCK)
+          ON unit._IDRRef = vt._Fld2517RRef
+        LEFT JOIN open_line
+          ON open_line.order_ref = doc._IDRRef
+         AND open_line.product_ref = vt._Fld2523RRef
+        OUTER APPLY (
+          SELECT TOP 1 LTRIM(RTRIM(barcode_row._Fld6984)) AS _Fld6984
+          FROM dbo._InfoRg6983 AS barcode_row WITH (NOLOCK)
+          WHERE barcode_row._Fld6985_RRRef = item._IDRRef
+            AND LTRIM(RTRIM(barcode_row._Fld6984)) <> ''
+          ORDER BY barcode_row._Fld6984 ASC
+        ) AS barcode
+        WHERE LOWER(CONVERT(varchar(34), doc._IDRRef, 1)) IN :refs
+        ORDER BY onec_ref, vt._LineNo2516
+    """).bindparams(bindparam("refs", expanding=True))
+    result: dict[str, list[dict[str, Any]]] = {}
+    normalized = sorted({clean(value).lower() for value in refs if clean(value)})
+    with engine.connect() as conn:
+        for start in range(0, len(normalized), 500):
+            rows = conn.execute(
+                statement,
+                {
+                    "refs": normalized[start : start + 500],
+                    "balance_period": datetime.fromisoformat(OPEN_BALANCE_PERIOD),
+                },
+            ).mappings()
+            for row in rows:
+                payload = dict(row)
+                result.setdefault(clean(payload.get("onec_ref")).lower(), []).append(payload)
+    return result
+
+
+def attach_supplier_order_lines(
+    engine: Engine, orders: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    lines_by_ref = fetch_supplier_order_lines_by_refs(
+        engine, [clean(order.get("onec_ref")) for order in orders]
+    )
+    for order in orders:
+        lines = lines_by_ref.get(clean(order.get("onec_ref")).lower(), [])
+        order["lines"] = lines
+        order["ordered_qty"] = sum(
+            (Decimal(str(line.get("quantity") or 0)) for line in lines), Decimal("0")
+        )
+    return orders
 
 
 def fetch_open_supplier_orders(
@@ -315,6 +396,7 @@ def fetch_open_supplier_orders(
             NULLIF(LTRIM(RTRIM(doc._Number)), N'') AS number,
             doc._Date_Time AS order_date,
             CASE WHEN doc._Posted = 0x01 THEN 1 ELSE 0 END AS posted,
+            CASE WHEN doc._Marked = 0x01 THEN 1 ELSE 0 END AS marked,
             COALESCE(CONVERT(varchar(34), doc._Fld2498RRef, 1), '') AS supplier_ref,
             COALESCE(supplier_ref._Description, '') AS supplier_name,
             COALESCE(CONVERT(varchar(34), doc._Fld2504RRef, 1), '') AS responsible_ref,
@@ -355,18 +437,111 @@ def fetch_open_supplier_orders(
         """)
     params["balance_period"] = datetime.fromisoformat(OPEN_BALANCE_PERIOD)
     engine = build_engine(onec_database_url, pool_pre_ping=True)
-    with engine.connect() as conn:
-        rows = [dict(row) for row in conn.execute(sql, params).mappings()]
+    try:
+        with engine.connect() as conn:
+            rows = [dict(row) for row in conn.execute(sql, params).mappings()]
+        orders: list[dict[str, Any]] = []
+        for row in rows:
+            order = order_from_open_supplier_order_row(row, allowed_contours=contours)
+            if order:
+                orders.append(order)
+        attach_supplier_order_lines(engine, orders)
+    finally:
+        engine.dispose()
     if fail_on_query_limit and len(rows) >= limit:
         raise RuntimeError(
             f"procurement source query may be truncated: fetched {len(rows)} rows at limit {limit}"
         )
-    orders: list[dict[str, Any]] = []
-    for row in rows:
-        order = order_from_open_supplier_order_row(row, allowed_contours=contours)
-        if order:
-            orders.append(order)
     return orders
+
+
+def fetch_supplier_orders_by_refs(
+    onec_database_url: str,
+    *,
+    refs: list[str],
+    contours: set[str],
+) -> list[dict[str, Any]]:
+    """Refresh known documents even after their open balance reaches zero."""
+
+    normalized_refs = sorted({clean(value).lower() for value in refs if clean(value)})
+    if not normalized_refs:
+        return []
+    statement = text("""
+        WITH open_balance AS (
+            SELECT
+                bal._Fld7149RRef AS order_ref,
+                SUM(CAST(bal._Fld7156 AS decimal(18, 3))) AS open_qty,
+                SUM(CAST(bal._Fld7157 AS decimal(18, 2))) AS open_amount,
+                SUM(CAST(bal._Fld7158 AS decimal(18, 2))) AS open_amount_rub,
+                COUNT(*) AS open_line_count
+            FROM dbo._AccumRgT7160 AS bal WITH (NOLOCK)
+            WHERE bal._Period = :balance_period
+            GROUP BY bal._Fld7149RRef
+        )
+        SELECT
+            CONVERT(varchar(34), doc._IDRRef, 1) AS onec_ref,
+            NULLIF(LTRIM(RTRIM(doc._Number)), N'') AS number,
+            doc._Date_Time AS order_date,
+            CASE WHEN doc._Posted = 0x01 THEN 1 ELSE 0 END AS posted,
+            CASE WHEN doc._Marked = 0x01 THEN 1 ELSE 0 END AS marked,
+            COALESCE(CONVERT(varchar(34), doc._Fld2498RRef, 1), '') AS supplier_ref,
+            COALESCE(supplier_ref._Description, '') AS supplier_name,
+            COALESCE(CONVERT(varchar(34), doc._Fld2504RRef, 1), '') AS responsible_ref,
+            COALESCE(responsible_ref._Description, '') AS responsible_name,
+            COALESCE(CONVERT(varchar(34), doc._Fld2494RRef, 1), '') AS contract_ref,
+            COALESCE(contract_ref._Description, '') AS contract_name,
+            COALESCE(CONVERT(varchar(34), doc._Fld2506RRef, 1), '') AS store_ref,
+            COALESCE(store_ref._Description, '') AS store_name,
+            COALESCE(currency_ref._Description, '') AS currency_name,
+            CAST(COALESCE(open_balance.open_qty, 0) AS decimal(18, 3)) AS open_qty,
+            CAST(COALESCE(open_balance.open_amount, 0) AS decimal(18, 2)) AS open_amount,
+            CAST(COALESCE(open_balance.open_amount_rub, 0) AS decimal(18, 2)) AS open_amount_rub,
+            CAST(COALESCE(open_balance.open_line_count, 0) AS int) AS open_line_count,
+            doc._Fld8851 AS supplier_dispatch_date,
+            doc._Fld8852 AS cargo_dropoff_date,
+            doc._Fld2493 AS expected_receipt_date,
+            doc._Fld2492 AS payment_date,
+            doc._Fld2497 AS comment,
+            contour._EnumOrder AS contour_enum_order
+        FROM dbo._Document133 AS doc WITH (NOLOCK)
+        LEFT JOIN open_balance ON open_balance.order_ref = doc._IDRRef
+        LEFT JOIN dbo._Reference54 AS supplier_ref WITH (NOLOCK)
+            ON supplier_ref._IDRRef = doc._Fld2498RRef
+        LEFT JOIN dbo._Reference69 AS responsible_ref WITH (NOLOCK)
+            ON responsible_ref._IDRRef = doc._Fld2504RRef
+        LEFT JOIN dbo._Reference37 AS contract_ref WITH (NOLOCK)
+            ON contract_ref._IDRRef = doc._Fld2494RRef
+        LEFT JOIN dbo._Reference80 AS store_ref WITH (NOLOCK)
+            ON store_ref._IDRRef = doc._Fld2506RRef
+        LEFT JOIN dbo._Reference20 AS currency_ref WITH (NOLOCK)
+            ON currency_ref._IDRRef = doc._Fld2490RRef
+        LEFT JOIN dbo._Enum10091 AS contour WITH (NOLOCK)
+            ON contour._IDRRef = doc._Fld10092RRef
+        WHERE LOWER(CONVERT(varchar(34), doc._IDRRef, 1)) IN :refs
+    """).bindparams(bindparam("refs", expanding=True))
+    engine = build_engine(onec_database_url, pool_pre_ping=True)
+    try:
+        rows: list[dict[str, Any]] = []
+        with engine.connect() as conn:
+            for start in range(0, len(normalized_refs), 500):
+                rows.extend(
+                    dict(row)
+                    for row in conn.execute(
+                        statement,
+                        {
+                            "refs": normalized_refs[start : start + 500],
+                            "balance_period": datetime.fromisoformat(OPEN_BALANCE_PERIOD),
+                        },
+                    ).mappings()
+                )
+        orders = []
+        for row in rows:
+            order = order_from_open_supplier_order_row(row, allowed_contours=contours)
+            if order:
+                orders.append(order)
+        return attach_supplier_order_lines(engine, orders)
+    finally:
+        engine.dispose()
 
 
 def fetch_supplier_prepare_history(
@@ -395,17 +570,20 @@ def fetch_supplier_prepare_history(
           AND doc._Fld8852 > doc._Date_Time
     """)
     engine = build_engine(onec_database_url, pool_pre_ping=True)
-    with engine.connect() as conn:
-        rows = [
-            dict(row)
-            for row in conn.execute(
-                sql,
-                {
-                    "date_from": datetime.combine(date_from, time.min),
-                    "date_to": datetime.combine(date_to, time.min),
-                },
-            ).mappings()
-        ]
+    try:
+        with engine.connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    sql,
+                    {
+                        "date_from": datetime.combine(date_from, time.min),
+                        "date_to": datetime.combine(date_to, time.min),
+                    },
+                ).mappings()
+            ]
+    finally:
+        engine.dispose()
 
     observations: list[dict[str, Any]] = []
     for row in rows:
@@ -461,11 +639,20 @@ def list_existing_procurement_items(api: Any, mapping: dict[str, Any]) -> list[d
     number_field = crm_item_rest_field_name(field_name(mapping, "onec_source_number"))
     source_type_field = crm_item_rest_field_name(field_name(mapping, "onec_source_type"))
     source_date_field = crm_item_rest_field_name(field_name(mapping, "onec_source_date"))
+    ref_field = crm_item_rest_field_name(field_name(mapping, "onec_document_ref"))
     if not entity_type_id or not number_field:
         return []
     select = [
         field
-        for field in ["id", "title", number_field, source_type_field, source_date_field]
+        for field in [
+            "id",
+            "title",
+            "xmlId",
+            ref_field,
+            number_field,
+            source_type_field,
+            source_date_field,
+        ]
         if field
     ]
     items: list[dict[str, Any]] = []
@@ -490,6 +677,22 @@ def list_existing_procurement_items(api: Any, mapping: dict[str, Any]) -> list[d
 def prefetched_procurement_item_id(
     existing_items: list[dict[str, Any]], order: dict[str, Any], mapping: dict[str, Any]
 ) -> str:
+    onec_ref = clean(order.get("onec_ref")).lower()
+    ref_field = crm_item_rest_field_name(field_name(mapping, "onec_document_ref"))
+    if onec_ref:
+        matched_by_ref = {
+            clean(item.get("id"))
+            for item in existing_items
+            if clean(item.get("id"))
+            and (
+                (ref_field and clean(item.get(ref_field)).lower() == onec_ref)
+                or clean(item.get("xmlId")).lower() == f"onec:supplier-order:{onec_ref}"
+            )
+        }
+        if len(matched_by_ref) == 1:
+            return next(iter(matched_by_ref))
+        if len(matched_by_ref) > 1:
+            raise RuntimeError(f"Найдено несколько Bitrix-карточек для GUID 1С {onec_ref!r}")
     number_field = crm_item_rest_field_name(field_name(mapping, "onec_source_number"))
     number = source_number(order)
     if not number_field or not number:

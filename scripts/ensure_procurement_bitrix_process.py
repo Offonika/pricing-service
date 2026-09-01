@@ -91,6 +91,18 @@ PAYMENT_TASK_STATUS_ENUM = [
     {"value": "Ошибка", "xml_id": "error"},
 ]
 
+ORDER_LIFECYCLE_STATUS_ENUM = [
+    {"value": "Черновик", "xml_id": "draft"},
+    {"value": "На проверке", "xml_id": "review"},
+    {"value": "Заблокирован", "xml_id": "blocked"},
+    {"value": "Передаётся в 1С", "xml_id": "transmitting"},
+    {"value": "Активен", "xml_id": "active"},
+    {"value": "В пути", "xml_id": "in_transit"},
+    {"value": "Частично поступил", "xml_id": "partially_received"},
+    {"value": "Поступил", "xml_id": "received"},
+    {"value": "Отменён", "xml_id": "cancelled"},
+]
+
 AUTO_ORDER_DECISION_ENUM = [
     {"value": "К заказу", "xml_id": "order"},
     {"value": "Ручная проверка", "xml_id": "manual_review"},
@@ -708,6 +720,14 @@ CUSTOM_FIELD_SPECS = [
         "edit_in_list": True,
     },
     {
+        "logical_key": "onec_document_ref",
+        "title": "1С GUID заказа поставщику",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": False,
+    },
+    {
         "logical_key": "onec_source_date",
         "title": "1С дата документа",
         "type": "datetime",
@@ -722,6 +742,39 @@ CUSTOM_FIELD_SPECS = [
         "required": False,
         "searchable": False,
         "edit_in_list": True,
+    },
+    {
+        "logical_key": "order_lifecycle_status",
+        "title": "Статус заказа",
+        "type": "enumeration",
+        "enum": ORDER_LIFECYCLE_STATUS_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "ordered_quantity",
+        "title": "Заказано",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "open_quantity",
+        "title": "Открытый остаток",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "received_quantity",
+        "title": "Поступило",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": False,
     },
     {
         "logical_key": "supplier_company",

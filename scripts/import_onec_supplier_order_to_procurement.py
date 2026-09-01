@@ -460,8 +460,12 @@ def add_order_scalar_fields(
         "pilot_batch_id": clean_string(order.get("pilot_batch_id") or order.get("batch_id")),
         "onec_source_type": clean_string(order.get("source_type") or "ЗаказПоставщику"),
         "onec_source_number": source_number(order),
+        "onec_document_ref": clean_string(order.get("onec_ref")),
         "onec_source_date": iso_value(order.get("date") or order.get("onec_source_date")),
         "onec_posted": order.get("posted"),
+        "ordered_quantity": order.get("ordered_qty"),
+        "open_quantity": order.get("open_qty"),
+        "received_quantity": order.get("received_qty"),
         "currency": clean_string(order.get("currency")),
         "amount": order.get("amount"),
         "planned_warehouse": clean_string(order.get("planned_warehouse") or order.get("warehouse")),
@@ -477,6 +481,13 @@ def add_order_scalar_fields(
         target = field_name(mapping, logical_key)
         if target:
             fields[target] = value
+    onec_ref = clean_string(order.get("onec_ref"))
+    if onec_ref:
+        fields["xmlId"] = f"onec:supplier-order:{onec_ref.lower()}"
+    lifecycle = clean_string(order.get("lifecycle_status"))
+    lifecycle_field = field_name(mapping, "order_lifecycle_status")
+    if lifecycle and lifecycle_field:
+        fields[lifecycle_field] = enum_value(mapping, "order_lifecycle_status", lifecycle)
 
 
 def payment_field_updates(

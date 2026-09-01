@@ -21,7 +21,7 @@ import {
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
-import { procurementBlockerSummaryLabel, procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -76,14 +76,21 @@ const MANUAL_STATUS_LEGACY_LABELS: Record<string, string> = {
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
-  draft: "На подтверждении",
+  draft: "Черновик",
   review: "На проверке",
-  approved: "Проверен",
-  transmitting: "Передача в 1С",
-  transmitted: "Передан в 1С",
-  deferred: "Отложен",
-  superseded: "Заменён новым расчётом",
-  error: "Ошибка",
+  blocked: "Заблокирован",
+  transmitting: "Передаётся в 1С",
+  active: "Активен",
+  in_transit: "В пути",
+  partially_received: "Частично поступил",
+  received: "Поступил",
+  cancelled: "Отменён",
+};
+
+const ORDER_CONTOUR_LABELS: Record<string, string> = {
+  ordinary: "Обычный",
+  cargo: "Карго",
+  ved_import: "ВЭД импорт",
 };
 
 const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
@@ -189,6 +196,14 @@ function dateTime(value?: string | null) {
         hour: "2-digit",
         minute: "2-digit",
       }).format(parsed);
+}
+
+function dateOnly(value?: string | null) {
+  if (!value) return "—";
+  const parsed = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : new Intl.DateTimeFormat("ru-RU").format(parsed);
 }
 
 function lifecycleFactLabel(key: string) {
@@ -966,38 +981,53 @@ export function LifecycleQueue({
   );
 }
 
-function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => void }) {
+export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => void }) {
   const [data, setData] = useState<ProcurementOrderList | null>(null);
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("");
+  const [lifecycleStatus, setLifecycleStatus] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [contour, setContour] = useState("");
+  const [onecNumber, setOnecNumber] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [source, setSource] = useState<"" | "generated" | "onec_import">("");
   const [blockers, setBlockers] = useState<"all" | "with" | "without">("all");
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const filters = useMemo(() => ({
+    search: search || undefined,
+    lifecycle_status: lifecycleStatus || undefined,
+    supplier: supplier || undefined,
+    contour: contour || undefined,
+    onec_number: onecNumber || undefined,
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+    source: source || undefined,
+    blockers,
+  }), [blockers, contour, dateFrom, dateTo, lifecycleStatus, onecNumber, search, source, supplier]);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      setData(await fetchProcurementOrders({ search, status, blockers, page_size: 100 }));
+      setData(await fetchProcurementOrders({ ...filters, page_size: 100 }));
     } catch (requestError) {
       setError(errorText(requestError));
     }
-  }, [blockers, search, status]);
+  }, [filters]);
 
   useEffect(() => {
     let cancelled = false;
-    fetchProcurementOrders({ search, status, blockers, page_size: 100 })
+    fetchProcurementOrders({ ...filters, page_size: 100 })
       .then((response) => { if (!cancelled) setData(response); })
       .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
     return () => { cancelled = true; };
-  }, [blockers, search, status]);
+  }, [filters]);
 
   const downloadExcel = async () => {
     setDownloading(true);
     try {
       const { blob, filename } = await exportProcurementOrdersExcel({
-        search,
-        status,
-        blockers,
+        ...filters,
       });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1020,17 +1050,33 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
   return (
     <main className="order-workspace__content">
       <section className="registry-summary">
-        <div><span>Заказов на подтверждение</span><strong>{data.summary.orders}</strong></div>
-        <div><span>Позиций</span><strong>{data.summary.lines}</strong></div>
-        <div><span>Количество</span><strong>{number(data.summary.quantity)}</strong></div>
+        <div><span>Заказов</span><strong>{data.summary.orders}</strong></div>
+        <div><span>Активных</span><strong>{data.summary.by_status.active || 0}</strong></div>
+        <div><span>В пути</span><strong>{data.summary.by_status.in_transit || 0}</strong></div>
+        <div><span>Частично поступило</span><strong>{data.summary.by_status.partially_received || 0}</strong></div>
         <div><span>Сумма</span><strong>{money(data.summary.amount)}</strong></div>
       </section>
       <section className="registry-toolbar">
-        <input onChange={(event) => setSearch(event.target.value)} placeholder="Поиск по поставщику или товару" value={search} />
-        <select onChange={(event) => setStatus(event.target.value)} value={status}>
+        <input onChange={(event) => setSearch(event.target.value)} placeholder="Товар или общий поиск" value={search} />
+        <input onChange={(event) => setSupplier(event.target.value)} placeholder="Поставщик" value={supplier} />
+        <input onChange={(event) => setOnecNumber(event.target.value)} placeholder="Номер 1С" value={onecNumber} />
+        <select onChange={(event) => setLifecycleStatus(event.target.value)} value={lifecycleStatus}>
           <option value="">Все статусы</option>
           {Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
+        <select onChange={(event) => setContour(event.target.value)} value={contour}>
+          <option value="">Все контуры</option>
+          <option value="ordinary">Обычный</option>
+          <option value="cargo">Карго</option>
+          <option value="ved_import">ВЭД импорт</option>
+        </select>
+        <select onChange={(event) => setSource(event.target.value as typeof source)} value={source}>
+          <option value="">Все источники</option>
+          <option value="generated">Создано в приложении</option>
+          <option value="onec_import">Импортировано из 1С</option>
+        </select>
+        <label>С <input aria-label="Заказы с даты" onChange={(event) => setDateFrom(event.target.value)} type="date" value={dateFrom} /></label>
+        <label>По <input aria-label="Заказы по дату" onChange={(event) => setDateTo(event.target.value)} type="date" value={dateTo} /></label>
         <select onChange={(event) => setBlockers(event.target.value as typeof blockers)} value={blockers}>
           <option value="all">Все проверки</option>
           <option value="without">Без блокеров</option>
@@ -1043,24 +1089,33 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
       {data.items.length === 0 ? <div className="order-workspace__empty">Заказы не сформированы.</div> : (
         <div className="order-workspace__table-wrap">
           <table className="order-workspace__table order-registry__table">
-            <thead><tr><th>Поставщик / условия</th><th>Поз.</th><th>Кол-во</th><th>Сумма</th><th>Проверка</th><th>Действие</th></tr></thead>
+            <thead><tr><th>Заказ 1С</th><th>Поставщик / условия</th><th>Статус</th><th>Заказано / поступило / открыто</th><th>Ожидаем</th><th>Сумма</th><th>Действие</th></tr></thead>
             <tbody>
               {data.items.map((order) => (
                 <tr key={order.id}>
                   <td>
+                    <strong>{order.onec_document_number || `Проект №${order.id}`}</strong>
+                    <small>{dateOnly(order.onec_document_date || order.order_date)}</small>
+                    <small>{order.origin === "onec_import" ? "Источник: 1С" : "Источник: приложение"}</small>
+                  </td>
+                  <td>
                     <strong>{order.supplier_name}</strong>
                     <small>{order.contract_name} · {order.warehouse_name}</small>
-                    <small>{order.route} · партия {order.batch_id}</small>
+                    <small>{ORDER_CONTOUR_LABELS[order.procurement_contour] || order.procurement_contour} · {order.line_count} поз.</small>
                   </td>
-                  <td>{order.line_count}</td>
-                  <td>{number(order.total_quantity)}</td>
+                  <td>
+                    <span className={`state-pill ${order.lifecycle_status === "blocked" || order.sync_conflict ? "state-pill--blocked" : "state-pill--ready"}`}>
+                      {order.lifecycle_status_label}
+                    </span>
+                    {(order.sync_conflict || order.onec_error) && <small>{order.sync_conflict || order.onec_error}</small>}
+                  </td>
+                  <td><strong>{number(order.ordered_quantity)}</strong><small>{number(order.received_quantity || 0)} / {number(order.open_quantity ?? order.ordered_quantity)}</small></td>
+                  <td>{dateOnly(order.expected_receipt_date)}<small>{order.cargo_dropoff_date ? `Cargo: ${dateOnly(order.cargo_dropoff_date)}` : ""}</small></td>
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
-                    <span className={`state-pill ${order.blockers.length ? "state-pill--blocked" : "state-pill--ready"}`}>
-                      {order.blockers.length ? procurementBlockerSummaryLabel(order.blockers) : "готов"}
-                    </span>
+                    <button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button>
+                    {order.bitrix_item_url && <a className="btn btn--ghost btn--small" href={order.bitrix_item_url} rel="noreferrer" target="_blank">Bitrix24</a>}
                   </td>
-                  <td><button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button></td>
                 </tr>
               ))}
             </tbody>

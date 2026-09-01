@@ -168,6 +168,8 @@ class ProcurementOrderFormationLineRead(BaseModel):
     nomenclature_name: str
     recommended_quantity: Decimal
     final_quantity: Decimal
+    onec_open_quantity: Decimal | None = None
+    onec_received_quantity: Decimal | None = None
     purchase_price: Decimal
     amount: Decimal
     currency: str
@@ -308,6 +310,9 @@ class ProcurementOrderFormationRead(BaseModel):
     id: int
     stable_key: str
     status: str
+    lifecycle_status: str
+    lifecycle_status_label: str
+    origin: str
     version: int
     bitrix_entity_type_id: int | None = None
     bitrix_item_id: str | None = None
@@ -342,6 +347,17 @@ class ProcurementOrderFormationRead(BaseModel):
     onec_document_number: str | None = None
     onec_document_date: date | None = None
     onec_error: str | None = None
+    onec_posted: bool | None = None
+    onec_marked: bool | None = None
+    supplier_dispatch_date: date | None = None
+    cargo_dropoff_date: date | None = None
+    expected_receipt_date: date | None = None
+    onec_ordered_quantity: Decimal | None = None
+    onec_open_quantity: Decimal | None = None
+    onec_received_quantity: Decimal | None = None
+    last_onec_sync_at: datetime | None = None
+    last_onec_seen_at: datetime | None = None
+    sync_conflict: str | None = None
     label_source: ProcurementOrderLabelSourceRead | None = None
     blockers: list[str] = Field(default_factory=list)
     blocker_details: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
@@ -687,6 +703,9 @@ class ProcurementOrderListItem(BaseModel):
     id: int
     stable_key: str
     status: str
+    lifecycle_status: str
+    lifecycle_status_label: str
+    origin: str
     version: int
     supplier_name: str
     contract_name: str
@@ -699,7 +718,19 @@ class ProcurementOrderListItem(BaseModel):
     source_run_id: str | None = None
     onec_status: str
     onec_document_number: str | None = None
+    onec_document_ref: str | None = None
+    onec_document_date: date | None = None
     onec_error: str | None = None
+    procurement_contour: str
+    bitrix_item_url: str | None = None
+    expected_receipt_date: date | None = None
+    supplier_dispatch_date: date | None = None
+    cargo_dropoff_date: date | None = None
+    ordered_quantity: Decimal
+    open_quantity: Decimal | None = None
+    received_quantity: Decimal | None = None
+    last_onec_sync_at: datetime | None = None
+    sync_conflict: str | None = None
     line_count: int
     total_quantity: Decimal
     total_amount: Decimal
@@ -712,6 +743,7 @@ class ProcurementOrderListSummary(BaseModel):
     lines: int = 0
     quantity: Decimal = Decimal("0")
     amount: Decimal = Decimal("0")
+    by_status: dict[str, int] = Field(default_factory=dict)
 
 
 class ProcurementOrderListResponse(BaseModel):

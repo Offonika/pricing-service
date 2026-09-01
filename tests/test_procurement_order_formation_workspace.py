@@ -312,7 +312,7 @@ def test_order_calculation_excel_contains_classification_and_active_filtered_lin
         "Дисплей iPhone тестовый",
         "ART-001",
     )
-    assert exported_rows[1][5:15] == (
+    assert exported_rows[1][5:21] == (
         "Поставщик Excel",
         "Основной договор",
         "Центральный склад",
@@ -320,7 +320,13 @@ def test_order_calculation_excel_contains_classification_and_active_filtered_lin
         1250.5,
         3751.5,
         "RUB",
-        "На подтверждении",
+        "Черновик",
+        None,
+        None,
+        "ordinary",
+        "generated",
+        None,
+        None,
         "2026-08-01",
         datetime(2026, 8, 1),
     )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from io import BytesIO
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 from fastapi import HTTPException
@@ -155,6 +157,7 @@ def test_manual_label_source_endpoint_commits_audit_event(monkeypatch) -> None:
         "product_label_count": 1,
         "separator_count": 0,
         "total_page_count": 1,
+        "export_file_count": 1,
         "ready": True,
         "blockers": [],
         "rows": [
@@ -201,6 +204,47 @@ def test_manual_label_source_endpoint_commits_audit_event(monkeypatch) -> None:
     assert recorded["event_type"] == "label_source_linked"
     assert recorded["after"] == source
     assert result.preview.source_checksum == "a" * 64
+
+
+def test_large_label_download_returns_zip_with_part_files(monkeypatch) -> None:
+    from app.services.procurement_order_labels import build_preview_from_rows
+
+    preview = build_preview_from_rows(
+        order_id=14,
+        onec_number="РБГУ0000590",
+        onec_date=date(2026, 8, 31),
+        label_size="50x40",
+        rows=[
+            {
+                "line_no": 1,
+                "onec_item_code": "0001",
+                "item_name": "Товар",
+                "article_1c": "A-1",
+                "barcode": "460000000001",
+                "quantity": 4,
+            }
+        ],
+        max_page_count=3,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "build_order_label_preview",
+        lambda *_args, **_kwargs: preview,
+    )
+
+    response = api_module._order_label_download(
+        14,
+        "50x40",
+        "pdf",
+        preview["source_checksum"],
+        object(),
+    )
+
+    assert response.headers["content-type"] == "application/zip"
+    assert "supplier-order-14-labels-50x40-pdf.zip" in response.headers["content-disposition"]
+    with ZipFile(BytesIO(response.body)) as archive:
+        assert len(archive.namelist()) == 2
+        assert archive.namelist()[0].endswith("part-01-of-02.pdf")
 
 
 def test_lifecycle_approval_schema_limits_batch_to_100() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from io import BytesIO
 from types import SimpleNamespace
+from zipfile import ZipFile
 
 import pytest
 from openpyxl import load_workbook
@@ -14,12 +15,14 @@ from app.services.procurement_order_labels import (
     LabelSourceChangedError,
     _label_image,
     _order_marker,
+    build_export_archive,
     build_order_label_preview,
     build_pdf,
     build_preview_from_rows,
     build_xlsx,
     ensure_label_source_checksum,
     link_order_label_source,
+    split_preview_for_export,
 )
 
 
@@ -115,7 +118,7 @@ def test_xlsx_contains_one_visual_block_per_product_label(
     assert sheet.row_dimensions[11].height > 200
 
 
-def test_preview_blocks_more_than_configured_page_limit() -> None:
+def test_preview_splits_more_than_configured_page_limit() -> None:
     preview = build_preview_from_rows(
         order_id=1,
         onec_number="РБГУ0000543",
@@ -134,9 +137,97 @@ def test_preview_blocks_more_than_configured_page_limit() -> None:
         max_page_count=1000,
     )
 
-    assert preview["ready"] is False
+    assert preview["ready"] is True
     assert preview["total_page_count"] == 1001
-    assert any("Максимум" in blocker for blocker in preview["blockers"])
+    assert preview["export_file_count"] == 2
+    assert preview["blockers"] == []
+
+    chunks = split_preview_for_export(preview)
+
+    assert [chunk["total_page_count"] for chunk in chunks] == [1000, 1]
+    assert sum(chunk["product_label_count"] for chunk in chunks) == 1001
+
+
+def test_split_uses_separators_only_between_positions_inside_each_file() -> None:
+    preview = build_preview_from_rows(
+        order_id=1,
+        onec_number="РБГУ0000590",
+        onec_date=date(2026, 8, 31),
+        label_size="50x40",
+        rows=[
+            {"line_no": 1, "barcode": "1", "quantity": 1},
+            {"line_no": 2, "barcode": "2", "quantity": 1},
+            {"line_no": 3, "barcode": "3", "quantity": 1},
+        ],
+        max_page_count=3,
+    )
+
+    chunks = split_preview_for_export(preview)
+
+    assert [chunk["total_page_count"] for chunk in chunks] == [3, 1]
+    assert sum(chunk["product_label_count"] for chunk in chunks) == 3
+    assert sum(chunk["separator_count"] for chunk in chunks) == 1
+
+
+def test_known_large_order_shape_produces_seven_files() -> None:
+    rows = [
+        {
+            "line_no": line_no,
+            "onec_item_code": str(line_no),
+            "item_name": f"Товар {line_no}",
+            "barcode": str(line_no),
+            "quantity": 5517 if line_no == 1 else 1,
+        }
+        for line_no in range(1, 250)
+    ]
+    preview = build_preview_from_rows(
+        order_id=94,
+        onec_number="РБГУ0000590",
+        onec_date=date(2026, 8, 31),
+        label_size="50x40",
+        rows=rows,
+        max_page_count=1000,
+    )
+
+    chunks = split_preview_for_export(preview)
+
+    assert preview["position_count"] == 249
+    assert preview["product_label_count"] == 5765
+    assert preview["total_page_count"] == 6013
+    assert preview["export_file_count"] == 7
+    assert len(chunks) == 7
+    assert all(chunk["total_page_count"] <= 1000 for chunk in chunks)
+
+
+@pytest.mark.parametrize(
+    ("format_", "signature"),
+    (("pdf", b"%PDF-1.4"), ("xlsx", b"PK")),
+)
+def test_multi_file_export_is_a_named_zip_archive(format_: str, signature: bytes) -> None:
+    preview = build_preview_from_rows(
+        order_id=1,
+        onec_number="РБГУ0000590",
+        onec_date=date(2026, 8, 31),
+        label_size="40x30",
+        rows=[
+            {
+                "line_no": 1,
+                "onec_item_code": "0001",
+                "item_name": "Товар",
+                "article_1c": "A-1",
+                "barcode": "460000000001",
+                "quantity": 4,
+            }
+        ],
+        max_page_count=3,
+    )
+
+    with ZipFile(BytesIO(build_export_archive(preview, format_))) as archive:
+        assert archive.namelist() == [
+            f"supplier-order-РБГУ0000590-labels-40x30-part-01-of-02.{format_}",
+            f"supplier-order-РБГУ0000590-labels-40x30-part-02-of-02.{format_}",
+        ]
+        assert all(archive.read(name).startswith(signature) for name in archive.namelist())
 
 
 def test_download_checksum_detects_changed_onec_rows() -> None:

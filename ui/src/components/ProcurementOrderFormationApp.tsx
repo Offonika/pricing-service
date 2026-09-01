@@ -291,6 +291,10 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
       }
     : null);
   const labelSourceNumber = labelSource?.onec_number || "";
+  const importedFromOnec = order.origin === "onec_import";
+  const importedOnecNumber = order.onec_document_number
+    || labelSourceNumber
+    || order.batch_id.replace(/^onec-/i, "");
 
   useEffect(() => {
     if (!focusLineId || !focusedLineRef.current) return;
@@ -778,6 +782,12 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
           {labelPreview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
         </ul>
       ) : null}
+      {labelPreview?.ready && labelPreview.export_file_count > 1 ? (
+        <p className="order-formation__labels-setup-hint">
+          Будет создан архив: <strong>{labelPreview.export_file_count} файлов</strong>,
+          до {labelPreview.max_page_count} страниц каждый.
+        </p>
+      ) : null}
       {labelPreview?.rows.length ? (
         <details className="order-formation__labels-rows">
           <summary>Состав этикеток по позициям</summary>
@@ -836,7 +846,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         <div><span>Договор</span><strong>{order.contract_name}</strong></div>
         <div><span>Склад</span><strong>{order.warehouse_name}</strong></div>
         <div><span>Маршрут</span><strong>{ROUTE_LABELS[order.route] || "Не определён"}</strong></div>
-        <div><span>Партия</span><strong>{order.batch_id}</strong></div>
+        {importedFromOnec
+          ? <div><span>Источник</span><strong>Заказ 1С {importedOnecNumber}</strong></div>
+          : <div><span>Партия</span><strong>{order.batch_id}</strong></div>}
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
 
@@ -895,7 +907,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         </section>
       )}
 
-      {(blockerDetailGroups.length > 0 || blockerGroups.length > 0) && (
+      {!importedFromOnec && (blockerDetailGroups.length > 0 || blockerGroups.length > 0) && (
         <section className="order-formation__alert">
           <strong>Передача заблокирована</strong>
           <ul>
@@ -1385,7 +1397,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         <strong>Итого: {money(String(draftTotal), order.currency)}</strong>
         <span>1С: {ONEC_STATUS_LABELS[order.onec_status] || "Статус не определён"}</span>
         {order.approved_by_name && <span>Согласовал: {order.approved_by_name}</span>}
-        {!locked && (
+        {!locked && !importedFromOnec && (
           <div className="order-formation__submit-action">
             <button
               aria-describedby={order.blockers.length > 0 ? "order-submit-blocked-hint" : undefined}

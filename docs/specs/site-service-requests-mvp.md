@@ -1086,6 +1086,24 @@ outbound, site Agent и site emit/outbound остались выключены.
 11. Включить новые тикеты сайта для пилота онлайн-отдела.
 12. Первые 3 рабочих дня ежедневно проверять pending lag, ошибки, SLA и дубли.
 
+Production status на 2026-09-01:
+
+- active immutable release `task3223-conversation-ux-20260901-v2`, source commit
+  `8e298a60f97063d42428c17d21ab93f800307494`; release-controller и smoke зелёные;
+- форма category 55 процесса 1134 применена с обязательным readback:
+  `uxMismatches=[]`, управляемые legacy/technical fields в форме отсутствуют,
+  неизвестные пользовательские разделы сохранены;
+- `UI_REPLIES_ENABLED=true` только для write-allowlist `115204,131016`;
+  `LEGACY_FIELD_REPLIES_ENABLED=false`, исходящие вложения и backfill выключены;
+- controlled smoke через тикет `760` создал ровно одну command `4`: site ACK
+  подтвердил message `1788` с первой попытки, повтор того же `clientRequestId`
+  вернул `duplicate=true`, обратное site-event обработано без ошибки;
+- новый ответ клиента после smoke технически не имитировался: его проверка требует
+  реального ответа из личного кабинета; до этого allowlist не расширять;
+- worker-health исправен, но общий health остаётся `degraded` из-за двух старых
+  email dead-letter от 2026-08-26; они не относятся к UI-rollout и требуют
+  отдельного безопасного разбора без автоматической перепривязки писем.
+
 Rollback:
 
 - сначала выключить site emit и outbound reply feature flags;
@@ -1098,6 +1116,11 @@ Rollback:
 
 # Changelog
 
+- 2026-09-01 — по явному разрешению выполнен production-пилот единой вкладки:
+  release `8e298a6`, форма 1134 и readback применены, UI-запись включена только
+  для `115204,131016`, legacy/attachments выключены; тикет `760` получил один
+  ответ command `4` / message `1788`, idempotent retry не создал дубль, обратное
+  событие обработано. Расширение allowlist отложено до реального ответа клиента.
 - 2026-09-01 — production readback выявил ограничение Bitrix Box: для уже
   существующего dynamic user field портал немедленно возвращает `showInList=Y`
   после успешного update с `N` или `false`. Ensure сохраняет fail-closed

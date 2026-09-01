@@ -9157,6 +9157,19 @@
   background: #fffafa;
 }
 
+.order-registry__row--blocked {
+  background: #fff6f6;
+  box-shadow: inset 4px 0 0 #d94a57;
+}
+
+.order-registry__row--blocked:hover {
+  background: #ffeded;
+}
+
+.order-registry__blocker-pill {
+  margin-top: 7px;
+}
+
 .state-pill,
 .transition-pill {
   display: inline-flex;

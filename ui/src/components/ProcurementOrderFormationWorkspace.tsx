@@ -33,6 +33,64 @@ type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "histo
 const LIFECYCLE_READINESS = ["all", "ready", "review", "blocked", "stale"] as const;
 type LifecycleReadiness = (typeof LIFECYCLE_READINESS)[number];
 
+type OrderRegistrySource = "" | "generated" | "onec_import";
+type OrderRegistryBlockers = "all" | "with" | "without";
+
+interface OrderRegistryViewState {
+  page: number;
+  search: string;
+  lifecycleStatus: string;
+  supplier: string;
+  contour: string;
+  onecNumber: string;
+  dateFrom: string;
+  dateTo: string;
+  source: OrderRegistrySource;
+  blockers: OrderRegistryBlockers;
+}
+
+const ORDER_REGISTRY_VIEW_STATE_KEY = "pricing.procurement.orders-registry-view.v1";
+const DEFAULT_ORDER_REGISTRY_VIEW_STATE: OrderRegistryViewState = {
+  page: 1,
+  search: "",
+  lifecycleStatus: "",
+  supplier: "",
+  contour: "",
+  onecNumber: "",
+  dateFrom: "",
+  dateTo: "",
+  source: "",
+  blockers: "all",
+};
+
+function readOrderRegistryViewState(): OrderRegistryViewState {
+  try {
+    const raw = window.sessionStorage.getItem(ORDER_REGISTRY_VIEW_STATE_KEY);
+    if (!raw) return DEFAULT_ORDER_REGISTRY_VIEW_STATE;
+    const value = JSON.parse(raw) as Partial<OrderRegistryViewState>;
+    const source = ["", "generated", "onec_import"].includes(String(value.source || ""))
+      ? String(value.source || "") as OrderRegistrySource
+      : "";
+    const blockers = ["all", "with", "without"].includes(String(value.blockers || ""))
+      ? String(value.blockers) as OrderRegistryBlockers
+      : "all";
+    return {
+      page: Number.isInteger(value.page) && Number(value.page) > 0 ? Number(value.page) : 1,
+      search: typeof value.search === "string" ? value.search : "",
+      lifecycleStatus: typeof value.lifecycleStatus === "string" ? value.lifecycleStatus : "",
+      supplier: typeof value.supplier === "string" ? value.supplier : "",
+      contour: typeof value.contour === "string" ? value.contour : "",
+      onecNumber: typeof value.onecNumber === "string" ? value.onecNumber : "",
+      dateFrom: typeof value.dateFrom === "string" ? value.dateFrom : "",
+      dateTo: typeof value.dateTo === "string" ? value.dateTo : "",
+      source,
+      blockers,
+    };
+  } catch {
+    return DEFAULT_ORDER_REGISTRY_VIEW_STATE;
+  }
+}
+
 type WorkspaceRoute =
   | { kind: "tab"; tab: WorkspaceTab }
   | {
@@ -983,19 +1041,38 @@ export function LifecycleQueue({
 
 export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => void }) {
   const [data, setData] = useState<ProcurementOrderList | null>(null);
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
-  const [lifecycleStatus, setLifecycleStatus] = useState("");
-  const [supplier, setSupplier] = useState("");
-  const [contour, setContour] = useState("");
-  const [onecNumber, setOnecNumber] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [source, setSource] = useState<"" | "generated" | "onec_import">("");
-  const [blockers, setBlockers] = useState<"all" | "with" | "without">("all");
+  const [viewState, setViewState] = useState<OrderRegistryViewState>(readOrderRegistryViewState);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
-  const [debouncedTextFilters, setDebouncedTextFilters] = useState({ search: "", supplier: "", onecNumber: "" });
+  const [debouncedTextFilters, setDebouncedTextFilters] = useState(() => ({
+    search: viewState.search,
+    supplier: viewState.supplier,
+    onecNumber: viewState.onecNumber,
+  }));
+  const {
+    page,
+    search,
+    lifecycleStatus,
+    supplier,
+    contour,
+    onecNumber,
+    dateFrom,
+    dateTo,
+    source,
+    blockers,
+  } = viewState;
+
+  const updateFilters = useCallback((patch: Partial<OrderRegistryViewState>) => {
+    setViewState((current) => ({ ...current, ...patch, page: 1 }));
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(ORDER_REGISTRY_VIEW_STATE_KEY, JSON.stringify(viewState));
+    } catch {
+      // WebView может запрещать storage; реестр остаётся рабочим без сохранения состояния.
+    }
+  }, [viewState]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1075,27 +1152,27 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
         <div><span>Сумма</span><strong>{money(data.summary.amount)}</strong></div>
       </section>
       <section className="registry-toolbar">
-        <input onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Товар или общий поиск" value={search} />
-        <input onChange={(event) => { setSupplier(event.target.value); setPage(1); }} placeholder="Поставщик" value={supplier} />
-        <input onChange={(event) => { setOnecNumber(event.target.value); setPage(1); }} placeholder="Номер 1С" value={onecNumber} />
-        <select onChange={(event) => { setLifecycleStatus(event.target.value); setPage(1); }} value={lifecycleStatus}>
+        <input onChange={(event) => updateFilters({ search: event.target.value })} placeholder="Товар или общий поиск" value={search} />
+        <input onChange={(event) => updateFilters({ supplier: event.target.value })} placeholder="Поставщик" value={supplier} />
+        <input onChange={(event) => updateFilters({ onecNumber: event.target.value })} placeholder="Номер 1С" value={onecNumber} />
+        <select onChange={(event) => updateFilters({ lifecycleStatus: event.target.value })} value={lifecycleStatus}>
           <option value="">Все статусы</option>
           {Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <select onChange={(event) => { setContour(event.target.value); setPage(1); }} value={contour}>
+        <select onChange={(event) => updateFilters({ contour: event.target.value })} value={contour}>
           <option value="">Все контуры</option>
           <option value="ordinary">Обычный</option>
           <option value="cargo">Карго</option>
           <option value="ved_import">ВЭД импорт</option>
         </select>
-        <select onChange={(event) => { setSource(event.target.value as typeof source); setPage(1); }} value={source}>
+        <select onChange={(event) => updateFilters({ source: event.target.value as OrderRegistrySource })} value={source}>
           <option value="">Все источники</option>
           <option value="generated">Создано в приложении</option>
           <option value="onec_import">Импортировано из 1С</option>
         </select>
-        <label>С <input aria-label="Заказы с даты" onChange={(event) => { setDateFrom(event.target.value); setPage(1); }} type="date" value={dateFrom} /></label>
-        <label>По <input aria-label="Заказы по дату" onChange={(event) => { setDateTo(event.target.value); setPage(1); }} type="date" value={dateTo} /></label>
-        <select onChange={(event) => { setBlockers(event.target.value as typeof blockers); setPage(1); }} value={blockers}>
+        <label>С <input aria-label="Заказы с даты" onChange={(event) => updateFilters({ dateFrom: event.target.value })} type="date" value={dateFrom} /></label>
+        <label>По <input aria-label="Заказы по дату" onChange={(event) => updateFilters({ dateTo: event.target.value })} type="date" value={dateTo} /></label>
+        <select onChange={(event) => updateFilters({ blockers: event.target.value as OrderRegistryBlockers })} value={blockers}>
           <option value="all">Все проверки</option>
           <option value="without">Без блокеров</option>
           <option value="with">С блокерами</option>
@@ -1109,8 +1186,10 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
           <table className="order-workspace__table order-registry__table">
             <thead><tr><th>Заказ 1С</th><th>Поставщик / условия</th><th>Статус</th><th>Заказано / поступило / открыто</th><th>Ожидаем</th><th>Сумма</th><th>Действие</th></tr></thead>
             <tbody>
-              {data.items.map((order) => (
-                <tr key={order.id}>
+              {data.items.map((order) => {
+                const blockerCount = order.blockers?.length || 0;
+                return (
+                <tr className={blockerCount > 0 ? "order-registry__row--blocked" : ""} key={order.id}>
                   <td>
                     <strong>{order.onec_document_number || `Проект №${order.id}`}</strong>
                     <small>{dateOnly(order.onec_document_date || order.order_date)}</small>
@@ -1125,6 +1204,11 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                     <span className={`state-pill ${order.lifecycle_status === "blocked" || order.sync_conflict ? "state-pill--blocked" : "state-pill--ready"}`}>
                       {order.lifecycle_status_label}
                     </span>
+                    {blockerCount > 0 && (
+                      <span className="state-pill state-pill--blocked order-registry__blocker-pill">
+                        С блокерами: {blockerCount}
+                      </span>
+                    )}
                     {(order.sync_conflict || order.onec_error) && <small>{order.sync_conflict || order.onec_error}</small>}
                   </td>
                   <td><strong>{number(order.ordered_quantity)}</strong><small>{number(order.received_quantity || 0)} / {number(order.open_quantity ?? order.ordered_quantity)}</small></td>
@@ -1135,7 +1219,8 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                     {order.bitrix_item_url && <a className="btn btn--ghost btn--small" href={order.bitrix_item_url} rel="noreferrer" target="_blank">Bitrix24</a>}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1146,8 +1231,8 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
           <small>Показано {data.items.length} из {data.total} заказов.</small>
         </div>
         <div>
-          <button className="btn btn--ghost" disabled={page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))} type="button">Назад</button>
-          <button className="btn btn--ghost" disabled={page * data.page_size >= data.total} onClick={() => setPage((current) => current + 1)} type="button">Вперёд</button>
+          <button className="btn btn--ghost" disabled={page <= 1} onClick={() => setViewState((current) => ({ ...current, page: Math.max(1, current.page - 1) }))} type="button">Назад</button>
+          <button className="btn btn--ghost" disabled={page * data.page_size >= data.total} onClick={() => setViewState((current) => ({ ...current, page: current.page + 1 }))} type="button">Вперёд</button>
         </div>
       </footer>
     </main>

@@ -373,7 +373,11 @@ fallback, но не основным сценарием работы в CRM. С�
 `canAttachFiles` отдельно отражает разрешение исходящих вложений. Все mutation
 endpoints повторно проверяют ID сотрудника из подписанной item-scoped session по
 `SITE_SERVICE_REQUESTS_UI_WRITE_ALLOWED_USER_IDS`; пустой список работает
-fail-closed. Для первого пилота разрешены только `115204` и `131016`, вложения
+fail-closed. ОТМЕНЕНО (2026-09-01): ограничение первого пилота только
+`115204` и `131016`; после успешного controlled smoke write-allowlist
+расширен до всего текущего view-allowlist: `115204`, `132252`, `12587`,
+`131016`, `130904`. Новые пользователи портала автоматически право
+записи не получают. Legacy-ответы, исходящие вложения и backfill
 остаются выключены.
 
 Для защиты от конкурентного редактирования outbound worker использует hash-guard
@@ -1088,21 +1092,27 @@ outbound, site Agent и site emit/outbound остались выключены.
 
 Production status на 2026-09-01:
 
-- active immutable release `task3223-conversation-ux-20260901-v2`, source commit
-  `8e298a60f97063d42428c17d21ab93f800307494`; release-controller и smoke зелёные;
+- active immutable release `unified-procurement-orders-20260901`, source commit
+  `8b3cac24fd260f65db0f4e1c96cd8a5bf5812008`; manifest подтверждает обязательную
+  базу №3223 `8e298a60f97063d42428c17d21ab93f800307494`;
 - форма category 55 процесса 1134 применена с обязательным readback:
   `uxMismatches=[]`, управляемые legacy/technical fields в форме отсутствуют,
   неизвестные пользовательские разделы сохранены;
-- `UI_REPLIES_ENABLED=true` только для write-allowlist `115204,131016`;
+- `UI_REPLIES_ENABLED=true` для write-allowlist
+  `115204,132252,12587,131016,130904`; список точно совпадает с
+  текущим view-allowlist, но не расширяется автоматически;
   `LEGACY_FIELD_REPLIES_ENABLED=false`, исходящие вложения и backfill выключены;
 - controlled smoke через тикет `760` создал ровно одну command `4`: site ACK
   подтвердил message `1788` с первой попытки, повтор того же `clientRequestId`
   вернул `duplicate=true`, обратное site-event обработано без ошибки;
-- новый ответ клиента после smoke технически не имитировался: его проверка требует
-  реального ответа из личного кабинета; до этого allowlist не расширять;
-- worker-health исправен, но общий health остаётся `degraded` из-за двух старых
-  email dead-letter от 2026-08-26; они не относятся к UI-rollout и требуют
-  отдельного безопасного разбора без автоматической перепривязки писем.
+- ОТМЕНЕНО (2026-09-01): не расширять allowlist до реального ответа
+  клиента из личного кабинета; по решению пользователя право ответа
+  открыто всем пяти уже допущенным к просмотру сотрудникам;
+- worker-health исправен: нет pending events/commands, worker failure/stale и
+  consecutive failures. Общий health остаётся `degraded` из-за двух старых email
+  dead-letter от 2026-08-26 и одного существующего outbound `ticket_not_found`;
+  эти ошибки не относятся к расширению UI-allowlist и требуют отдельного
+  безопасного разбора без автоматической перепривязки писем или повторной отправки.
 
 Rollback:
 
@@ -1116,6 +1126,13 @@ Rollback:
 
 # Changelog
 
+- 2026-09-01 — после успешного controlled smoke по решению пользователя
+  UI write-allowlist расширен до всего текущего view-allowlist:
+  `115204,132252,12587,131016,130904`; автоматический допуск новых
+  пользователей запрещён, legacy-ответы, вложения и backfill остались
+  выключены. Live readback подтвердил `canReply=true` и `canAttachFiles=false`
+  для всех пяти пользователей, `canReply=false` и mutation `403` вне списка;
+  очереди пусты, worker исправен, клиентские сообщения не отправлялись.
 - 2026-09-01 — по явному разрешению выполнен production-пилот единой вкладки:
   release `8e298a6`, форма 1134 и readback применены, UI-запись включена только
   для `115204,131016`, legacy/attachments выключены; тикет `760` получил один

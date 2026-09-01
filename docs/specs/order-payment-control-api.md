@@ -17,7 +17,6 @@ contracts:
 depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
   - docs/specs/site-order-fulfillment-control-contour.md
-  - docs/IntegrationContract.OrderAssemblyQueue1C.md
 supersedes: []
 rollout_required: true
 updated_at: "2026-09-01"

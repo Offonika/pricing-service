@@ -68,7 +68,7 @@ def _bitrix_settings() -> Settings:
     )
 
 
-def test_bitrix_matching_page_inlines_built_assets(
+def test_bitrix_matching_page_keeps_vite_assets_external_for_split_chunks(
     matching_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -76,7 +76,11 @@ def test_bitrix_matching_page_inlines_built_assets(
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
     (assets_dir / "index-test.js").write_text(
-        'console.log("matching loaded");',
+        'import "./split-test.js"; console.log("matching loaded");',
+        encoding="utf-8",
+    )
+    (assets_dir / "split-test.js").write_text(
+        'console.log("split chunk loaded");',
         encoding="utf-8",
     )
     (assets_dir / "index-test.css").write_text(
@@ -101,10 +105,10 @@ def test_bitrix_matching_page_inlines_built_assets(
     response = matching_client.get("/bitrix/matching/")
 
     assert response.status_code == 200
-    assert 'src="./assets/' not in response.text
-    assert 'href="./assets/' not in response.text
-    assert '<script type="module">console.log("matching loaded");</script>' in response.text
-    assert "<style>.matching-root{display:block}</style>" in response.text
+    assert 'src="./assets/index-test.js"' in response.text
+    assert 'href="./assets/index-test.css"' in response.text
+    assert 'import "./split-test.js"' not in response.text
+    assert ".matching-root{display:block}" not in response.text
     assert "window.__MM_BITRIX_LAUNCH__" in response.text
 
 

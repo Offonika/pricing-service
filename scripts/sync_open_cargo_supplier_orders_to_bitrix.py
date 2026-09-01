@@ -21,6 +21,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.infrastructure.db.engines import build_engine  # noqa: E402
+from app.infrastructure.db.session import session_scope  # noqa: E402
+from app.services.procurement_order_process_link import (  # noqa: E402
+    ProcurementProcessCardSnapshot,
+    reconcile_procurement_order_process_links,
+)
 from app.services.procurement_supplier_crm import (  # noqa: E402
     normalize_procurement_contour,
     procurement_stage_key,
@@ -74,6 +79,7 @@ READ_ONLY_BITRIX_METHODS = {
     "crm.contact.get",
     "crm.duplicate.findbycomm",
     "crm.item.list",
+    "crm.status.list",
 }
 
 
@@ -648,6 +654,8 @@ def list_existing_procurement_items(api: Any, mapping: dict[str, Any]) -> list[d
             "id",
             "title",
             "xmlId",
+            "categoryId",
+            "stageId",
             ref_field,
             number_field,
             source_type_field,
@@ -672,6 +680,25 @@ def list_existing_procurement_items(api: Any, mapping: dict[str, Any]) -> list[d
             break
         start = int(next_start)
     return items
+
+
+def list_procurement_stage_names(api: Any, mapping: dict[str, Any]) -> dict[str, str]:
+    entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+    names: dict[str, str] = {}
+    for category in (mapping.get("category_map") or {}).values():
+        category_id = int((category or {}).get("id") or 0)
+        if not entity_type_id or not category_id:
+            continue
+        payload = api.call(
+            "crm.status.list",
+            {"filter": {"ENTITY_ID": f"DYNAMIC_{entity_type_id}_STAGE_{category_id}"}},
+        )
+        rows = payload.get("result") if isinstance(payload, dict) else []
+        for row in rows if isinstance(rows, list) else []:
+            stage_id = clean(row.get("STATUS_ID"))
+            if stage_id:
+                names[stage_id] = clean(row.get("NAME"))
+    return names
 
 
 def prefetched_procurement_item_id(
@@ -748,6 +775,7 @@ def run_bitrix_import(
     base_api = BitrixRestApi(webhook_base)
     api = base_api if apply else CachedBitrixApi(base_api)
     existing_items = list_existing_procurement_items(api, mapping)
+    stage_names = list_procurement_stage_names(api, mapping)
     supplier_results: dict[str, dict[str, Any]] = {}
     used_batch_ids: set[str] = set()
     rows: list[dict[str, Any]] = []
@@ -778,6 +806,7 @@ def run_bitrix_import(
                 existing_item_id=existing_id,
                 used_batch_ids=used_batch_ids,
             )
+            row["stage_name"] = stage_names.get(clean(row.get("stage_id")), "")
             if not apply:
                 row["existing_item_id"] = existing_id
                 row["would_action"] = "update" if existing_id else "create"
@@ -794,6 +823,45 @@ def run_bitrix_import(
                 }
             )
     return rows
+
+
+def reconcile_result_rows(
+    result_rows: list[dict[str, Any]], *, database_url: str
+) -> dict[str, int]:
+    cards: list[ProcurementProcessCardSnapshot] = []
+    for row in result_rows:
+        if clean(row.get("action")) in {"blocked", "dry_run_update_or_create"}:
+            continue
+        item_id = clean(row.get("item_id"))
+        onec_ref = clean(row.get("onec_ref"))
+        if not item_id or not onec_ref:
+            continue
+        raw_date = clean(row.get("onec_date"))[:10]
+        try:
+            onec_date = date.fromisoformat(raw_date) if raw_date else None
+        except ValueError:
+            onec_date = None
+        cards.append(
+            ProcurementProcessCardSnapshot(
+                item_id=item_id,
+                onec_ref=onec_ref,
+                onec_number=clean(row.get("source_number")),
+                onec_date=onec_date,
+                category_id=int(row["category_id"]) if row.get("category_id") else None,
+                stage_id=clean(row.get("stage_id")),
+                stage_name=clean(row.get("stage_name")),
+                entity_type_id=int(row.get("entity_type_id") or 0),
+            )
+        )
+    if not cards:
+        return {"checked": 0, "linked": 0, "unchanged": 0, "broken": 0}
+    with session_scope(database_url=database_url) as db:
+        return reconcile_procurement_order_process_links(
+            db,
+            cards,
+            actor="system:open-procurement-bitrix-sync",
+            mark_missing=False,
+        )
 
 
 def summarize(orders: list[dict[str, Any]], result_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -865,6 +933,14 @@ def main(argv: list[str] | None = None) -> int:
         "rows": result_rows,
         "summary": summarize(orders, result_rows),
     }
+    if args.apply and result_rows:
+        database_url = clean(env.get("DATABASE_URL"))
+        if not database_url:
+            raise SystemExit(f"DATABASE_URL is not configured in {args.env_file}")
+        result["link_reconciliation"] = reconcile_result_rows(
+            result_rows,
+            database_url=database_url,
+        )
     write_json(args.result_path, result)
     print(json.dumps({"mode": mode, "summary": result["summary"]}, ensure_ascii=False, indent=2))
     return 0

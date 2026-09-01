@@ -523,7 +523,6 @@ def read_events(
 @router.get(
     "/orders/by-bitrix/{item_id}",
     response_model=ProcurementOrderFormationRead,
-    include_in_schema=False,
 )
 def read_order_by_bitrix_item(
     item_id: str,

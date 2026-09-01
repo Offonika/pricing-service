@@ -49,7 +49,10 @@ class ProcurementOrderFormation(Base):
     bitrix_item_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     bitrix_category_id: Mapped[Optional[int]] = mapped_column(nullable=True)
     bitrix_stage_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bitrix_stage_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     bitrix_item_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    bitrix_link_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    bitrix_link_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     supplier_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     supplier_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

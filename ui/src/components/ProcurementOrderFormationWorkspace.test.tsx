@@ -2,13 +2,22 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
-import type { ProcurementLifecycleTransitionList } from "../api/procurementAssortment";
+import type {
+  ProcurementLifecycleTransitionList,
+  ProcurementOrderFormation,
+} from "../api/procurementAssortment";
 import {
   decideProcurementLifecycleTransition,
   fetchProcurementLifecycleTransitions,
+  fetchProcurementOrderFormation,
   fetchProcurementOrders,
 } from "../api/procurementAssortment";
-import { LifecycleQueue, OrdersRegistry } from "./ProcurementOrderFormationWorkspace";
+import { openBitrixProcurementProcess } from "../api/bitrix";
+import {
+  LifecycleQueue,
+  OrdersRegistry,
+  ProcurementOrderFormationWorkspace,
+} from "./ProcurementOrderFormationWorkspace";
 
 vi.mock("../api/procurementAssortment", () => ({
   approveProcurementClassification: vi.fn(),
@@ -20,7 +29,12 @@ vi.mock("../api/procurementAssortment", () => ({
   fetchProcurementEvents: vi.fn(),
   fetchProcurementLifecycleTransitions: vi.fn(),
   fetchProcurementOrder: vi.fn(),
+  fetchProcurementOrderFormation: vi.fn(),
   fetchProcurementOrders: vi.fn(),
+}));
+
+vi.mock("../api/bitrix", () => ({
+  openBitrixProcurementProcess: vi.fn(),
 }));
 
 vi.mock("./ProcurementOrderAssistant", () => ({
@@ -28,7 +42,9 @@ vi.mock("./ProcurementOrderAssistant", () => ({
 }));
 
 vi.mock("./ProcurementOrderFormationApp", () => ({
-  ProcurementOrderFormationApp: () => null,
+  ProcurementOrderFormationApp: ({ initialOrder }: { initialOrder: { id: number } }) => (
+    <div>Карточка заказа #{initialOrder.id}</div>
+  ),
 }));
 
 vi.mock("react-hot-toast", () => ({
@@ -78,6 +94,51 @@ function lifecycleQueue(): ProcurementLifecycleTransitionList {
     }],
   };
 }
+
+function linkedOrder(): ProcurementOrderFormation {
+  return {
+    id: 431,
+    stable_key: "onec:supplier-order:595",
+    status: "transmitted",
+    lifecycle_status: "active",
+    lifecycle_status_label: "Активен",
+    origin: "onec_import",
+    version: 1,
+    linked_process: {
+      state: "linked",
+      process_title: "Закупка/Заказ",
+      entity_type_id: 1056,
+      item_id: "324",
+    },
+    supplier_name: "Поставщик",
+    contract_name: "Договор",
+    currency: "RUB",
+    warehouse_name: "Склад",
+    procurement_contour: "cargo",
+    route: "ordinary",
+    batch_id: "onec-595",
+    order_date: "2026-09-01",
+    calculation_id: "onec-import:595",
+    onec_status: "transmitted",
+    blockers: [],
+    total_amount: "1000",
+    lines: [],
+    manual_status_options: {},
+  };
+}
+
+describe("ProcurementOrderFormationWorkspace placement", () => {
+  afterEach(cleanup);
+
+  it("открывает тот же заказ по ID карточки смарт-процесса", async () => {
+    vi.mocked(fetchProcurementOrderFormation).mockResolvedValue(linkedOrder());
+
+    render(<ProcurementOrderFormationWorkspace bitrixItemId="324" bitrixUserName="Закупщик" />);
+
+    expect(await screen.findByText("Карточка заказа #431")).toBeInTheDocument();
+    expect(fetchProcurementOrderFormation).toHaveBeenCalledWith("324");
+  });
+});
 
 describe("LifecycleQueue manual decision", () => {
   beforeEach(() => {
@@ -206,6 +267,16 @@ describe("OrdersRegistry", () => {
         currency: "RUB",
         route: "ordinary",
         procurement_contour: "ordinary",
+        linked_process: {
+          state: "linked",
+          process_title: "Закупка/Заказ",
+          entity_type_id: 1056,
+          item_id: "324",
+          category_id: 53,
+          category_name: "Карго",
+          stage_id: "DT1056_53:PAYREQ",
+          stage_name: "Заявка на оплату / оплата в работе",
+        },
         batch_id: "onec-543",
         order_date: "2026-08-31",
         onec_status: "transmitted",
@@ -231,6 +302,9 @@ describe("OrdersRegistry", () => {
     expect(await screen.findByText("РБГУ0000543")).toBeInTheDocument();
     expect(screen.getAllByText("Частично поступил")).toHaveLength(2);
     expect(screen.getByText("Источник: 1С")).toBeInTheDocument();
+    expect(screen.queryByText("Bitrix24")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть процесс" }));
+    expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
     fireEvent.change(screen.getByDisplayValue("Все контуры"), { target: { value: "ordinary" } });
 
     await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
@@ -252,6 +326,11 @@ describe("OrdersRegistry", () => {
         lifecycle_status_label: "Черновик",
         onec_document_number: null,
         onec_document_date: null,
+        linked_process: {
+          state: "not_created",
+          process_title: "Закупка/Заказ",
+          entity_type_id: 1056,
+        },
         blockers: ["line_1:catalog_product_missing", "line_2:quantity_must_be_positive"],
       }],
     });
@@ -260,6 +339,7 @@ describe("OrdersRegistry", () => {
 
     const project = await screen.findByText("Проект №543");
     expect(screen.getByText("С блокерами: 2")).toBeInTheDocument();
+    expect(screen.getByText("Процесс появится после создания документа в 1С")).toBeInTheDocument();
     expect(project.closest("tr")).toHaveClass("order-registry__row--blocked");
   });
 

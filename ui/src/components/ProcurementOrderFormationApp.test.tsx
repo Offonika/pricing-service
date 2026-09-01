@@ -20,6 +20,7 @@ import {
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
+import { openBitrixProcurementProcess } from "../api/bitrix";
 
 vi.mock("../api/procurementAssortment", () => ({
   applyProcurementSupplierDistribution: vi.fn(),
@@ -38,6 +39,10 @@ vi.mock("../api/procurementAssortment", () => ({
 
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
+}));
+
+vi.mock("../api/bitrix", () => ({
+  openBitrixProcurementProcess: vi.fn(),
 }));
 
 function line(overrides: Partial<ProcurementOrderFormationLine> = {}) {
@@ -141,6 +146,44 @@ async function proposePension() {
 const versionConflict = {
   response: { status: 409, data: { detail: "order version changed; refresh the order" } },
 };
+
+describe("ProcurementOrderFormationApp связанный процесс", () => {
+  afterEach(cleanup);
+
+  it("показывает стадию и открывает процесс без кнопки Bitrix24", async () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "linked",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+        item_id: "324",
+        category_id: 53,
+        category_name: "Карго",
+        stage_id: "DT1056_53:PAYREQ",
+        stage_name: "Заявка на оплату / оплата в работе",
+      },
+    })} />);
+
+    expect(screen.getByText("Закупка/Заказ №324")).toBeInTheDocument();
+    expect(screen.getByText("Заявка на оплату / оплата в работе")).toBeInTheDocument();
+    expect(screen.queryByText("Bitrix24")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть процесс" }));
+    expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
+  });
+
+  it("объясняет, почему у черновика ещё нет процесса", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "not_created",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+      },
+    })} />);
+
+    expect(screen.getByText("Процесс ещё не создан")).toBeInTheDocument();
+    expect(screen.getByText("Он появится после создания документа в 1С")).toBeInTheDocument();
+  });
+});
 
 describe("ProcurementOrderFormationApp «Допродаём»", () => {
   beforeEach(() => {

@@ -305,6 +305,19 @@ class ProcurementSupplierDistributionApplyRequest(BaseModel):
     expected_order_version: int = Field(ge=1)
 
 
+class ProcurementLinkedProcessRead(BaseModel):
+    state: Literal["not_created", "linked", "broken"]
+    process_title: str = "Закупка/Заказ"
+    entity_type_id: int = 1056
+    item_id: str | None = None
+    category_id: int | None = None
+    category_name: str | None = None
+    stage_id: str | None = None
+    stage_name: str | None = None
+    checked_at: datetime | None = None
+    error: str | None = None
+
+
 class ProcurementOrderFormationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -320,6 +333,7 @@ class ProcurementOrderFormationRead(BaseModel):
     bitrix_category_id: int | None = None
     bitrix_stage_id: str | None = None
     bitrix_item_url: str | None = None
+    linked_process: ProcurementLinkedProcessRead
     supplier_ref: str | None = None
     supplier_code: str | None = None
     supplier_name: str
@@ -724,6 +738,7 @@ class ProcurementOrderListItem(BaseModel):
     onec_error: str | None = None
     procurement_contour: str
     bitrix_item_url: str | None = None
+    linked_process: ProcurementLinkedProcessRead
     expected_receipt_date: date | None = None
     supplier_dispatch_date: date | None = None
     cargo_dropoff_date: date | None = None

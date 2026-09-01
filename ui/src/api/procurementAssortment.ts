@@ -329,6 +329,7 @@ export interface ProcurementOrderFormation {
   origin?: "generated" | "onec_import";
   version: number;
   bitrix_item_id?: string | null;
+  linked_process?: ProcurementLinkedProcess;
   supplier_ref?: string | null;
   supplier_code?: string | null;
   supplier_name: string;
@@ -367,6 +368,19 @@ export interface ProcurementOrderFormation {
   lines: ProcurementOrderFormationLine[];
   manual_status_options: Record<string, string>;
   supplier_profile?: ProcurementSupplierProfile;
+}
+
+export interface ProcurementLinkedProcess {
+  state: "not_created" | "linked" | "broken";
+  process_title: string;
+  entity_type_id: number;
+  item_id?: string | null;
+  category_id?: number | null;
+  category_name?: string | null;
+  stage_id?: string | null;
+  stage_name?: string | null;
+  checked_at?: string | null;
+  error?: string | null;
 }
 
 export interface ProcurementOrderLabelSource {
@@ -564,6 +578,7 @@ export interface ProcurementOrderListItem {
   onec_error?: string | null;
   procurement_contour: string;
   bitrix_item_url?: string | null;
+  linked_process?: ProcurementLinkedProcess;
   expected_receipt_date?: string | null;
   supplier_dispatch_date?: string | null;
   cargo_dropoff_date?: string | null;

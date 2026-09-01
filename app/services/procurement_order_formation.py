@@ -90,6 +90,13 @@ PROPERTY_UPDATE_SOURCE = "pricing-service:procurement-order-formation"
 MISSING_ONEC_DOCUMENT_NUMBER_ERROR = (
     "1С подтвердила обработку, но не вернула номер документа; требуется reconciliation"
 )
+PROCUREMENT_PROCESS_ENTITY_TYPE_ID = 1056
+PROCUREMENT_PROCESS_TITLE = "Закупка/Заказ"
+PROCUREMENT_PROCESS_CATEGORY_NAMES = {
+    52: "Обычный",
+    53: "Карго",
+    12: "ВЭД импорт",
+}
 
 
 class VersionConflictError(ValueError):
@@ -100,7 +107,10 @@ def get_order_by_bitrix_item(db: Session, item_id: str) -> ProcurementOrderForma
     item_id = str(item_id).strip()
     if not item_id:
         raise ValueError("item_id is required")
-    statement = _order_statement().where(ProcurementOrderFormation.bitrix_item_id == item_id)
+    statement = _order_statement().where(
+        ProcurementOrderFormation.bitrix_entity_type_id == PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+        ProcurementOrderFormation.bitrix_item_id == item_id,
+    )
     order = db.scalar(statement)
     if order is None:
         raise LookupError("order formation card was not found")
@@ -112,6 +122,35 @@ def get_order(db: Session, order_id: int) -> ProcurementOrderFormation:
     if order is None:
         raise LookupError("order formation card was not found")
     return order
+
+
+def serialize_linked_process(order: ProcurementOrderFormation) -> dict[str, Any]:
+    has_onec_document = bool(
+        str(order.onec_document_ref or "").strip() and str(order.onec_document_number or "").strip()
+    )
+    canonical_link = bool(
+        str(order.bitrix_item_id or "").strip()
+        and order.bitrix_entity_type_id == PROCUREMENT_PROCESS_ENTITY_TYPE_ID
+        and not str(order.bitrix_link_error or "").strip()
+    )
+    if canonical_link:
+        state = "linked"
+    elif has_onec_document:
+        state = "broken"
+    else:
+        state = "not_created"
+    return {
+        "state": state,
+        "process_title": PROCUREMENT_PROCESS_TITLE,
+        "entity_type_id": PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+        "item_id": str(order.bitrix_item_id or "").strip() or None,
+        "category_id": order.bitrix_category_id,
+        "category_name": PROCUREMENT_PROCESS_CATEGORY_NAMES.get(order.bitrix_category_id or 0),
+        "stage_id": order.bitrix_stage_id,
+        "stage_name": order.bitrix_stage_name,
+        "checked_at": order.bitrix_link_checked_at,
+        "error": str(order.bitrix_link_error or "").strip() or None,
+    }
 
 
 def list_supplier_options(
@@ -441,6 +480,7 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "bitrix_category_id": order.bitrix_category_id,
         "bitrix_stage_id": order.bitrix_stage_id,
         "bitrix_item_url": order.bitrix_item_url,
+        "linked_process": serialize_linked_process(order),
         "supplier_ref": order.supplier_ref,
         "supplier_code": order.supplier_code,
         "supplier_name": order.supplier_name,

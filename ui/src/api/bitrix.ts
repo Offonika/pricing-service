@@ -10,7 +10,7 @@ const RECEIVABLES_LEFT_MENU_STORAGE_KEY = "mm_receivables_bitrix_left_menu_bound
 const EXECUTIVE_SESSION_STORAGE_KEY = "mm_executive_dashboard_bitrix_session";
 const EXECUTIVE_LEFT_MENU_STORAGE_KEY = "mm_executive_dashboard_bitrix_left_menu_bound";
 const PROCUREMENT_LABELS_SESSION_STORAGE_KEY = "mm_procurement_labels_bitrix_session";
-const PROCUREMENT_LABELS_PLACEMENT_STORAGE_KEY = "mm_procurement_labels_bitrix_tab_bound";
+const PROCUREMENT_LABELS_PLACEMENT_STORAGE_KEY = "mm_procurement_order_bitrix_tab_v2_bound";
 const PROCUREMENT_ASSORTMENT_SESSION_STORAGE_KEY = "mm_procurement_assortment_bitrix_session";
 const PROCUREMENT_ORDER_FORMATION_SESSION_STORAGE_KEY =
   "mm_procurement_order_formation_bitrix_session";
@@ -24,7 +24,7 @@ const PROCUREMENT_LABELS_DETAIL_PLACEMENT = "CRM_DYNAMIC_1056_DETAIL_TAB";
 const MATCHING_LEFT_MENU_TITLE = "Сопоставление товаров";
 const RECEIVABLES_LEFT_MENU_TITLE = "Дебиторка покупателей";
 const EXECUTIVE_LEFT_MENU_TITLE = "Управленческая витрина";
-const PROCUREMENT_LABELS_TITLE = "Сформировать этикетки";
+const PROCUREMENT_LABELS_TITLE = "Заказ";
 const PROCUREMENT_ORDER_FORMATION_MENU_TITLE = "Формирование заказа";
 let receivablesSessionRefreshPromise: Promise<BitrixReceivablesSessionResponse> | null = null;
 let logisticsSessionRefreshPromise: Promise<BitrixLogisticsSessionResponse> | null = null;
@@ -112,11 +112,36 @@ interface BX24Api {
   init(callback: () => void): void;
   getAuth(): false | BitrixAuthPayload;
   refreshAuth?(callback: () => void): void;
+  openPath?(path: string, callback?: () => void): void;
   callMethod<T>(
     method: string,
     params: Record<string, unknown>,
     callback: (result: BX24CallResult<T>) => void
   ): void;
+}
+
+export async function openBitrixProcurementProcess(itemId: string) {
+  const normalizedItemId = String(itemId || "").trim();
+  if (!/^[1-9][0-9]*$/.test(normalizedItemId)) {
+    throw new Error("Некорректный номер связанного процесса");
+  }
+  const path = `/crm/type/1056/details/${normalizedItemId}/`;
+  try {
+    await loadBitrixSdk();
+    await initBitrix();
+  } catch {
+    // The fallback below still keeps navigation inside the current portal.
+  }
+  if (window.BX24?.openPath) {
+    window.BX24.openPath(path);
+    return;
+  }
+  const domain = String(window.__MM_BITRIX_LAUNCH__?.domain || "").trim();
+  if (!domain || !/^[a-z0-9.-]+(?::[0-9]+)?$/i.test(domain)) {
+    throw new Error("Bitrix24 не передал адрес портала для открытия процесса");
+  }
+  const target = new URL(path, `https://${domain}`);
+  window.open(target.toString(), "_blank", "noopener,noreferrer");
 }
 
 declare global {
@@ -704,8 +729,10 @@ async function ensureBitrixProcurementLabelsPlacement() {
   await loadBitrixSdk();
   await initBitrix();
 
-  const handler = procurementLabelsHandlerUrl();
+  const handler = procurementOrderFormationHandlerUrl();
   const normalizedHandler = normalizeHandlerUrl(handler);
+  const legacyHandler = procurementLabelsHandlerUrl();
+  const normalizedLegacyHandler = normalizeHandlerUrl(legacyHandler);
   const placements = await bitrixCall<
     Array<{ placement?: string; handler?: string; title?: string }>
   >("placement.get", {});
@@ -719,17 +746,28 @@ async function ensureBitrixProcurementLabelsPlacement() {
       PLACEMENT: PROCUREMENT_LABELS_DETAIL_PLACEMENT,
       HANDLER: handler,
       TITLE: PROCUREMENT_LABELS_TITLE,
-      DESCRIPTION: "ВЭД этикетки",
+      DESCRIPTION: "Заказ, позиции и этикетки",
       LANG_ALL: {
         ru: {
           TITLE: PROCUREMENT_LABELS_TITLE,
-          DESCRIPTION: "ВЭД этикетки",
+          DESCRIPTION: "Заказ, позиции и этикетки",
         },
         en: {
-          TITLE: "Generate labels",
-          DESCRIPTION: "VED product labels",
+          TITLE: "Order",
+          DESCRIPTION: "Order, products and labels",
         },
       },
+    });
+  }
+  const legacyBound = placements.some(
+    (item) =>
+      item.placement === PROCUREMENT_LABELS_DETAIL_PLACEMENT &&
+      normalizeHandlerUrl(String(item.handler || "")) === normalizedLegacyHandler
+  );
+  if (legacyBound && normalizedLegacyHandler !== normalizedHandler) {
+    await bitrixCall<boolean>("placement.unbind", {
+      PLACEMENT: PROCUREMENT_LABELS_DETAIL_PLACEMENT,
+      HANDLER: legacyHandler,
     });
   }
 
@@ -808,12 +846,15 @@ function ensureBitrixExecutiveDashboardLeftMenuPlacementInBackground() {
 
 function ensureBitrixProcurementLabelsPlacementInBackground() {
   ensureBitrixProcurementLabelsPlacement().catch((error: unknown) => {
-    console.warn("Не удалось добавить вкладку этикеток в Bitrix24", error);
+    console.warn("Не удалось добавить вкладку заказа в Bitrix24", error);
   });
 }
 
 function ensureBitrixProcurementOrderFormationPlacementInBackground() {
-  ensureBitrixProcurementOrderFormationPlacement().catch((error: unknown) => {
+  Promise.all([
+    ensureBitrixProcurementOrderFormationPlacement(),
+    ensureBitrixProcurementLabelsPlacement(),
+  ]).catch((error: unknown) => {
     console.warn("Не удалось добавить формирование заказа в Bitrix24", error);
   });
 }

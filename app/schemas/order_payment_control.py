@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
 PaymentCheckStage = Literal["checkout", "cloudpayments_check", "cloudpayments_pay"]
 PaymentDecisionReason = Literal[
-    "amount_match",
+    "amount_and_full_reservation_match",
     "site_payment_mismatch",
     "onec_order_not_found",
     "onec_order_deleted",
@@ -17,7 +18,15 @@ PaymentDecisionReason = Literal[
     "onec_order_closed",
     "onec_amount_invalid",
     "onec_amount_mismatch",
+    "onec_warehouse_missing",
+    "onec_warehouse_mismatch",
+    "onec_lines_missing",
+    "onec_line_placement_mismatch",
+    "onec_reservation_none",
+    "onec_reservation_partial",
+    "onec_reservation_mismatch",
 ]
+ReservationState = Literal["FULL", "NONE", "PARTIAL", "MISMATCH"]
 
 
 class OrderPaymentCheckRequest(BaseModel):
@@ -26,8 +35,11 @@ class OrderPaymentCheckRequest(BaseModel):
     payment_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
     stage: PaymentCheckStage
     payment_id: str | None = Field(default=None, max_length=128)
+    region_xml_id: UUID
+    source_warehouse_xml_id: UUID
+    availability_snapshot_id: str | None = Field(default=None, max_length=128)
 
-    @field_validator("site_order_number", "payment_id")
+    @field_validator("site_order_number", "payment_id", "availability_snapshot_id")
     @classmethod
     def strip_identifiers(cls, value: str | None) -> str | None:
         if value is None:
@@ -51,4 +63,9 @@ class OrderPaymentCheckResponse(BaseModel):
     onec_posted: bool | None = None
     onec_closure_document: str | None = None
     onec_closure_reason: str | None = None
+    reservation_state: ReservationState
+    reservation_quantity_match: bool
+    source_warehouse_xml_id: UUID | None = None
+    reservation_confirmed_at: datetime | None = None
+    confirmed_ready_at: datetime | None = None
     checked_at: datetime

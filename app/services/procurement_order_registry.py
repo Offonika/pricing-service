@@ -49,6 +49,10 @@ def decimal_value(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
+def normalized_decimal_text(value: Any) -> str:
+    return format(decimal_value(value).normalize(), "f")
+
+
 def date_value(value: Any) -> date | None:
     if value in (None, ""):
         return None
@@ -330,7 +334,7 @@ def upsert_onec_order_snapshot(
     previous = {
         "lifecycle_status": order.lifecycle_status,
         "onec_snapshot_hash": order.onec_snapshot_hash,
-        "onec_open_quantity": str(order.onec_open_quantity or ""),
+        "onec_open_quantity": normalized_decimal_text(order.onec_open_quantity),
     }
     order.onec_document_ref = onec_ref
     order.onec_document_number = number
@@ -366,7 +370,7 @@ def upsert_onec_order_snapshot(
     after = {
         "lifecycle_status": order.lifecycle_status,
         "onec_snapshot_hash": checksum,
-        "onec_open_quantity": str(order.onec_open_quantity),
+        "onec_open_quantity": normalized_decimal_text(order.onec_open_quantity),
     }
     if created or previous != after:
         _event(

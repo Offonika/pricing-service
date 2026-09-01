@@ -983,6 +983,7 @@ export function LifecycleQueue({
 
 export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => void }) {
   const [data, setData] = useState<ProcurementOrderList | null>(null);
+  const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [lifecycleStatus, setLifecycleStatus] = useState("");
   const [supplier, setSupplier] = useState("");
@@ -994,34 +995,49 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
   const [blockers, setBlockers] = useState<"all" | "with" | "without">("all");
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
+  const [debouncedTextFilters, setDebouncedTextFilters] = useState({ search: "", supplier: "", onecNumber: "" });
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedTextFilters((current) => (
+        current.search === search
+        && current.supplier === supplier
+        && current.onecNumber === onecNumber
+          ? current
+          : { search, supplier, onecNumber }
+      ));
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [onecNumber, search, supplier]);
+
   const filters = useMemo(() => ({
-    search: search || undefined,
+    search: debouncedTextFilters.search || undefined,
     lifecycle_status: lifecycleStatus || undefined,
-    supplier: supplier || undefined,
+    supplier: debouncedTextFilters.supplier || undefined,
     contour: contour || undefined,
-    onec_number: onecNumber || undefined,
+    onec_number: debouncedTextFilters.onecNumber || undefined,
     date_from: dateFrom || undefined,
     date_to: dateTo || undefined,
     source: source || undefined,
     blockers,
-  }), [blockers, contour, dateFrom, dateTo, lifecycleStatus, onecNumber, search, source, supplier]);
+  }), [blockers, contour, dateFrom, dateTo, debouncedTextFilters, lifecycleStatus, source]);
 
   const load = useCallback(async () => {
     setError("");
     try {
-      setData(await fetchProcurementOrders({ ...filters, page_size: 100 }));
+      setData(await fetchProcurementOrders({ ...filters, page, page_size: 100 }));
     } catch (requestError) {
       setError(errorText(requestError));
     }
-  }, [filters]);
+  }, [filters, page]);
 
   useEffect(() => {
     let cancelled = false;
-    fetchProcurementOrders({ ...filters, page_size: 100 })
+    fetchProcurementOrders({ ...filters, page, page_size: 100 })
       .then((response) => { if (!cancelled) setData(response); })
       .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
     return () => { cancelled = true; };
-  }, [filters]);
+  }, [filters, page]);
 
   const downloadExcel = async () => {
     setDownloading(true);
@@ -1035,8 +1051,10 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
       link.download = filename;
       document.body.appendChild(link);
       link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(url);
+      }, 1000);
       toast.success("Расчёт заказа скачан");
     } catch (requestError) {
       toast.error(errorText(requestError));
@@ -1057,27 +1075,27 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
         <div><span>Сумма</span><strong>{money(data.summary.amount)}</strong></div>
       </section>
       <section className="registry-toolbar">
-        <input onChange={(event) => setSearch(event.target.value)} placeholder="Товар или общий поиск" value={search} />
-        <input onChange={(event) => setSupplier(event.target.value)} placeholder="Поставщик" value={supplier} />
-        <input onChange={(event) => setOnecNumber(event.target.value)} placeholder="Номер 1С" value={onecNumber} />
-        <select onChange={(event) => setLifecycleStatus(event.target.value)} value={lifecycleStatus}>
+        <input onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Товар или общий поиск" value={search} />
+        <input onChange={(event) => { setSupplier(event.target.value); setPage(1); }} placeholder="Поставщик" value={supplier} />
+        <input onChange={(event) => { setOnecNumber(event.target.value); setPage(1); }} placeholder="Номер 1С" value={onecNumber} />
+        <select onChange={(event) => { setLifecycleStatus(event.target.value); setPage(1); }} value={lifecycleStatus}>
           <option value="">Все статусы</option>
           {Object.entries(ORDER_STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <select onChange={(event) => setContour(event.target.value)} value={contour}>
+        <select onChange={(event) => { setContour(event.target.value); setPage(1); }} value={contour}>
           <option value="">Все контуры</option>
           <option value="ordinary">Обычный</option>
           <option value="cargo">Карго</option>
           <option value="ved_import">ВЭД импорт</option>
         </select>
-        <select onChange={(event) => setSource(event.target.value as typeof source)} value={source}>
+        <select onChange={(event) => { setSource(event.target.value as typeof source); setPage(1); }} value={source}>
           <option value="">Все источники</option>
           <option value="generated">Создано в приложении</option>
           <option value="onec_import">Импортировано из 1С</option>
         </select>
-        <label>С <input aria-label="Заказы с даты" onChange={(event) => setDateFrom(event.target.value)} type="date" value={dateFrom} /></label>
-        <label>По <input aria-label="Заказы по дату" onChange={(event) => setDateTo(event.target.value)} type="date" value={dateTo} /></label>
-        <select onChange={(event) => setBlockers(event.target.value as typeof blockers)} value={blockers}>
+        <label>С <input aria-label="Заказы с даты" onChange={(event) => { setDateFrom(event.target.value); setPage(1); }} type="date" value={dateFrom} /></label>
+        <label>По <input aria-label="Заказы по дату" onChange={(event) => { setDateTo(event.target.value); setPage(1); }} type="date" value={dateTo} /></label>
+        <select onChange={(event) => { setBlockers(event.target.value as typeof blockers); setPage(1); }} value={blockers}>
           <option value="all">Все проверки</option>
           <option value="without">Без блокеров</option>
           <option value="with">С блокерами</option>
@@ -1122,6 +1140,16 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
           </table>
         </div>
       )}
+      <footer className="lifecycle-queue__footer">
+        <div>
+          <strong>Страница {data.page} из {Math.max(1, Math.ceil(data.total / data.page_size))}</strong>
+          <small>Показано {data.items.length} из {data.total} заказов.</small>
+        </div>
+        <div>
+          <button className="btn btn--ghost" disabled={page <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))} type="button">Назад</button>
+          <button className="btn btn--ghost" disabled={page * data.page_size >= data.total} onClick={() => setPage((current) => current + 1)} type="button">Вперёд</button>
+        </div>
+      </footer>
     </main>
   );
 }

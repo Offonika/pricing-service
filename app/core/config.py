@@ -5,14 +5,14 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_name: str = "Pricing Service"
     environment: str = "development"
-    debug: bool = True
+    debug: bool = False
     app_port: int = 8000
     log_level: str = "INFO"
 
@@ -777,6 +777,12 @@ class Settings(BaseSettings):
         if normalized in {"0", "false", "no", "off", "release", "prod", "production"}:
             return False
         return value
+
+    @model_validator(mode="after")
+    def _reject_production_debug(self):
+        if self.environment.strip().casefold() in {"prod", "production"} and self.debug:
+            raise ValueError("DEBUG must be disabled in production")
+        return self
 
     @field_validator(
         "expertise_bitrix_stage_map",

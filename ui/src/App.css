@@ -7746,6 +7746,34 @@
   flex: 1;
 }
 
+.order-formation__labels-source small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.order-formation__labels-relink {
+  flex-basis: 100%;
+}
+
+.order-formation__labels-relink summary {
+  color: #1665d8;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.order-formation__labels-relink .order-formation__labels-source {
+  margin-top: 10px;
+}
+
+.order-formation__labels-setup-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+}
+
 .order-formation__labels input,
 .order-formation__labels select {
   min-width: 120px;

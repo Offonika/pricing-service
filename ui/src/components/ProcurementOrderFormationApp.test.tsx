@@ -655,11 +655,15 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
     expect(
       labels.compareDocumentPosition(orderTable as Node) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
+    expect(screen.getByText(/Один номер для всех товаров проекта/)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Введите номер заказа 1С")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Подключить весь заказ" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Скачать PDF" })).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Полный номер заказа 1С для этикеток"), {
       target: { value: "РБГУ0000543" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Подключить и проверить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Подключить весь заказ" }));
 
     await waitFor(() => expect(linkProcurementOrderLabelSource).toHaveBeenCalledWith(
       12,
@@ -669,11 +673,15 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
     await waitFor(() => {
       expect(screen.getByText("Страниц:").parentElement).toHaveTextContent("2 / 1000");
     });
+    expect(fetchProcurementOrderLabelPreview).not.toHaveBeenCalled();
     expect(screen.getByText(/Дисплей HUA NV 10 Pro/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled();
   });
 
   it("заменяет ошибочную ручную привязку", async () => {
+    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
+      onec_number: "РБГУ0000496",
+    }));
     vi.mocked(linkProcurementOrderLabelSource).mockResolvedValue({
       label_source: {
         origin: "manual",
@@ -695,17 +703,57 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
       />
     );
 
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Обновить данные из 1С" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByText("Изменить привязанный заказ 1С"));
     fireEvent.change(screen.getByLabelText("Полный номер заказа 1С для этикеток"), {
       target: { value: "РБГУ0000543" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Перепривязать и проверить" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Сохранить другой заказ" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить другой заказ" }));
 
     await waitFor(() => expect(linkProcurementOrderLabelSource).toHaveBeenCalledWith(
       12,
       "РБГУ0000543",
       "50x40"
     ));
-    expect(screen.getByText(/Заказ 1С: РБГУ0000543/)).toBeInTheDocument();
+    expect(screen.getByText(/Заказ 1С РБГУ0000543/)).toBeInTheDocument();
+  });
+
+  it("автоматически проверяет весь привязанный заказ при открытии и смене размера", async () => {
+    vi.mocked(fetchProcurementOrderLabelPreview)
+      .mockResolvedValueOnce(labelPreview())
+      .mockResolvedValueOnce(labelPreview({ label_size: "40x30" }));
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          label_source: {
+            origin: "manual",
+            onec_number: "РБГУ0000543",
+            onec_date: "2026-08-03",
+          },
+        })}
+      />
+    );
+
+    await waitFor(() => expect(fetchProcurementOrderLabelPreview).toHaveBeenCalledWith(
+      12,
+      "50x40"
+    ));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Размер этикетки" }), {
+      target: { value: "40x30" },
+    });
+
+    await waitFor(() => expect(fetchProcurementOrderLabelPreview).toHaveBeenLastCalledWith(
+      12,
+      "40x30"
+    ));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
   });
 
   it("передаёт checksum проверенного preview и безопасно завершает скачивание", async () => {
@@ -731,7 +779,6 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Проверить количество" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
     vi.useFakeTimers();
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
@@ -781,7 +828,6 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Проверить количество" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Скачать XLSX" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Скачать XLSX" }));
 
@@ -810,8 +856,6 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
         })}
       />
     );
-
-    fireEvent.click(screen.getByRole("button", { name: "Проверить количество" }));
 
     await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(2));
     expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeDisabled();

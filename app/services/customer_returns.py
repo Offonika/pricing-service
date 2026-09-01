@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.customer_return import (
@@ -106,6 +107,55 @@ def list_returns(
     return list(db.scalars(statement).all())
 
 
+def _find_return_by_tracking(
+    db: Session,
+    *,
+    carrier: str,
+    tracking_number: str,
+) -> CustomerReturnShipment | None:
+    return db.scalar(
+        select(CustomerReturnShipment).where(
+            CustomerReturnShipment.carrier == carrier,
+            CustomerReturnShipment.tracking_number == tracking_number,
+        )
+    )
+
+
+def _fill_missing_registration_links(
+    db: Session,
+    shipment: CustomerReturnShipment,
+    *,
+    source_ref: str | None,
+    bitrix_case_id: str | None,
+    site_ticket_id: str | None,
+    onec_order_ref: str | None,
+    created_by_bitrix_user_id: str | None,
+    payload: dict | None,
+) -> CustomerReturnShipment:
+    changed = False
+    for field, value in (
+        ("source_ref", source_ref),
+        ("bitrix_case_id", bitrix_case_id),
+        ("site_ticket_id", site_ticket_id),
+        ("onec_order_ref", onec_order_ref),
+        ("created_by_bitrix_user_id", created_by_bitrix_user_id),
+        ("source_payload", payload),
+    ):
+        if value is not None and getattr(shipment, field) is None:
+            setattr(shipment, field, value)
+            changed = True
+    if changed:
+        shipment.updated_at = _utcnow()
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise CustomerReturnConflict(
+                "customer return registration links conflict with existing data"
+            ) from exc
+    return get_return(db, shipment.id)
+
+
 def register_return(
     db: Session,
     *,
@@ -122,23 +172,40 @@ def register_return(
     adapter = get_customer_return_carrier_adapter(carrier)
     normalized_tracking = adapter.normalize_tracking_number(tracking_number)
 
-    existing = db.scalar(
-        select(CustomerReturnShipment).where(
-            CustomerReturnShipment.carrier == adapter.carrier,
-            CustomerReturnShipment.tracking_number == normalized_tracking,
-        )
-    )
-    if existing is not None:
-        return get_return(db, existing.id), False
-
+    source_match = None
     if source_ref:
         source_match = db.scalar(
             select(CustomerReturnShipment).where(CustomerReturnShipment.source_ref == source_ref)
         )
-        if source_match is not None:
+
+    existing = _find_return_by_tracking(
+        db,
+        carrier=adapter.carrier,
+        tracking_number=normalized_tracking,
+    )
+    if existing is not None:
+        if source_match is not None and source_match.id != existing.id:
             raise CustomerReturnConflict(
                 "source_ref already belongs to another customer return shipment"
             )
+        return (
+            _fill_missing_registration_links(
+                db,
+                existing,
+                source_ref=source_ref,
+                bitrix_case_id=bitrix_case_id,
+                site_ticket_id=site_ticket_id,
+                onec_order_ref=onec_order_ref,
+                created_by_bitrix_user_id=created_by_bitrix_user_id,
+                payload=payload,
+            ),
+            False,
+        )
+
+    if source_match is not None:
+        raise CustomerReturnConflict(
+            "source_ref already belongs to another customer return shipment"
+        )
 
     now = _utcnow()
     shipment = CustomerReturnShipment(
@@ -155,21 +222,46 @@ def register_return(
         source_payload=payload,
         updated_at=now,
     )
-    db.add(shipment)
-    db.flush()
-    db.add(
-        CustomerReturnEvent(
-            shipment_id=shipment.id,
-            event_type=EVENT_REGISTERED,
-            source=source,
-            normalized_status=STATUS_REGISTERED,
-            dedupe_key=_dedupe_key("registered", adapter.carrier, normalized_tracking),
-            actor_bitrix_user_id=created_by_bitrix_user_id,
-            occurred_at=now,
-            payload=payload,
+    try:
+        db.add(shipment)
+        db.flush()
+        db.add(
+            CustomerReturnEvent(
+                shipment_id=shipment.id,
+                event_type=EVENT_REGISTERED,
+                source=source,
+                normalized_status=STATUS_REGISTERED,
+                dedupe_key=_dedupe_key("registered", adapter.carrier, normalized_tracking),
+                actor_bitrix_user_id=created_by_bitrix_user_id,
+                occurred_at=now,
+                payload=payload,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        existing = _find_return_by_tracking(
+            db,
+            carrier=adapter.carrier,
+            tracking_number=normalized_tracking,
+        )
+        if existing is not None:
+            return (
+                _fill_missing_registration_links(
+                    db,
+                    existing,
+                    source_ref=source_ref,
+                    bitrix_case_id=bitrix_case_id,
+                    site_ticket_id=site_ticket_id,
+                    onec_order_ref=onec_order_ref,
+                    created_by_bitrix_user_id=created_by_bitrix_user_id,
+                    payload=payload,
+                ),
+                False,
+            )
+        raise CustomerReturnConflict(
+            "customer return registration conflicts with existing data"
+        ) from exc
     return get_return(db, shipment.id), True
 
 
@@ -204,6 +296,15 @@ def _should_apply_transport_status(current: str, candidate: str) -> bool:
     current_rank = _TRANSPORT_STATUS_RANK.get(current, -1)
     candidate_rank = _TRANSPORT_STATUS_RANK.get(candidate, -1)
     return candidate_rank >= current_rank
+
+
+def _is_current_carrier_event(
+    shipment: CustomerReturnShipment,
+    occurred_at: datetime,
+) -> bool:
+    if shipment.carrier_last_event_at is None:
+        return True
+    return occurred_at >= _as_utc(shipment.carrier_last_event_at)
 
 
 def _schedule_action(
@@ -319,13 +420,18 @@ def record_carrier_event(
     )
     db.add(event)
 
-    shipment.carrier_last_status_code = raw_status_code
-    shipment.carrier_last_status_text = status_text
-    shipment.carrier_last_event_at = occurred_at
-    if storage_deadline_at is not None:
-        shipment.storage_deadline_at = _as_utc(storage_deadline_at)
+    is_current_event = _is_current_carrier_event(shipment, occurred_at)
+    if is_current_event:
+        shipment.carrier_last_status_code = raw_status_code
+        shipment.carrier_last_status_text = status_text
+        shipment.carrier_last_event_at = occurred_at
+        if storage_deadline_at is not None:
+            shipment.storage_deadline_at = _as_utc(storage_deadline_at)
 
-    status_applied = _should_apply_transport_status(shipment.status, normalized.status)
+    status_applied = is_current_event and _should_apply_transport_status(
+        shipment.status,
+        normalized.status,
+    )
     if status_applied:
         shipment.status = normalized.status
         shipment.status_changed_at = occurred_at
@@ -335,7 +441,7 @@ def record_carrier_event(
 
     if status_applied and normalized.status == STATUS_ARRIVED:
         _schedule_arrival_actions(db, shipment, now=shipment.updated_at)
-    elif shipment.status == STATUS_ARRIVED and storage_deadline_at is not None:
+    elif is_current_event and shipment.status == STATUS_ARRIVED and storage_deadline_at is not None:
         _schedule_arrival_actions(db, shipment, now=shipment.updated_at)
 
     db.commit()

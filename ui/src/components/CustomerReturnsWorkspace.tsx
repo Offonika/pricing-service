@@ -99,8 +99,16 @@ function statusTone(status: CustomerReturnStatus) {
 
 function upsertShipment(
   current: CustomerReturnShipment[],
-  shipment: CustomerReturnShipment
+  shipment: CustomerReturnShipment,
+  carrierFilter: string,
+  statusFilter: string
 ) {
+  if (
+    (carrierFilter && shipment.carrier !== carrierFilter) ||
+    (statusFilter && shipment.status !== statusFilter)
+  ) {
+    return current.filter((item) => item.id !== shipment.id);
+  }
   return [shipment, ...current.filter((item) => item.id !== shipment.id)];
 }
 
@@ -154,7 +162,9 @@ export function CustomerReturnsWorkspace() {
           onec_order_ref: onecOrderRef.trim() || null,
         }
       );
-      setReturns((current) => upsertShipment(current, data.shipment));
+      setReturns((current) =>
+        upsertShipment(current, data.shipment, carrierFilter, statusFilter)
+      );
       setDetail(data.shipment);
       setTrackingNumber("");
       setOnecOrderRef("");
@@ -195,7 +205,7 @@ export function CustomerReturnsWorkspace() {
         }
       );
       setDetail(data);
-      setReturns((current) => upsertShipment(current, data));
+      setReturns((current) => upsertShipment(current, data, carrierFilter, statusFilter));
       setPickupComment("");
       setMessage("Получение возврата подтверждено. Поставлен контроль сверки с 1С.");
     } catch (error) {

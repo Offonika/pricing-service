@@ -148,4 +148,42 @@ describe("CustomerReturnsWorkspace", () => {
     expect(screen.getAllByText("Забрали").length).toBeGreaterThan(1);
     expect(screen.queryByRole("button", { name: "Забрали" })).not.toBeInTheDocument();
   });
+
+  it("убирает полученный возврат из активного фильтра «Можно забирать»", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/customer-returns") return { data: [arrivedReturn] };
+      if (path === "/bitrix/logistics/customer-returns/35") return { data: arrivedDetail };
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.post).mockResolvedValue({
+      data: {
+        ...arrivedDetail,
+        status: "picked_up",
+        picked_up_at: "2026-08-31T12:00:00Z",
+      },
+    });
+
+    render(<CustomerReturnsWorkspace />);
+    expect(await screen.findByText("Можно забирать")).toBeVisible();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Фильтр по состоянию" }), {
+      target: { value: "arrived_at_pickup_point" },
+    });
+    await waitFor(() =>
+      expect(api.get).toHaveBeenLastCalledWith(
+        "/bitrix/logistics/customer-returns",
+        { params: { limit: 100, status: "arrived_at_pickup_point" } }
+      )
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    expect(await screen.findByRole("button", { name: "Забрали" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Забрали" }));
+
+    expect(
+      await screen.findByText("Получение возврата подтверждено. Поставлен контроль сверки с 1С.")
+    ).toBeVisible();
+    expect(screen.getByLabelText("Возвратов в списке: 0")).toBeVisible();
+    expect(screen.getByText("Возвраты с выбранными условиями не найдены")).toBeVisible();
+  });
 });

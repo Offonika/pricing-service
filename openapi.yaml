@@ -32085,9 +32085,18 @@ components:
           - site_ticket
           - bitrix_mail
           title: Sourcekind
+        ticketId:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Ticketid
         canReply:
           type: boolean
           title: Canreply
+        canAttachFiles:
+          type: boolean
+          title: Canattachfiles
         originalUrl:
           anyOf:
           - type: string
@@ -32107,7 +32116,9 @@ components:
       required:
       - itemId
       - sourceKind
+      - ticketId
       - canReply
+      - canAttachFiles
       - messages
       title: SiteServiceRequestConversationResponse
     SiteServiceRequestEventAcceptedResponse:

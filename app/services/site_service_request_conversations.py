@@ -236,6 +236,7 @@ def build_site_service_request_conversation(
     return {
         "itemId": item_id,
         "sourceKind": case.source_kind,
+        "ticketId": case.source_ticket_id if case.source_kind == "site_ticket" else None,
         "canReply": case.source_kind == "site_ticket",
         "originalUrl": (
             f"{site_base_url.rstrip('/')}/personal/tickets/?ID={case.source_ticket_id}"

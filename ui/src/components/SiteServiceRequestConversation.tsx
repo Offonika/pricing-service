@@ -27,8 +27,10 @@ type ConversationMessage = {
 
 type Conversation = {
   itemId: number;
-  sourceKind: string;
+  sourceKind: "site_ticket" | "bitrix_mail";
+  ticketId: number | null;
   canReply: boolean;
+  canAttachFiles: boolean;
   originalUrl: string | null;
   nextBeforeId: number | null;
   messages: ConversationMessage[];
@@ -48,13 +50,15 @@ const statusLabel: Record<ConversationMessage["deliveryStatus"], string> = {
   note: "Внутренняя заметка",
 };
 
+const conversationDateFormatter = new Intl.DateTimeFormat("ru-RU", {
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
+  return conversationDateFormatter.format(new Date(value));
 }
 
 function newRequestId() {
@@ -82,6 +86,7 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
       const { data } = await api.get<Conversation>(
         `/site-service-requests/ui/items/${itemId}/conversation`,
       );
+      if (!data.canAttachFiles) setFiles([]);
       setConversation(data);
       setError("");
     } catch {
@@ -133,7 +138,9 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
         const form = new FormData();
         form.append("clientRequestId", clientRequestId);
         form.append("text", normalized);
-        files.forEach((file) => form.append("files", file));
+        if (conversation?.canAttachFiles) {
+          files.forEach((file) => form.append("files", file));
+        }
         await api.post(`/site-service-requests/ui/items/${itemId}/replies`, form);
       }
       setText("");
@@ -198,11 +205,29 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
   return (
     <main className="ssr-chat">
       <header className="ssr-chat__header">
-        <div><h1>Переписка с клиентом</h1><p>Ответ попадёт в личный кабинет клиента.</p></div>
+        <div>
+          <h1>Переписка с клиентом</h1>
+          <p className="ssr-chat__context">
+            {conversation.sourceKind === "site_ticket" && conversation.ticketId
+              ? `Тикет сайта №${conversation.ticketId}`
+              : "Обращение по электронной почте"}
+          </p>
+          {conversation.canReply && (
+            <p className="ssr-chat__delivery-hint">Ответ попадёт в личный кабинет клиента.</p>
+          )}
+        </div>
         {conversation.originalUrl && (
-          <a href={conversation.originalUrl} target="_blank" rel="noreferrer">Открыть оригинал</a>
+          <a href={conversation.originalUrl} target="_blank" rel="noreferrer">Открыть обращение на сайте</a>
         )}
       </header>
+
+      {!conversation.canReply && (
+        <section className="ssr-chat__channel-warning" role="status">
+          {conversation.sourceKind === "bitrix_mail"
+            ? "Это обращение пришло по электронной почте. Ответьте через письмо в таймлайне CRM."
+            : "Только просмотр. Отправка ответов из карточки временно недоступна."}
+        </section>
+      )}
 
       <section className="ssr-chat__messages" ref={listRef} aria-live="polite" aria-label="История переписки">
         {conversation.nextBeforeId && <button className="ssr-chat__older" onClick={() => void loadOlder()}>Показать предыдущие сообщения</button>}
@@ -220,7 +245,7 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
             </div>}
             <div className="ssr-message__status">
               <span>{statusLabel[message.deliveryStatus]}</span>
-              {message.retryable && <button disabled={busy} onClick={() => void retry(message)}>Повторить</button>}
+              {message.retryable && conversation.canReply && <button disabled={busy} onClick={() => void retry(message)}>Повторить</button>}
             </div>
           </article>
         ))}
@@ -238,7 +263,7 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
             {TEMPLATES.map((template) => <option key={template} value={template}>{template}</option>)}
           </select>}
           <textarea value={text} onChange={(event) => { setText(event.target.value); resetPendingRequest(); }} placeholder={mode === "note" ? "Заметка для коллег" : "Напишите ответ клиенту"} rows={4} />
-          {mode === "reply" && <label className="ssr-composer__files">Прикрепить файлы
+          {mode === "reply" && conversation.canAttachFiles && <label className="ssr-composer__files">Прикрепить файлы
             <input type="file" multiple onChange={(event) => { setFiles(Array.from(event.target.files || []).slice(0, 5)); resetPendingRequest(); }} />
           </label>}
           {files.length > 0 && <ul className="ssr-composer__selected" aria-label="Выбранные файлы">
@@ -251,13 +276,7 @@ export function SiteServiceRequestConversation({ itemId }: { itemId: number }) {
             {busy ? "Сохраняем…" : mode === "note" ? "Сохранить заметку" : "Отправить клиенту"}
           </button>
         </section>
-      ) : (
-        <section className="ssr-chat__channel-warning">
-          {conversation.sourceKind === "bitrix_mail"
-            ? "Это обращение пришло по email. Ответьте через штатное письмо в таймлайне CRM."
-            : "Отправка ответов временно выключена. История доступна только для чтения."}
-        </section>
-      )}
+      ) : null}
     </main>
   );
 }

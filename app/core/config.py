@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     site_service_requests_email_ingest_enabled: bool = False
     site_service_requests_bitrix_writes_enabled: bool = False
     site_service_requests_outbound_replies_enabled: bool = False
+    site_service_requests_legacy_field_replies_enabled: bool = False
     site_service_requests_ui_enabled: bool = False
     site_service_requests_ui_replies_enabled: bool = False
     site_service_requests_command_attachments_enabled: bool = False
@@ -193,6 +194,7 @@ class Settings(BaseSettings):
         default_factory=list
     )
     site_service_requests_ui_allowed_user_ids: list[int] = Field(default_factory=list)
+    site_service_requests_ui_write_allowed_user_ids: list[int] = Field(default_factory=list)
     site_service_requests_ui_session_ttl_seconds: int = Field(default=900, ge=300, le=3600)
     site_service_requests_conversation_retention_days: int = Field(default=90, ge=1, le=3650)
     site_service_requests_ui_max_files_per_reply: int = Field(default=5, ge=1, le=20)
@@ -1002,7 +1004,11 @@ class Settings(BaseSettings):
             return [int(chunk.strip()) for chunk in stripped.split(",") if chunk.strip()]
         raise ValueError("unsupported list value")
 
-    @field_validator("site_service_requests_ui_allowed_user_ids", mode="before")
+    @field_validator(
+        "site_service_requests_ui_allowed_user_ids",
+        "site_service_requests_ui_write_allowed_user_ids",
+        mode="before",
+    )
     @classmethod
     def _parse_site_service_request_ui_user_ids(cls, value: Any) -> list[int]:
         if value in (None, ""):

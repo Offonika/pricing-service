@@ -127,6 +127,7 @@ FORM_SECTIONS = (
             "mail_activity_id",
             "mail_activity_url",
             "first_response_due_at",
+            "first_response_at",
             "site_sync_status",
         ),
     ),
@@ -150,17 +151,6 @@ FORM_SECTIONS = (
             "UF_CRM_36_PROBLEMDESCRIPTION",
             "UF_CRM_36_PROBLEMTYPECHOICE",
             "UF_CRM_36_CLIENTFILES",
-            "site_history",
-        ),
-    ),
-    (
-        "site_reply",
-        "Ответ клиенту",
-        (
-            "site_reply_text",
-            "site_reply_action",
-            "site_reply_status",
-            "first_response_at",
         ),
     ),
     (
@@ -242,6 +232,10 @@ TECHNICAL_FORM_FIELD_NAMES = {
     "UF_CRM_36_BACKENDCASEID",
     "UF_CRM_36_IDEMPOTENCYKEY",
     "UF_CRM_36_SITETICKETID",
+    "UF_CRM_36_SITEHISTORY",
+    "UF_CRM_36_SITEREPLYTEXT",
+    "UF_CRM_36_SITEREPLYACTION",
+    "UF_CRM_36_SITEREPLYSTATUS",
     "UF_CRM_36_SITELASTSYNCAT",
     "UF_CRM_36_SITESYNCERROR",
     "UF_CRM_36_RETURNDECISIONAPPROVEDBY",
@@ -497,6 +491,14 @@ def build_plan(
             or str(field_settings.get("ROWS") or "") != str(multiline_rows)
         ):
             ux_mismatches.append(f"field_settings:{field_name}:rows")
+        if field_name in TECHNICAL_FORM_FIELD_NAMES:
+            for setting_name, desired_value in (
+                ("showFilter", "N"),
+                ("showInList", "N"),
+                ("editInList", "N"),
+            ):
+                if str(field.get(setting_name) or "") != desired_value:
+                    ux_mismatches.append(f"field_visibility:{field_name}:{setting_name}")
         if field.get("fieldName") == REQUEST_TYPE_FIELD_NAME:
             request_mapping = _request_type_enum_mapping(field)
             enum_by_id = {_strict_enum_row_id(row): row for row in _require_enum_rows(field)}
@@ -1319,16 +1321,19 @@ def _form_contains(
 
 
 def _field_payload(*, entity_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+    field_name = _field_name(entity_id, spec["key"])
+    technical = field_name in TECHNICAL_FORM_FIELD_NAMES
     payload: dict[str, Any] = {
         "entityId": entity_id,
-        "fieldName": _field_name(entity_id, spec["key"]),
+        "fieldName": field_name,
         "userTypeId": spec["type"],
         "xmlId": _xml_id(spec["key"]),
         "multiple": "N",
         "mandatory": "N",
-        "showFilter": "E",
+        "showFilter": "N" if technical else "E",
+        "showInList": "N" if technical else "Y",
         "isSearchable": "Y",
-        "editInList": "Y",
+        "editInList": "N" if technical else "Y",
         "editFormLabel": {"ru": spec["title"]},
         "listColumnLabel": {"ru": spec["title"]},
         "listFilterLabel": {"ru": spec["title"]},

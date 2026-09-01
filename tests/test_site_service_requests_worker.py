@@ -337,6 +337,7 @@ def _case(**overrides) -> SiteServiceRequestCase:
 def _worker_settings(**overrides) -> Settings:
     values = {
         "site_service_requests_bitrix_writes_enabled": True,
+        "site_service_requests_legacy_field_replies_enabled": True,
         "site_service_requests_bitrix_entity_type_id": 1134,
         "site_service_requests_bitrix_working_category_id": 55,
         "site_service_requests_bitrix_field_map": {
@@ -2184,6 +2185,33 @@ def test_event_file_error_preserves_underlying_base_status_for_recovery(db_sessi
     assert case.last_error_code == "file_sync_error"
     assert case.base_sync_status == "synced"
     assert case.base_error_code is None
+
+
+def test_legacy_field_outbound_is_disabled_by_default_gate(db_session) -> None:
+    case = _case(bitrix_item_id=1000)
+    db_session.add(case)
+    db_session.commit()
+    api = FakeBitrixApi()
+    api.items[1000] = {
+        "ufSiteReplyAction": "SEND",
+        "ufSiteReplyText": "Не отправлять через старые поля",
+    }
+    settings = _worker_settings(
+        site_service_requests_outbound_replies_enabled=True,
+        site_service_requests_legacy_field_replies_enabled=False,
+    )
+
+    result = collect_site_service_request_outbound_commands(
+        db_session,
+        settings=settings,
+        writer=SiteServiceRequestBitrixWriter(api),
+        cipher=SiteServiceRequestCipher(_ENCRYPTION_KEY),
+    )
+
+    assert result == []
+    assert db_session.scalar(select(func.count(SiteServiceRequestCommand.id))) == 0
+    assert api.items[1000]["ufSiteReplyAction"] == "SEND"
+    assert api.items[1000]["ufSiteReplyText"] == "Не отправлять через старые поля"
 
 
 def test_outbound_poll_creates_one_command_and_updates_pending_status(db_session) -> None:

@@ -397,7 +397,9 @@ class SiteServiceRequestConversationResponse(BaseModel):
 
     item_id: int = Field(alias="itemId", gt=0)
     source_kind: Literal["site_ticket", "bitrix_mail"] = Field(alias="sourceKind")
+    ticket_id: int | None = Field(alias="ticketId", gt=0)
     can_reply: bool = Field(alias="canReply")
+    can_attach_files: bool = Field(alias="canAttachFiles")
     original_url: str | None = Field(default=None, alias="originalUrl")
     next_before_id: int | None = Field(default=None, alias="nextBeforeId")
     messages: list[SiteServiceRequestConversationMessage]

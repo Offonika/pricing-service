@@ -45,7 +45,11 @@ def test_out_of_order_carrier_event_does_not_replace_current_state(db_session: S
     assert shipment.carrier_last_status_text == "Можно забирать"
     assert customer_return_service._as_utc(shipment.carrier_last_event_at) == current_event_at
     assert customer_return_service._as_utc(shipment.storage_deadline_at) == current_deadline
-    assert [event.carrier_status_code for event in shipment.events[-2:]] == [
+    assert [
+        event.carrier_status_code
+        for event in shipment.events
+        if event.event_type == customer_return_service.EVENT_CARRIER_STATUS
+    ] == [
         "CANCELLED",
         "READY_FOR_PICKUP",
     ]

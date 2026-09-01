@@ -241,6 +241,7 @@ describe("LifecycleQueue manual decision", () => {
 describe("OrdersRegistry", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
+    vi.mocked(openBitrixProcurementProcess).mockReset();
     vi.mocked(fetchProcurementOrders).mockReset();
     vi.mocked(fetchProcurementOrders).mockResolvedValue({
       total: 1,
@@ -297,14 +298,17 @@ describe("OrdersRegistry", () => {
   afterEach(cleanup);
 
   it("показывает импортированный заказ и передаёт фильтры единого реестра", async () => {
-    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+    const onOpenOrder = vi.fn();
+    render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
     expect(await screen.findByText("РБГУ0000543")).toBeInTheDocument();
     expect(screen.getAllByText("Частично поступил")).toHaveLength(2);
     expect(screen.getByText("Источник: 1С")).toBeInTheDocument();
     expect(screen.queryByText("Bitrix24")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть процесс" }));
+    expect(screen.queryByRole("button", { name: "Открыть процесс" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
     expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
+    expect(onOpenOrder).not.toHaveBeenCalled();
     fireEvent.change(screen.getByDisplayValue("Все контуры"), { target: { value: "ordinary" } });
 
     await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
@@ -335,18 +339,59 @@ describe("OrdersRegistry", () => {
       }],
     });
 
-    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+    const onOpenOrder = vi.fn();
+    render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
     const project = await screen.findByText("Проект №543");
     expect(screen.getByText("С блокерами: 2")).toBeInTheDocument();
     expect(screen.getByText("Процесс появится после создания документа в 1С")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    expect(onOpenOrder).toHaveBeenCalledWith(543);
+    expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
     expect(project.closest("tr")).toHaveClass("order-registry__row--blocked");
+  });
+
+  it("открывает внутреннюю карточку при нарушенной связи с процессом", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      items: [{
+        ...initial.items[0],
+        linked_process: {
+          state: "broken",
+          process_title: "Закупка/Заказ",
+          entity_type_id: 1056,
+          error: "Карточка процесса не найдена",
+        },
+      }],
+    });
+    const onOpenOrder = vi.fn();
+
+    render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
+
+    expect(await screen.findByText("Связь с процессом требует восстановления")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    expect(onOpenOrder).toHaveBeenCalledWith(543);
+    expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
   });
 
   it("восстанавливает фильтры и страницу после открытия заказа и возврата", async () => {
     const initial = await fetchProcurementOrders({ page_size: 100 });
     vi.mocked(fetchProcurementOrders).mockClear();
-    vi.mocked(fetchProcurementOrders).mockResolvedValue({ ...initial, total: 201 });
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      total: 201,
+      items: [{
+        ...initial.items[0],
+        linked_process: {
+          state: "broken",
+          process_title: "Закупка/Заказ",
+          entity_type_id: 1056,
+          error: "Связь проверяется",
+        },
+      }],
+    });
     const onOpenOrder = vi.fn();
     const firstView = render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
@@ -361,7 +406,7 @@ describe("OrdersRegistry", () => {
       target: { value: "with" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Вперёд" }));
-    fireEvent.click(screen.getByRole("button", { name: "Открыть" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
 
     expect(onOpenOrder).toHaveBeenCalledWith(543);
     await waitFor(() => expect(JSON.parse(

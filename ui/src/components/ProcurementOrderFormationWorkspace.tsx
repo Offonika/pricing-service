@@ -20,6 +20,7 @@ import {
   type ProcurementLifecycleTransitionList,
   type ProcurementOrderFormation,
   type ProcurementOrderList,
+  type ProcurementOrderListItem,
 } from "../api/procurementAssortment";
 import { openBitrixProcurementProcess } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
@@ -1143,9 +1144,14 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
     }
   };
 
-  const openProcess = async (itemId: string) => {
+  const openOrder = async (order: ProcurementOrderListItem) => {
+    const processItemId = order.linked_process?.item_id;
+    if (order.linked_process?.state !== "linked" || !processItemId) {
+      onOpenOrder(order.id);
+      return;
+    }
     try {
-      await openBitrixProcurementProcess(itemId);
+      await openBitrixProcurementProcess(processItemId);
     } catch (requestError) {
       toast.error(errorText(requestError));
     }
@@ -1226,12 +1232,9 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                   <td>{dateOnly(order.expected_receipt_date)}<small>{order.cargo_dropoff_date ? `Cargo: ${dateOnly(order.cargo_dropoff_date)}` : ""}</small></td>
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
-                    <button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button>
+                    <button className="btn btn--ghost btn--small" onClick={() => void openOrder(order)} type="button">Открыть карточку</button>
                     {order.linked_process?.state === "linked" && order.linked_process.item_id ? (
-                      <>
-                        <button className="btn btn--ghost btn--small" onClick={() => void openProcess(order.linked_process?.item_id || "")} type="button">Открыть процесс</button>
-                        <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
-                      </>
+                      <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
                     ) : order.linked_process?.state === "broken" ? (
                       <small className="order-registry__process-error">Связь с процессом требует восстановления</small>
                     ) : (

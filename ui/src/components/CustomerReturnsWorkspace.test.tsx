@@ -50,6 +50,66 @@ describe("CustomerReturnsWorkspace", () => {
 
   afterEach(cleanup);
 
+  it("открывает рабочую справку и возвращает фокус после закрытия", async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: [] });
+
+    render(<CustomerReturnsWorkspace />);
+    await screen.findByText("Возвраты с выбранными условиями не найдены");
+
+    const trigger = screen.getByRole("button", { name: "Открыть справку по возвратам" });
+    fireEvent.click(trigger);
+
+    const dialog = screen.getByRole("dialog", { name: "Справка по возвратам" });
+    expect(dialog).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Как зарегистрировать возврат" })).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "Тестирование" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Закрыть справку" })).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Справка по возвратам" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("показывает администраторам отдельную инструкцию тестирования", async () => {
+    vi.mocked(api.get).mockResolvedValue({ data: [] });
+
+    render(<CustomerReturnsWorkspace showTestingGuide />);
+    await screen.findByText("Возвраты с выбранными условиями не найдены");
+    fireEvent.click(screen.getByRole("button", { name: "Открыть справку по возвратам" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Тестирование" }));
+
+    expect(screen.getByText("99999999999999")).toBeVisible();
+    expect(screen.getByText("TEST-3507-CDEK")).toBeVisible();
+    expect(screen.getByText(/Тест создаёт записи в Production/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Проверка пилота" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть справку" }));
+    expect(screen.queryByRole("dialog", { name: "Справка по возвратам" })).not.toBeInTheDocument();
+  });
+
+  it("открывает карточку поверх реестра и закрывает её по Escape", async () => {
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/customer-returns") return { data: [arrivedReturn] };
+      if (path === "/bitrix/logistics/customer-returns/35") return { data: arrivedDetail };
+      throw new Error(`unexpected GET ${path}`);
+    });
+
+    render(<CustomerReturnsWorkspace />);
+    const trigger = await screen.findByRole("button", { name: "Открыть карточку" });
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "Возврат 12345678901234" });
+    expect(dialog).toBeVisible();
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("button", { name: "Закрыть карточку возврата" })).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Возврат 12345678901234" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it("регистрирует трек Почты России или СДЭК из Bitrix24", async () => {
     vi.mocked(api.get).mockResolvedValue({ data: [] });
     vi.mocked(api.post).mockResolvedValue({

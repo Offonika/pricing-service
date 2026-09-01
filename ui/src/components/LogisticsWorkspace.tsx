@@ -1118,7 +1118,9 @@ export function LogisticsWorkspace() {
           </section>
         )}
 
-        {screen === "returns" && <CustomerReturnsWorkspace />}
+        {screen === "returns" && (
+          <CustomerReturnsWorkspace showTestingGuide={bootstrap.profile.role === "admin"} />
+        )}
 
         {message && <div className="logistics-toast" role="status">{message}</div>}
         {(capabilities.has("handoff") || capabilities.has("receipt") || capabilities.has("monitor")) && (

@@ -391,6 +391,9 @@ def test_ui_allowed_user_ids_reject_fractional_values():
     with pytest.raises(ValueError, match="positive integers"):
         Settings(site_service_requests_ui_allowed_user_ids=[131016.5])
 
+    with pytest.raises(ValueError, match="positive integers"):
+        Settings(site_service_requests_ui_write_allowed_user_ids=[115204.5])
+
 
 def test_ui_auth_rejects_malformed_bitrix_user_name(monkeypatch):
     settings = Settings(site_service_requests_ui_allowed_user_ids=[131016])

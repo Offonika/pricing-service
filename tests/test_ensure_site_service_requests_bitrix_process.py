@@ -375,7 +375,18 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
             "elements": [
                 {"name": "TITLE", "optionFlags": 1},
                 {"name": "UF_CRM_36_REACTIONDEADLINE", "optionFlags": 1},
+                {"name": "UF_CRM_36_SITEHISTORY", "optionFlags": 1},
                 {"name": "UF_CRM_36_CONCURRENT", "optionFlags": 1},
+            ],
+        },
+        {
+            "name": "site_reply",
+            "title": "Ответ клиенту",
+            "type": "section",
+            "elements": [
+                {"name": "UF_CRM_36_SITEREPLYTEXT", "optionFlags": 1},
+                {"name": "UF_CRM_36_SITEREPLYACTION", "optionFlags": 1},
+                {"name": "UF_CRM_36_SITEREPLYSTATUS", "optionFlags": 1},
             ],
         },
         {
@@ -462,6 +473,60 @@ def test_apply_updates_russian_ux_preserves_enum_ids_and_archive_category() -> N
     }
     assert "UF_CRM_36_CONCURRENT" in form_names
     assert not (form_names & bitrix_setup.TECHNICAL_FORM_FIELD_NAMES)
+    assert "UF_CRM_36_FIRSTRESPONSEAT" in form_names
+    assert all(section["name"] != "site_reply" for section in api.saved_form)
+
+
+def test_reply_and_history_fields_are_hidden_from_lists() -> None:
+    for field_name in (
+        "UF_CRM_36_SITEHISTORY",
+        "UF_CRM_36_SITEREPLYTEXT",
+        "UF_CRM_36_SITEREPLYACTION",
+        "UF_CRM_36_SITEREPLYSTATUS",
+    ):
+        field = next(field for field in _all_fields() if field.get("fieldName") == field_name)
+        field.update(showFilter="E", showInList="Y", editInList="Y")
+
+        update = bitrix_setup._field_metadata_update_payload(field)
+
+        assert update is not None
+        assert update["showFilter"] == "N"
+        assert update["showInList"] == "N"
+        assert update["editInList"] == "N"
+
+
+def test_apply_fails_closed_if_legacy_reply_section_survives_form_write() -> None:
+    legacy_form = [
+        {
+            "name": "main",
+            "title": "Основное",
+            "type": "section",
+            "elements": [{"name": "TITLE", "optionFlags": 1}],
+        },
+        {
+            "name": "site_reply",
+            "title": "Ответ клиенту",
+            "type": "section",
+            "elements": [
+                {"name": "UF_CRM_36_SITEREPLYTEXT", "optionFlags": 1},
+                {"name": "UF_CRM_36_SITEREPLYACTION", "optionFlags": 1},
+            ],
+        },
+    ]
+
+    class StaleFormApi(FakeBitrixApi):
+        def call_json(self, method: str, payload: dict[str, Any], **kwargs: Any):
+            if method == "crm.item.details.configuration.set":
+                self.calls.append((method, deepcopy(payload)))
+                return {"result": True}
+            return super().call_json(method, payload, **kwargs)
+
+    api = StaleFormApi(fields=_all_fields(), existing_form=legacy_form)
+
+    with pytest.raises(RuntimeError, match="ux_readback_failed"):
+        bitrix_setup.ensure(api, settings=_settings(writes_enabled=True), apply=True)
+
+    assert any(method == "crm.item.details.configuration.set" for method, _payload in api.calls)
 
 
 def test_legacy_contact_and_next_action_fields_are_rendered_as_multiline() -> None:

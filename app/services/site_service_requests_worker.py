@@ -2834,6 +2834,7 @@ def collect_site_service_request_outbound_commands(
     if not (
         settings.site_service_requests_bitrix_writes_enabled
         and settings.site_service_requests_outbound_replies_enabled
+        and settings.site_service_requests_legacy_field_replies_enabled
     ):
         return []
     field_map = resolved_site_service_request_field_map(settings)

@@ -16,7 +16,8 @@ def test_out_of_order_carrier_event_does_not_replace_current_state(db_session: S
         tracking_number="12345678901234",
         source="manual",
     )
-    current_event_at = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    registered_at = customer_return_service._as_utc(shipment.status_changed_at)
+    current_event_at = registered_at + timedelta(days=2)
     current_deadline = current_event_at + timedelta(days=5)
     shipment, _ = customer_return_service.record_carrier_event(
         db_session,

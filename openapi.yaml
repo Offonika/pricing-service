@@ -27469,6 +27469,7 @@ components:
           type: string
           enum:
           - not_created
+          - pending
           - linked
           - broken
           title: State

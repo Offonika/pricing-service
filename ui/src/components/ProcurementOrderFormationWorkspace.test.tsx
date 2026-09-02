@@ -9,6 +9,7 @@ import type {
 import {
   decideProcurementLifecycleTransition,
   fetchProcurementLifecycleTransitions,
+  fetchProcurementOrder,
   fetchProcurementOrderFormation,
   fetchProcurementOrders,
 } from "../api/procurementAssortment";
@@ -128,7 +129,24 @@ function linkedOrder(): ProcurementOrderFormation {
 }
 
 describe("ProcurementOrderFormationWorkspace placement", () => {
-  afterEach(cleanup);
+  beforeEach(() => {
+    vi.mocked(fetchProcurementOrder).mockReset();
+    vi.mocked(fetchProcurementOrderFormation).mockReset();
+    vi.mocked(fetchProcurementOrders).mockReset();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      total: 0,
+      page: 1,
+      page_size: 100,
+      summary: { orders: 0, lines: 0, quantity: "0", amount: "0", by_status: {} },
+      items: [],
+    });
+    vi.mocked(openBitrixProcurementProcess).mockReset();
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation");
+    cleanup();
+  });
 
   it("открывает тот же заказ по ID карточки смарт-процесса", async () => {
     vi.mocked(fetchProcurementOrderFormation).mockResolvedValue(linkedOrder());
@@ -137,6 +155,35 @@ describe("ProcurementOrderFormationWorkspace placement", () => {
 
     expect(await screen.findByText("Карточка заказа #431")).toBeInTheDocument();
     expect(fetchProcurementOrderFormation).toHaveBeenCalledWith("324");
+  });
+
+  it("перенаправляет старый внутренний URL связанного заказа в Smart Process", async () => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation/orders/431");
+    vi.mocked(fetchProcurementOrder).mockResolvedValue(linkedOrder());
+    vi.mocked(openBitrixProcurementProcess).mockResolvedValue(undefined);
+
+    render(<ProcurementOrderFormationWorkspace bitrixUserName="Закупщик" />);
+
+    await waitFor(() => expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324"));
+    expect(screen.queryByText("Карточка заказа #431")).not.toBeInTheDocument();
+  });
+
+  it("не открывает внутреннюю карточку по прямому URL в состоянии pending", async () => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation/orders/431");
+    vi.mocked(fetchProcurementOrder).mockResolvedValue({
+      ...linkedOrder(),
+      linked_process: {
+        state: "pending",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+      },
+    });
+
+    render(<ProcurementOrderFormationWorkspace bitrixUserName="Закупщик" />);
+
+    expect(await screen.findByText("Карточка создаётся…")).toBeInTheDocument();
+    expect(screen.queryByText("Карточка заказа #431")).not.toBeInTheDocument();
+    expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
   });
 });
 
@@ -306,7 +353,7 @@ describe("OrdersRegistry", () => {
     expect(screen.getByText("Источник: 1С")).toBeInTheDocument();
     expect(screen.queryByText("Bitrix24")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Открыть процесс" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть заказ" }));
     expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
     expect(onOpenOrder).not.toHaveBeenCalled();
     fireEvent.change(screen.getByDisplayValue("Все контуры"), { target: { value: "ordinary" } });
@@ -345,13 +392,13 @@ describe("OrdersRegistry", () => {
     const project = await screen.findByText("Проект №543");
     expect(screen.getByText("С блокерами: 2")).toBeInTheDocument();
     expect(screen.getByText("Процесс появится после создания документа в 1С")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть проект" }));
     expect(onOpenOrder).toHaveBeenCalledWith(543);
     expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
     expect(project.closest("tr")).toHaveClass("order-registry__row--blocked");
   });
 
-  it("открывает внутреннюю карточку при нарушенной связи с процессом", async () => {
+  it("не подменяет нарушенную связь внутренней карточкой", async () => {
     const initial = await fetchProcurementOrders({ page_size: 100 });
     vi.mocked(fetchProcurementOrders).mockClear();
     vi.mocked(fetchProcurementOrders).mockResolvedValue({
@@ -370,10 +417,35 @@ describe("OrdersRegistry", () => {
 
     render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
-    expect(await screen.findByText("Связь с процессом требует восстановления")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
-    expect(onOpenOrder).toHaveBeenCalledWith(543);
+    const action = await screen.findByRole("button", { name: "Связь требует восстановления" });
+    expect(action).toBeDisabled();
+    expect(screen.getByText("Карточка процесса не найдена")).toBeInTheDocument();
+    expect(onOpenOrder).not.toHaveBeenCalled();
     expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
+  });
+
+  it("показывает ожидание процесса без внутреннего fallback", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      items: [{
+        ...initial.items[0],
+        linked_process: {
+          state: "pending",
+          process_title: "Закупка/Заказ",
+          entity_type_id: 1056,
+        },
+      }],
+    });
+    const onOpenOrder = vi.fn();
+
+    render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
+
+    const action = await screen.findByRole("button", { name: "Карточка создаётся…" });
+    expect(action).toBeDisabled();
+    expect(screen.getByText("Заказ создан в 1С, связь проверяется")).toBeInTheDocument();
+    expect(onOpenOrder).not.toHaveBeenCalled();
   });
 
   it("восстанавливает фильтры и страницу после открытия заказа и возврата", async () => {
@@ -385,17 +457,18 @@ describe("OrdersRegistry", () => {
       items: [{
         ...initial.items[0],
         linked_process: {
-          state: "broken",
+          state: "not_created",
           process_title: "Закупка/Заказ",
           entity_type_id: 1056,
-          error: "Связь проверяется",
         },
+        onec_document_number: null,
+        onec_document_date: null,
       }],
     });
     const onOpenOrder = vi.fn();
     const firstView = render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
-    await screen.findByText("РБГУ0000543");
+    await screen.findByText("Проект №543");
     fireEvent.change(screen.getByPlaceholderText("Поставщик"), {
       target: { value: "Поставщик 1С" },
     });
@@ -406,7 +479,7 @@ describe("OrdersRegistry", () => {
       target: { value: "with" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Вперёд" }));
-    fireEvent.click(screen.getByRole("button", { name: "Открыть карточку" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть проект" }));
 
     expect(onOpenOrder).toHaveBeenCalledWith(543);
     await waitFor(() => expect(JSON.parse(

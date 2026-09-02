@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.infrastructure.db.session import get_application_session_factory
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
@@ -18,7 +19,16 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationLine,
 )
 from app.services.bitrix_order_formation import resolve_catalog_products_by_xml_ids
-from app.services.procurement_order_formation import normalize_guid
+from app.services.procurement_order_formation import (
+    PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+    normalize_guid,
+    serialize_linked_process,
+)
+from app.services.procurement_order_process_link import (
+    ProcurementProcessCardSnapshot,
+    reconcile_procurement_order_process_links,
+    record_procurement_process_sync_failure,
+)
 from app.services.procurement_order_registry import (
     decimal_value,
     lifecycle_status_for_snapshot,
@@ -42,6 +52,193 @@ from scripts.sync_open_cargo_supplier_orders_to_bitrix import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULT_PATH = REPO_ROOT / "build/bitrix/procurement_order_registry_sync.json"
+
+
+class ConfirmedProcurementProcessLinkError(RuntimeError):
+    """A deterministic identity conflict that needs manual reconciliation."""
+
+
+def _is_confirmed_process_error_text(value: Any) -> bool:
+    message = str(value or "").casefold()
+    return any(
+        marker in message
+        for marker in (
+            "несколько bitrix-карточек",
+            "несколько карточек смарт-процесса",
+            "duplicate onec guid",
+            "уже связана с заказом",
+            "номер документа не совпадает",
+            "дата документа не совпадает",
+        )
+    )
+
+
+def is_confirmed_process_sync_failure(error: BaseException) -> bool:
+    return isinstance(error, ConfirmedProcurementProcessLinkError) or (
+        _is_confirmed_process_error_text(error)
+    )
+
+
+def _prepare_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    snapshot = dict(snapshot)
+    snapshot["lifecycle_status"] = lifecycle_status_for_snapshot(snapshot)
+    snapshot["received_qty"] = max(
+        decimal_value(snapshot.get("ordered_qty")) - decimal_value(snapshot.get("open_qty")),
+        0,
+    )
+    contour_key = str(snapshot.get("procurement_contour_key") or "ordinary")
+    lifecycle = str(snapshot["lifecycle_status"])
+    if lifecycle == "received":
+        snapshot["procurement_stage_key"] = "closed"
+    elif lifecycle == "partially_received":
+        snapshot["procurement_stage_key"] = "receiving"
+    elif lifecycle == "cancelled":
+        snapshot["procurement_stage_key"] = {
+            "ordinary": "cancelled",
+            "cargo": "exception",
+            "ved_import": "blocked",
+        }.get(contour_key, "supplier_order")
+    elif lifecycle == "in_transit":
+        snapshot["procurement_stage_key"] = {
+            "ordinary": "waiting_delivery",
+            "cargo": "in_transit",
+            "ved_import": "logistics_customs",
+        }.get(contour_key, "supplier_order")
+    return snapshot
+
+
+def _process_cards_from_rows(
+    result_rows: list[dict[str, Any]],
+) -> list[ProcurementProcessCardSnapshot]:
+    cards: list[ProcurementProcessCardSnapshot] = []
+    for row in result_rows:
+        if str(row.get("action") or "").strip() in {"blocked", "dry_run_update_or_create"}:
+            continue
+        item_id = str(row.get("item_id") or "").strip()
+        onec_ref = normalize_onec_ref(row.get("onec_ref"))
+        if not item_id or not onec_ref:
+            continue
+        raw_date = str(row.get("onec_date") or "").strip()[:10]
+        try:
+            onec_date = datetime.fromisoformat(raw_date).date() if raw_date else None
+        except ValueError:
+            onec_date = None
+        cards.append(
+            ProcurementProcessCardSnapshot(
+                item_id=item_id,
+                onec_ref=onec_ref,
+                onec_number=str(row.get("source_number") or "").strip(),
+                onec_date=onec_date,
+                category_id=int(row["category_id"]) if row.get("category_id") else None,
+                stage_id=str(row.get("stage_id") or "").strip(),
+                stage_name=str(row.get("stage_name") or "").strip(),
+                entity_type_id=int(row.get("entity_type_id") or 0),
+            )
+        )
+    return cards
+
+
+def _resolved_mapping_path(settings: Settings, mapping_path: Path | None) -> Path:
+    path = mapping_path or Path(settings.procurement_labels_mapping_path)
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def sync_onec_order_process_by_ref(
+    db: Session,
+    *,
+    order_id: int,
+    onec_ref: str,
+    settings: Settings | None = None,
+    webhook_base: str = "",
+    mapping_path: Path | None = None,
+    assigned_by_id: str = "130750",
+    finance_user_id: str = "",
+) -> dict[str, Any]:
+    """Immediately refresh one 1C order and link its canonical process 1056."""
+
+    settings = settings or get_settings()
+    normalized_ref = normalize_onec_ref(onec_ref)
+    if not re.fullmatch(r"0x[0-9a-f]{32}", normalized_ref):
+        raise ConfirmedProcurementProcessLinkError("Некорректный GUID документа 1С")
+    if not settings.onec_database_url:
+        raise RuntimeError("ONEC_DATABASE_URL is not configured")
+    snapshots = fetch_supplier_orders_by_refs(
+        settings.onec_database_url,
+        refs=[normalized_ref],
+        contours=parse_contour_keys("ordinary,cargo,ved_import"),
+    )
+    if len(snapshots) != 1:
+        raise RuntimeError(
+            "Канонический snapshot заказа 1С ещё не доступен по GUID; повторит плановая синхронизация"
+        )
+    snapshot = _prepare_snapshot(snapshots[0])
+    catalog_product_ids = _catalog_product_ids_for_snapshots(db, [snapshot])
+    registry_result = upsert_onec_order_snapshot(
+        db,
+        snapshot,
+        synced_at=datetime.now(UTC).replace(tzinfo=None),
+        catalog_product_ids=catalog_product_ids,
+    )
+    if registry_result.conflict:
+        raise ConfirmedProcurementProcessLinkError(registry_result.conflict)
+    if registry_result.order_id != order_id:
+        raise ConfirmedProcurementProcessLinkError(
+            f"GUID документа 1С связан с другой записью заказа #{registry_result.order_id}"
+        )
+    db.commit()
+
+    resolved_webhook = str(
+        webhook_base
+        or settings.procurement_bitrix_webhook_url
+        or settings.bitrix_box_webhook_base
+        or ""
+    ).strip()
+    if not resolved_webhook:
+        raise RuntimeError("PROCUREMENT_BITRIX_WEBHOOK_URL is not configured")
+    mapping = load_mapping(_resolved_mapping_path(settings, mapping_path))
+    mapping_entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+    if mapping_entity_type_id != PROCUREMENT_PROCESS_ENTITY_TYPE_ID:
+        raise ConfirmedProcurementProcessLinkError(
+            f"Настроен неподдерживаемый Smart Process {mapping_entity_type_id}; требуется 1056"
+        )
+    rows = run_bitrix_import(
+        [snapshot],
+        webhook_base=resolved_webhook,
+        mapping=mapping,
+        apply=True,
+        assigned_by_id=assigned_by_id,
+        finance_user_id=finance_user_id,
+    )
+    blocked = next(
+        (row for row in rows if str(row.get("action") or "").strip() == "blocked"),
+        None,
+    )
+    if blocked:
+        error = str(blocked.get("error") or "Синхронизация Smart Process заблокирована")
+        if _is_confirmed_process_error_text(error):
+            raise ConfirmedProcurementProcessLinkError(error)
+        raise RuntimeError(error)
+    cards = _process_cards_from_rows(rows)
+    if len(cards) != 1:
+        raise RuntimeError("Bitrix24 не вернул созданную или найденную карточку процесса")
+    reconciliation = reconcile_procurement_order_process_links(
+        db,
+        cards,
+        actor="system:procurement-process-immediate-sync",
+        mark_missing=False,
+    )
+    db.commit()
+    order = db.get(ProcurementOrderFormation, order_id)
+    if order is None:
+        raise LookupError("order formation card was not found")
+    state = serialize_linked_process(order)["state"]
+    return {
+        "order_id": order_id,
+        "onec_ref": normalized_ref,
+        "state": state,
+        "item_id": order.bitrix_item_id if state == "linked" else None,
+        "reconciliation": reconciliation,
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -152,37 +349,36 @@ def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[
         session.close()
 
 
-def _store_bitrix_links(result_rows: list[dict[str, Any]]) -> None:
-    by_number = {
-        str(row.get("source_number") or "").strip(): row
-        for row in result_rows
-        if row.get("item_id") and str(row.get("source_number") or "").strip()
-    }
-    if not by_number:
-        return
+def _store_bitrix_links(result_rows: list[dict[str, Any]]) -> dict[str, int]:
     session = get_application_session_factory()()
     try:
-        orders = list(
-            session.scalars(
-                select(ProcurementOrderFormation).where(
-                    ProcurementOrderFormation.onec_document_number.in_(list(by_number))
-                )
-            ).all()
+        summary = reconcile_procurement_order_process_links(
+            session,
+            _process_cards_from_rows(result_rows),
+            actor="system:onec-procurement-registry",
+            mark_missing=False,
         )
-        for order in orders:
-            row = by_number.get(str(order.onec_document_number or "").strip())
-            if not row:
-                continue
-            order.bitrix_item_id = str(row["item_id"])
-            if row.get("entity_type_id"):
-                order.bitrix_entity_type_id = int(row["entity_type_id"])
-            if row.get("category_id") is not None:
-                order.bitrix_category_id = int(row["category_id"])
-            if row.get("stage_id"):
-                order.bitrix_stage_id = str(row["stage_id"])
-            if row.get("item_url"):
-                order.bitrix_item_url = str(row["item_url"])
         session.commit()
+        for row in result_rows:
+            if str(row.get("action") or "").strip() != "blocked":
+                continue
+            ref = normalize_onec_ref(row.get("onec_ref"))
+            order = session.scalar(
+                select(ProcurementOrderFormation).where(
+                    func.lower(ProcurementOrderFormation.onec_document_ref) == ref
+                )
+            )
+            if order is None:
+                continue
+            error = str(row.get("error") or "Синхронизация Smart Process заблокирована")
+            record_procurement_process_sync_failure(
+                session,
+                order.id,
+                error,
+                confirmed_broken=_is_confirmed_process_error_text(error),
+                actor="system:onec-procurement-registry",
+            )
+        return summary
     except BaseException:
         session.rollback()
         raise
@@ -256,30 +452,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     snapshots = list(snapshots_by_ref.values())
     missing_refs = sorted(set(value.lower() for value in known_refs) - set(snapshots_by_ref))
-    for snapshot in snapshots:
-        snapshot["lifecycle_status"] = lifecycle_status_for_snapshot(snapshot)
-        snapshot["received_qty"] = max(
-            decimal_value(snapshot.get("ordered_qty")) - decimal_value(snapshot.get("open_qty")),
-            0,
-        )
-        contour_key = str(snapshot.get("procurement_contour_key") or "ordinary")
-        lifecycle = str(snapshot["lifecycle_status"])
-        if lifecycle == "received":
-            snapshot["procurement_stage_key"] = "closed"
-        elif lifecycle == "partially_received":
-            snapshot["procurement_stage_key"] = "receiving"
-        elif lifecycle == "cancelled":
-            snapshot["procurement_stage_key"] = {
-                "ordinary": "cancelled",
-                "cargo": "exception",
-                "ved_import": "blocked",
-            }.get(contour_key, "supplier_order")
-        elif lifecycle == "in_transit":
-            snapshot["procurement_stage_key"] = {
-                "ordinary": "waiting_delivery",
-                "cargo": "in_transit",
-                "ved_import": "logistics_customs",
-            }.get(contour_key, "supplier_order")
+    snapshots = [_prepare_snapshot(snapshot) for snapshot in snapshots]
     registry_rows = (
         [] if args.source_only else _persist_snapshots(snapshots, apply=bool(args.apply))
     )
@@ -313,20 +486,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         _store_missing_conflicts(missing_refs)
 
     bitrix_rows: list[dict[str, Any]] = []
+    link_reconciliation = {"checked": 0, "linked": 0, "unchanged": 0, "broken": 0}
     if args.sync_bitrix and not args.source_only:
         webhook = bitrix_webhook(args, load_env(args.env_file))
         if not webhook:
             raise RuntimeError("PROCUREMENT_BITRIX_WEBHOOK_URL is not configured")
+        mapping = load_mapping(args.mapping_path)
+        mapping_entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+        if mapping_entity_type_id != PROCUREMENT_PROCESS_ENTITY_TYPE_ID:
+            raise RuntimeError(
+                f"Unsupported procurement Smart Process {mapping_entity_type_id}; expected 1056"
+            )
         bitrix_rows = run_bitrix_import(
             snapshots,
             webhook_base=webhook,
-            mapping=load_mapping(args.mapping_path),
+            mapping=mapping,
             apply=bool(args.apply),
             assigned_by_id=str(args.assigned_by_id),
             finance_user_id=str(args.finance_user_id),
         )
         if args.apply:
-            _store_bitrix_links(bitrix_rows)
+            link_reconciliation = _store_bitrix_links(bitrix_rows)
 
     return {
         "mode": "apply" if args.apply else "dry-run",
@@ -348,6 +528,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "missing_refs": missing_refs,
         "registry_rows": registry_rows,
         "bitrix_rows": bitrix_rows,
+        "link_reconciliation": link_reconciliation,
     }
 
 

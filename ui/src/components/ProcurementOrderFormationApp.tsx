@@ -28,7 +28,6 @@ import {
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
-import { openBitrixProcurementProcess } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
@@ -694,15 +693,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   };
 
   const canAttachLabelSource = labelSource?.origin !== "exchange";
-  const openLinkedProcess = async () => {
-    const itemId = order.linked_process?.item_id;
-    if (!itemId) return;
-    try {
-      await openBitrixProcurementProcess(itemId);
-    } catch (error: unknown) {
-      toast.error(errorText(error));
-    }
-  };
   const labelSourceForm = (
     <form
       className="order-formation__labels-source"
@@ -875,6 +865,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
               <strong>Закупка/Заказ №{order.linked_process.item_id}</strong>
               <small>{order.linked_process.stage_name || "Стадия уточняется"}</small>
             </>
+          ) : order.linked_process?.state === "pending" ? (
+            <>
+              <strong>Карточка создаётся…</strong>
+              <small>Заказ уже создан в 1С; связь с процессом проверяется</small>
+            </>
           ) : order.linked_process?.state === "broken" ? (
             <>
               <strong>Связь с процессом требует восстановления</strong>
@@ -887,11 +882,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
             </>
           )}
         </div>
-        {order.linked_process?.state === "linked" && order.linked_process.item_id && (
-          <button className="btn btn--ghost" onClick={() => void openLinkedProcess()} type="button">
-            Открыть процесс
-          </button>
-        )}
       </section>
 
       {labelsSection}

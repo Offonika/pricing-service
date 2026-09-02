@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from decimal import Decimal
 
+from sqlalchemy import func, select
+
+from app.core.config import Settings
 from app.models.procurement_order_formation import ProcurementOrderFormation
-from app.services.procurement_order_formation import line_blockers
+from app.services.procurement_order_formation import line_blockers, serialize_order
 from app.services.procurement_order_formation_workspace import list_orders
 from app.services.procurement_order_registry import (
     lifecycle_status_for_snapshot,
@@ -183,6 +187,80 @@ def test_repeated_snapshot_with_numeric_scale_difference_is_noop(db_session) -> 
     second = synchronize_onec_snapshots(db_session, [_snapshot(open_qty=Decimal("6"))])[0]
 
     assert second.action == "noop"
+
+
+def test_immediate_process_sync_is_idempotent_and_links_same_order(
+    db_session, monkeypatch, tmp_path
+) -> None:
+    created = upsert_onec_order_snapshot(db_session, _snapshot())
+    db_session.commit()
+    mapping_path = tmp_path / "procurement-order-mapping.json"
+    mapping_path.write_text(
+        json.dumps({"process": {"entity_type_id": 1056}, "fields": {}}),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        onec_database_url="mssql+pyodbc://readonly",
+        procurement_bitrix_webhook_url="https://bitrix.example/rest/1/token",
+        procurement_labels_mapping_path=str(mapping_path),
+    )
+    import_calls: list[str] = []
+    monkeypatch.setattr(
+        registry_sync_task,
+        "fetch_supplier_orders_by_refs",
+        lambda *_args, **_kwargs: [_snapshot()],
+    )
+    monkeypatch.setattr(
+        registry_sync_task,
+        "_catalog_product_ids_for_snapshots",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def fake_import(orders, **_kwargs):
+        import_calls.append(str(orders[0]["onec_ref"]))
+        return [
+            {
+                "source_number": "РБГУ0000543",
+                "onec_ref": "0x0123456789abcdef0123456789abcdef",
+                "onec_date": "2026-08-31",
+                "action": "created" if len(import_calls) == 1 else "noop",
+                "item_id": "323",
+                "entity_type_id": 1056,
+                "category_id": 52,
+                "stage_id": "DT1056_52:NEW",
+                "stage_name": "Новый",
+            }
+        ]
+
+    monkeypatch.setattr(registry_sync_task, "run_bitrix_import", fake_import)
+
+    first = registry_sync_task.sync_onec_order_process_by_ref(
+        db_session,
+        order_id=created.order_id,
+        onec_ref=created.onec_ref,
+        settings=settings,
+    )
+    second = registry_sync_task.sync_onec_order_process_by_ref(
+        db_session,
+        order_id=created.order_id,
+        onec_ref=created.onec_ref,
+        settings=settings,
+    )
+
+    order = db_session.get(ProcurementOrderFormation, created.order_id)
+    assert first["state"] == second["state"] == "linked"
+    assert first["item_id"] == second["item_id"] == "323"
+    assert order is not None
+    assert serialize_order(order)["linked_process"]["state"] == "linked"
+    assert (
+        db_session.scalar(
+            select(func.count(ProcurementOrderFormation.id)).where(
+                func.lower(ProcurementOrderFormation.onec_document_ref) == created.onec_ref
+            )
+        )
+        == 1
+    )
+    assert len(import_calls) == 2
 
 
 def test_legacy_exact_identity_attaches_guid_to_same_generated_order(db_session) -> None:

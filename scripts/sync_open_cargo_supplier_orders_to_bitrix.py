@@ -815,6 +815,7 @@ def run_bitrix_import(
             rows.append(
                 {
                     "source_number": clean(order.get("number")),
+                    "onec_ref": clean(order.get("onec_ref")),
                     "action": "blocked",
                     "error_type": type(exc).__name__,
                     "error": str(exc),

@@ -306,7 +306,7 @@ class ProcurementSupplierDistributionApplyRequest(BaseModel):
 
 
 class ProcurementLinkedProcessRead(BaseModel):
-    state: Literal["not_created", "linked", "broken"]
+    state: Literal["not_created", "pending", "linked", "broken"]
     process_title: str = "Закупка/Заказ"
     entity_type_id: int = 1056
     item_id: str | None = None

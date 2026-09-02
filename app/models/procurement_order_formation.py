@@ -376,3 +376,14 @@ class ProcurementOrderFormationEvent(Base):
     )
 
     order: Mapped[Optional[ProcurementOrderFormation]] = relationship(back_populates="events")
+
+
+Index(
+    "uq_proc_order_formation_onec_ref_normalized",
+    func.lower(func.trim(ProcurementOrderFormation.onec_document_ref)),
+    unique=True,
+    sqlite_where=ProcurementOrderFormation.onec_document_ref.is_not(None)
+    & (func.trim(ProcurementOrderFormation.onec_document_ref) != ""),
+    postgresql_where=ProcurementOrderFormation.onec_document_ref.is_not(None)
+    & (func.trim(ProcurementOrderFormation.onec_document_ref) != ""),
+)

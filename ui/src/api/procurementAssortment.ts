@@ -371,7 +371,7 @@ export interface ProcurementOrderFormation {
 }
 
 export interface ProcurementLinkedProcess {
-  state: "not_created" | "linked" | "broken";
+  state: "not_created" | "pending" | "linked" | "broken";
   process_title: string;
   entity_type_id: number;
   item_id?: string | null;

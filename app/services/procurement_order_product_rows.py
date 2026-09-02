@@ -39,9 +39,9 @@ MANAGED_FIELDS = (
     "PRODUCT_NAME",
     "PRICE",
     "QUANTITY",
-    "CURRENCY_ID",
     "SORT",
 )
+PRODUCT_ROW_BATCH_TIMEOUT_SECONDS = 30.0
 
 
 class ProcurementProductRowsSyncError(RuntimeError):
@@ -109,7 +109,10 @@ def build_procurement_product_rows(order: ProcurementOrderFormation) -> list[dic
 
 
 def procurement_product_rows_checksum(rows: Sequence[Mapping[str, Any]]) -> str:
-    normalized = [_managed_row(row) for row in rows]
+    normalized = sorted(
+        (_checksum_row(row) for row in rows),
+        key=lambda row: (row["SORT"], row["PRODUCT_ID"]),
+    )
     encoded = json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -120,8 +123,14 @@ def _managed_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "PRODUCT_NAME": _clean(_row_value(row, "PRODUCT_NAME")),
         "PRICE": _decimal_text(_row_value(row, "PRICE")),
         "QUANTITY": _decimal_text(_row_value(row, "QUANTITY")),
-        "CURRENCY_ID": _clean(_row_value(row, "CURRENCY_ID")).upper(),
         "SORT": int(_row_value(row, "SORT") or 0),
+    }
+
+
+def _checksum_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **_managed_row(row),
+        "CURRENCY_ID": _clean(_row_value(row, "CURRENCY_ID")).upper(),
     }
 
 
@@ -133,21 +142,67 @@ def _product_row_key(row: Mapping[str, Any]) -> tuple[int, int]:
 def _list_product_rows(
     *, item_id: str, settings: Settings, webhook_base: str = ""
 ) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    start = 0
+    seen_starts: set[int] = set()
+    while True:
+        payload = bitrix_call(
+            "crm.productrow.list",
+            {
+                "filter": {"OWNER_TYPE": PRODUCT_ROW_OWNER_TYPE, "OWNER_ID": int(item_id)},
+                "select": ["ID", "OWNER_TYPE", "OWNER_ID", *MANAGED_FIELDS],
+                "start": start,
+            },
+            settings=settings,
+            webhook_base=webhook_base,
+        )
+        result = payload.get("result")
+        if result is None:
+            result = []
+        if not isinstance(result, list):
+            raise ProcurementProductRowsSyncError("Bitrix вернул некорректный список товаров")
+        rows.extend(dict(row) for row in result if isinstance(row, Mapping))
+        next_start = payload.get("next")
+        if next_start is None:
+            return rows
+        try:
+            next_value = int(next_start)
+        except (TypeError, ValueError) as exc:
+            raise ProcurementProductRowsSyncError(
+                "Bitrix вернул некорректную пагинацию товаров"
+            ) from exc
+        if next_value <= start or next_value in seen_starts:
+            raise ProcurementProductRowsSyncError("Bitrix зациклил пагинацию товаров")
+        seen_starts.add(start)
+        start = next_value
+
+
+def _item_currency(*, item_id: str, settings: Settings, webhook_base: str = "") -> str:
     payload = bitrix_call(
-        "crm.productrow.list",
+        "crm.item.get",
+        {"entityTypeId": PROCUREMENT_PROCESS_ENTITY_TYPE_ID, "id": int(item_id)},
+        settings=settings,
+        webhook_base=webhook_base,
+    )
+    item = (payload.get("result") or {}).get("item") or {}
+    if not isinstance(item, Mapping):
+        raise ProcurementProductRowsSyncError("Bitrix вернул некорректную карточку заказа")
+    return _clean(item.get("currencyId")).upper()
+
+
+def _set_item_currency(
+    *, item_id: str, currency_id: str, settings: Settings, webhook_base: str = ""
+) -> None:
+    bitrix_call(
+        "crm.item.update",
         {
-            "filter": {"OWNER_TYPE": PRODUCT_ROW_OWNER_TYPE, "OWNER_ID": int(item_id)},
-            "select": ["ID", "OWNER_TYPE", "OWNER_ID", *MANAGED_FIELDS],
+            "entityTypeId": PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+            "id": int(item_id),
+            "fields": {"currencyId": currency_id},
         },
         settings=settings,
         webhook_base=webhook_base,
     )
-    result = payload.get("result")
-    if result is None:
-        return []
-    if not isinstance(result, list):
-        raise ProcurementProductRowsSyncError("Bitrix вернул некорректный список товаров")
-    return [dict(row) for row in result if isinstance(row, Mapping)]
 
 
 def list_procurement_product_rows(
@@ -191,6 +246,10 @@ def _run_batches(
             {"halt": 1, "cmd": dict(chunk)},
             settings=settings,
             webhook_base=webhook_base,
+            timeout_seconds=max(
+                PRODUCT_ROW_BATCH_TIMEOUT_SECONDS,
+                float(settings.procurement_labels_bitrix_rest_timeout_seconds),
+            ),
         )
         batch = payload.get("result") or {}
         errors = batch.get("result_error") or {}
@@ -213,11 +272,11 @@ def _diff_product_rows(
     for row in desired:
         matches = available.get(_product_row_key(row)) or []
         if not matches:
-            additions.append(dict(row))
+            additions.append(_managed_row(row))
             continue
         existing = matches.pop(0)
         if _managed_row(existing) != _managed_row(row):
-            updates.append({"id": _clean(_row_value(existing, "ID")), "fields": dict(row)})
+            updates.append({"id": _clean(_row_value(existing, "ID")), "fields": _managed_row(row)})
 
     deletions = [
         {"id": _clean(_row_value(row, "ID"))}
@@ -301,7 +360,20 @@ def sync_procurement_order_product_rows(
     before = _product_rows_state(order)
     try:
         desired = build_procurement_product_rows(order)
+        currencies = {_clean(_row_value(row, "CURRENCY_ID")).upper() for row in desired}
+        if not currencies:
+            currencies = {_clean(order.currency).upper()}
+        if len(currencies) != 1 or not next(iter(currencies)):
+            raise ProcurementProductRowsSyncError(
+                "В строках заказа указаны разные или пустые валюты"
+            )
+        desired_currency = next(iter(currencies))
         checksum = procurement_product_rows_checksum(desired)
+        current_currency = _item_currency(
+            item_id=_clean(order.bitrix_item_id),
+            settings=settings,
+            webhook_base=webhook_base,
+        )
         current = _list_product_rows(
             item_id=_clean(order.bitrix_item_id), settings=settings, webhook_base=webhook_base
         )
@@ -316,9 +388,19 @@ def sync_procurement_order_product_rows(
             "add": len(diff["add"]),
             "update": len(diff["update"]),
             "delete": len(diff["delete"]),
+            "currency_id": desired_currency,
+            "currency_update": current_currency != desired_currency,
         }
         if not apply:
             return result
+
+        if current_currency != desired_currency:
+            _set_item_currency(
+                item_id=_clean(order.bitrix_item_id),
+                currency_id=desired_currency,
+                settings=settings,
+                webhook_base=webhook_base,
+            )
 
         upserts: list[tuple[str, str]] = []
         for index, row in enumerate(diff["add"]):
@@ -352,10 +434,16 @@ def sync_procurement_order_product_rows(
         readback = _list_product_rows(
             item_id=_clean(order.bitrix_item_id), settings=settings, webhook_base=webhook_base
         )
+        readback_currency = _item_currency(
+            item_id=_clean(order.bitrix_item_id),
+            settings=settings,
+            webhook_base=webhook_base,
+        )
+        readback_with_currency = [{**row, "CURRENCY_ID": readback_currency} for row in readback]
         if (
             len(readback) != len(desired)
-            or procurement_product_rows_checksum([_managed_row(row) for row in readback])
-            != checksum
+            or readback_currency != desired_currency
+            or procurement_product_rows_checksum(readback_with_currency) != checksum
         ):
             raise ProcurementProductRowsSyncError(
                 "Readback товаров Bitrix не совпадает с каноническими строками 1С"

@@ -512,6 +512,7 @@ def bitrix_call(
     *,
     settings: Settings | None = None,
     webhook_base: str = "",
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
     webhook = (
@@ -533,7 +534,11 @@ def bitrix_call(
     try:
         with urllib.request.urlopen(
             request,
-            timeout=settings.procurement_labels_bitrix_rest_timeout_seconds,
+            timeout=(
+                timeout_seconds
+                if timeout_seconds is not None
+                else settings.procurement_labels_bitrix_rest_timeout_seconds
+            ),
         ) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:

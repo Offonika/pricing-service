@@ -11,8 +11,10 @@ from app.core.config import get_settings
 from app.main import app
 from app.models import Base, LogisticsUser
 from app.models.customer_return import CustomerReturnShipment
+from app.services import customer_return_deals as customer_return_deal_service
 from app.services import customer_returns as customer_return_service
 from app.services.bitrix_logistics_auth import create_logistics_bitrix_session_token
+from app.services.customer_returns import CustomerReturnDealLink
 
 
 def _override_db(engine):
@@ -75,6 +77,98 @@ def test_bitrix_customer_returns_role_registers_tracks_and_confirms_pickup(
         assert bootstrap.json()["profile"]["role"] == "returns"
         assert bootstrap.json()["capabilities"] == ["customer_returns"]
         assert bootstrap.json()["warehouses"] == []
+
+        selected_deals = {
+            3507: CustomerReturnDealLink(
+                deal_id=3507,
+                title="Интернет-заказ 241094",
+                order_ref="241094",
+                stage_id="NEW",
+                stage_name="Новая",
+                contact_id=77,
+                contact_name="Иван Петров",
+                responsible_user_id=88,
+                responsible_name="Анна Смирнова",
+            ),
+            3508: CustomerReturnDealLink(
+                deal_id=3508,
+                title="Интернет-заказ 241095",
+                order_ref="241095",
+                stage_id="WON",
+                stage_name="Завершена",
+                closed=True,
+                company_id=99,
+                company_name="ООО Клиент",
+                responsible_user_id=89,
+                responsible_name="Олег Сидоров",
+            ),
+        }
+        monkeypatch.setattr(
+            customer_return_deal_service,
+            "search_customer_return_deals",
+            lambda **_kwargs: list(selected_deals.values()),
+        )
+        monkeypatch.setattr(
+            customer_return_deal_service,
+            "get_customer_return_deal",
+            lambda *, deal_id, **_kwargs: selected_deals[deal_id],
+        )
+
+        deal_search = client.get(
+            "/api/bitrix/logistics/customer-return-deals",
+            headers=headers,
+            params={"search": "241094"},
+        )
+        assert deal_search.status_code == 200
+        assert [item["deal_id"] for item in deal_search.json()] == [3507, 3508]
+        assert deal_search.json()[1]["closed"] is True
+
+        linked_registration = client.post(
+            "/api/bitrix/logistics/customer-returns",
+            headers=headers,
+            json={
+                "carrier": "cdek",
+                "tracking_number": "CDEK-DEAL-3507",
+                "bitrix_deal_id": 3507,
+            },
+        )
+        assert linked_registration.status_code == 200
+        linked_id = linked_registration.json()["shipment"]["id"]
+        assert linked_registration.json()["shipment"]["bitrix_deal_id"] == 3507
+        assert linked_registration.json()["shipment"]["onec_order_ref"] == "241094"
+        assert linked_registration.json()["shipment"]["bitrix_contact_name"] == "Иван Петров"
+
+        relinked = client.put(
+            f"/api/bitrix/logistics/customer-returns/{linked_id}/deal-link",
+            headers=headers,
+            json={"bitrix_deal_id": 3508},
+        )
+        assert relinked.status_code == 200
+        assert relinked.json()["bitrix_deal_id"] == 3508
+        assert relinked.json()["bitrix_company_name"] == "ООО Клиент"
+        assert relinked.json()["events"][-1]["event_type"] == "deal_link_changed"
+        assert relinked.json()["events"][-1]["payload"]["old"]["deal_id"] == 3507
+
+        repeated = client.put(
+            f"/api/bitrix/logistics/customer-returns/{linked_id}/deal-link",
+            headers=headers,
+            json={"bitrix_deal_id": 3508},
+        )
+        assert repeated.status_code == 200
+        assert [event["event_type"] for event in repeated.json()["events"]].count(
+            "deal_link_changed"
+        ) == 1
+
+        unlinked = client.put(
+            f"/api/bitrix/logistics/customer-returns/{linked_id}/deal-link",
+            headers=headers,
+            json={"bitrix_deal_id": None},
+        )
+        assert unlinked.status_code == 200
+        assert unlinked.json()["bitrix_deal_id"] is None
+        assert [event["event_type"] for event in unlinked.json()["events"]].count(
+            "deal_link_changed"
+        ) == 2
 
         registered = client.post(
             "/api/bitrix/logistics/customer-returns",

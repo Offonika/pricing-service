@@ -36,4 +36,7 @@ export const logisticsApi = {
   post<T>(path: string, data?: unknown, config?: AxiosRequestConfig) {
     return withLogisticsAuthRetry(() => api.post<T>(path, data, config));
   },
+  put<T>(path: string, data?: unknown, config?: AxiosRequestConfig) {
+    return withLogisticsAuthRetry(() => api.put<T>(path, data, config));
+  },
 };

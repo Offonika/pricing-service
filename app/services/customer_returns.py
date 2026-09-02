@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -28,6 +29,7 @@ EVENT_REGISTERED = "registered"
 EVENT_CARRIER_STATUS = "carrier_status"
 EVENT_PICKUP_CONFIRMED = "pickup_confirmed"
 EVENT_ONEC_RETURN_CONFIRMED = "onec_return_confirmed"
+EVENT_DEAL_LINK_CHANGED = "deal_link_changed"
 
 ACTION_ARRIVAL_TASK = "arrival_task"
 ACTION_STORAGE_REMINDER_3D = "storage_reminder_3d"
@@ -58,6 +60,23 @@ class CustomerReturnNotFound(CustomerReturnError):
 
 class CustomerReturnConflict(CustomerReturnError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class CustomerReturnDealLink:
+    deal_id: int
+    title: str
+    order_ref: str | None = None
+    stage_id: str | None = None
+    stage_name: str | None = None
+    closed: bool = False
+    created_at: datetime | None = None
+    contact_id: int | None = None
+    contact_name: str | None = None
+    company_id: int | None = None
+    company_name: str | None = None
+    responsible_user_id: int | None = None
+    responsible_name: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -121,6 +140,57 @@ def _find_return_by_tracking(
     )
 
 
+def _deal_link_payload(link: CustomerReturnDealLink | None) -> dict | None:
+    if link is None:
+        return None
+    return {
+        "deal_id": link.deal_id,
+        "title": link.title,
+        "order_ref": link.order_ref,
+    }
+
+
+def _apply_deal_link(
+    shipment: CustomerReturnShipment,
+    link: CustomerReturnDealLink,
+    *,
+    actor_bitrix_user_id: str,
+    linked_at: datetime,
+) -> None:
+    shipment.bitrix_deal_id = link.deal_id
+    shipment.bitrix_deal_title = link.title
+    shipment.bitrix_order_ref = link.order_ref
+    shipment.bitrix_deal_stage_id = link.stage_id
+    shipment.bitrix_deal_stage_name = link.stage_name
+    shipment.bitrix_deal_closed = link.closed
+    shipment.bitrix_contact_id = link.contact_id
+    shipment.bitrix_contact_name = link.contact_name
+    shipment.bitrix_company_id = link.company_id
+    shipment.bitrix_company_name = link.company_name
+    shipment.bitrix_responsible_user_id = link.responsible_user_id
+    shipment.bitrix_responsible_name = link.responsible_name
+    shipment.bitrix_deal_linked_at = linked_at
+    shipment.bitrix_deal_linked_by_user_id = actor_bitrix_user_id
+    shipment.onec_order_ref = link.order_ref
+
+
+def _clear_deal_link(shipment: CustomerReturnShipment) -> None:
+    shipment.bitrix_deal_id = None
+    shipment.bitrix_deal_title = None
+    shipment.bitrix_order_ref = None
+    shipment.bitrix_deal_stage_id = None
+    shipment.bitrix_deal_stage_name = None
+    shipment.bitrix_deal_closed = None
+    shipment.bitrix_contact_id = None
+    shipment.bitrix_contact_name = None
+    shipment.bitrix_company_id = None
+    shipment.bitrix_company_name = None
+    shipment.bitrix_responsible_user_id = None
+    shipment.bitrix_responsible_name = None
+    shipment.bitrix_deal_linked_at = None
+    shipment.bitrix_deal_linked_by_user_id = None
+
+
 def _fill_missing_registration_links(
     db: Session,
     shipment: CustomerReturnShipment,
@@ -131,6 +201,7 @@ def _fill_missing_registration_links(
     onec_order_ref: str | None,
     created_by_bitrix_user_id: str | None,
     payload: dict | None,
+    deal_link: CustomerReturnDealLink | None,
 ) -> CustomerReturnShipment:
     changed = False
     for field, value in (
@@ -143,6 +214,36 @@ def _fill_missing_registration_links(
     ):
         if value is not None and getattr(shipment, field) is None:
             setattr(shipment, field, value)
+            changed = True
+    if deal_link is not None:
+        if shipment.bitrix_deal_id not in (None, deal_link.deal_id):
+            raise CustomerReturnConflict(
+                "customer return is already linked to another Bitrix24 deal"
+            )
+        if shipment.bitrix_deal_id is None:
+            linked_at = _utcnow()
+            _apply_deal_link(
+                shipment,
+                deal_link,
+                actor_bitrix_user_id=created_by_bitrix_user_id or "system",
+                linked_at=linked_at,
+            )
+            db.add(
+                CustomerReturnEvent(
+                    shipment_id=shipment.id,
+                    event_type=EVENT_DEAL_LINK_CHANGED,
+                    source="bitrix24",
+                    dedupe_key=_dedupe_key(
+                        "deal-link",
+                        shipment.id,
+                        "none",
+                        deal_link.deal_id,
+                    ),
+                    actor_bitrix_user_id=created_by_bitrix_user_id,
+                    occurred_at=linked_at,
+                    payload={"old": None, "new": _deal_link_payload(deal_link)},
+                )
+            )
             changed = True
     if changed:
         shipment.updated_at = _utcnow()
@@ -168,6 +269,7 @@ def register_return(
     onec_order_ref: str | None = None,
     created_by_bitrix_user_id: str | None = None,
     payload: dict | None = None,
+    deal_link: CustomerReturnDealLink | None = None,
 ) -> tuple[CustomerReturnShipment, bool]:
     adapter = get_customer_return_carrier_adapter(carrier)
     normalized_tracking = adapter.normalize_tracking_number(tracking_number)
@@ -198,6 +300,7 @@ def register_return(
                 onec_order_ref=onec_order_ref,
                 created_by_bitrix_user_id=created_by_bitrix_user_id,
                 payload=payload,
+                deal_link=deal_link,
             ),
             False,
         )
@@ -222,6 +325,13 @@ def register_return(
         source_payload=payload,
         updated_at=now,
     )
+    if deal_link is not None:
+        _apply_deal_link(
+            shipment,
+            deal_link,
+            actor_bitrix_user_id=created_by_bitrix_user_id or "system",
+            linked_at=now,
+        )
     try:
         db.add(shipment)
         db.flush()
@@ -234,7 +344,15 @@ def register_return(
                 dedupe_key=_dedupe_key("registered", adapter.carrier, normalized_tracking),
                 actor_bitrix_user_id=created_by_bitrix_user_id,
                 occurred_at=now,
-                payload=payload,
+                payload={
+                    **(payload or {}),
+                    **(
+                        {"deal_link": _deal_link_payload(deal_link)}
+                        if deal_link is not None
+                        else {}
+                    ),
+                }
+                or None,
             )
         )
         db.commit()
@@ -256,6 +374,7 @@ def register_return(
                     onec_order_ref=onec_order_ref,
                     created_by_bitrix_user_id=created_by_bitrix_user_id,
                     payload=payload,
+                    deal_link=deal_link,
                 ),
                 False,
             )
@@ -263,6 +382,60 @@ def register_return(
             "customer return registration conflicts with existing data"
         ) from exc
     return get_return(db, shipment.id), True
+
+
+def update_return_deal_link(
+    db: Session,
+    shipment_id: int,
+    *,
+    deal_link: CustomerReturnDealLink | None,
+    actor_bitrix_user_id: str,
+) -> CustomerReturnShipment:
+    shipment = get_return(db, shipment_id)
+    old_deal_id = shipment.bitrix_deal_id
+    new_deal_id = deal_link.deal_id if deal_link is not None else None
+    if old_deal_id == new_deal_id:
+        return shipment
+
+    old_payload = (
+        {
+            "deal_id": shipment.bitrix_deal_id,
+            "title": shipment.bitrix_deal_title,
+            "order_ref": shipment.bitrix_order_ref,
+        }
+        if shipment.bitrix_deal_id is not None
+        else None
+    )
+    occurred_at = _utcnow()
+    if deal_link is None:
+        _clear_deal_link(shipment)
+    else:
+        _apply_deal_link(
+            shipment,
+            deal_link,
+            actor_bitrix_user_id=actor_bitrix_user_id,
+            linked_at=occurred_at,
+        )
+    shipment.updated_at = occurred_at
+    db.add(
+        CustomerReturnEvent(
+            shipment_id=shipment.id,
+            event_type=EVENT_DEAL_LINK_CHANGED,
+            source="bitrix24",
+            dedupe_key=_dedupe_key(
+                "deal-link",
+                shipment.id,
+                old_deal_id or "none",
+                new_deal_id or "none",
+                occurred_at.isoformat(),
+            ),
+            actor_bitrix_user_id=actor_bitrix_user_id,
+            occurred_at=occurred_at,
+            payload={"old": old_payload, "new": _deal_link_payload(deal_link)},
+        )
+    )
+    db.commit()
+    return get_return(db, shipment.id)
 
 
 def _carrier_event_dedupe_key(

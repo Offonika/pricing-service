@@ -29,6 +29,8 @@ from app.models import (
 )
 from app.schemas.bitrix_logistics import (
     BitrixCustomerReturnCreateRequest,
+    BitrixCustomerReturnDealLinkRequest,
+    BitrixCustomerReturnDealSearchItem,
     BitrixCustomerReturnPickupRequest,
     BitrixLogisticsBootstrapResponse,
     BitrixLogisticsDraftCancelRequest,
@@ -55,6 +57,7 @@ from app.schemas.logistics import (
     LogisticsHistoryEventResponse,
     LogisticsMonitorResponse,
 )
+from app.services import customer_return_deals as customer_return_deal_service
 from app.services import customer_returns as customer_return_service
 from app.services import logistics as logistics_service
 from app.services.bitrix_logistics_auth import (
@@ -228,6 +231,10 @@ def _raise_customer_return_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, CustomerReturnCarrierError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, customer_return_deal_service.CustomerReturnDealNotFound):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, customer_return_deal_service.CustomerReturnDealUnavailable):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     raise exc
 
 
@@ -400,6 +407,14 @@ def register_bitrix_customer_return(
 ):
     _require_role(actor, CUSTOMER_RETURN_ROLES)
     try:
+        deal_link = (
+            customer_return_deal_service.get_customer_return_deal(
+                webhook_url=get_settings().customer_return_bitrix_webhook_url,
+                deal_id=payload.bitrix_deal_id,
+            )
+            if payload.bitrix_deal_id is not None
+            else None
+        )
         shipment, created = customer_return_service.register_return(
             db,
             carrier=payload.carrier,
@@ -410,13 +425,54 @@ def register_bitrix_customer_return(
             site_ticket_id=payload.site_ticket_id,
             onec_order_ref=payload.onec_order_ref,
             created_by_bitrix_user_id=str(actor.bitrix_user_id),
+            deal_link=deal_link,
         )
     except (
         customer_return_service.CustomerReturnConflict,
         CustomerReturnCarrierError,
+        customer_return_deal_service.CustomerReturnDealNotFound,
+        customer_return_deal_service.CustomerReturnDealUnavailable,
     ) as exc:
         _raise_customer_return_http_error(exc)
     return {"created": created, "shipment": shipment}
+
+
+@router.get(
+    "/customer-return-deals",
+    response_model=list[BitrixCustomerReturnDealSearchItem],
+)
+def search_bitrix_customer_return_deals(
+    search: str = Query(min_length=2, max_length=100),
+    limit: int = Query(default=20, ge=1, le=20),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    try:
+        deals = customer_return_deal_service.search_customer_return_deals(
+            webhook_url=get_settings().customer_return_bitrix_webhook_url,
+            search=search,
+            limit=limit,
+        )
+    except customer_return_deal_service.CustomerReturnDealUnavailable as exc:
+        _raise_customer_return_http_error(exc)
+    return [
+        {
+            "deal_id": deal.deal_id,
+            "title": deal.title,
+            "order_ref": deal.order_ref,
+            "stage_id": deal.stage_id,
+            "stage_name": deal.stage_name,
+            "closed": deal.closed,
+            "created_at": deal.created_at,
+            "contact_id": deal.contact_id,
+            "contact_name": deal.contact_name,
+            "company_id": deal.company_id,
+            "company_name": deal.company_name,
+            "responsible_user_id": deal.responsible_user_id,
+            "responsible_name": deal.responsible_name,
+        }
+        for deal in deals
+    ]
 
 
 @router.get(
@@ -452,6 +508,40 @@ def get_bitrix_customer_return(
     try:
         return customer_return_service.get_return(db, shipment_id)
     except customer_return_service.CustomerReturnNotFound as exc:
+        _raise_customer_return_http_error(exc)
+
+
+@router.put(
+    "/customer-returns/{shipment_id}/deal-link",
+    response_model=CustomerReturnDetailResponse,
+)
+def update_bitrix_customer_return_deal_link(
+    shipment_id: int,
+    payload: BitrixCustomerReturnDealLinkRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    try:
+        deal_link = (
+            customer_return_deal_service.get_customer_return_deal(
+                webhook_url=get_settings().customer_return_bitrix_webhook_url,
+                deal_id=payload.bitrix_deal_id,
+            )
+            if payload.bitrix_deal_id is not None
+            else None
+        )
+        return customer_return_service.update_return_deal_link(
+            db,
+            shipment_id,
+            deal_link=deal_link,
+            actor_bitrix_user_id=str(actor.bitrix_user_id),
+        )
+    except (
+        customer_return_service.CustomerReturnNotFound,
+        customer_return_deal_service.CustomerReturnDealNotFound,
+        customer_return_deal_service.CustomerReturnDealUnavailable,
+    ) as exc:
         _raise_customer_return_http_error(exc)
 
 

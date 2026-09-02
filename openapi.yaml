@@ -2941,6 +2941,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-return-deals:
+    get:
+      summary: Search Bitrix Customer Return Deals
+      operationId: search_bitrix_customer_return_deals_api_bitrix_logistics_customer_return_deals_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 2
+          maxLength: 100
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 20
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BitrixCustomerReturnDealSearchItem'
+                title: Response Search Bitrix Customer Return Deals Api Bitrix Logistics Customer Return Deals Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/customer-returns/{shipment_id}:
     get:
       summary: Get Bitrix Customer Return
@@ -2954,6 +2994,38 @@ paths:
         schema:
           type: integer
           title: Shipment Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-returns/{shipment_id}/deal-link:
+    put:
+      summary: Update Bitrix Customer Return Deal Link
+      operationId: update_bitrix_customer_return_deal_link_api_bitrix_logistics_customer_returns__shipment_id__deal_link_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCustomerReturnDealLinkRequest'
       responses:
         '200':
           description: Successful Response
@@ -12991,12 +13063,97 @@ components:
             minLength: 1
           - type: 'null'
           title: Onec Order Ref
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Bitrix Deal Id
       additionalProperties: false
       type: object
       required:
       - carrier
       - tracking_number
       title: BitrixCustomerReturnCreateRequest
+    BitrixCustomerReturnDealLinkRequest:
+      properties:
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Bitrix Deal Id
+      additionalProperties: false
+      type: object
+      title: BitrixCustomerReturnDealLinkRequest
+    BitrixCustomerReturnDealSearchItem:
+      properties:
+        deal_id:
+          type: integer
+          title: Deal Id
+        title:
+          type: string
+          title: Title
+        order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Order Ref
+        stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Id
+        stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Name
+        closed:
+          type: boolean
+          title: Closed
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        contact_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Contact Id
+        contact_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contact Name
+        company_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Company Id
+        company_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Company Name
+        responsible_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Responsible User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+      type: object
+      required:
+      - deal_id
+      - title
+      - closed
+      title: BitrixCustomerReturnDealSearchItem
     BitrixCustomerReturnPickupRequest:
       properties:
         idempotency_key:
@@ -17827,6 +17984,77 @@ components:
           - type: string
           - type: 'null'
           title: Onec Order Ref
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Deal Id
+        bitrix_deal_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Title
+        bitrix_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Order Ref
+        bitrix_deal_stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Stage Id
+        bitrix_deal_stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Stage Name
+        bitrix_deal_closed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Bitrix Deal Closed
+        bitrix_contact_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Contact Id
+        bitrix_contact_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Contact Name
+        bitrix_company_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Company Id
+        bitrix_company_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Company Name
+        bitrix_responsible_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Responsible User Id
+        bitrix_responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Responsible Name
+        bitrix_deal_linked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Bitrix Deal Linked At
+        bitrix_deal_linked_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Linked By User Id
         onec_return_ref:
           anyOf:
           - type: string
@@ -18094,6 +18322,77 @@ components:
           - type: string
           - type: 'null'
           title: Onec Order Ref
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Deal Id
+        bitrix_deal_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Title
+        bitrix_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Order Ref
+        bitrix_deal_stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Stage Id
+        bitrix_deal_stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Stage Name
+        bitrix_deal_closed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Bitrix Deal Closed
+        bitrix_contact_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Contact Id
+        bitrix_contact_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Contact Name
+        bitrix_company_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Company Id
+        bitrix_company_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Company Name
+        bitrix_responsible_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Responsible User Id
+        bitrix_responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Responsible Name
+        bitrix_deal_linked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Bitrix Deal Linked At
+        bitrix_deal_linked_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Deal Linked By User Id
         onec_return_ref:
           anyOf:
           - type: string

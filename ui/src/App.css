@@ -4737,10 +4737,133 @@
 
 .customer-returns__registration {
   display: grid;
-  grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.5fr) minmax(150px, 1fr) auto;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(220px, 1.3fr) minmax(280px, 1.5fr) auto;
   align-items: end;
   gap: 10px;
   margin-top: 16px;
+}
+
+.customer-return-deal-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.customer-return-deal-picker__control {
+  position: relative;
+}
+
+.customer-return-deal-picker__control input {
+  width: 100%;
+  padding-right: 38px;
+}
+
+.customer-return-deal-picker__clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #526170;
+  font-size: 22px;
+  line-height: 1;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.customer-return-deal-picker__clear:hover {
+  background: #edf2f6;
+}
+
+.customer-return-deal-picker__selected {
+  color: #247346;
+  font-weight: 700;
+}
+
+.customer-return-deal-picker__options {
+  position: absolute;
+  z-index: 130;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #cfd9e2;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgb(12 22 33 / 18%);
+}
+
+.customer-return-deal-picker__options > button {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid #e8edf1;
+  background: #fff;
+  color: #243342;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer-return-deal-picker__options > button:last-child {
+  border-bottom: 0;
+}
+
+.customer-return-deal-picker__options > button:hover,
+.customer-return-deal-picker__options > button.is-active {
+  background: #edf6ff;
+}
+
+.customer-return-deal-picker__options span,
+.customer-return-deal-picker__options small {
+  color: #526170;
+  font-size: 12px;
+}
+
+.customer-return-deal-picker__options p {
+  margin: 0;
+  padding: 12px;
+  color: #526170;
+  font-size: 13px;
+}
+
+.customer-return-deal-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #d7e2eb;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.customer-return-deal-link > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.customer-return-deal-link > div:first-child > span {
+  color: #526170;
+  font-size: 12px;
+}
+
+.customer-return-deal-link__editor {
+  display: grid;
+  width: min(100%, 520px);
+  gap: 10px;
+}
+
+.customer-return-deal-link__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .customer-returns__registration .btn,
@@ -5013,6 +5136,15 @@
   .customer-returns__filters,
   .customer-returns__pickup {
     grid-template-columns: 1fr;
+  }
+
+  .customer-return-deal-link {
+    display: grid;
+  }
+
+  .customer-return-deal-link > .btn,
+  .customer-return-deal-link__actions .btn {
+    width: 100%;
   }
 
   .customer-returns__registration .btn,

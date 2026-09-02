@@ -563,8 +563,8 @@ documents:
     status: implemented
     owner: engineering-and-online-sales
     source_of_truth: true
-    related_code: [app/api/bitrix_logistics.py, app/api/customer_returns.py, app/models/customer_return.py, app/schemas/bitrix_logistics.py, app/schemas/customer_returns.py, app/services/customer_return_bitrix.py, app/services/customer_returns.py, app/services/customer_return_carriers.py, tasks/customer_return_bitrix_worker.py, ui/src/App.css, ui/src/components/CustomerReturnsWorkspace.tsx, ui/src/components/LogisticsWorkspace.tsx]
-    related_tests: [tests/test_bitrix_customer_returns.py, tests/test_bitrix_logistics.py, tests/test_customer_return_bitrix_worker.py, tests/test_customer_returns_api.py, tests/test_customer_return_carriers.py, tests/test_customer_returns_migration.py, ui/src/components/CustomerReturnsWorkspace.test.tsx, ui/src/components/LogisticsWorkspace.test.tsx]
+    related_code: [app/api/bitrix_logistics.py, app/api/customer_returns.py, app/models/customer_return.py, app/schemas/bitrix_logistics.py, app/schemas/customer_returns.py, app/services/customer_return_bitrix.py, app/services/customer_return_deals.py, app/services/customer_returns.py, app/services/customer_return_carriers.py, tasks/customer_return_bitrix_worker.py, alembic/versions/c7d9e1f3a5b8_add_customer_return_deal_link.py, ui/src/App.css, ui/src/components/CustomerReturnsWorkspace.tsx, ui/src/components/LogisticsWorkspace.tsx]
+    related_tests: [tests/test_bitrix_customer_returns.py, tests/test_bitrix_logistics.py, tests/test_customer_return_bitrix_worker.py, tests/test_customer_return_deals.py, tests/test_customer_returns_api.py, tests/test_customer_return_carriers.py, tests/test_customer_returns_migration.py, ui/src/components/CustomerReturnsWorkspace.test.tsx, ui/src/components/LogisticsWorkspace.test.tsx]
     keywords: [customer-return, inbound-return, carrier, tracking, russian-post, cdek, yandex-delivery, bitrix24, onec, task-3507, возврат, трек, перевозчик]
   - path: docs/specs/transfer-assistant-readonly-v1.md
     title: Transfer Assistant Readonly V1

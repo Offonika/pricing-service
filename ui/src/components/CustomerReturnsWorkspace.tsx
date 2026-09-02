@@ -21,6 +21,18 @@ type CustomerReturnShipment = {
   source_ref?: string | null;
   bitrix_case_id?: string | null;
   onec_order_ref?: string | null;
+  bitrix_deal_id?: number | null;
+  bitrix_deal_title?: string | null;
+  bitrix_order_ref?: string | null;
+  bitrix_deal_stage_id?: string | null;
+  bitrix_deal_stage_name?: string | null;
+  bitrix_deal_closed?: boolean | null;
+  bitrix_contact_id?: number | null;
+  bitrix_contact_name?: string | null;
+  bitrix_company_id?: number | null;
+  bitrix_company_name?: string | null;
+  bitrix_responsible_user_id?: number | null;
+  bitrix_responsible_name?: string | null;
   onec_return_ref?: string | null;
   carrier_last_status_text?: string | null;
   storage_deadline_at?: string | null;
@@ -47,6 +59,22 @@ type CustomerReturnDetail = CustomerReturnShipment & {
 type CustomerReturnRegistration = {
   created: boolean;
   shipment: CustomerReturnDetail;
+};
+
+type CustomerReturnDeal = {
+  deal_id: number;
+  title: string;
+  order_ref?: string | null;
+  stage_id?: string | null;
+  stage_name?: string | null;
+  closed: boolean;
+  created_at?: string | null;
+  contact_id?: number | null;
+  contact_name?: string | null;
+  company_id?: number | null;
+  company_name?: string | null;
+  responsible_user_id?: number | null;
+  responsible_name?: string | null;
 };
 
 type CustomerReturnsWorkspaceProps = {
@@ -83,6 +111,7 @@ const EVENT_LABELS: Record<string, string> = {
   carrier_status: "Статус перевозчика",
   pickup_confirmed: "Сотрудник подтвердил получение",
   onec_return_confirmed: "Возврат найден в 1С",
+  deal_link_changed: "Привязка сделки изменена",
 };
 
 const STATUS_HELP: Array<{ status: CustomerReturnStatus; description: string }> = [
@@ -179,7 +208,8 @@ function CustomerReturnsHelp({
               <h3>Как зарегистрировать возврат</h3>
               <ol>
                 <li>Выберите Почту России или СДЭК.</li>
-                <li>Введите трек-номер и, если известен, номер заказа 1С.</li>
+                <li>Введите трек-номер и найдите сделку по ID, названию или номеру заказа.</li>
+                <li>Если сделку пока найти не удалось, зарегистрируйте возврат без неё.</li>
                 <li>Нажмите «Зарегистрировать» и проверьте карточку и первое событие истории.</li>
               </ol>
               <p>
@@ -231,12 +261,12 @@ function CustomerReturnsHelp({
                 <p>
                   <strong>Почта России</strong>
                   <code>99999999999999</code>
-                  <span>Заказ 1С: TEST-3507-RP</span>
+                  <span>Сделку не выбирайте</span>
                 </p>
                 <p>
                   <strong>СДЭК</strong>
                   <code>TEST-3507-CDEK</code>
-                  <span>Заказ 1С: TEST-3507-CDEK</span>
+                  <span>Сделку не выбирайте</span>
                 </p>
               </div>
             </section>
@@ -309,6 +339,214 @@ function upsertShipment(
   return [shipment, ...current.filter((item) => item.id !== shipment.id)];
 }
 
+function dealFromShipment(shipment: CustomerReturnShipment): CustomerReturnDeal | null {
+  if (!shipment.bitrix_deal_id) return null;
+  return {
+    deal_id: shipment.bitrix_deal_id,
+    title: shipment.bitrix_deal_title || `Сделка #${shipment.bitrix_deal_id}`,
+    order_ref: shipment.bitrix_order_ref,
+    stage_id: shipment.bitrix_deal_stage_id,
+    stage_name: shipment.bitrix_deal_stage_name,
+    closed: Boolean(shipment.bitrix_deal_closed),
+    contact_id: shipment.bitrix_contact_id,
+    contact_name: shipment.bitrix_contact_name,
+    company_id: shipment.bitrix_company_id,
+    company_name: shipment.bitrix_company_name,
+    responsible_user_id: shipment.bitrix_responsible_user_id,
+    responsible_name: shipment.bitrix_responsible_name,
+  };
+}
+
+function dealClientLabel(deal: CustomerReturnDeal) {
+  return deal.company_name || deal.contact_name || null;
+}
+
+type CustomerReturnDealPickerProps = {
+  disabled?: boolean;
+  idPrefix: string;
+  label: string;
+  onSelect: (deal: CustomerReturnDeal | null) => void;
+  selected: CustomerReturnDeal | null;
+};
+
+function CustomerReturnDealPicker({
+  disabled = false,
+  idPrefix,
+  label,
+  onSelect,
+  selected,
+}: CustomerReturnDealPickerProps) {
+  const [query, setQuery] = useState(selected?.title || "");
+  const [options, setOptions] = useState<CustomerReturnDeal[]>([]);
+  const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const listId = `${idPrefix}-deal-options`;
+
+  useEffect(() => {
+    setQuery(selected?.title || "");
+  }, [selected?.deal_id, selected?.title]);
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (selected && normalized === selected.title) {
+      setOptions([]);
+      setOpen(false);
+      setSearchError("");
+      return undefined;
+    }
+    if (normalized.length < 2) {
+      setOptions([]);
+      setOpen(false);
+      setSearching(false);
+      setSearchError("");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setSearching(true);
+      setSearchError("");
+      try {
+        const { data } = await api.get<CustomerReturnDeal[]>(
+          "/bitrix/logistics/customer-return-deals",
+          { params: { search: normalized, limit: 20 }, signal: controller.signal }
+        );
+        setOptions(data);
+        setActiveIndex(0);
+        setOpen(true);
+      } catch (error) {
+        if (isAxiosError(error) && error.code === "ERR_CANCELED") return;
+        setOptions([]);
+        setOpen(true);
+        setSearchError(apiError(error));
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [query, selected]);
+
+  const choose = (deal: CustomerReturnDeal) => {
+    onSelect(deal);
+    setQuery(deal.title);
+    setOptions([]);
+    setOpen(false);
+    setSearchError("");
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || !options.length) {
+      if (event.key === "ArrowDown" && query.trim().length >= 2) setOpen(true);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.min(current + 1, options.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.max(current - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      choose(options[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="logistics-field customer-return-deal-picker">
+      <span>{label}</span>
+      <div className="customer-return-deal-picker__control">
+        <input
+          aria-activedescendant={open && options.length ? `${idPrefix}-deal-${options[activeIndex].deal_id}` : undefined}
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-label={label}
+          autoComplete="off"
+          disabled={disabled}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            onSelect(null);
+          }}
+          onFocus={() => {
+            if (options.length || searchError) setOpen(true);
+          }}
+          onKeyDown={onKeyDown}
+          placeholder="ID, название или номер заказа"
+          role="combobox"
+          value={query}
+        />
+        {selected && (
+          <button
+            aria-label="Очистить выбранную сделку"
+            className="customer-return-deal-picker__clear"
+            disabled={disabled}
+            onClick={() => {
+              onSelect(null);
+              setQuery("");
+            }}
+            type="button"
+          >
+            ×
+          </button>
+        )}
+      </div>
+      {selected && (
+        <small className="customer-return-deal-picker__selected">
+          #{selected.deal_id}{selected.order_ref ? ` · заказ ${selected.order_ref}` : ""}
+          {selected.closed ? " · закрыта" : ""}
+        </small>
+      )}
+      {searching && <small role="status">Ищем сделки…</small>}
+      {open && (
+        <div className="customer-return-deal-picker__options" id={listId} role="listbox">
+          {searchError ? (
+            <p role="alert">{searchError}. Возврат можно зарегистрировать без сделки.</p>
+          ) : options.length ? (
+            options.map((deal, index) => (
+              <button
+                aria-selected={index === activeIndex}
+                className={index === activeIndex ? "is-active" : ""}
+                id={`${idPrefix}-deal-${deal.deal_id}`}
+                key={deal.deal_id}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => choose(deal)}
+                role="option"
+                type="button"
+              >
+                <strong>#{deal.deal_id} · {deal.title}</strong>
+                <span>
+                  {deal.order_ref ? `Заказ ${deal.order_ref}` : "Номер заказа не заполнен"}
+                  {deal.stage_name ? ` · ${deal.stage_name}` : ""}
+                  {deal.closed ? " · Закрыта" : ""}
+                </span>
+                {(dealClientLabel(deal) || deal.responsible_name) && (
+                  <small>
+                    {dealClientLabel(deal) ? `Клиент: ${dealClientLabel(deal)}` : ""}
+                    {deal.responsible_name ? ` · Ответственный: ${deal.responsible_name}` : ""}
+                  </small>
+                )}
+              </button>
+            ))
+          ) : (
+            <p>Сделки не найдены. Возврат можно зарегистрировать без привязки.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function CustomerReturnsWorkspace({
   showTestingGuide = false,
 }: CustomerReturnsWorkspaceProps) {
@@ -318,7 +556,9 @@ export function CustomerReturnsWorkspace({
   const [statusFilter, setStatusFilter] = useState("");
   const [carrier, setCarrier] = useState<CustomerReturnCarrier>("russian_post");
   const [trackingNumber, setTrackingNumber] = useState("");
-  const [onecOrderRef, setOnecOrderRef] = useState("");
+  const [selectedDeal, setSelectedDeal] = useState<CustomerReturnDeal | null>(null);
+  const [detailDeal, setDetailDeal] = useState<CustomerReturnDeal | null>(null);
+  const [editingDealLink, setEditingDealLink] = useState(false);
   const [pickupComment, setPickupComment] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -344,6 +584,8 @@ export function CustomerReturnsWorkspace({
 
   const closeDetail = () => {
     setDetail(null);
+    setDetailDeal(null);
+    setEditingDealLink(false);
     detailTriggerRef.current?.focus();
   };
 
@@ -398,7 +640,7 @@ export function CustomerReturnsWorkspace({
         {
           carrier,
           tracking_number: normalizedTrack,
-          onec_order_ref: onecOrderRef.trim() || null,
+          bitrix_deal_id: selectedDeal?.deal_id || null,
         }
       );
       setReturns((current) =>
@@ -406,8 +648,9 @@ export function CustomerReturnsWorkspace({
       );
       detailTriggerRef.current = registerButtonRef.current;
       setDetail(data.shipment);
+      setDetailDeal(dealFromShipment(data.shipment));
       setTrackingNumber("");
-      setOnecOrderRef("");
+      setSelectedDeal(null);
       setMessage(data.created ? "Возврат зарегистрирован" : "Этот трек уже есть в реестре");
     } catch (error) {
       setMessage(apiError(error));
@@ -428,6 +671,8 @@ export function CustomerReturnsWorkspace({
       );
       detailTriggerRef.current = trigger;
       setDetail(data);
+      setDetailDeal(dealFromShipment(data));
+      setEditingDealLink(false);
       setPickupComment("");
       setMessage("");
     } catch (error) {
@@ -452,6 +697,26 @@ export function CustomerReturnsWorkspace({
       setReturns((current) => upsertShipment(current, data, carrierFilter, statusFilter));
       setPickupComment("");
       setMessage("Получение возврата подтверждено. Поставлен контроль сверки с 1С.");
+    } catch (error) {
+      setMessage(apiError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveDealLink = async (deal: CustomerReturnDeal | null = detailDeal) => {
+    if (!detail || busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.put<CustomerReturnDetail>(
+        `/bitrix/logistics/customer-returns/${detail.id}/deal-link`,
+        { bitrix_deal_id: deal?.deal_id || null }
+      );
+      setDetail(data);
+      setDetailDeal(dealFromShipment(data));
+      setReturns((current) => upsertShipment(current, data, carrierFilter, statusFilter));
+      setEditingDealLink(false);
+      setMessage(deal ? "Сделка привязана к возврату" : "Привязка сделки удалена");
     } catch (error) {
       setMessage(apiError(error));
     } finally {
@@ -500,16 +765,13 @@ export function CustomerReturnsWorkspace({
               onChange={(event) => setTrackingNumber(event.target.value)}
             />
           </label>
-          <label className="logistics-field">
-            <span>Заказ 1С</span>
-            <input
-              aria-label="Заказ 1С"
-              maxLength={64}
-              placeholder="Необязательно"
-              value={onecOrderRef}
-              onChange={(event) => setOnecOrderRef(event.target.value)}
-            />
-          </label>
+          <CustomerReturnDealPicker
+            disabled={busy}
+            idPrefix="customer-return-registration"
+            label="Сделка Bitrix24 (необязательно)"
+            onSelect={setSelectedDeal}
+            selected={selectedDeal}
+          />
           <button
             className="btn logistics-primary"
             type="submit"
@@ -575,7 +837,14 @@ export function CustomerReturnsWorkspace({
               <div className="customer-returns__meta">
                 <span>Хранение: {shipment.storage_deadline_at ? `до ${formatDate(shipment.storage_deadline_at)}` : "срок не передан"}</span>
                 <span>1С: {shipment.onec_return_confirmed_at ? `подтверждено ${formatDate(shipment.onec_return_confirmed_at)}` : "ожидает сверки"}</span>
-                {shipment.onec_order_ref && <span>Заказ: {shipment.onec_order_ref}</span>}
+                {shipment.bitrix_deal_id ? (
+                  <span>
+                    Сделка #{shipment.bitrix_deal_id}
+                    {shipment.bitrix_order_ref ? ` · заказ ${shipment.bitrix_order_ref}` : ""}
+                  </span>
+                ) : shipment.onec_order_ref ? (
+                  <span>Ранее указанный заказ: {shipment.onec_order_ref}</span>
+                ) : null}
               </div>
               <button
                 className="btn btn--ghost"
@@ -631,8 +900,86 @@ export function CustomerReturnsWorkspace({
                 </span>
                 <span>{CARRIER_LABELS[detail.carrier]}</span>
                 <span>Срок хранения: {formatDate(detail.storage_deadline_at)}</span>
-                <span>Заказ 1С: {detail.onec_order_ref || "не указан"}</span>
+                <span>
+                  Сделка: {detail.bitrix_deal_id
+                    ? `#${detail.bitrix_deal_id} · ${detail.bitrix_deal_title || "без названия"}`
+                    : "не привязана"}
+                </span>
+                <span>
+                  Заказ: {detail.bitrix_order_ref || (!detail.bitrix_deal_id && detail.onec_order_ref) || "не указан"}
+                </span>
+                {(detail.bitrix_company_name || detail.bitrix_contact_name) && (
+                  <span>Клиент: {detail.bitrix_company_name || detail.bitrix_contact_name}</span>
+                )}
+                {detail.bitrix_responsible_name && (
+                  <span>Ответственный: {detail.bitrix_responsible_name}</span>
+                )}
                 <span>Документ возврата 1С: {detail.onec_return_ref || "ещё не найден"}</span>
+              </div>
+
+              <div className="customer-return-deal-link">
+                <div>
+                  <strong>Связь с заказом и клиентом</strong>
+                  <span>
+                    {detail.bitrix_deal_id
+                      ? `${detail.bitrix_deal_stage_name || detail.bitrix_deal_stage_id || "Стадия не указана"}${detail.bitrix_deal_closed ? " · закрыта" : ""}`
+                      : "Возврат зарегистрирован без сделки"}
+                  </span>
+                </div>
+                {!editingDealLink ? (
+                  <button
+                    className="btn btn--ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      setDetailDeal(dealFromShipment(detail));
+                      setEditingDealLink(true);
+                    }}
+                    type="button"
+                  >
+                    {detail.bitrix_deal_id ? "Изменить связь" : "Привязать сделку"}
+                  </button>
+                ) : (
+                  <div className="customer-return-deal-link__editor">
+                    <CustomerReturnDealPicker
+                      disabled={busy}
+                      idPrefix={`customer-return-detail-${detail.id}`}
+                      label="Новая сделка Bitrix24"
+                      onSelect={setDetailDeal}
+                      selected={detailDeal}
+                    />
+                    <div className="customer-return-deal-link__actions">
+                      <button
+                        className="btn logistics-primary"
+                        disabled={busy || !detailDeal}
+                        onClick={() => void saveDealLink()}
+                        type="button"
+                      >
+                        Сохранить связь
+                      </button>
+                      {detail.bitrix_deal_id && (
+                        <button
+                          className="btn btn--ghost"
+                          disabled={busy}
+                          onClick={() => void saveDealLink(null)}
+                          type="button"
+                        >
+                          Убрать связь
+                        </button>
+                      )}
+                      <button
+                        className="btn btn--ghost"
+                        disabled={busy}
+                        onClick={() => {
+                          setDetailDeal(dealFromShipment(detail));
+                          setEditingDealLink(false);
+                        }}
+                        type="button"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {detail.status === "arrived_at_pickup_point" && (

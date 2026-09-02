@@ -81,6 +81,11 @@ def test_product_rows_are_exact_onec_purchase_facts(db_session) -> None:
     assert len(product_rows_service.procurement_product_rows_checksum(rows)) == 64
 
 
+def test_dynamic_product_row_owner_type_uses_bitrix_hex_abbreviation() -> None:
+    assert product_rows_service.dynamic_product_row_owner_type(1056) == "T420"
+    assert product_rows_service.PRODUCT_ROW_OWNER_TYPE == "T420"
+
+
 def test_missing_catalog_product_keeps_link_and_records_error(db_session, monkeypatch) -> None:
     order = _order(db_session)
     order.lines[0].bitrix_product_id = None
@@ -132,6 +137,7 @@ def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkey
 
     def fake_call(method, params, **_kwargs):
         if method == "crm.productrow.list":
+            assert params["filter"]["OWNER_TYPE"] == "T420"
             return {"result": next(list_results)}
         assert method == "batch"
         commands = list(params["cmd"].values())
@@ -159,6 +165,7 @@ def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkey
     }
     flattened = [command for batch in batch_commands for command in batch]
     assert flattened[0].startswith("crm.productrow.add?")
+    assert "fields%5BOWNER_TYPE%5D=T420" in flattened[0]
     assert flattened[1].startswith("crm.productrow.update?")
     assert flattened[-1] == "crm.productrow.delete?id=7002"
     assert order.bitrix_product_rows_synced_count == 2

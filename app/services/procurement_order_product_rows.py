@@ -20,7 +20,13 @@ from app.models.procurement_order_formation import (
 from app.services.bitrix_order_formation import bitrix_call
 from app.services.procurement_order_formation import PROCUREMENT_PROCESS_ENTITY_TYPE_ID
 
-PRODUCT_ROW_OWNER_TYPE = f"T{PROCUREMENT_PROCESS_ENTITY_TYPE_ID}"
+
+def dynamic_product_row_owner_type(entity_type_id: int) -> str:
+    """Return the Bitrix product-row owner abbreviation for a dynamic CRM type."""
+    return f"T{int(entity_type_id):X}"
+
+
+PRODUCT_ROW_OWNER_TYPE = dynamic_product_row_owner_type(PROCUREMENT_PROCESS_ENTITY_TYPE_ID)
 PRODUCT_ROW_BATCH_SIZE = 50
 PRODUCT_ROW_METHODS = {
     "crm.productrow.list",

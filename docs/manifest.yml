@@ -968,6 +968,16 @@ documents:
     related_code: [app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py]
     related_tests: [tests/test_logistics_onec.py]
     keywords: [logistics, 1c, rtu, site-orders, contract]
+  - path: docs/IntegrationContract.OrderAssemblyQueue1C.md
+    title: CRM to 1C Order Assembly Queue Integration Contract
+    doc_type: integration_contract
+    domain: order_fulfillment
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_fulfillment.py, app/services/order_assembly_queue.py, app/models/order_assembly_queue.py, tasks/reconcile_onec_assembly_to_crm.py, alembic/versions/a4c5e6f70819_add_order_assembly_queue.py]
+    related_tests: [tests/test_order_assembly_queue.py, tests/test_reconcile_onec_assembly_to_crm.py]
+    keywords: [order-assembly, queue, crm, bitrix24, 1c, customer-order, executing, fail-closed, contract, сборка, очередь]
   - path: docs/Onepage.LogisticsTelegramMVP.md
     title: Logistics Telegram Onepage
     doc_type: onepager

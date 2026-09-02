@@ -110,6 +110,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         OrchestrationDeliveryIntent,
         OrchestrationJobRun,
     )
+    from app.models.order_assembly_queue import (
+        OrderAssemblyQueueItem,
+        OrderAssemblyQueueSyncState,
+    )
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion
     from app.models.procurement_order_formation import (
@@ -287,6 +291,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsRouteRunItem",
         "LogisticsManualReview",
         "OneCSalesDailyKpi",
+        "OrderAssemblyQueueItem",
+        "OrderAssemblyQueueSyncState",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",
         "SmsJournalApiRequest",

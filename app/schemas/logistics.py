@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -51,6 +52,13 @@ class LogisticsTransferSyncItem(BaseModel):
     origin_order_external_id: str | None = None
     site_order_number: str | None = None
     status: str | None = None
+    flow_mode: Literal["LEGACY_RTU", "ORDER_TRANSFER_V1"] | None = None
+    plan_key: str | None = None
+    plan_version: int | None = Field(default=None, ge=1)
+    unit_key: str | None = None
+    expected_unit_count: int | None = Field(default=None, ge=0)
+    ready_for_handoff: bool = False
+    is_required: bool = True
     onec_deleted: bool = False
     payload: dict | None = None
 
@@ -62,6 +70,70 @@ class LogisticsUnitSyncItem(LogisticsTransferSyncItem):
 class LogisticsSyncResponse(BaseModel):
     created: int
     updated: int
+
+
+class LogisticsOrderPlanUnitSyncItem(BaseModel):
+    unit_key: str
+    source_warehouse_external_id: str
+    target_warehouse_external_id: str
+    internal_order_external_id: str | None = None
+    transfer_external_id: str | None = None
+    is_required: bool = True
+    ready_for_handoff: bool = False
+    readiness: str | None = None
+    payload: dict | None = None
+
+
+class LogisticsOrderPlanSyncItem(BaseModel):
+    origin_order_external_id: str
+    site_order_number: str | None = None
+    flow_mode: Literal["ORDER_TRANSFER_V1"] = "ORDER_TRANSFER_V1"
+    plan_key: str
+    plan_version: int = Field(ge=1)
+    final_warehouse_external_id: str
+    status: str = "planned"
+    expected_unit_count: int = Field(ge=0)
+    synced_at: datetime | None = None
+    units: list[LogisticsOrderPlanUnitSyncItem] = Field(default_factory=list)
+    payload: dict | None = None
+
+    @model_validator(mode="after")
+    def validate_expected_units(self):
+        required_count = sum(1 for unit in self.units if unit.is_required)
+        if self.expected_unit_count != required_count:
+            raise ValueError("expected_unit_count must equal the number of required units")
+        keys = [unit.unit_key for unit in self.units]
+        if len(keys) != len(set(keys)):
+            raise ValueError("unit_key values must be unique within a plan")
+        return self
+
+
+class LogisticsExternalCarrierConfirmationSyncItem(BaseModel):
+    origin_order_external_id: str | None = None
+    site_order_number: str | None = None
+    carrier_name: str
+    tracking_number: str = Field(min_length=1)
+    confirmed_at: datetime
+    source_ref: str = Field(min_length=1)
+    terminal_warehouse_external_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_order_reference(self):
+        if not self.origin_order_external_id and not self.site_order_number:
+            raise ValueError("origin_order_external_id or site_order_number is required")
+        return self
+
+
+class LogisticsExternalCarrierConfirmationResponse(BaseModel):
+    origin_order_external_id: str
+    site_order_number: str | None = None
+    plan_key: str
+    plan_version: int
+    terminal_warehouse_external_id: str
+    carrier_name: str
+    tracking_number: str
+    confirmed_at: datetime
+    source_ref: str
 
 
 class LogisticsTelegramAuthRequest(BaseModel):
@@ -166,6 +238,18 @@ class LogisticsRtuReadyForPickupResponse(BaseModel):
     accepted_at: datetime
 
 
+class LogisticsOrderReadyForPickupResponse(BaseModel):
+    origin_order_external_id: str
+    site_order_number: str | None = None
+    flow_mode: Literal["LEGACY_RTU", "ORDER_TRANSFER_V1"]
+    plan_key: str | None = None
+    plan_version: int | None = None
+    ready_at: datetime
+    expected_unit_count: int
+    accepted_unit_count: int
+    source_external_ids: list[str] = Field(default_factory=list)
+
+
 class LogisticsMonitorResponse(BaseModel):
     transfer_id: int
     external_id: str
@@ -229,6 +313,12 @@ class LogisticsUnitLookupResponse(BaseModel):
     dropoff_warehouse_id: int | None = None
     target_warehouse_id: int
     document_target_warehouse_id: int | None = None
+    flow_mode: str | None = None
+    plan_key: str | None = None
+    plan_version: int | None = None
+    unit_key: str | None = None
+    expected_unit_count: int | None = None
+    ready_for_handoff: bool = False
 
 
 class LogisticsWarehouseResponse(BaseModel):

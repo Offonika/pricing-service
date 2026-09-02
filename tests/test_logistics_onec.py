@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models import (
     Base,
     LogisticsManualReview,
+    LogisticsOrderPlan,
+    LogisticsOrderPlanUnit,
     LogisticsTransfer,
     LogisticsTransferEvent,
     LogisticsTransferState,
@@ -930,6 +932,100 @@ def test_apply_warehouse_alias_overrides_requires_confirmation_payload() -> None
             )
             assert repeat["aliases_added"] == 0
             assert repeat["aliases_existing"] == 1
+    finally:
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_order_transfer_rows_builds_plan_before_all_transfer_documents() -> None:
+    engine, path = setup_db()
+    rows = [
+        {
+            "origin_order_external_id": "0xORDER250001",
+            "site_order_number": "250001",
+            "plan_key": "0xORDER250001:0xTARGET",
+            "plan_version": 1,
+            "plan_status": "assembling",
+            "final_warehouse_external_id": "0xTARGET",
+            "unit_key": "0xSOURCE1:0xTARGET",
+            "source_warehouse_external_id": "0xSOURCE1",
+            "target_warehouse_external_id": "0xTARGET",
+            "internal_order_external_id": "0xINTERNAL1",
+            "transfer_external_id": "0xTRANSFER1",
+            "transfer_number": "РБГУ000001",
+            "transfer_date": datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc),
+            "transfer_status": "posted",
+            "barcode": "TRANSFER-1",
+            "is_required": 1,
+            "is_posted": 1,
+            "is_printed": 1,
+            "is_assembled": 1,
+            "is_deleted": 0,
+        },
+        {
+            "origin_order_external_id": "0xORDER250001",
+            "site_order_number": "250001",
+            "plan_key": "0xORDER250001:0xTARGET",
+            "plan_version": 1,
+            "plan_status": "assembling",
+            "final_warehouse_external_id": "0xTARGET",
+            "unit_key": "0xSOURCE2:0xTARGET",
+            "source_warehouse_external_id": "0xSOURCE2",
+            "target_warehouse_external_id": "0xTARGET",
+            "internal_order_external_id": "0xINTERNAL2",
+            "transfer_external_id": None,
+            "is_required": 1,
+            "is_posted": 0,
+            "is_printed": 0,
+            "is_assembled": 0,
+            "is_deleted": 0,
+        },
+    ]
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    LogisticsWarehouse(external_id="0xSOURCE1", name="Источник 1", kind="store"),
+                    LogisticsWarehouse(external_id="0xSOURCE2", name="Источник 2", kind="store"),
+                    LogisticsWarehouse(external_id="0xTARGET", name="Точка", kind="store"),
+                ]
+            )
+            session.commit()
+            dry_run = logistics_onec.sync_order_transfer_rows(
+                session,
+                onec_engine=None,
+                source_rows=rows,
+                dry_run=True,
+            )
+            assert dry_run == {
+                "dry_run": True,
+                "fetched": 2,
+                "plans": 1,
+                "units": 1,
+                "plans_created": 0,
+                "plans_updated": 0,
+                "units_created": 0,
+                "units_updated": 0,
+            }
+
+            applied = logistics_onec.sync_order_transfer_rows(
+                session,
+                onec_engine=None,
+                source_rows=rows,
+                dry_run=False,
+            )
+            assert applied["plans_created"] == 1
+            assert applied["units_created"] == 1
+            plan = session.scalar(select(LogisticsOrderPlan))
+            assert plan is not None
+            assert plan.expected_unit_count == 2
+            assert len(session.scalars(select(LogisticsOrderPlanUnit)).all()) == 2
+            transfer = session.scalar(select(LogisticsTransfer))
+            assert transfer is not None
+            assert transfer.flow_mode == "ORDER_TRANSFER_V1"
+            assert transfer.expected_unit_count == 2
+            assert transfer.ready_for_handoff is True
     finally:
         engine.dispose()
         if os.path.exists(path):

@@ -24,6 +24,7 @@ REVIEW_RTU_READINESS_GATE_FAILED = "rtu_readiness_gate_failed"
 REVIEW_RTU_SOURCE_WAREHOUSE_UNRESOLVED = "rtu_source_warehouse_unresolved"
 REVIEW_RTU_EXTERNAL_CARRIER_UNMAPPED = "rtu_external_carrier_unmapped"
 REVIEW_RTU_EXTERNAL_CARRIER_STATE_CONFLICT = "rtu_external_carrier_state_conflict"
+REVIEW_ORDER_FLOW_CONFLICT = "order_flow_conflict"
 
 _TOKEN_RE = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
 _ADDRESS_STOP_TOKENS = {
@@ -129,6 +130,7 @@ class RtuSyncReport:
     external_carrier_handoff_existing: int = 0
     external_carrier_state_conflicts: int = 0
     local_pickup_skipped: int = 0
+    final_sale_skipped: int = 0
     by_reason: Counter[str] = field(default_factory=Counter)
 
     def as_dict(self) -> dict[str, Any]:
@@ -150,6 +152,7 @@ class RtuSyncReport:
             "external_carrier_handoff_existing": self.external_carrier_handoff_existing,
             "external_carrier_state_conflicts": self.external_carrier_state_conflicts,
             "local_pickup_skipped": self.local_pickup_skipped,
+            "final_sale_skipped": self.final_sale_skipped,
             "by_reason": dict(self.by_reason),
         }
 
@@ -357,6 +360,228 @@ def fetch_ready_rtu_units(
     return normalize_rtu_source_rows(rows).ready
 
 
+def sync_order_transfer_rows(
+    session: Session,
+    onec_engine,
+    *,
+    source_query: str | None = None,
+    date_from: date | datetime | None = None,
+    limit: int = 500,
+    dry_run: bool = True,
+    source_rows: Iterable[dict[str, Any] | Any] | None = None,
+) -> dict[str, Any]:
+    raw_rows = (
+        list(source_rows)
+        if source_rows is not None
+        else _fetch_order_transfer_source_rows(
+            onec_engine,
+            source_query=source_query,
+            date_from=date_from,
+            limit=limit,
+        )
+    )
+    plan_payloads, unit_payloads = _normalize_order_transfer_rows(raw_rows)
+    report: dict[str, Any] = {
+        "dry_run": dry_run,
+        "fetched": len(raw_rows),
+        "plans": len(plan_payloads),
+        "units": len(unit_payloads),
+        "plans_created": 0,
+        "plans_updated": 0,
+        "units_created": 0,
+        "units_updated": 0,
+    }
+    if dry_run:
+        return report
+    plan_result = logistics.sync_order_plans(session, plan_payloads)
+    unit_result = logistics.sync_units(session, unit_payloads)
+    report.update(
+        {
+            "plans_created": plan_result["created"],
+            "plans_updated": plan_result["updated"],
+            "units_created": unit_result["created"],
+            "units_updated": unit_result["updated"],
+        }
+    )
+    return report
+
+
+def _normalize_order_transfer_rows(
+    rows: Iterable[dict[str, Any] | Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    grouped: dict[tuple[str, int], dict[str, Any]] = {}
+    transfer_payloads: list[dict[str, Any]] = []
+    for raw in rows:
+        row = _row_to_dict(raw)
+        origin_order_external_id = _clean_ref(row.get("origin_order_external_id"))
+        plan_key = _clean_string(row.get("plan_key"))
+        unit_key = _clean_string(row.get("unit_key"))
+        source_warehouse = _clean_ref(row.get("source_warehouse_external_id"))
+        target_warehouse = _clean_ref(row.get("target_warehouse_external_id"))
+        final_warehouse = _clean_ref(row.get("final_warehouse_external_id"))
+        delivery_code = _clean_string(row.get("delivery_code")).upper()
+        external_carrier = _as_bool(
+            row.get("external_carrier"),
+            default=delivery_code in {"CDEK_PVZ", "CDEK_COURIER", "RUSSIAN_POST"},
+        )
+        try:
+            plan_version = int(row.get("plan_version"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("ORDER_TRANSFER_V1 row has invalid plan_version") from exc
+        if not all(
+            (
+                origin_order_external_id,
+                plan_key,
+                unit_key,
+                source_warehouse,
+                target_warehouse,
+                final_warehouse,
+            )
+        ):
+            raise ValueError("ORDER_TRANSFER_V1 row misses an identity or warehouse field")
+        key = (plan_key, plan_version)
+        plan = grouped.setdefault(
+            key,
+            {
+                "origin_order_external_id": origin_order_external_id,
+                "site_order_number": _clean_string(row.get("site_order_number")) or None,
+                "flow_mode": logistics.FLOW_ORDER_TRANSFER_V1,
+                "plan_key": plan_key,
+                "plan_version": plan_version,
+                "final_warehouse_external_id": final_warehouse,
+                "status": _clean_string(row.get("plan_status")) or "planned",
+                "expected_unit_count": 0,
+                "units": [],
+                "payload": {
+                    "source": "1c_readonly_order_transfer_sync",
+                    "delivery_code": delivery_code or None,
+                    "external_carrier": external_carrier,
+                },
+            },
+        )
+        identity = (
+            plan["origin_order_external_id"],
+            plan["site_order_number"],
+            plan["final_warehouse_external_id"],
+            (plan.get("payload") or {}).get("delivery_code"),
+            bool((plan.get("payload") or {}).get("external_carrier")),
+        )
+        incoming_identity = (
+            origin_order_external_id,
+            _clean_string(row.get("site_order_number")) or None,
+            final_warehouse,
+            delivery_code or None,
+            external_carrier,
+        )
+        if identity != incoming_identity:
+            raise ValueError("ORDER_TRANSFER_V1 plan rows have conflicting identities")
+        is_required = _as_bool(row.get("is_required"), default=True)
+        is_posted = _as_bool(row.get("is_posted"), default=False)
+        is_printed = _as_bool(row.get("is_printed"), default=False)
+        is_assembled = _as_bool(row.get("is_assembled"), default=False)
+        is_deleted = _as_bool(row.get("is_deleted"), default=False)
+        ready_for_handoff = is_posted and is_printed and is_assembled and not is_deleted
+        readiness = "ready" if ready_for_handoff else "blocked"
+        unit = {
+            "unit_key": unit_key,
+            "source_warehouse_external_id": source_warehouse,
+            "target_warehouse_external_id": target_warehouse,
+            "internal_order_external_id": _clean_ref(row.get("internal_order_external_id")) or None,
+            "transfer_external_id": _clean_ref(row.get("transfer_external_id")) or None,
+            "is_required": is_required,
+            "ready_for_handoff": ready_for_handoff,
+            "readiness": readiness,
+            "payload": {
+                "is_posted": is_posted,
+                "is_printed": is_printed,
+                "is_assembled": is_assembled,
+                "is_deleted": is_deleted,
+            },
+        }
+        if any(existing["unit_key"] == unit_key for existing in plan["units"]):
+            raise ValueError("ORDER_TRANSFER_V1 plan contains duplicate unit_key")
+        plan["units"].append(unit)
+        if is_required:
+            plan["expected_unit_count"] += 1
+
+        transfer_external_id = unit["transfer_external_id"]
+        if not transfer_external_id:
+            continue
+        transfer_date = row.get("transfer_date") or row.get("synced_at") or logistics.utcnow()
+        transfer_number = _clean_string(row.get("transfer_number")) or transfer_external_id
+        lookup_code = _clean_string(row.get("lookup_code")) or (
+            f"MMLOG1|transfer|{transfer_external_id}"
+        )
+        transfer_payloads.append(
+            {
+                "source_document_type": logistics.SOURCE_TRANSFER,
+                "external_id": transfer_external_id,
+                "document_number": transfer_number,
+                "document_date": transfer_date,
+                "source_warehouse_external_id": source_warehouse,
+                "target_warehouse_external_id": target_warehouse,
+                "document_target_warehouse_external_id": final_warehouse,
+                "final_recipient_name": _clean_string(row.get("final_recipient_name")) or None,
+                "barcode": _clean_string(row.get("barcode")) or lookup_code,
+                "lookup_code": lookup_code,
+                "origin_order_external_id": origin_order_external_id,
+                "site_order_number": plan["site_order_number"],
+                "status": _clean_string(row.get("transfer_status")) or None,
+                "flow_mode": logistics.FLOW_ORDER_TRANSFER_V1,
+                "plan_key": plan_key,
+                "plan_version": plan_version,
+                "unit_key": unit_key,
+                "expected_unit_count": plan["expected_unit_count"],
+                "ready_for_handoff": ready_for_handoff,
+                "is_required": is_required,
+                "onec_deleted": is_deleted,
+                "payload": {
+                    "readiness": readiness,
+                    "is_posted": is_posted,
+                    "is_printed": is_printed,
+                    "is_assembled": is_assembled,
+                },
+            }
+        )
+
+    plans = list(grouped.values())
+    expected_counts = {
+        (plan["plan_key"], plan["plan_version"]): plan["expected_unit_count"] for plan in plans
+    }
+    for payload in transfer_payloads:
+        payload["expected_unit_count"] = expected_counts[
+            (payload["plan_key"], payload["plan_version"])
+        ]
+    return plans, transfer_payloads
+
+
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return _clean_string(value).casefold() in {"1", "true", "yes", "да"}
+
+
+def _fetch_order_transfer_source_rows(
+    onec_engine,
+    *,
+    source_query: str | None,
+    date_from: date | datetime | None,
+    limit: int,
+) -> list[Any]:
+    if not source_query or not source_query.strip():
+        raise ValueError("ORDER_TRANSFER_V1 source SQL is not configured")
+    params = {
+        "date_from": date_from or date(2000, 1, 1),
+        "limit": max(1, int(limit)),
+    }
+    with onec_engine.connect() as connection:
+        return list(connection.execute(text(source_query), params))
+
+
 def sync_ready_rtu_units(
     session: Session,
     onec_engine,
@@ -390,6 +615,37 @@ def sync_ready_rtu_units(
         skipped = _validate_ready_row(session, row, lookup_counts)
         if skipped is not None:
             _record_skip(session, report, skipped, dry_run=dry_run)
+            continue
+
+        disposition, active_plan = logistics.order_transfer_rtu_disposition(
+            session,
+            origin_order_external_id=row.site_order_external_id,
+            site_order_number=row.site_order_number,
+        )
+        if disposition == "final_sale":
+            report.final_sale_skipped += 1
+            report.by_reason["order_transfer_final_sale"] += 1
+            continue
+        if disposition == "conflict":
+            _record_skip(
+                session,
+                report,
+                RtuSkippedRow(
+                    review_type=REVIEW_ORDER_FLOW_CONFLICT,
+                    reason="RTU appeared before the ORDER_TRANSFER_V1 plan was completed",
+                    source_external_id=(
+                        active_plan.origin_order_external_id
+                        if active_plan is not None
+                        else row.site_order_external_id
+                    ),
+                    site_order_number=row.site_order_number,
+                    payload={
+                        **row.raw,
+                        "active_plan_id": active_plan.id if active_plan is not None else None,
+                    },
+                ),
+                dry_run=dry_run,
+            )
             continue
 
         source_warehouse = _ensure_source_warehouse(session, report, row, dry_run=dry_run)

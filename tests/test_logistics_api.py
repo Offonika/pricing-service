@@ -301,7 +301,7 @@ def test_logistics_mvp_flow(monkeypatch) -> None:
     incident = client.post(
         f"/api/logistics/transfers/{ids['transfer_id']}/incident",
         json={
-            "actor_user_id": ids["users"]["Логист"],
+            "actor_user_id": ids["users"]["Отправитель"],
             "warehouse_id": ids["warehouses"]["central"],
             "comment": "Проверка API",
             "idempotency_key": "incident-api-1",
@@ -569,7 +569,7 @@ def test_logistics_route_run_lookup_and_external_carrier(monkeypatch) -> None:
     external_handoff = client.post(
         f"/api/logistics/transfers/{ids['transfer_id']}/external-carrier/handoff",
         json={
-            "actor_user_id": ids["users"]["Логист"],
+            "actor_user_id": ids["users"]["Отправитель"],
             "carrier_name": "СДЭК",
             "tracking_number": "CDEK-1",
         },
@@ -890,6 +890,567 @@ def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
     web_monitor = client.get("/api/logistics/web/monitor")
     assert web_monitor.status_code == 200
     assert isinstance(web_monitor.json(), list)
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_order_transfer_plan_gates_handoff_and_aggregates_pickup(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    assert (
+        client.post(
+            "/api/logistics/sync/users",
+            json=[
+                {
+                    "external_id": "user-sender-store-2",
+                    "full_name": "Отправитель 2",
+                    "role": "sender",
+                    "default_warehouse_external_id": "store-2",
+                }
+            ],
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    ids = _id_maps(engine)
+    plan_units = [
+        {
+            "unit_key": "source-a-to-central",
+            "source_warehouse_external_id": "store-1",
+            "target_warehouse_external_id": "central",
+            "internal_order_external_id": "internal-order-a",
+            "transfer_external_id": "transfer-order-a",
+            "is_required": True,
+            "ready_for_handoff": False,
+            "readiness": "assembling",
+        },
+        {
+            "unit_key": "source-b-to-central",
+            "source_warehouse_external_id": "store-2",
+            "target_warehouse_external_id": "central",
+            "internal_order_external_id": "internal-order-b",
+            "transfer_external_id": "transfer-order-b",
+            "is_required": True,
+            "ready_for_handoff": False,
+            "readiness": "assembling",
+        },
+    ]
+    plan_payload = {
+        "origin_order_external_id": "customer-order-1",
+        "site_order_number": "250001",
+        "flow_mode": "ORDER_TRANSFER_V1",
+        "plan_key": "customer-order-1:central",
+        "plan_version": 1,
+        "final_warehouse_external_id": "central",
+        "status": "assembling",
+        "expected_unit_count": 2,
+        "units": plan_units,
+    }
+    assert (
+        client.post(
+            "/api/logistics/sync/order-plans", json=[plan_payload], headers=headers
+        ).status_code
+        == 200
+    )
+
+    def unit_payload(external_id: str, unit_key: str, source: str, ready: bool) -> dict:
+        return {
+            "source_document_type": "transfer",
+            "external_id": external_id,
+            "document_number": external_id,
+            "document_date": "2026-09-02T09:00:00Z",
+            "source_warehouse_external_id": source,
+            "target_warehouse_external_id": "central",
+            "document_target_warehouse_external_id": "central",
+            "barcode": f"QR-{external_id}",
+            "lookup_code": f"QR-{external_id}",
+            "origin_order_external_id": "customer-order-1",
+            "site_order_number": "250001",
+            "status": "posted",
+            "flow_mode": "ORDER_TRANSFER_V1",
+            "plan_key": "customer-order-1:central",
+            "plan_version": 1,
+            "unit_key": unit_key,
+            "expected_unit_count": 2,
+            "ready_for_handoff": ready,
+            "is_required": True,
+            "payload": {"readiness": "ready" if ready else "assembling"},
+        }
+
+    units = [
+        unit_payload("transfer-order-a", "source-a-to-central", "store-1", False),
+        unit_payload("transfer-order-b", "source-b-to-central", "store-2", False),
+    ]
+    assert client.post("/api/logistics/sync/units", json=units, headers=headers).status_code == 200
+
+    blocked_draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    blocked_draft_id = blocked_draft.json()["id"]
+    blocked_scan = client.post(
+        f"/api/logistics/handoffs/draft/{blocked_draft_id}/scan",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "lookup_code": "QR-transfer-order-a",
+        },
+        headers=headers,
+    )
+    assert blocked_scan.status_code == 409
+    assert "not posted, printed and assembled" in blocked_scan.text
+
+    ready_plan = dict(plan_payload)
+    ready_plan["status"] = "ready_for_handoff"
+    ready_plan["units"] = [
+        {**unit, "ready_for_handoff": True, "readiness": "ready"} for unit in plan_units
+    ]
+    assert (
+        client.post(
+            "/api/logistics/sync/order-plans", json=[ready_plan], headers=headers
+        ).status_code
+        == 200
+    )
+    ready_units = [
+        unit_payload("transfer-order-a", "source-a-to-central", "store-1", True),
+        unit_payload("transfer-order-b", "source-b-to-central", "store-2", True),
+    ]
+    assert (
+        client.post("/api/logistics/sync/units", json=ready_units, headers=headers).status_code
+        == 200
+    )
+
+    # Упаковки могут ехать одним рейсом, но передаются со своих складов отдельно.
+    for external_id, source in (
+        ("transfer-order-a", "store-1"),
+        ("transfer-order-b", "store-2"),
+    ):
+        draft = (
+            blocked_draft
+            if source == "store-1"
+            else client.post(
+                "/api/logistics/handoffs/draft",
+                json={
+                    "actor_user_id": ids["users"]["Отправитель 2"],
+                    "warehouse_id": ids["warehouses"][source],
+                    "driver_id": ids["drivers"]["Иван Водитель"],
+                    "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+                },
+                headers=headers,
+            )
+        )
+        draft_id = draft.json()["id"]
+        actor_id = (
+            ids["users"]["Отправитель"] if source == "store-1" else ids["users"]["Отправитель 2"]
+        )
+        assert (
+            client.post(
+                f"/api/logistics/handoffs/draft/{draft_id}/scan",
+                json={
+                    "actor_user_id": actor_id,
+                    "lookup_code": f"QR-{external_id}",
+                },
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        assert (
+            client.post(
+                f"/api/logistics/handoffs/draft/{draft_id}/confirm",
+                json={"actor_user_id": actor_id, "idempotency_key": external_id},
+                headers=headers,
+            ).status_code
+            == 200
+        )
+
+    with Session(engine) as session:
+        transit_rows = session.scalars(
+            select(SiteOrderStageOutbox).where(
+                SiteOrderStageOutbox.target_stage == "PICKUP_TRANSIT"
+            )
+        ).all()
+        assert len(transit_rows) == 1
+
+    for index, external_id in enumerate(("transfer-order-a", "transfer-order-b")):
+        receipt = client.post(
+            "/api/logistics/receipts/draft",
+            json={
+                "actor_user_id": ids["users"]["Получатель"],
+                "warehouse_id": ids["warehouses"]["central"],
+            },
+            headers=headers,
+        )
+        receipt_id = receipt.json()["id"]
+        assert (
+            client.post(
+                f"/api/logistics/receipts/draft/{receipt_id}/scan",
+                json={
+                    "actor_user_id": ids["users"]["Получатель"],
+                    "lookup_code": f"QR-{external_id}",
+                },
+                headers=headers,
+            ).status_code
+            == 200
+        )
+        confirmed = client.post(
+            f"/api/logistics/receipts/draft/{receipt_id}/confirm",
+            json={
+                "actor_user_id": ids["users"]["Получатель"],
+                "idempotency_key": f"receipt-{external_id}",
+            },
+            headers=headers,
+        )
+        assert confirmed.status_code == 200
+        with Session(engine) as session:
+            waiting_count = len(
+                session.scalars(
+                    select(SiteOrderStageOutbox).where(
+                        SiteOrderStageOutbox.target_stage == "PICKUP_WAITING"
+                    )
+                ).all()
+            )
+            assert waiting_count == index
+
+    ready = client.get(
+        "/api/logistics/orders/ready-for-pickup",
+        params={"warehouse_code": "central"},
+        headers=headers,
+    )
+    assert ready.status_code == 200
+    assert ready.json() == [
+        {
+            "origin_order_external_id": "customer-order-1",
+            "site_order_number": "250001",
+            "flow_mode": "ORDER_TRANSFER_V1",
+            "plan_key": "customer-order-1:central",
+            "plan_version": 1,
+            "ready_at": ready.json()[0]["ready_at"],
+            "expected_unit_count": 2,
+            "accepted_unit_count": 2,
+            "source_external_ids": ["transfer-order-a", "transfer-order-b"],
+        }
+    ]
+    assert (
+        client.get(
+            "/api/logistics/rtu/ready-for-pickup",
+            params={"warehouse_code": "central"},
+            headers=headers,
+        ).json()
+        == []
+    )
+    with Session(engine) as session:
+        logistics._create_order_flow_conflict(
+            session,
+            origin_order_external_id="customer-order-1",
+            site_order_number="250001",
+            reason="test unresolved dual-flow conflict",
+            payload={"test": True},
+        )
+        session.commit()
+    assert (
+        client.get(
+            "/api/logistics/orders/ready-for-pickup",
+            params={"warehouse_code": "central"},
+            headers=headers,
+        ).json()
+        == []
+    )
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_order_transfer_external_carrier_uses_bitrix_confirmation(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+    plan = {
+        "origin_order_external_id": "customer-order-cdek",
+        "site_order_number": "250777",
+        "flow_mode": "ORDER_TRANSFER_V1",
+        "plan_key": "customer-order-cdek:central",
+        "plan_version": 1,
+        "final_warehouse_external_id": "central",
+        "status": "ready_for_handoff",
+        "expected_unit_count": 1,
+        "payload": {"delivery_code": "CDEK_PVZ", "external_carrier": True},
+        "units": [
+            {
+                "unit_key": "store-1-to-cdek",
+                "source_warehouse_external_id": "store-1",
+                "target_warehouse_external_id": "central",
+                "internal_order_external_id": "internal-cdek",
+                "transfer_external_id": "transfer-cdek",
+                "is_required": True,
+                "ready_for_handoff": True,
+                "readiness": "ready",
+            }
+        ],
+    }
+    assert (
+        client.post("/api/logistics/sync/order-plans", json=[plan], headers=headers).status_code
+        == 200
+    )
+    transfer = {
+        "source_document_type": "transfer",
+        "external_id": "transfer-cdek",
+        "document_number": "ТР-250777",
+        "document_date": "2026-09-02T09:00:00Z",
+        "source_warehouse_external_id": "store-1",
+        "target_warehouse_external_id": "central",
+        "document_target_warehouse_external_id": "central",
+        "barcode": "QR-transfer-cdek",
+        "lookup_code": "QR-transfer-cdek",
+        "origin_order_external_id": "customer-order-cdek",
+        "site_order_number": "250777",
+        "status": "posted",
+        "flow_mode": "ORDER_TRANSFER_V1",
+        "plan_key": "customer-order-cdek:central",
+        "plan_version": 1,
+        "unit_key": "store-1-to-cdek",
+        "expected_unit_count": 1,
+        "ready_for_handoff": True,
+        "is_required": True,
+        "payload": {"readiness": "ready"},
+    }
+    assert (
+        client.post("/api/logistics/sync/units", json=[transfer], headers=headers).status_code
+        == 200
+    )
+
+    handoff = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    handoff_id = handoff.json()["id"]
+    assert (
+        client.post(
+            f"/api/logistics/handoffs/draft/{handoff_id}/scan",
+            json={
+                "actor_user_id": ids["users"]["Отправитель"],
+                "lookup_code": "QR-transfer-cdek",
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/logistics/handoffs/draft/{handoff_id}/confirm",
+            json={
+                "actor_user_id": ids["users"]["Отправитель"],
+                "idempotency_key": "cdek-handoff",
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    receipt = client.post(
+        "/api/logistics/receipts/draft",
+        json={
+            "actor_user_id": ids["users"]["Получатель"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    blocked = client.post(
+        f"/api/logistics/receipts/draft/{receipt.json()['id']}/scan",
+        json={
+            "actor_user_id": ids["users"]["Получатель"],
+            "lookup_code": "QR-transfer-cdek",
+        },
+        headers=headers,
+    )
+    assert blocked.status_code == 409
+    assert "existing Bitrix integration" in blocked.text
+
+    confirmation = {
+        "origin_order_external_id": "customer-order-cdek",
+        "site_order_number": "250777",
+        "carrier_name": "СДЭК",
+        "tracking_number": "CDEK-250777",
+        "confirmed_at": "2026-09-02T10:00:00Z",
+        "source_ref": "bitrix-deal-250777-track-CDEK-250777",
+        "terminal_warehouse_external_id": "central",
+    }
+    missing_terminal = dict(confirmation)
+    missing_terminal.pop("terminal_warehouse_external_id")
+    assert (
+        client.post(
+            "/api/logistics/sync/carrier-confirmations",
+            json=[missing_terminal],
+            headers=headers,
+        ).status_code
+        == 422
+    )
+    first = client.post(
+        "/api/logistics/sync/carrier-confirmations",
+        json=[confirmation],
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert first.json() == {"created": 1, "updated": 0}
+    repeat = client.post(
+        "/api/logistics/sync/carrier-confirmations",
+        json=[confirmation],
+        headers=headers,
+    )
+    assert repeat.status_code == 200
+    assert repeat.json() == {"created": 0, "updated": 1}
+
+    feed = client.get(
+        "/api/logistics/orders/carrier-confirmations",
+        headers=headers,
+    )
+    assert feed.status_code == 200
+    assert feed.json()[0]["tracking_number"] == "CDEK-250777"
+    assert feed.json()[0]["origin_order_external_id"] == "customer-order-cdek"
+    xml_feed = client.get(
+        "/api/logistics/orders/carrier-confirmations",
+        params={"format": "xml", "confirmed_from": "2026-09-02T09:59:00Z"},
+        headers=headers,
+    )
+    assert xml_feed.status_code == 200
+    assert xml_feed.headers["content-type"].startswith("application/xml")
+    assert b"<carrier_confirmations>" in xml_feed.content
+    assert b"<tracking_number>CDEK-250777</tracking_number>" in xml_feed.content
+    assert b"<plan_version>1</plan_version>" in xml_feed.content
+    assert (
+        client.get(
+            "/api/logistics/orders/ready-for-pickup",
+            params={"warehouse_code": "central"},
+            headers=headers,
+        ).json()
+        == []
+    )
+
+    final_rtu = {
+        **transfer,
+        "source_document_type": "rtu",
+        "external_id": "final-rtu-cdek",
+        "document_number": "РТУ-250777",
+        "flow_mode": None,
+        "plan_key": None,
+        "plan_version": None,
+        "unit_key": None,
+    }
+    final_sync = client.post("/api/logistics/sync/units", json=[final_rtu], headers=headers)
+    assert final_sync.status_code == 200
+    assert final_sync.json() == {"created": 0, "updated": 0}
+    with Session(engine) as session:
+        assert session.scalar(select(SiteOrderStageOutbox)) is None
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_order_transfer_carrier_confirmation_blocks_ambiguous_order_link(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+
+    def plan(origin_order_external_id: str, site_order_number: str) -> dict:
+        return {
+            "origin_order_external_id": origin_order_external_id,
+            "site_order_number": site_order_number,
+            "flow_mode": "ORDER_TRANSFER_V1",
+            "plan_key": f"{origin_order_external_id}:central",
+            "plan_version": 1,
+            "final_warehouse_external_id": "central",
+            "status": "ready_for_handoff",
+            "expected_unit_count": 0,
+            "payload": {"delivery_code": "CDEK_PVZ", "external_carrier": True},
+            "units": [],
+        }
+
+    assert (
+        client.post(
+            "/api/logistics/sync/order-plans",
+            json=[plan("customer-order-a", "site-order-a")],
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/logistics/sync/order-plans",
+            json=[plan("customer-order-b", "site-order-b")],
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    confirmation = {
+        "origin_order_external_id": "customer-order-a",
+        "site_order_number": "site-order-b",
+        "carrier_name": "СДЭК",
+        "tracking_number": "CDEK-AMBIGUOUS",
+        "confirmed_at": "2026-09-02T10:00:00Z",
+        "source_ref": "bitrix-ambiguous-link",
+        "terminal_warehouse_external_id": "central",
+    }
+    ambiguous = client.post(
+        "/api/logistics/sync/carrier-confirmations",
+        json=[confirmation],
+        headers=headers,
+    )
+    assert ambiguous.status_code == 409
+    assert "ambiguous" in ambiguous.text
+
+    with Session(engine) as session:
+        review = session.scalar(
+            select(LogisticsManualReview).where(
+                LogisticsManualReview.review_type == "order_flow_conflict",
+                LogisticsManualReview.status == "open",
+            )
+        )
+        assert review is not None
+        assert review.source_external_id == "customer-order-a"
+
+    confirmation["site_order_number"] = "site-order-a"
+    confirmation["source_ref"] = "bitrix-correct-after-conflict"
+    blocked = client.post(
+        "/api/logistics/sync/carrier-confirmations",
+        json=[confirmation],
+        headers=headers,
+    )
+    assert blocked.status_code == 409
+    assert "unresolved flow conflict" in blocked.text
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

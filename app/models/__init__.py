@@ -78,6 +78,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         LogisticsWarehouse,
         LogisticsWebLaunchToken,
     )
+    from app.models.logistics_order_plan import (
+        LogisticsOrderPlan,
+        LogisticsOrderPlanUnit,
+    )
     from app.models.matching_property_mapping import (
         MatchingPropertyProfile,
         MatchingPropertyRule,
@@ -244,6 +248,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "OneCSalesDailyKpi",
         "OrderAssemblyQueueItem",
         "OrderAssemblyQueueSyncState",
+        "LogisticsOrderPlan",
+        "LogisticsOrderPlanUnit",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",
         "SmsJournalApiRequest",

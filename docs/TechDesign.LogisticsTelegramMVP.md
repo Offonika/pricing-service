@@ -877,6 +877,25 @@ foundation API поддерживает `status`, `warehouse_id`, `driver_id`,
 - API поддерживает `source_document_type`; для перемещений используется
   `source_document_type = transfer`.
 
+#### `POST /api/logistics/sync/order-plans`
+
+- принимает полный versioned snapshot `ORDER_TRANSFER_V1` до готовности
+  документов перемещения;
+- план идентифицируется `plan_key + plan_version`, обязательные части —
+  уникальным `unit_key`;
+- изменение незапущенного плана создаёт новую версию, изменение после handoff
+  фиксируется как `order_flow_conflict`;
+- production ingress выполняется минутным read-only SQL pull. HTTP endpoint
+  используется сервисным слоем и тестами, но не делает backend владельцем 1С.
+
+#### `POST /api/logistics/sync/carrier-confirmations`
+
+- принимает сильный факт существующей Bitrix-интеграции СДЭК/Почты;
+- требует однозначный заказ, активный carrier-plan, терминал, трек,
+  `confirmed_at` и стабильный `source_ref`;
+- идемпотентно завершает все обязательные внутренние плечи заказа на терминале;
+- не создаёт второй CRM outbox и не заменяет внешний adapter Bitrix24.
+
 #### `POST /api/logistics/sync/rtu`
 
 Отдельный HTTP endpoint не является действующим способом загрузки РТУ. Текущий
@@ -950,6 +969,22 @@ web fallback:
 - предоставить ТЗП получателя безопасный read-only список без записи логистики
   обратно в production 1С;
 - XML используется старой платформой 1С 8.2, JSON — тестами и другими клиентами.
+
+#### `GET /api/logistics/orders/ready-for-pickup`
+
+- объединяет legacy РТУ и `ORDER_TRANSFER_V1`;
+- возвращает одну строку на клиентский заказ только после приёмки всех
+  обязательных частей актуальной версии на конечном складе;
+- промежуточная приёмка и одна часть многоскладского заказа не дают готовность;
+- ТЗП сначала читает этот XML endpoint, затем временно использует RTU endpoint
+  как fallback.
+
+#### `GET /api/logistics/orders/carrier-confirmations`
+
+- read-only feed подтверждённых передач внешнему перевозчику;
+- параметры: опциональный `confirmed_from`, `format=json|xml`;
+- XML предназначен для native 1С 8.2 handler, создающего одну финальную РТУ;
+- feed не подтверждает событие повторно и не двигает CRM.
 
 ### 7.5. Export API для 1С
 
@@ -1192,7 +1227,7 @@ API принимает `source_document_type`, `document_target_warehouse_extern
 - поддерживать Bitrix24, Telegram и web fallback над одной state machine;
 - позже, если нагрузка вырастет, вынести логистику в отдельный сервис без изменения пользовательского UX.
 
-## 14. Текущее Состояние Реализации На 2026-08-28
+## 14. Текущее Состояние Реализации На 2026-09-02
 
 В репозитории уже есть foundation логистики:
 
@@ -1210,6 +1245,15 @@ API принимает `source_document_type`, `document_target_warehouse_extern
 - production cron sync РТУ раз в минуту с `flock` и apply-режимом;
 - Telegram webhook endpoint и базовый бот;
 - web fallback и Bitrix24-встраивание используют ту же state machine.
+
+Локально реализован, но ещё не включён `ORDER_TRANSFER_V1`:
+
+- Alembic-модели versioned order plan и plan unit;
+- минутный read-only sync-кандидат с dry-run по умолчанию;
+- readiness/freshness gate и запрет дублей scan/confirm;
+- единый `orders/ready-for-pickup` с legacy fallback;
+- carrier confirmation ingress/readback и защита финальной РТУ;
+- 1С source package для native-8.2 merge, feature flag выключен.
 
 Production release и минутный cron уже активны. Внешние события и стадии
 СДЭК/Почты уже ведет действующая интеграция Bitrix24; `pricing-service` не
@@ -1245,6 +1289,10 @@ production-based candidate другой задачи, но в рабочую 1С
 
 ## 15. Changelog
 
+- 2026-09-02 — реализован локальный dual-flow `ORDER_TRANSFER_V1`: versioned
+  plans/units, единая готовность заказа, 180-секундный freshness gate,
+  carrier-confirmation через существующую Bitrix-интеграцию и исключение
+  финальной РТУ из повторной логистики. Production не переключён.
 - 2026-08-28 — TechDesign синхронизирован с фактическим Bitrix24-first контуром: действующий минутный RTU sync, автоматическое направление по документу, сканирование существующего печатного кода и отмена пользовательского `manual_ready_override`.
 - 2026-08-28 — отображение и зеркало статусов СДЭК/Почты в логистическом мониторе отменены; пользователь видит их только в стадиях сделки Bitrix24.
 - 2026-08-28 — владельцем API-событий СДЭК/Почты и внешних стадий сделки сохранена действующая интеграция Bitrix24; прямые adapters и повторные CRM-переходы в `pricing-service` отменены.

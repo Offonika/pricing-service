@@ -7188,6 +7188,107 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/logistics/sync/order-plans:
+    post:
+      summary: Sync Order Plans
+      operationId: sync_order_plans_api_logistics_sync_order_plans_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                $ref: '#/components/schemas/LogisticsOrderPlanSyncItem'
+              type: array
+              title: Items
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/logistics/sync/carrier-confirmations:
+    post:
+      summary: Sync Carrier Confirmations
+      operationId: sync_carrier_confirmations_api_logistics_sync_carrier_confirmations_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                $ref: '#/components/schemas/LogisticsExternalCarrierConfirmationSyncItem'
+              type: array
+              title: Items
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/logistics/orders/carrier-confirmations:
+    get:
+      summary: List Carrier Confirmations
+      operationId: list_carrier_confirmations_api_logistics_orders_carrier_confirmations_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: confirmed_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Confirmed From
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - json
+          - xml
+          type: string
+          default: json
+          title: Format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsExternalCarrierConfirmationResponse'
+                title: Response List Carrier Confirmations Api Logistics Orders Carrier Confirmations Get
+            application/xml:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/units/lookup:
     get:
       summary: Lookup Unit
@@ -7505,6 +7606,58 @@ paths:
                 items:
                   $ref: '#/components/schemas/LogisticsRtuReadyForPickupResponse'
                 title: Response List Rtu Ready For Pickup Api Logistics Rtu Ready For Pickup Get
+            application/xml:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/orders/ready-for-pickup:
+    get:
+      summary: List Orders Ready For Pickup
+      operationId: list_orders_ready_for_pickup_api_logistics_orders_ready_for_pickup_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: warehouse_code
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Warehouse Code
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - json
+          - xml
+          type: string
+          default: json
+          title: Format
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsOrderReadyForPickupResponse'
+                title: Response List Orders Ready For Pickup Api Logistics Orders Ready For Pickup Get
             application/xml:
               schema:
                 type: string
@@ -21258,6 +21411,88 @@ components:
       - actor_user_id
       - warehouse_id
       title: LogisticsExternalCarrierAcceptRequest
+    LogisticsExternalCarrierConfirmationResponse:
+      properties:
+        origin_order_external_id:
+          type: string
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        plan_key:
+          type: string
+          title: Plan Key
+        plan_version:
+          type: integer
+          title: Plan Version
+        terminal_warehouse_external_id:
+          type: string
+          title: Terminal Warehouse External Id
+        carrier_name:
+          type: string
+          title: Carrier Name
+        tracking_number:
+          type: string
+          title: Tracking Number
+        confirmed_at:
+          type: string
+          format: date-time
+          title: Confirmed At
+        source_ref:
+          type: string
+          title: Source Ref
+      type: object
+      required:
+      - origin_order_external_id
+      - plan_key
+      - plan_version
+      - terminal_warehouse_external_id
+      - carrier_name
+      - tracking_number
+      - confirmed_at
+      - source_ref
+      title: LogisticsExternalCarrierConfirmationResponse
+    LogisticsExternalCarrierConfirmationSyncItem:
+      properties:
+        origin_order_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        carrier_name:
+          type: string
+          title: Carrier Name
+        tracking_number:
+          type: string
+          minLength: 1
+          title: Tracking Number
+        confirmed_at:
+          type: string
+          format: date-time
+          title: Confirmed At
+        source_ref:
+          type: string
+          minLength: 1
+          title: Source Ref
+        terminal_warehouse_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Terminal Warehouse External Id
+      type: object
+      required:
+      - carrier_name
+      - tracking_number
+      - confirmed_at
+      - source_ref
+      title: LogisticsExternalCarrierConfirmationSyncItem
     LogisticsExternalCarrierHandoffRequest:
       properties:
         actor_user_id:
@@ -21547,6 +21782,159 @@ components:
       - last_event_type
       - last_event_at
       title: LogisticsMonitorResponse
+    LogisticsOrderPlanSyncItem:
+      properties:
+        origin_order_external_id:
+          type: string
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        flow_mode:
+          type: string
+          const: ORDER_TRANSFER_V1
+          title: Flow Mode
+          default: ORDER_TRANSFER_V1
+        plan_key:
+          type: string
+          title: Plan Key
+        plan_version:
+          type: integer
+          minimum: 1.0
+          title: Plan Version
+        final_warehouse_external_id:
+          type: string
+          title: Final Warehouse External Id
+        status:
+          type: string
+          title: Status
+          default: planned
+        expected_unit_count:
+          type: integer
+          minimum: 0.0
+          title: Expected Unit Count
+        synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Synced At
+        units:
+          items:
+            $ref: '#/components/schemas/LogisticsOrderPlanUnitSyncItem'
+          type: array
+          title: Units
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - origin_order_external_id
+      - plan_key
+      - plan_version
+      - final_warehouse_external_id
+      - expected_unit_count
+      title: LogisticsOrderPlanSyncItem
+    LogisticsOrderPlanUnitSyncItem:
+      properties:
+        unit_key:
+          type: string
+          title: Unit Key
+        source_warehouse_external_id:
+          type: string
+          title: Source Warehouse External Id
+        target_warehouse_external_id:
+          type: string
+          title: Target Warehouse External Id
+        internal_order_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Internal Order External Id
+        transfer_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Transfer External Id
+        is_required:
+          type: boolean
+          title: Is Required
+          default: true
+        ready_for_handoff:
+          type: boolean
+          title: Ready For Handoff
+          default: false
+        readiness:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Readiness
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - unit_key
+      - source_warehouse_external_id
+      - target_warehouse_external_id
+      title: LogisticsOrderPlanUnitSyncItem
+    LogisticsOrderReadyForPickupResponse:
+      properties:
+        origin_order_external_id:
+          type: string
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        flow_mode:
+          type: string
+          enum:
+          - LEGACY_RTU
+          - ORDER_TRANSFER_V1
+          title: Flow Mode
+        plan_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Key
+        plan_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Plan Version
+        ready_at:
+          type: string
+          format: date-time
+          title: Ready At
+        expected_unit_count:
+          type: integer
+          title: Expected Unit Count
+        accepted_unit_count:
+          type: integer
+          title: Accepted Unit Count
+        source_external_ids:
+          items:
+            type: string
+          type: array
+          title: Source External Ids
+      type: object
+      required:
+      - origin_order_external_id
+      - flow_mode
+      - ready_at
+      - expected_unit_count
+      - accepted_unit_count
+      title: LogisticsOrderReadyForPickupResponse
     LogisticsPhotoInput:
       properties:
         telegram_file_id:
@@ -21986,6 +22374,44 @@ components:
           - type: string
           - type: 'null'
           title: Status
+        flow_mode:
+          anyOf:
+          - type: string
+            enum:
+            - LEGACY_RTU
+            - ORDER_TRANSFER_V1
+          - type: 'null'
+          title: Flow Mode
+        plan_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Key
+        plan_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Plan Version
+        unit_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit Key
+        expected_unit_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Unit Count
+        ready_for_handoff:
+          type: boolean
+          title: Ready For Handoff
+          default: false
+        is_required:
+          type: boolean
+          title: Is Required
+          default: true
         onec_deleted:
           type: boolean
           title: Onec Deleted
@@ -22052,6 +22478,35 @@ components:
           - type: integer
           - type: 'null'
           title: Document Target Warehouse Id
+        flow_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Mode
+        plan_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Key
+        plan_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Plan Version
+        unit_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit Key
+        expected_unit_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expected Unit Count
+        ready_for_handoff:
+          type: boolean
+          title: Ready For Handoff
+          default: false
       type: object
       required:
       - transfer_id
@@ -22119,6 +22574,44 @@ components:
           - type: string
           - type: 'null'
           title: Status
+        flow_mode:
+          anyOf:
+          - type: string
+            enum:
+            - LEGACY_RTU
+            - ORDER_TRANSFER_V1
+          - type: 'null'
+          title: Flow Mode
+        plan_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Key
+        plan_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Plan Version
+        unit_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit Key
+        expected_unit_count:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Unit Count
+        ready_for_handoff:
+          type: boolean
+          title: Ready For Handoff
+          default: false
+        is_required:
+          type: boolean
+          title: Is Required
+          default: true
         onec_deleted:
           type: boolean
           title: Onec Deleted

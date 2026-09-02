@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import Select, select
@@ -14,6 +14,8 @@ from app.models import (
     LogisticsDriver,
     LogisticsEventPhoto,
     LogisticsManualReview,
+    LogisticsOrderPlan,
+    LogisticsOrderPlanUnit,
     LogisticsRouteRun,
     LogisticsRouteRunItem,
     LogisticsTransfer,
@@ -31,6 +33,10 @@ SOURCE_CHANNELS = {"bitrix", "telegram", "web_fallback"}
 
 SOURCE_TRANSFER = "transfer"
 SOURCE_RTU = "rtu"
+
+FLOW_LEGACY_RTU = "LEGACY_RTU"
+FLOW_ORDER_TRANSFER_V1 = "ORDER_TRANSFER_V1"
+ORDER_PLAN_SYNC_MAX_AGE_SECONDS = 180
 
 STATUS_AT_WAREHOUSE = "at_warehouse"
 STATUS_IN_TRANSIT = "in_transit"
@@ -59,6 +65,18 @@ def _coerce_datetime(value: datetime | str) -> datetime:
         return value
     normalized = value.replace("Z", "+00:00")
     return datetime.fromisoformat(normalized)
+
+
+def _same_instant_clock(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_fresh_order_plan_sync(value: datetime) -> bool:
+    return utcnow() - _same_instant_clock(value) <= timedelta(
+        seconds=ORDER_PLAN_SYNC_MAX_AGE_SECONDS
+    )
 
 
 def _http_error(status: int, detail) -> HTTPException:
@@ -216,6 +234,12 @@ def lookup_unit(session: Session, code: str) -> dict:
         "dropoff_warehouse_id": state.dropoff_warehouse_id,
         "target_warehouse_id": transfer.target_warehouse_id,
         "document_target_warehouse_id": transfer.document_target_warehouse_id,
+        "flow_mode": transfer.flow_mode,
+        "plan_key": transfer.plan_key,
+        "plan_version": transfer.plan_version,
+        "unit_key": transfer.unit_key,
+        "expected_unit_count": transfer.expected_unit_count,
+        "ready_for_handoff": transfer.ready_for_handoff,
     }
 
 
@@ -368,6 +392,103 @@ def _bridge_rtu_handoff_to_order_fulfillment(
             "driver_name": driver.full_name if driver is not None else None,
             "user_id": event.user_id,
             "user_name": user.full_name if user is not None else None,
+            "source_channel": event.source,
+        },
+    )
+
+
+def _bridge_order_transfer_progress(
+    session: Session,
+    *,
+    transfer: LogisticsTransfer,
+    event: LogisticsTransferEvent,
+) -> None:
+    if not (
+        transfer.source_document_type == SOURCE_TRANSFER
+        and transfer.flow_mode == FLOW_ORDER_TRANSFER_V1
+        and transfer.site_order_number
+    ):
+        return
+    plan_unit = session.scalar(
+        select(LogisticsOrderPlanUnit)
+        .where(LogisticsOrderPlanUnit.transfer_id == transfer.id)
+        .options(
+            joinedload(LogisticsOrderPlanUnit.plan),
+        )
+    )
+    if plan_unit is None:
+        return
+    plan = plan_unit.plan
+    if (
+        not plan.is_active
+        or not _is_fresh_order_plan_sync(plan.synced_at)
+        or _has_open_order_flow_conflict(session, plan=plan)
+    ):
+        return
+    # СДЭК/Почта сами двигают CRM. Внутреннее плечо до виртуального терминала
+    # фиксируется здесь только как физический аудит и не создаёт второй outbox.
+    if _plan_is_external_carrier(plan):
+        return
+    required_units = [unit for unit in plan.units if unit.is_required]
+    if not required_units or len(required_units) != plan.expected_unit_count:
+        return
+    transfer_ids = [unit.transfer_id for unit in required_units]
+    if any(transfer_id is None for transfer_id in transfer_ids):
+        return
+
+    if event.event_type == EVENT_HANDED_TO_DRIVER:
+        handoff_events = session.scalars(
+            select(LogisticsTransferEvent).where(
+                LogisticsTransferEvent.transfer_id.in_(transfer_ids),
+                LogisticsTransferEvent.event_type == EVENT_HANDED_TO_DRIVER,
+            )
+        ).all()
+        handed_ids = {row.transfer_id for row in handoff_events}
+        if len(handed_ids) != len(required_units):
+            return
+        event_type = site_order_fulfillment.EVENT_PICKUP_MOVING
+        event_at = max(
+            (row.event_at for row in handoff_events),
+            key=_same_instant_clock,
+        )
+        source_ref = f"logistics_order_plan:{plan.id}:all_handed_off"
+    elif event.event_type == EVENT_ACCEPTED_AT_POINT:
+        states = [session.get(LogisticsTransferState, transfer_id) for transfer_id in transfer_ids]
+        if any(
+            state is None
+            or state.status != STATUS_AT_WAREHOUSE
+            or state.current_warehouse_id != plan.final_warehouse_id
+            or state.last_event_type != EVENT_ACCEPTED_AT_POINT
+            for state in states
+        ):
+            return
+        event_type = site_order_fulfillment.EVENT_PICKUP_STORED
+        event_at = max(
+            (state.last_event_at for state in states if state is not None),
+            key=_same_instant_clock,
+        )
+        source_ref = f"logistics_order_plan:{plan.id}:all_accepted_at_final"
+    else:
+        return
+
+    site_order_fulfillment.upsert_execution_event(
+        session,
+        site_order_number=transfer.site_order_number,
+        event_type=event_type,
+        event_at=event_at,
+        source="logistics",
+        source_ref=source_ref,
+        confidence="strong",
+        raw_message_id=None,
+        payload={
+            "origin_order_external_id": plan.origin_order_external_id,
+            "flow_mode": plan.flow_mode,
+            "plan_key": plan.plan_key,
+            "plan_version": plan.plan_version,
+            "expected_unit_count": plan.expected_unit_count,
+            "completed_unit_count": len(required_units),
+            "trigger_transfer_id": transfer.id,
+            "trigger_event_id": event.id,
             "source_channel": event.source,
         },
     )
@@ -620,6 +741,38 @@ def _get_draft(session: Session, draft_id: int) -> LogisticsDraft:
     return draft
 
 
+def _require_ready_for_handoff(
+    session: Session,
+    transfer: LogisticsTransfer,
+) -> None:
+    if not (
+        transfer.source_document_type == SOURCE_TRANSFER
+        and transfer.flow_mode == FLOW_ORDER_TRANSFER_V1
+    ):
+        return
+    plan_unit = session.scalar(
+        select(LogisticsOrderPlanUnit)
+        .where(LogisticsOrderPlanUnit.transfer_id == transfer.id)
+        .options(joinedload(LogisticsOrderPlanUnit.plan))
+    )
+    if plan_unit is None or not plan_unit.plan.is_active:
+        raise _http_error(409, "unit is not linked to the active order plan")
+    if _has_open_order_flow_conflict(session, plan=plan_unit.plan):
+        raise _http_error(409, "order has an unresolved flow conflict")
+    if (
+        plan_unit.plan.plan_key != transfer.plan_key
+        or plan_unit.plan.plan_version != transfer.plan_version
+        or plan_unit.unit_key != transfer.unit_key
+    ):
+        raise _http_error(409, "unit does not match the active order plan version")
+    if not _is_fresh_order_plan_sync(plan_unit.plan.synced_at):
+        raise _http_error(409, "order plan sync is stale; handoff is blocked")
+    if transfer.onec_deleted:
+        raise _http_error(409, "1C marked the transfer as deleted")
+    if not transfer.ready_for_handoff or not plan_unit.ready_for_handoff:
+        raise _http_error(409, "unit is not posted, printed and assembled for handoff")
+
+
 def add_scan_to_draft(
     session: Session,
     *,
@@ -652,6 +805,7 @@ def add_scan_to_draft(
         raise _http_error(409, "transfer already added to this draft")
 
     if draft.draft_type == DRAFT_TYPE_HANDOFF:
+        _require_ready_for_handoff(session, transfer)
         if state.status != STATUS_AT_WAREHOUSE or state.current_warehouse_id != draft.warehouse_id:
             if state.status == STATUS_IN_TRANSIT:
                 raise _http_error(
@@ -672,6 +826,17 @@ def add_scan_to_draft(
         if route_item is not None:
             route_item.status = "planned"
     else:
+        if transfer.flow_mode == FLOW_ORDER_TRANSFER_V1:
+            plan_unit = session.scalar(
+                select(LogisticsOrderPlanUnit)
+                .where(LogisticsOrderPlanUnit.transfer_id == transfer.id)
+                .options(joinedload(LogisticsOrderPlanUnit.plan))
+            )
+            if plan_unit is not None and _plan_is_external_carrier(plan_unit.plan):
+                raise _http_error(
+                    409,
+                    "external carrier receipt is confirmed by the existing Bitrix integration",
+                )
         if state.status != STATUS_IN_TRANSIT:
             raise _http_error(409, "transfer is already accepted earlier")
         if state.dropoff_warehouse_id != draft.warehouse_id:
@@ -743,6 +908,7 @@ def confirm_draft(
         event_key = f"{idempotency_key}:{transfer.id}" if idempotency_key else None
 
         if draft.draft_type == DRAFT_TYPE_HANDOFF:
+            _require_ready_for_handoff(session, transfer)
             if (
                 state.status != STATUS_AT_WAREHOUSE
                 or state.current_warehouse_id != draft.warehouse_id
@@ -765,11 +931,6 @@ def confirm_draft(
             _attach_photos(event, photos)
             session.add(event)
             session.flush()
-            _bridge_rtu_handoff_to_order_fulfillment(
-                session,
-                transfer=transfer,
-                event=event,
-            )
             route_item = _get_or_create_route_item(
                 session,
                 route_run_id=draft.route_run_id,
@@ -811,12 +972,6 @@ def confirm_draft(
                 transfer_id=transfer.id,
                 warehouse_id=draft.warehouse_id,
             )
-            _bridge_rtu_receipt_to_order_fulfillment(
-                session,
-                transfer=transfer,
-                event=event,
-                warehouse_id=draft.warehouse_id,
-            )
             state.status = STATUS_AT_WAREHOUSE
             state.current_warehouse_id = draft.warehouse_id
             state.dropoff_warehouse_id = None
@@ -827,6 +982,25 @@ def confirm_draft(
         state.last_user_id = actor.id
         state.last_document_ref = transfer.document_number
         state.version += 1
+        session.flush()
+        if draft.draft_type == DRAFT_TYPE_HANDOFF:
+            _bridge_rtu_handoff_to_order_fulfillment(
+                session,
+                transfer=transfer,
+                event=event,
+            )
+        else:
+            _bridge_rtu_receipt_to_order_fulfillment(
+                session,
+                transfer=transfer,
+                event=event,
+                warehouse_id=draft.warehouse_id,
+            )
+        _bridge_order_transfer_progress(
+            session,
+            transfer=transfer,
+            event=event,
+        )
         processed_count += 1
 
     draft.status = "confirmed"
@@ -953,6 +1127,135 @@ def list_rtu_ready_for_pickup(
         }
         for state in session.scalars(stmt).all()
     ]
+
+
+def list_orders_ready_for_pickup(
+    session: Session,
+    *,
+    warehouse_code: str,
+    date_from: date | None = None,
+) -> list[dict]:
+    normalized_code = warehouse_code.strip().casefold()
+    if not normalized_code:
+        raise _http_error(422, "warehouse_code is required")
+    warehouses = [
+        warehouse
+        for warehouse in session.scalars(
+            select(LogisticsWarehouse)
+            .where(LogisticsWarehouse.is_active.is_(True))
+            .order_by(LogisticsWarehouse.id.asc())
+        ).all()
+        if normalized_code in _warehouse_lookup_codes(warehouse)
+    ]
+    if not warehouses:
+        raise _http_error(404, "warehouse not found")
+    if len(warehouses) > 1:
+        raise _http_error(409, "warehouse_code matched multiple warehouses")
+    warehouse = warehouses[0]
+
+    ready_after = datetime.combine(date_from, time.min) if date_from is not None else None
+    results: list[dict] = []
+
+    legacy_states = session.scalars(
+        select(LogisticsTransferState)
+        .join(LogisticsTransfer, LogisticsTransfer.id == LogisticsTransferState.transfer_id)
+        .where(
+            LogisticsTransfer.source_document_type == SOURCE_RTU,
+            LogisticsTransfer.target_warehouse_id == warehouse.id,
+            LogisticsTransfer.source_warehouse_id != warehouse.id,
+            LogisticsTransferState.status == STATUS_AT_WAREHOUSE,
+            LogisticsTransferState.current_warehouse_id == warehouse.id,
+            LogisticsTransferState.last_event_type == EVENT_ACCEPTED_AT_POINT,
+        )
+        .options(joinedload(LogisticsTransferState.transfer))
+    ).all()
+    legacy_groups: dict[str, list[LogisticsTransferState]] = {}
+    for state in legacy_states:
+        transfer = state.transfer
+        payload = transfer.payload if isinstance(transfer.payload, dict) else {}
+        if transfer.flow_mode == FLOW_ORDER_TRANSFER_V1 or payload.get("final_sale"):
+            continue
+        group_key = (
+            transfer.origin_order_external_id
+            or transfer.site_order_number
+            or f"rtu:{transfer.external_id}"
+        )
+        legacy_groups.setdefault(group_key, []).append(state)
+    for group_key, states in legacy_groups.items():
+        ready_at = max(state.last_event_at for state in states)
+        if ready_after is not None and ready_at < ready_after:
+            continue
+        transfers = [state.transfer for state in states]
+        results.append(
+            {
+                "origin_order_external_id": (transfers[0].origin_order_external_id or group_key),
+                "site_order_number": transfers[0].site_order_number,
+                "flow_mode": FLOW_LEGACY_RTU,
+                "plan_key": None,
+                "plan_version": None,
+                "ready_at": ready_at,
+                "expected_unit_count": len(transfers),
+                "accepted_unit_count": len(transfers),
+                "source_external_ids": sorted(transfer.external_id for transfer in transfers),
+            }
+        )
+
+    plans = (
+        session.scalars(
+            select(LogisticsOrderPlan)
+            .where(
+                LogisticsOrderPlan.is_active.is_(True),
+                LogisticsOrderPlan.flow_mode == FLOW_ORDER_TRANSFER_V1,
+                LogisticsOrderPlan.final_warehouse_id == warehouse.id,
+            )
+            .options(
+                joinedload(LogisticsOrderPlan.units)
+                .joinedload(LogisticsOrderPlanUnit.transfer)
+                .joinedload(LogisticsTransfer.state)
+            )
+        )
+        .unique()
+        .all()
+    )
+    for plan in plans:
+        if _plan_is_external_carrier(plan):
+            continue
+        if _has_open_order_flow_conflict(session, plan=plan):
+            continue
+        required_units = [unit for unit in plan.units if unit.is_required]
+        if not required_units or len(required_units) != plan.expected_unit_count:
+            continue
+        accepted_units = [
+            unit
+            for unit in required_units
+            if unit.transfer is not None
+            and unit.transfer.state is not None
+            and unit.transfer.state.status == STATUS_AT_WAREHOUSE
+            and unit.transfer.state.current_warehouse_id == plan.final_warehouse_id
+            and unit.transfer.state.last_event_type == EVENT_ACCEPTED_AT_POINT
+        ]
+        if len(accepted_units) != len(required_units):
+            continue
+        ready_at = max(unit.transfer.state.last_event_at for unit in accepted_units)
+        if ready_after is not None and ready_at < ready_after:
+            continue
+        results.append(
+            {
+                "origin_order_external_id": plan.origin_order_external_id,
+                "site_order_number": plan.site_order_number,
+                "flow_mode": plan.flow_mode,
+                "plan_key": plan.plan_key,
+                "plan_version": plan.plan_version,
+                "ready_at": ready_at,
+                "expected_unit_count": plan.expected_unit_count,
+                "accepted_unit_count": len(accepted_units),
+                "source_external_ids": sorted(unit.transfer.external_id for unit in accepted_units),
+            }
+        )
+    return sorted(
+        results,
+        key=lambda row: (row["ready_at"], row["origin_order_external_id"]),
+    )
 
 
 def _warehouse_lookup_codes(warehouse: LogisticsWarehouse) -> set[str]:
@@ -1353,6 +1656,578 @@ def sync_users(session: Session, items: list[dict]) -> dict:
     return counters.__dict__
 
 
+def _plan_has_started(plan: LogisticsOrderPlan) -> bool:
+    for unit in plan.units:
+        transfer = unit.transfer
+        state = transfer.state if transfer is not None else None
+        if state is None:
+            continue
+        if state.last_event_type != EVENT_SYNCED or state.status != STATUS_AT_WAREHOUSE:
+            return True
+    return False
+
+
+def _plan_is_external_carrier(plan: LogisticsOrderPlan) -> bool:
+    payload = plan.payload if isinstance(plan.payload, dict) else {}
+    return bool(payload.get("external_carrier"))
+
+
+def _plan_required_units_at_final(plan: LogisticsOrderPlan) -> bool:
+    required_units = [unit for unit in plan.units if unit.is_required]
+    if not required_units or len(required_units) != plan.expected_unit_count:
+        return False
+    for unit in required_units:
+        transfer = unit.transfer
+        state = transfer.state if transfer is not None else None
+        if (
+            state is None
+            or state.status != STATUS_AT_WAREHOUSE
+            or state.current_warehouse_id != plan.final_warehouse_id
+            or state.last_event_type
+            not in {EVENT_ACCEPTED_AT_POINT, EVENT_ACCEPTED_FROM_EXTERNAL_CARRIER}
+        ):
+            return False
+    return True
+
+
+def order_transfer_rtu_disposition(
+    session: Session,
+    *,
+    origin_order_external_id: str | None,
+    site_order_number: str | None,
+) -> tuple[str, LogisticsOrderPlan | None]:
+    """Classify an unmarked RTU received through the legacy polling contract."""
+
+    plan = _active_order_plan(
+        session,
+        origin_order_external_id=origin_order_external_id,
+        site_order_number=site_order_number,
+    )
+    if plan is None:
+        return "legacy", None
+    if _plan_required_units_at_final(plan):
+        return "final_sale", plan
+    return "conflict", plan
+
+
+def _active_order_plan(
+    session: Session,
+    *,
+    origin_order_external_id: str | None,
+    site_order_number: str | None,
+) -> LogisticsOrderPlan | None:
+    conditions = []
+    if origin_order_external_id:
+        conditions.append(LogisticsOrderPlan.origin_order_external_id == origin_order_external_id)
+    if site_order_number:
+        conditions.append(LogisticsOrderPlan.site_order_number == site_order_number)
+    if not conditions:
+        return None
+    selector = select(LogisticsOrderPlan).where(LogisticsOrderPlan.is_active.is_(True))
+    selector = selector.where(
+        conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]
+    )
+    return (
+        session.execute(
+            selector.options(
+                joinedload(LogisticsOrderPlan.units)
+                .joinedload(LogisticsOrderPlanUnit.transfer)
+                .joinedload(LogisticsTransfer.state)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+
+
+def _legacy_rtu_for_order(
+    session: Session,
+    *,
+    origin_order_external_id: str | None,
+    site_order_number: str | None,
+) -> LogisticsTransfer | None:
+    conditions = []
+    if origin_order_external_id:
+        conditions.append(LogisticsTransfer.origin_order_external_id == origin_order_external_id)
+    if site_order_number:
+        conditions.append(LogisticsTransfer.site_order_number == site_order_number)
+    if not conditions:
+        return None
+    selector = select(LogisticsTransfer).where(LogisticsTransfer.source_document_type == SOURCE_RTU)
+    selector = selector.where(
+        conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]
+    )
+    for transfer in session.scalars(selector).all():
+        payload = transfer.payload if isinstance(transfer.payload, dict) else {}
+        if transfer.flow_mode == FLOW_ORDER_TRANSFER_V1 or payload.get("final_sale"):
+            continue
+        return transfer
+    return None
+
+
+def _create_order_flow_conflict(
+    session: Session,
+    *,
+    origin_order_external_id: str | None,
+    site_order_number: str | None,
+    reason: str,
+    payload: dict,
+) -> None:
+    source_external_id = origin_order_external_id or site_order_number
+    existing = session.scalar(
+        select(LogisticsManualReview).where(
+            LogisticsManualReview.review_type == "order_flow_conflict",
+            LogisticsManualReview.status == "open",
+            LogisticsManualReview.source_external_id == source_external_id,
+        )
+    )
+    if existing is None:
+        _create_manual_review(
+            session,
+            review_type="order_flow_conflict",
+            reason=reason,
+            source_document_type="customer_order",
+            source_external_id=source_external_id,
+            payload=payload,
+        )
+
+
+def _has_open_order_flow_conflict(
+    session: Session,
+    *,
+    plan: LogisticsOrderPlan,
+) -> bool:
+    references = [plan.origin_order_external_id]
+    if plan.site_order_number:
+        references.append(plan.site_order_number)
+    return (
+        session.scalar(
+            select(LogisticsManualReview.id).where(
+                LogisticsManualReview.review_type == "order_flow_conflict",
+                LogisticsManualReview.status == "open",
+                LogisticsManualReview.source_external_id.in_(references),
+            )
+        )
+        is not None
+    )
+
+
+def _carrier_confirmation_plan(session: Session, item: dict) -> LogisticsOrderPlan | None:
+    origin_order_external_id = item.get("origin_order_external_id")
+    site_order_number = item.get("site_order_number")
+    conditions = []
+    if origin_order_external_id:
+        conditions.append(LogisticsOrderPlan.origin_order_external_id == origin_order_external_id)
+    if site_order_number:
+        conditions.append(LogisticsOrderPlan.site_order_number == site_order_number)
+    if not conditions:
+        return None
+    selector = select(LogisticsOrderPlan).where(
+        LogisticsOrderPlan.is_active.is_(True),
+        LogisticsOrderPlan.flow_mode == FLOW_ORDER_TRANSFER_V1,
+    )
+    selector = selector.where(
+        conditions[0] if len(conditions) == 1 else conditions[0] | conditions[1]
+    )
+    candidates = session.scalars(selector).all()
+    exact = [
+        plan
+        for plan in candidates
+        if (
+            not origin_order_external_id
+            or plan.origin_order_external_id == origin_order_external_id
+        )
+        and (not site_order_number or plan.site_order_number == site_order_number)
+    ]
+    if len(exact) == 1 and len(candidates) == 1:
+        return exact[0]
+    if candidates:
+        _create_order_flow_conflict(
+            session,
+            origin_order_external_id=origin_order_external_id,
+            site_order_number=site_order_number,
+            reason="carrier confirmation has an ambiguous order link",
+            payload={
+                "confirmation": item,
+                "candidate_plan_ids": [plan.id for plan in candidates],
+            },
+        )
+        session.commit()
+        raise _http_error(409, "carrier confirmation order link is ambiguous")
+    return None
+
+
+def sync_order_plans(session: Session, items: list[dict]) -> dict:
+    counters = _SyncCounters()
+    warehouses = {row.external_id: row for row in session.scalars(select(LogisticsWarehouse)).all()}
+    for item in items:
+        origin_order_external_id = item["origin_order_external_id"].strip()
+        plan_key = item["plan_key"].strip()
+        plan_version = item["plan_version"]
+        if not origin_order_external_id or not plan_key:
+            raise _http_error(422, "order plan requires non-empty order and plan keys")
+        if item.get("flow_mode") != FLOW_ORDER_TRANSFER_V1:
+            raise _http_error(422, "order plan supports only ORDER_TRANSFER_V1")
+
+        final_warehouse = warehouses.get(item["final_warehouse_external_id"])
+        if final_warehouse is None:
+            raise _http_error(422, "order plan references unknown final warehouse")
+        required_count = sum(1 for unit in item.get("units", []) if unit.get("is_required", True))
+        if required_count != item["expected_unit_count"]:
+            raise _http_error(422, "order plan expected_unit_count mismatch")
+
+        legacy_rtu = _legacy_rtu_for_order(
+            session,
+            origin_order_external_id=origin_order_external_id,
+            site_order_number=item.get("site_order_number"),
+        )
+        if legacy_rtu is not None:
+            _create_order_flow_conflict(
+                session,
+                origin_order_external_id=origin_order_external_id,
+                site_order_number=item.get("site_order_number"),
+                reason="legacy RTU and ORDER_TRANSFER_V1 plan exist for the same order",
+                payload={"plan": item, "legacy_rtu_external_id": legacy_rtu.external_id},
+            )
+            session.commit()
+            raise _http_error(409, "order has both legacy RTU and transfer plan")
+
+        current = _active_order_plan(
+            session,
+            origin_order_external_id=origin_order_external_id,
+            site_order_number=None,
+        )
+        row = (
+            session.execute(
+                select(LogisticsOrderPlan)
+                .where(
+                    LogisticsOrderPlan.plan_key == plan_key,
+                    LogisticsOrderPlan.plan_version == plan_version,
+                )
+                .options(
+                    joinedload(LogisticsOrderPlan.units)
+                    .joinedload(LogisticsOrderPlanUnit.transfer)
+                    .joinedload(LogisticsTransfer.state)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+
+        incoming_shape = {
+            (
+                unit["unit_key"],
+                unit["source_warehouse_external_id"],
+                unit["target_warehouse_external_id"],
+                unit.get("is_required", True),
+            )
+            for unit in item.get("units", [])
+        }
+        if current is not None:
+            current_shape = {
+                (
+                    unit.unit_key,
+                    unit.source_warehouse.external_id,
+                    unit.target_warehouse.external_id,
+                    unit.is_required,
+                )
+                for unit in current.units
+            }
+            changes_started_plan = _plan_has_started(current) and (
+                current.plan_version != plan_version
+                or current.plan_key != plan_key
+                or current_shape != incoming_shape
+                or current.final_warehouse_id != final_warehouse.id
+            )
+            if changes_started_plan:
+                _create_order_flow_conflict(
+                    session,
+                    origin_order_external_id=origin_order_external_id,
+                    site_order_number=item.get("site_order_number"),
+                    reason="1C changed an ORDER_TRANSFER_V1 plan after logistics handoff",
+                    payload={
+                        "incoming_plan": item,
+                        "active_plan_key": current.plan_key,
+                        "active_plan_version": current.plan_version,
+                    },
+                )
+                session.commit()
+                raise _http_error(409, "started order plan can only be changed manually")
+            if current is not row:
+                current.is_active = False
+                session.flush()
+
+        sync_time = utcnow()
+        if row is None:
+            row = LogisticsOrderPlan(
+                origin_order_external_id=origin_order_external_id,
+                site_order_number=item.get("site_order_number"),
+                flow_mode=FLOW_ORDER_TRANSFER_V1,
+                plan_key=plan_key,
+                plan_version=plan_version,
+                final_warehouse_id=final_warehouse.id,
+                status=item.get("status") or "planned",
+                expected_unit_count=item["expected_unit_count"],
+                is_active=True,
+                synced_at=sync_time,
+                payload=item.get("payload"),
+            )
+            session.add(row)
+            session.flush()
+            counters.created += 1
+        else:
+            row.site_order_number = item.get("site_order_number")
+            row.final_warehouse_id = final_warehouse.id
+            row.status = item.get("status") or row.status
+            row.expected_unit_count = item["expected_unit_count"]
+            row.is_active = True
+            row.synced_at = sync_time
+            row.payload = item.get("payload")
+            counters.updated += 1
+
+        existing_by_key = {unit.unit_key: unit for unit in row.units}
+        incoming_keys: set[str] = set()
+        for unit_item in item.get("units", []):
+            unit_key = unit_item["unit_key"].strip()
+            if not unit_key:
+                raise _http_error(422, "order plan unit_key is empty")
+            incoming_keys.add(unit_key)
+            source_warehouse = warehouses.get(unit_item["source_warehouse_external_id"])
+            target_warehouse = warehouses.get(unit_item["target_warehouse_external_id"])
+            if source_warehouse is None or target_warehouse is None:
+                raise _http_error(422, "order plan unit references unknown warehouse")
+            unit = existing_by_key.get(unit_key)
+            if unit is None:
+                unit = LogisticsOrderPlanUnit(plan_id=row.id, unit_key=unit_key)
+                session.add(unit)
+            unit.source_warehouse_id = source_warehouse.id
+            unit.target_warehouse_id = target_warehouse.id
+            unit.internal_order_external_id = unit_item.get("internal_order_external_id")
+            unit.transfer_external_id = unit_item.get("transfer_external_id")
+            unit.is_required = unit_item.get("is_required", True)
+            unit.ready_for_handoff = unit_item.get("ready_for_handoff", False)
+            unit.readiness = unit_item.get("readiness")
+            unit.synced_at = sync_time
+            unit.payload = unit_item.get("payload")
+            if unit.transfer_external_id:
+                transfer = session.scalar(
+                    _logistics_unit_selector(SOURCE_TRANSFER, unit.transfer_external_id)
+                )
+                if transfer is not None:
+                    unit.transfer_id = transfer.id
+                    transfer.flow_mode = FLOW_ORDER_TRANSFER_V1
+                    transfer.plan_key = plan_key
+                    transfer.plan_version = plan_version
+                    transfer.unit_key = unit_key
+                    transfer.expected_unit_count = row.expected_unit_count
+                    transfer.ready_for_handoff = unit.ready_for_handoff
+                    transfer.is_required = unit.is_required
+        for unit in list(row.units):
+            if unit.unit_key not in incoming_keys:
+                session.delete(unit)
+        session.flush()
+    session.commit()
+    return counters.__dict__
+
+
+def sync_external_carrier_confirmations(session: Session, items: list[dict]) -> dict:
+    """Consume strong handoff facts produced by the existing Bitrix carrier flow."""
+
+    counters = _SyncCounters()
+    for item in items:
+        plan = _carrier_confirmation_plan(session, item)
+        if plan is None:
+            raise _http_error(409, "active ORDER_TRANSFER_V1 plan was not found")
+        if _has_open_order_flow_conflict(session, plan=plan):
+            raise _http_error(409, "order has an unresolved flow conflict")
+        if not _plan_is_external_carrier(plan):
+            raise _http_error(409, "order plan is not an external carrier flow")
+        if plan.final_warehouse.external_id != item["terminal_warehouse_external_id"]:
+            _create_order_flow_conflict(
+                session,
+                origin_order_external_id=plan.origin_order_external_id,
+                site_order_number=plan.site_order_number,
+                reason="carrier confirmation references another terminal",
+                payload={"confirmation": item, "plan_id": plan.id},
+            )
+            session.commit()
+            raise _http_error(409, "carrier terminal differs from the active plan")
+
+        required_units = [unit for unit in plan.units if unit.is_required]
+        if not required_units or len(required_units) != plan.expected_unit_count:
+            raise _http_error(409, "active plan does not contain all required units")
+        if any(unit.transfer is None for unit in required_units):
+            raise _http_error(409, "not all required transfer documents were synced")
+
+        changed = False
+        for unit in required_units:
+            transfer = unit.transfer
+            state = _seed_state(session, transfer)
+            event_key = (
+                f"carrier_confirmation:{item['source_ref']}:{transfer.id}:"
+                f"{EVENT_ACCEPTED_AT_POINT}"
+            )
+            existing = session.scalar(
+                select(LogisticsTransferEvent).where(
+                    LogisticsTransferEvent.idempotency_key == event_key
+                )
+            )
+            if existing is not None:
+                continue
+            if not (
+                state.status == STATUS_IN_TRANSIT
+                and state.dropoff_warehouse_id == plan.final_warehouse_id
+            ):
+                _create_order_flow_conflict(
+                    session,
+                    origin_order_external_id=plan.origin_order_external_id,
+                    site_order_number=plan.site_order_number,
+                    reason="carrier confirmation arrived before the internal leg reached its terminal",
+                    payload={
+                        "confirmation": item,
+                        "plan_id": plan.id,
+                        "transfer_id": transfer.id,
+                        "state": state.status,
+                        "dropoff_warehouse_id": state.dropoff_warehouse_id,
+                    },
+                )
+                session.commit()
+                raise _http_error(409, "internal carrier leg is not in transit to its terminal")
+            event = LogisticsTransferEvent(
+                transfer_id=transfer.id,
+                event_type=EVENT_ACCEPTED_AT_POINT,
+                event_at=_coerce_datetime(item["confirmed_at"]),
+                warehouse_id=plan.final_warehouse_id,
+                dropoff_warehouse_id=plan.final_warehouse_id,
+                driver_id=state.driver_id,
+                user_id=None,
+                comment="Confirmed by the existing Bitrix carrier integration",
+                source="bitrix_carrier",
+                idempotency_key=event_key,
+                document_ref=transfer.document_number,
+                meta={
+                    "carrier_name": item["carrier_name"],
+                    "tracking_number": item["tracking_number"],
+                    "source_ref": item["source_ref"],
+                },
+            )
+            session.add(event)
+            _complete_route_item(
+                session,
+                transfer_id=transfer.id,
+                warehouse_id=plan.final_warehouse_id,
+            )
+            state.status = STATUS_AT_WAREHOUSE
+            state.current_warehouse_id = plan.final_warehouse_id
+            state.dropoff_warehouse_id = None
+            state.driver_id = None
+            state.last_event_type = EVENT_ACCEPTED_AT_POINT
+            state.last_event_at = event.event_at
+            state.last_user_id = None
+            state.last_document_ref = transfer.document_number
+            state.version += 1
+            changed = True
+
+        payload = dict(plan.payload or {})
+        confirmation = {
+            "carrier_name": item["carrier_name"],
+            "tracking_number": item["tracking_number"],
+            "confirmed_at": _coerce_datetime(item["confirmed_at"]).isoformat(),
+            "source_ref": item["source_ref"],
+        }
+        payload["carrier_confirmation"] = confirmation
+        plan.payload = payload
+        plan.status = "carrier_confirmed"
+        if changed:
+            counters.created += 1
+        else:
+            counters.updated += 1
+    session.commit()
+    return counters.__dict__
+
+
+def list_external_carrier_confirmations(
+    session: Session,
+    *,
+    confirmed_from: datetime | None = None,
+) -> list[dict]:
+    plans = (
+        session.scalars(
+            select(LogisticsOrderPlan)
+            .where(
+                LogisticsOrderPlan.is_active.is_(True),
+                LogisticsOrderPlan.flow_mode == FLOW_ORDER_TRANSFER_V1,
+                LogisticsOrderPlan.status == "carrier_confirmed",
+            )
+            .order_by(LogisticsOrderPlan.id.asc())
+        )
+        .unique()
+        .all()
+    )
+    results: list[dict] = []
+    for plan in plans:
+        if not _plan_is_external_carrier(plan):
+            continue
+        payload = plan.payload if isinstance(plan.payload, dict) else {}
+        confirmation = payload.get("carrier_confirmation")
+        if not isinstance(confirmation, dict):
+            continue
+        confirmed_at = _coerce_datetime(confirmation["confirmed_at"])
+        if confirmed_from is not None and _same_instant_clock(confirmed_at) < _same_instant_clock(
+            confirmed_from
+        ):
+            continue
+        results.append(
+            {
+                "origin_order_external_id": plan.origin_order_external_id,
+                "site_order_number": plan.site_order_number,
+                "plan_key": plan.plan_key,
+                "plan_version": plan.plan_version,
+                "terminal_warehouse_external_id": plan.final_warehouse.external_id,
+                **confirmation,
+            }
+        )
+    return results
+
+
+def _validate_order_transfer_unit(
+    session: Session,
+    *,
+    item: dict,
+) -> tuple[LogisticsOrderPlan, LogisticsOrderPlanUnit]:
+    required_fields = (
+        "origin_order_external_id",
+        "plan_key",
+        "plan_version",
+        "unit_key",
+    )
+    missing = [field for field in required_fields if not item.get(field)]
+    if missing:
+        raise _http_error(422, f"ORDER_TRANSFER_V1 unit misses: {', '.join(missing)}")
+    plan = (
+        session.execute(
+            select(LogisticsOrderPlan)
+            .where(
+                LogisticsOrderPlan.origin_order_external_id == item["origin_order_external_id"],
+                LogisticsOrderPlan.plan_key == item["plan_key"],
+                LogisticsOrderPlan.plan_version == item["plan_version"],
+                LogisticsOrderPlan.is_active.is_(True),
+            )
+            .options(joinedload(LogisticsOrderPlan.units))
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if plan is None:
+        raise _http_error(409, "active ORDER_TRANSFER_V1 plan was not synced")
+    unit = next((row for row in plan.units if row.unit_key == item["unit_key"]), None)
+    if unit is None:
+        raise _http_error(409, "unit is absent from the active order plan")
+    if item.get("expected_unit_count") not in (None, plan.expected_unit_count):
+        raise _http_error(409, "unit expected_unit_count differs from the active plan")
+    return plan, unit
+
+
 def sync_units(session: Session, items: list[dict]) -> dict:
     counters = _SyncCounters()
     warehouses = {
@@ -1360,6 +2235,55 @@ def sync_units(session: Session, items: list[dict]) -> dict:
     }
     for item in items:
         source_document_type = _normalize_source_document_type(item.get("source_document_type"))
+        flow_mode = item.get("flow_mode")
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if source_document_type == SOURCE_RTU and (
+            flow_mode == FLOW_ORDER_TRANSFER_V1 or payload.get("final_sale")
+        ):
+            # Финальная продажа нового потока не является новой логистической единицей.
+            continue
+        if flow_mode is None and source_document_type == SOURCE_RTU:
+            flow_mode = FLOW_LEGACY_RTU
+
+        plan = None
+        plan_unit = None
+        if source_document_type == SOURCE_TRANSFER and flow_mode == FLOW_ORDER_TRANSFER_V1:
+            plan, plan_unit = _validate_order_transfer_unit(session, item=item)
+            legacy_rtu = _legacy_rtu_for_order(
+                session,
+                origin_order_external_id=item.get("origin_order_external_id"),
+                site_order_number=item.get("site_order_number"),
+            )
+            if legacy_rtu is not None:
+                _create_order_flow_conflict(
+                    session,
+                    origin_order_external_id=item.get("origin_order_external_id"),
+                    site_order_number=item.get("site_order_number"),
+                    reason="legacy RTU and ORDER_TRANSFER_V1 unit exist for the same order",
+                    payload={"unit": item, "legacy_rtu_external_id": legacy_rtu.external_id},
+                )
+                session.commit()
+                raise _http_error(409, "order has both legacy RTU and transfer unit")
+        elif source_document_type == SOURCE_RTU:
+            disposition, active_plan = order_transfer_rtu_disposition(
+                session,
+                origin_order_external_id=item.get("origin_order_external_id"),
+                site_order_number=item.get("site_order_number"),
+            )
+            if disposition == "final_sale":
+                # Старый SQL-пуллер не знает flow_mode. Полностью завершённый
+                # transfer-plan однозначно классифицирует эту РТУ как продажу.
+                continue
+            if disposition == "conflict" and active_plan is not None:
+                _create_order_flow_conflict(
+                    session,
+                    origin_order_external_id=item.get("origin_order_external_id"),
+                    site_order_number=item.get("site_order_number"),
+                    reason="legacy RTU was received for an active ORDER_TRANSFER_V1 order",
+                    payload={"unit": item, "active_plan_id": active_plan.id},
+                )
+                session.commit()
+                raise _http_error(409, "order has both legacy RTU and transfer plan")
         source_id = warehouses.get(item["source_warehouse_external_id"])
         target_id = warehouses.get(item["target_warehouse_external_id"])
         if source_id is None or target_id is None:
@@ -1392,6 +2316,13 @@ def sync_units(session: Session, items: list[dict]) -> dict:
                 origin_order_external_id=item.get("origin_order_external_id"),
                 site_order_number=item.get("site_order_number"),
                 onec_status=item.get("status"),
+                flow_mode=flow_mode,
+                plan_key=item.get("plan_key"),
+                plan_version=item.get("plan_version"),
+                unit_key=item.get("unit_key"),
+                expected_unit_count=item.get("expected_unit_count"),
+                ready_for_handoff=item.get("ready_for_handoff", False),
+                is_required=item.get("is_required", True),
                 onec_deleted=item.get("onec_deleted", False),
                 payload=item.get("payload"),
             )
@@ -1445,10 +2376,38 @@ def sync_units(session: Session, items: list[dict]) -> dict:
             row.origin_order_external_id = item.get("origin_order_external_id")
             row.site_order_number = item.get("site_order_number")
             row.onec_status = item.get("status")
+            row.flow_mode = flow_mode
+            row.plan_key = item.get("plan_key")
+            row.plan_version = item.get("plan_version")
+            row.unit_key = item.get("unit_key")
+            row.expected_unit_count = item.get("expected_unit_count")
+            row.ready_for_handoff = item.get("ready_for_handoff", False)
+            row.is_required = item.get("is_required", True)
             row.onec_deleted = item.get("onec_deleted", False)
             row.payload = item.get("payload")
             counters.updated += 1
         session.flush()
+        if plan is not None and plan_unit is not None:
+            if plan_unit.transfer_id not in (None, row.id):
+                _create_order_flow_conflict(
+                    session,
+                    origin_order_external_id=row.origin_order_external_id,
+                    site_order_number=row.site_order_number,
+                    reason="order plan unit is already linked to another transfer",
+                    payload={
+                        "unit": item,
+                        "linked_transfer_id": plan_unit.transfer_id,
+                        "incoming_transfer_id": row.id,
+                    },
+                )
+                session.commit()
+                raise _http_error(409, "order plan unit is linked to another transfer")
+            plan_unit.transfer_id = row.id
+            plan_unit.transfer_external_id = row.external_id
+            plan_unit.ready_for_handoff = row.ready_for_handoff
+            plan_unit.is_required = row.is_required
+            plan_unit.readiness = payload.get("readiness") or plan_unit.readiness
+            plan_unit.synced_at = utcnow()
         if source_document_type == SOURCE_RTU and not row.site_order_number:
             _create_manual_review(
                 session,

@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Candidate only: minute schedule stays dry-run until metadata/view readback and
+# ORDER_TRANSFER_V1 acceptance are both complete.
+* * * * * root PYTHONPATH=/opt/MM/pricing-service-current REPO_DIR=/opt/MM/pricing-service-current LOGISTICS_ORDER_TRANSFER_SYNC_APPLY=false /opt/MM/pricing-service-current/infra/cron/logistics_order_transfer_sync.sh >> /var/log/pricing/logistics_order_transfer_sync.cron.log 2>&1

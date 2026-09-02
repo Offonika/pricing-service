@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from xml.etree import ElementTree
 
@@ -19,11 +19,15 @@ from app.schemas.logistics import (
     LogisticsEventActionRequest,
     LogisticsExpectedDeliveryResponse,
     LogisticsExternalCarrierAcceptRequest,
+    LogisticsExternalCarrierConfirmationResponse,
+    LogisticsExternalCarrierConfirmationSyncItem,
     LogisticsExternalCarrierHandoffRequest,
     LogisticsHistoryEventResponse,
     LogisticsManualReadyOverrideRequest,
     LogisticsManualReviewResponse,
     LogisticsMonitorResponse,
+    LogisticsOrderPlanSyncItem,
+    LogisticsOrderReadyForPickupResponse,
     LogisticsRouteRunCreateRequest,
     LogisticsRouteRunResponse,
     LogisticsRtuReadyForPickupResponse,
@@ -74,6 +78,64 @@ def sync_transfers(items: list[LogisticsTransferSyncItem], db: Session = Depends
 @router.post("/sync/units", response_model=LogisticsSyncResponse)
 def sync_units(items: list[LogisticsUnitSyncItem], db: Session = Depends(get_db)):
     return logistics_service.sync_units(db, [item.model_dump() for item in items])
+
+
+@router.post("/sync/order-plans", response_model=LogisticsSyncResponse)
+def sync_order_plans(items: list[LogisticsOrderPlanSyncItem], db: Session = Depends(get_db)):
+    return logistics_service.sync_order_plans(db, [item.model_dump() for item in items])
+
+
+@router.post("/sync/carrier-confirmations", response_model=LogisticsSyncResponse)
+def sync_carrier_confirmations(
+    items: list[LogisticsExternalCarrierConfirmationSyncItem],
+    db: Session = Depends(get_db),
+):
+    return logistics_service.sync_external_carrier_confirmations(
+        db, [item.model_dump() for item in items]
+    )
+
+
+@router.get(
+    "/orders/carrier-confirmations",
+    response_model=list[LogisticsExternalCarrierConfirmationResponse],
+    responses={200: {"content": {"application/xml": {"schema": {"type": "string"}}}}},
+)
+def list_carrier_confirmations(
+    confirmed_from: datetime | None = Query(default=None),
+    response_format: Literal["json", "xml"] = Query(default="json", alias="format"),
+    db: Session = Depends(get_db),
+):
+    rows = logistics_service.list_external_carrier_confirmations(
+        db,
+        confirmed_from=confirmed_from,
+    )
+    if response_format == "xml":
+        root = ElementTree.Element("carrier_confirmations")
+        for row in rows:
+            item = ElementTree.SubElement(root, "confirmation")
+            for field in (
+                "origin_order_external_id",
+                "site_order_number",
+                "plan_key",
+                "plan_version",
+                "terminal_warehouse_external_id",
+                "carrier_name",
+                "tracking_number",
+                "confirmed_at",
+                "source_ref",
+            ):
+                value = row.get(field)
+                child = ElementTree.SubElement(item, field)
+                child.text = (
+                    ""
+                    if value is None
+                    else (value.isoformat() if hasattr(value, "isoformat") else str(value))
+                )
+        return Response(
+            ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
+            media_type="application/xml",
+        )
+    return rows
 
 
 @router.get("/units/lookup", response_model=LogisticsUnitLookupResponse)
@@ -226,6 +288,53 @@ def list_rtu_ready_for_pickup(
                 value = row[field]
                 child = ElementTree.SubElement(item, field)
                 child.text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+        return Response(
+            ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
+            media_type="application/xml",
+        )
+    return rows
+
+
+@router.get(
+    "/orders/ready-for-pickup",
+    response_model=list[LogisticsOrderReadyForPickupResponse],
+    responses={200: {"content": {"application/xml": {"schema": {"type": "string"}}}}},
+)
+def list_orders_ready_for_pickup(
+    warehouse_code: str = Query(min_length=1),
+    date_from: date | None = Query(default=None),
+    response_format: Literal["json", "xml"] = Query(default="json", alias="format"),
+    db: Session = Depends(get_db),
+):
+    rows = logistics_service.list_orders_ready_for_pickup(
+        db,
+        warehouse_code=warehouse_code,
+        date_from=date_from,
+    )
+    if response_format == "xml":
+        root = ElementTree.Element("orders_ready_for_pickup")
+        for row in rows:
+            item = ElementTree.SubElement(root, "order")
+            for field in (
+                "origin_order_external_id",
+                "site_order_number",
+                "flow_mode",
+                "plan_key",
+                "plan_version",
+                "ready_at",
+                "expected_unit_count",
+                "accepted_unit_count",
+            ):
+                value = row.get(field)
+                child = ElementTree.SubElement(item, field)
+                child.text = (
+                    ""
+                    if value is None
+                    else (value.isoformat() if hasattr(value, "isoformat") else str(value))
+                )
+            for external_id in row["source_external_ids"]:
+                child = ElementTree.SubElement(item, "source_external_id")
+                child.text = external_id
         return Response(
             ElementTree.tostring(root, encoding="utf-8", xml_declaration=True),
             media_type="application/xml",

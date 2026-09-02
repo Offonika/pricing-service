@@ -119,6 +119,11 @@ class LogisticsTransfer(Base):
         Index("ix_logistics_transfer_barcode", "barcode"),
         Index("ix_logistics_transfer_lookup_code", "lookup_code"),
         Index("ix_logistics_transfer_site_order_number", "site_order_number"),
+        Index(
+            "ix_logistics_transfer_order_plan",
+            "origin_order_external_id",
+            "plan_version",
+        ),
     )
 
     source_document_type: Mapped[str] = mapped_column(
@@ -148,6 +153,17 @@ class LogisticsTransfer(Base):
     origin_order_external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     site_order_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     onec_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    flow_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    plan_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    plan_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expected_unit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ready_for_handoff: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    is_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
     onec_deleted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )

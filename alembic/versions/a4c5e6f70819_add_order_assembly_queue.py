@@ -1,7 +1,7 @@
 """Add the CRM-backed customer-order assembly queue snapshot.
 
 Revision ID: a4c5e6f70819
-Revises: c7d9e1f3a5b8
+Revises: d8e0f2a4c6b9
 Create Date: 2026-08-31
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "a4c5e6f70819"
-down_revision = "c7d9e1f3a5b8"
+down_revision = "d8e0f2a4c6b9"
 branch_labels = None
 depends_on = None
 

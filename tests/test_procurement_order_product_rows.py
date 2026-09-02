@@ -143,7 +143,7 @@ def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkey
             assert params["filter"]["OWNER_TYPE"] == "T420"
             return {"result": next(list_results)}
         assert method == "batch"
-        assert _kwargs["timeout_seconds"] >= 30
+        assert _kwargs["timeout_seconds"] >= 120
         commands = list(params["cmd"].values())
         batch_commands.append(commands)
         return {"result": {"result": {}, "result_error": {}}}

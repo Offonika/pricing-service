@@ -562,6 +562,14 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
+    procurement_product_card_mapping_path: str = (
+        "build/bitrix/procurement_product_card_mapping.json"
+    )
+    procurement_product_card_apply_enabled: bool = False
+    procurement_product_card_catalog_id: int = 17
+    procurement_product_card_placement: str = "CRM_PRODUCT_DETAIL_TAB"
+    procurement_product_card_stale_hours: int = 36
+    procurement_product_card_batch_size: int = 40
     master_mobile_catalog_base_url: str = "https://master-mobile.ru"
     master_mobile_catalog_timeout_seconds: float = 15.0
     master_mobile_catalog_max_attempts: int = 3

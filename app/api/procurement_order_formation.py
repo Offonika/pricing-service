@@ -36,6 +36,7 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderLineUpdateRequest,
     ProcurementOrderListResponse,
     ProcurementOrderTransmissionResponse,
+    ProcurementProductCardRead,
     ProcurementSupplierProfileRead,
     ProcurementSupplierProfileUpdateRequest,
 )
@@ -84,6 +85,7 @@ from app.services.procurement_order_labels import (
 from app.services.procurement_order_labels import (
     build_xlsx as build_order_labels_xlsx,
 )
+from app.services.procurement_product_cards import build_product_card_snapshot
 from app.services.procurement_supplier_profiles import (
     empty_supplier_profile,
     get_supplier_profile,
@@ -454,6 +456,44 @@ def read_events(
                 page=page,
                 page_size=page_size,
             )
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/products/by-xml/{xml_id}/card",
+    response_model=ProcurementProductCardRead,
+)
+def read_product_card_by_xml_id(
+    xml_id: str,
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementProductCardRead:
+    try:
+        return ProcurementProductCardRead.model_validate(
+            build_product_card_snapshot(db, xml_id=xml_id)
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/products/{product_id}/card",
+    response_model=ProcurementProductCardRead,
+)
+def read_product_card(
+    product_id: str,
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementProductCardRead:
+    try:
+        return ProcurementProductCardRead.model_validate(
+            build_product_card_snapshot(db, product_id=product_id)
         )
     except Exception as exc:
         raise _service_error(exc) from exc

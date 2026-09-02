@@ -1,15 +1,41 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  getProcurementProductId,
+  isBitrixProductInsightsPlacement,
   refreshBitrixAuth,
   refreshBitrixReceivablesSession,
+  resolveBitrixProductUrl,
   type BitrixReceivablesSessionResponse,
 } from "./bitrix";
 
 const originalBX24 = window.BX24;
+const originalLaunch = window.__MM_BITRIX_LAUNCH__;
 
 afterEach(() => {
   window.BX24 = originalBX24;
+  window.__MM_BITRIX_LAUNCH__ = originalLaunch;
+});
+
+describe("native Bitrix product card helpers", () => {
+  it("recognizes product placement and resolves its native catalog URL", () => {
+    window.__MM_BITRIX_LAUNCH__ = {
+      domain: "crm.example.test",
+      placement: "CRM_PRODUCT_DETAIL_TAB",
+      placement_options: { PRODUCT_ID: 1646 },
+    };
+
+    expect(isBitrixProductInsightsPlacement()).toBe(true);
+    expect(getProcurementProductId()).toBe("1646");
+    expect(resolveBitrixProductUrl("1646")).toBe(
+      "https://crm.example.test/crm/catalog/17/product/1646/"
+    );
+  });
+
+  it("rejects a non-numeric product identifier", () => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+    expect(resolveBitrixProductUrl("../1646")).toBe("");
+  });
 });
 
 describe("refreshBitrixAuth", () => {

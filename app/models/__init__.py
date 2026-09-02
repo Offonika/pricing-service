@@ -107,6 +107,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ProcurementOrderFormation,
         ProcurementOrderFormationEvent,
         ProcurementOrderFormationLine,
+        ProcurementProductCardSyncState,
         ProcurementSupplierProfile,
     )
     from app.models.product import Product
@@ -178,6 +179,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProcurementOrderFormation",
         "ProcurementOrderFormationLine",
         "ProcurementOrderFormationEvent",
+        "ProcurementProductCardSyncState",
         "ProcurementClassificationProposal",
         "ProcurementSupplierProfile",
         "ProcurementLifecycleTransitionProposal",

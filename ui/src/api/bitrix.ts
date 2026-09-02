@@ -156,6 +156,16 @@ export function isBitrixProcurementOrderFormationRoute() {
   );
 }
 
+export function isBitrixProductInsightsPlacement() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  const placement = String(window.__MM_BITRIX_LAUNCH__?.placement || "").toUpperCase();
+  return (
+    path.endsWith("/product-insights") ||
+    placement === "CRM_PRODUCT_DETAIL_TAB" ||
+    placement === "CATALOG_PRODUCT_DETAIL_TAB"
+  );
+}
+
 export function isBitrixLogisticsRoute() {
   const path = window.location.pathname.replace(/\/+$/, "");
   return path === "/bitrix/logistics" || path.startsWith("/bitrix/logistics/");
@@ -386,6 +396,12 @@ export function resolveBitrixPortalUrl(value?: string | null) {
   } catch {
     return "";
   }
+}
+
+export function resolveBitrixProductUrl(productId?: string | number | null, catalogId = 17) {
+  const value = String(productId || "").trim();
+  if (!/^\d+$/.test(value) || catalogId <= 0) return "";
+  return resolveBitrixPortalUrl(`/crm/catalog/${catalogId}/product/${value}/`);
 }
 
 function initBitrix() {
@@ -1022,6 +1038,18 @@ export function getProcurementLabelsItemId() {
 
 export function getProcurementAssortmentItemId() {
   return getProcurementLabelsItemId();
+}
+
+export function getProcurementProductId() {
+  const options = window.__MM_BITRIX_LAUNCH__?.placement_options || {};
+  const candidate =
+    options.ID ?? options.PRODUCT_ID ?? options.productId ?? options.ENTITY_ID;
+  if (typeof candidate === "number" || typeof candidate === "string") {
+    const value = String(candidate).trim();
+    if (/^\d+$/.test(value)) return value;
+  }
+  const url = new URL(window.location.href);
+  return url.searchParams.get("productId") || url.searchParams.get("itemId") || "";
 }
 
 export interface BitrixLogisticsProfile {

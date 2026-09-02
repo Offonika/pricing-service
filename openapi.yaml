@@ -9967,6 +9967,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/by-xml/{xml_id}/card:
+    get:
+      summary: Read Product Card By Xml Id
+      operationId: read_product_card_by_xml_id_api_procurement_order_formation_products_by_xml__xml_id__card_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: xml_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Xml Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementProductCardRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/{product_id}/card:
+    get:
+      summary: Read Product Card
+      operationId: read_product_card_api_procurement_order_formation_products__product_id__card_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Product Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementProductCardRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders/{order_id}:
     get:
       summary: Read Order
@@ -23810,6 +23862,51 @@ components:
       required:
       - decision
       title: ProcurementAssortmentDecisionUpdateResponse
+    ProcurementBlockedProductRead:
+      properties:
+        bitrix_product_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Product Id
+        xml_id:
+          type: string
+          title: Xml Id
+          default: ''
+        nomenclature_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Code
+        name:
+          type: string
+          title: Name
+          default: ''
+        bitrix_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Url
+        line_id:
+          type: integer
+          title: Line Id
+        line_number:
+          type: integer
+          title: Line Number
+        blocker_count:
+          type: integer
+          title: Blocker Count
+        blockers:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerDetailRead'
+          type: array
+          title: Blockers
+      type: object
+      required:
+      - line_id
+      - line_number
+      - blocker_count
+      title: ProcurementBlockedProductRead
     ProcurementBlockerDetailRead:
       properties:
         code:
@@ -25443,6 +25540,10 @@ components:
           additionalProperties: true
           type: object
           title: Payload
+        product:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementProductLinkRead'
+          - type: 'null'
         created_at:
           type: string
           format: date-time
@@ -26242,6 +26343,11 @@ components:
             type: string
           type: array
           title: Blockers
+        blocked_products:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockedProductRead'
+          type: array
+          title: Blocked Products
         updated_at:
           type: string
           format: date-time
@@ -26337,6 +26443,159 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementProductCardIdentityRead:
+      properties:
+        bitrix_product_id:
+          type: string
+          title: Bitrix Product Id
+        xml_id:
+          type: string
+          title: Xml Id
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        name:
+          type: string
+          title: Name
+        article:
+          type: string
+          title: Article
+          default: ''
+        photo_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Url
+        website_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Website Url
+        bitrix_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Url
+      type: object
+      required:
+      - bitrix_product_id
+      - xml_id
+      - nomenclature_code
+      - name
+      title: ProcurementProductCardIdentityRead
+    ProcurementProductCardOrderRead:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        label:
+          type: string
+          title: Label
+        status:
+          type: string
+          title: Status
+        onec_status:
+          type: string
+          title: Onec Status
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        bitrix_process_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Process Url
+        app_url:
+          type: string
+          title: App Url
+      type: object
+      required:
+      - order_id
+      - label
+      - status
+      - onec_status
+      - app_url
+      title: ProcurementProductCardOrderRead
+    ProcurementProductCardRead:
+      properties:
+        identity:
+          $ref: '#/components/schemas/ProcurementProductCardIdentityRead'
+        properties:
+          additionalProperties: true
+          type: object
+          title: Properties
+        lifecycle:
+          additionalProperties: true
+          type: object
+          title: Lifecycle
+        demand:
+          additionalProperties: true
+          type: object
+          title: Demand
+        quality:
+          additionalProperties: true
+          type: object
+          title: Quality
+        supply:
+          additionalProperties: true
+          type: object
+          title: Supply
+        family:
+          additionalProperties: true
+          type: object
+          title: Family
+        blockers:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerDetailRead'
+          type: array
+          title: Blockers
+        orders:
+          items:
+            $ref: '#/components/schemas/ProcurementProductCardOrderRead'
+          type: array
+          title: Orders
+        recommendation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation
+        source:
+          additionalProperties: true
+          type: object
+          title: Source
+      type: object
+      required:
+      - identity
+      title: ProcurementProductCardRead
+    ProcurementProductLinkRead:
+      properties:
+        bitrix_product_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Product Id
+        xml_id:
+          type: string
+          title: Xml Id
+          default: ''
+        nomenclature_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Code
+        name:
+          type: string
+          title: Name
+          default: ''
+        bitrix_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Url
+      type: object
+      title: ProcurementProductLinkRead
     ProcurementSupplierProfileRead:
       properties:
         supplier_ref:

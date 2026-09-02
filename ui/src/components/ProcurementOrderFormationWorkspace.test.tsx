@@ -2,12 +2,20 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
-import type { ProcurementLifecycleTransitionList } from "../api/procurementAssortment";
+import type {
+  ProcurementLifecycleTransitionList,
+  ProcurementOrderListItem,
+} from "../api/procurementAssortment";
 import {
   decideProcurementLifecycleTransition,
+  fetchProcurementEvents,
   fetchProcurementLifecycleTransitions,
 } from "../api/procurementAssortment";
-import { LifecycleQueue } from "./ProcurementOrderFormationWorkspace";
+import {
+  EventHistory,
+  LifecycleQueue,
+  OrderBlockerCell,
+} from "./ProcurementOrderFormationWorkspace";
 
 vi.mock("../api/procurementAssortment", () => ({
   approveProcurementClassification: vi.fn(),
@@ -77,6 +85,115 @@ function lifecycleQueue(): ProcurementLifecycleTransitionList {
     }],
   };
 }
+
+function blockedOrder(productCount = 1): ProcurementOrderListItem {
+  return {
+    id: 14,
+    stable_key: "order-14",
+    status: "draft",
+    version: 1,
+    supplier_name: "Поставщик",
+    contract_name: "Договор",
+    warehouse_name: "Склад",
+    currency: "RUB",
+    route: "ordinary",
+    batch_id: "2026-09-02",
+    order_date: "2026-09-02",
+    onec_status: "not_sent",
+    line_count: productCount,
+    total_quantity: "5",
+    total_amount: "575",
+    blockers: ["batch_error_suspected"],
+    blocked_products: Array.from({ length: productCount }, (_item, index) => ({
+      line_id: index + 1,
+      line_number: index + 1,
+      bitrix_product_id: String(1646 + index),
+      xml_id: `${index + 1}`.padStart(8, "0") + "-0000-0000-0000-000000000000",
+      nomenclature_code: `РБ00000673${7 + index}`,
+      name: `Дисплей ${index + 1}`,
+      blocker_count: 1,
+      blockers: [],
+      bitrix_url: `/crm/catalog/17/product/${1646 + index}/`,
+    })),
+    updated_at: "2026-09-02T10:00:00",
+  };
+}
+
+describe("OrderBlockerCell", () => {
+  beforeEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+  });
+
+  afterEach(cleanup);
+
+  it("открывает единственный проблемный товар сразу", () => {
+    render(<OrderBlockerCell order={blockedOrder()} />);
+
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/1646/"
+    );
+  });
+
+  it("показывает список карточек, когда проблемных товаров несколько", () => {
+    render(<OrderBlockerCell order={blockedOrder(2)} />);
+
+    expect(screen.getByRole("link", { name: /Дисплей 1/ })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/1646/"
+    );
+    expect(screen.getByRole("link", { name: /Дисплей 2/ })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/1647/"
+    );
+  });
+});
+
+describe("EventHistory product navigation", () => {
+  beforeEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+    vi.mocked(fetchProcurementEvents).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("связывает товарное событие с оригинальной карточкой Bitrix24", async () => {
+    vi.mocked(fetchProcurementEvents).mockResolvedValue({
+      total: 1,
+      page: 1,
+      page_size: 100,
+      items: [
+        {
+          id: 91,
+          order_id: 14,
+          entity_type: "order_line",
+          entity_id: "10",
+          event_type: "order_line_changed",
+          actor: "test",
+          before: {},
+          after: {},
+          payload: {},
+          product: {
+            bitrix_product_id: "1646",
+            xml_id: "2685293e-967c-11e1-bdb9-0025901e48ef",
+            nomenclature_code: "РБ000006737",
+            name: "Дисплей Samsung A16",
+            bitrix_url: "/crm/catalog/17/product/1646/",
+          },
+          created_at: "2026-09-02T10:00:00",
+        },
+      ],
+    });
+
+    render(<EventHistory />);
+
+    expect(await screen.findByRole("link", { name: "Дисплей Samsung A16" }))
+      .toHaveAttribute(
+        "href",
+        "https://crm.example.test/crm/catalog/17/product/1646/"
+      );
+  });
+});
 
 describe("LifecycleQueue manual decision", () => {
   beforeEach(() => {

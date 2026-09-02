@@ -13,6 +13,7 @@ import {
   type ProcurementOrderFormationLine,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
+import { resolveBitrixProductUrl } from "../api/bitrix";
 import {
   groupProcurementBlockers,
   procurementBlockerText,
@@ -542,6 +543,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                 const problems = lineProblemTexts(line, order.batch_id);
                 const recommendationReason = visibleRecommendationReason(line);
                 const rounding = roundingExplanation(line);
+                const bitrixProductUrl = resolveBitrixProductUrl(line.bitrix_product_id);
                 const defectValue = payloadValue(line, "defect_share_pct")
                   ?? line.supplier_defect_pct
                   ?? line.product_defect_pct;
@@ -570,7 +572,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                   >
                     <td className="order-formation__line-number">{line.line_number}</td>
                     <td>
-                      <strong>{line.nomenclature_name}</strong>
+                      <strong>
+                        {bitrixProductUrl ? (
+                          <a href={bitrixProductUrl} rel="noreferrer" target="_blank">
+                            {line.nomenclature_name}
+                          </a>
+                        ) : line.nomenclature_name}
+                      </strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
                       <small>Bitrix product: {line.bitrix_product_id || "не найден"}</small>
                       {line.quality && <small>Качество: {line.quality}</small>}
@@ -618,6 +626,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       {openedClassification === line.id && (
                         <div className="order-formation__classification">
                           <select
+                            aria-label={`Классификация ${line.nomenclature_name}`}
                             disabled={locked || line.removed}
                             value={classification.status}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -815,7 +824,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           rel="noreferrer"
                           target="_blank"
                         >
-                          Открыть карточку
+                          Карточка на сайте
                         </a>
                       )}
                       {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (

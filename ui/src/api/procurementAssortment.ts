@@ -482,6 +482,17 @@ export interface ProcurementOrderListItem {
   total_quantity: string;
   total_amount: string;
   blockers: string[];
+  blocked_products?: Array<{
+    line_id: number;
+    line_number: number;
+    bitrix_product_id?: string | null;
+    xml_id: string;
+    nomenclature_code?: string | null;
+    name: string;
+    blocker_count: number;
+    blockers: ProcurementBlockerDetail[];
+    bitrix_url?: string | null;
+  }>;
   updated_at: string;
 }
 
@@ -530,8 +541,46 @@ export interface ProcurementEventList {
     before: Record<string, unknown>;
     after: Record<string, unknown>;
     payload: Record<string, unknown>;
+    product?: {
+      bitrix_product_id: string;
+      xml_id: string;
+      nomenclature_code?: string | null;
+      name: string;
+      bitrix_url?: string | null;
+    } | null;
     created_at: string;
   }>;
+}
+
+export interface ProcurementProductCard {
+  identity: {
+    bitrix_product_id: string;
+    xml_id: string;
+    nomenclature_code: string;
+    name: string;
+    article: string;
+    photo_url?: string | null;
+    website_url?: string | null;
+    bitrix_url?: string | null;
+  };
+  properties: Record<string, unknown>;
+  lifecycle: Record<string, unknown>;
+  demand: Record<string, unknown>;
+  quality: Record<string, unknown>;
+  supply: Record<string, unknown>;
+  family: Record<string, unknown>;
+  blockers: ProcurementBlockerDetail[];
+  orders: Array<{
+    order_id: number;
+    label: string;
+    status: string;
+    onec_status: string;
+    onec_document_number?: string | null;
+    bitrix_process_url?: string | null;
+    app_url: string;
+  }>;
+  recommendation?: string | null;
+  source: Record<string, unknown>;
 }
 
 export async function fetchProcurementOrderFormation(itemId: string) {
@@ -544,6 +593,13 @@ export async function fetchProcurementOrderFormation(itemId: string) {
 export async function fetchProcurementOrder(orderId: number) {
   const { data } = await api.get<ProcurementOrderFormation>(
     `/procurement-order-formation/orders/${orderId}`
+  );
+  return data;
+}
+
+export async function fetchProcurementProductCard(productId: string) {
+  const { data } = await api.get<ProcurementProductCard>(
+    `/procurement-order-formation/products/${encodeURIComponent(productId)}/card`
   );
   return data;
 }

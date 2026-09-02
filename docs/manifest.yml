@@ -247,6 +247,7 @@ documents:
     owner: operations
     source_of_truth: true
     related_code:
+      - alembic/versions/c6d7e8f90123_add_procurement_product_card_sync_state.py
       - app/models/procurement_order_formation.py
       - app/api/procurement_order_formation.py
       - app/services/procurement_order_formation.py
@@ -347,17 +348,26 @@ documents:
       - app/api/procurement_order_formation.py
       - app/services/procurement_order_formation.py
       - app/services/procurement_order_formation_workspace.py
+      - app/services/procurement_product_cards.py
       - app/services/bitrix_procurement_order_formation_auth.py
       - app/services/bitrix_order_formation.py
       - tasks/build_procurement_order_formation_dry_run.py
       - tasks/sync_procurement_order_formation_results.py
+      - tasks/sync_procurement_product_cards.py
+      - scripts/ensure_procurement_product_card_fields.py
+      - infra/cron/display_auto_order_sync.sh
       - ui/src/components/ProcurementOrderFormationApp.tsx
       - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+      - ui/src/components/ProcurementProductInsights.tsx
+      - ui/src/api/bitrix.ts
+      - ui/src/api/procurementAssortment.ts
     related_tests:
       - tests/test_procurement_order_formation.py
       - tests/test_procurement_order_formation_workspace.py
       - tests/test_procurement_order_formation_api.py
       - tests/test_procurement_order_formation_dry_run.py
+      - tests/test_procurement_product_cards.py
+      - tests/test_procurement_product_card_migration.py
     keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle, формирование, заказ, поставщик]
   - path: docs/specs/display-auto-order-project-brief.md
     title: Display Auto Order Project Brief

@@ -86,7 +86,10 @@ async function proposeClassification() {
 
 async function proposePension() {
   fireEvent.click(screen.getByRole("button", { name: "Изменить классификацию" }));
-  fireEvent.change(screen.getByRole("combobox"), { target: { value: "pension" } });
+  fireEvent.change(
+    screen.getByRole("combobox", { name: /Классификация/ }),
+    { target: { value: "pension" } }
+  );
   fireEvent.change(screen.getByPlaceholderText("Обязательная причина"), {
     target: { value: "ведём аналог дешевле" },
   });
@@ -95,6 +98,10 @@ async function proposePension() {
 const versionConflict = {
   response: { status: 409, data: { detail: "order version changed; refresh the order" } },
 };
+
+beforeEach(() => {
+  window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+});
 
 describe("ProcurementOrderFormationApp «Допродаём»", () => {
   beforeEach(() => {
@@ -193,7 +200,11 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     );
     expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
     expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Проблемная строка" })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/2695/"
+    );
+    expect(screen.getByRole("link", { name: "Карточка на сайте" })).toHaveAttribute(
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );
@@ -298,7 +309,8 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
 
     fireEvent.click(screen.getByRole("button", { name: "Указать «Взамен ведём»" }));
 
-    expect(screen.getByRole("combobox")).toHaveValue("replace_candidate");
+    expect(screen.getByRole("combobox", { name: /Классификация/ }))
+      .toHaveValue("replace_candidate");
     expect(screen.getByPlaceholderText("Взамен ведём: код 1С (РБ...)")).toBeInTheDocument();
     expect(screen.getByRole("spinbutton", { name: "Ручной минимум Дисплей для Huawei P10 Lite" }))
       .toHaveAttribute("step", "1");

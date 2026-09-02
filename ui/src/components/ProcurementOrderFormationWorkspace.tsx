@@ -21,6 +21,7 @@ import {
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
+import { resolveBitrixPortalUrl, resolveBitrixProductUrl } from "../api/bitrix";
 import { procurementBlockerSummaryLabel, procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
@@ -85,6 +86,44 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   superseded: "Заменён новым расчётом",
   error: "Ошибка",
 };
+
+export function OrderBlockerCell({ order }: { order: ProcurementOrderList["items"][number] }) {
+  if (!order.blockers.length) {
+    return <span className="state-pill state-pill--ready">готов</span>;
+  }
+  const products = order.blocked_products || [];
+  const label = procurementBlockerSummaryLabel(order.blockers);
+  if (products.length === 1) {
+    const product = products[0];
+    const href = resolveBitrixPortalUrl(product.bitrix_url) || resolveBitrixProductUrl(product.bitrix_product_id);
+    return href ? (
+      <a className="state-pill state-pill--blocked" href={href} rel="noreferrer" target="_blank">
+        {label}
+      </a>
+    ) : <span className="state-pill state-pill--blocked">{label}</span>;
+  }
+  if (products.length > 1) {
+    return (
+      <details className="order-registry__blocker-products">
+        <summary className="state-pill state-pill--blocked">{label}</summary>
+        <div>
+          {products.map((product) => {
+            const href = resolveBitrixPortalUrl(product.bitrix_url) || resolveBitrixProductUrl(product.bitrix_product_id);
+            return href ? (
+              <a href={href} key={product.line_id} rel="noreferrer" target="_blank">
+                <strong>{product.name}</strong>
+                <small>{product.blocker_count} блокер(а) · строка {product.line_number}</small>
+              </a>
+            ) : (
+              <span key={product.line_id}><strong>{product.name}</strong></span>
+            );
+          })}
+        </div>
+      </details>
+    );
+  }
+  return <span className="state-pill state-pill--blocked">{label}</span>;
+}
 
 const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
   fruit: "Рассматриваем",
@@ -1055,9 +1094,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
                   <td>{number(order.total_quantity)}</td>
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
-                    <span className={`state-pill ${order.blockers.length ? "state-pill--blocked" : "state-pill--ready"}`}>
-                      {order.blockers.length ? procurementBlockerSummaryLabel(order.blockers) : "готов"}
-                    </span>
+                    <OrderBlockerCell order={order} />
                   </td>
                   <td><button className="btn btn--ghost btn--small" onClick={() => onOpenOrder(order.id)} type="button">Открыть</button></td>
                 </tr>
@@ -1169,7 +1206,7 @@ function ClassificationQueue() {
   );
 }
 
-function EventHistory() {
+export function EventHistory() {
   const [data, setData] = useState<ProcurementEventList | null>(null);
   const [eventType, setEventType] = useState("");
   const [error, setError] = useState("");
@@ -1204,7 +1241,16 @@ function EventHistory() {
             <article key={event.id}>
               <time>{dateTime(event.created_at)}</time>
               <div><strong>{EVENT_LABELS[event.event_type] || event.event_type}</strong><span>{event.user_name || event.actor}</span></div>
-              <small>{event.entity_type} #{event.entity_id}{event.order_id ? ` · заказ #${event.order_id}` : ""}</small>
+              <small>
+                {event.entity_type} #{event.entity_id}{event.order_id ? ` · заказ #${event.order_id}` : ""}
+                {event.product ? (
+                  <> · <a
+                    href={resolveBitrixPortalUrl(event.product.bitrix_url) || resolveBitrixProductUrl(event.product.bitrix_product_id)}
+                    rel="noreferrer"
+                    target="_blank"
+                  >{event.product.name || "Карточка товара"}</a></>
+                ) : null}
+              </small>
             </article>
           ))}
         </div>

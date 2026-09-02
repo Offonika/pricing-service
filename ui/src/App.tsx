@@ -7,6 +7,7 @@ import { LogisticsWorkspace } from "./components/LogisticsWorkspace";
 import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
 import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
 import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
+import { ProcurementProductInsights } from "./components/ProcurementProductInsights";
 import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
@@ -15,6 +16,7 @@ import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
   getProcurementLabelsItemId,
+  getProcurementProductId,
   initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
@@ -29,6 +31,7 @@ import {
   isBitrixLogisticsRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
+  isBitrixProductInsightsPlacement,
   isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
   type BitrixCustomerPriceTypesSessionResponse,
@@ -1144,6 +1147,9 @@ function ProcurementOrderFormationBitrixApp() {
     );
   }
 
+  if (isBitrixProductInsightsPlacement()) {
+    return <ProcurementProductInsights productId={getProcurementProductId()} />;
+  }
   return <ProcurementOrderFormationWorkspace bitrixUserName={authState.userName} />;
 }
 

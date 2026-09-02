@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
@@ -22,10 +22,70 @@ from app.schemas.order_fulfillment import (
     ShipmentNotificationStatusRequest,
     ShipmentNotificationStatusResponse,
 )
+from app.services import order_assembly_queue as assembly_queue
 from app.services import site_order_fulfillment as fulfillment
 from app.services import site_order_shipments
 
 router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+
+
+@router.get(
+    "/assembly-queue",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Fresh CRM assembly queue",
+            "content": {"application/xml": {"schema": {"type": "string"}}},
+        },
+        503: {
+            "description": "CRM queue is unavailable; no stale rows are returned",
+            "content": {"application/xml": {"schema": {"type": "string"}}},
+        },
+    },
+)
+def get_assembly_queue(
+    format: str = Query(default="xml", pattern="^xml$"),
+    limit: int = Query(default=1000, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> Response:
+    del format
+    settings = get_settings()
+    if not settings.order_fulfillment_bitrix_webhook_url:
+        state = assembly_queue.get_sync_state(db)
+        return Response(
+            content=assembly_queue.render_error_xml(
+                code="bitrix_not_configured",
+                last_success_at=state.last_success_at if state is not None else None,
+            ),
+            status_code=503,
+            media_type="application/xml",
+        )
+
+    client = fulfillment.BitrixChatClient(settings.order_fulfillment_bitrix_webhook_url)
+    try:
+        snapshot = assembly_queue.sync_assembly_queue(
+            db,
+            client=client,
+            limit=limit,
+        )
+        db.commit()
+    except assembly_queue.AssemblyQueueError as exc:
+        db.rollback()
+        state = assembly_queue.record_sync_failure(db, error_code=exc.code)
+        db.commit()
+        return Response(
+            content=assembly_queue.render_error_xml(
+                code=exc.code,
+                last_success_at=state.last_success_at,
+            ),
+            status_code=503,
+            media_type="application/xml",
+        )
+
+    return Response(
+        content=assembly_queue.render_queue_xml(snapshot),
+        media_type="application/xml",
+    )
 
 
 @router.post("/shipments/sync", response_model=OrderShipmentsSyncResponse)

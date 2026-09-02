@@ -9730,6 +9730,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/assembly-queue:
+    get:
+      summary: Get Assembly Queue
+      operationId: get_assembly_queue_api_order_fulfillment_assembly_queue_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: format
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^xml$
+          default: xml
+          title: Format
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 1000
+          title: Limit
+      responses:
+        '200':
+          description: Fresh CRM assembly queue
+          content:
+            application/xml:
+              schema:
+                type: string
+        '503':
+          description: CRM queue is unavailable; no stale rows are returned
+          content:
+            application/xml:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/order-fulfillment/shipments/sync:
     post:
       summary: Sync Order Shipments

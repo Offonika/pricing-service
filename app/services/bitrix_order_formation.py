@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.core.config import Settings, get_settings
 from app.models.procurement_order_formation import (
@@ -288,8 +288,6 @@ def build_bitrix_item_fields(
         "categoryId": int(process.get("category_id") or 0),
         "stageId": stage_map.get(order.status) or stage_map.get("draft"),
     }
-    if order.responsible_bitrix_user_id:
-        fields["assignedById"] = order.responsible_bitrix_user_id
     values = {
         "backend_order_id": order.id,
         "stable_key": order.stable_key,
@@ -355,21 +353,25 @@ def sync_bitrix_product_rows(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    mapping = mapping or load_order_formation_mapping(settings)
     if not order.bitrix_item_id:
         raise ValueError("Bitrix item id is required before product row sync")
-    owner_type = str((mapping.get("process") or {}).get("owner_type") or "").strip()
-    if not owner_type:
-        raise RuntimeError("Bitrix owner_type is missing in order formation mapping")
-    return bitrix_call(
-        "crm.item.productrow.set",
-        {
-            "ownerId": int(order.bitrix_item_id),
-            "ownerType": owner_type,
-            "productRows": build_bitrix_product_rows(order),
-        },
-        settings=settings,
+    from app.services.procurement_order_product_rows import (
+        sync_procurement_order_product_rows,
     )
+
+    db = object_session(order)
+    if db is None:
+        raise RuntimeError("order must be attached to a database session")
+    result = sync_procurement_order_product_rows(
+        db,
+        order,
+        apply=True,
+        settings=settings,
+        actor="system:procurement-order-formation",
+    )
+    if result["state"] == "error":
+        raise RuntimeError(str(result.get("error") or "product row sync failed"))
+    return result
 
 
 def refresh_line_catalog_snapshot(
@@ -509,11 +511,13 @@ def bitrix_call(
     params: dict[str, Any] | None = None,
     *,
     settings: Settings | None = None,
+    webhook_base: str = "",
 ) -> dict[str, Any]:
     settings = settings or get_settings()
     webhook = (
-        settings.procurement_labels_bitrix_webhook_url
+        webhook_base
         or settings.procurement_bitrix_webhook_url
+        or settings.procurement_labels_bitrix_webhook_url
         or settings.bitrix_box_webhook_base
         or ""
     ).strip()

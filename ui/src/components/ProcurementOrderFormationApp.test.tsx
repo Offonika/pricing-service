@@ -20,7 +20,6 @@ import {
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
-import { openBitrixProcurementProcess } from "../api/bitrix";
 
 vi.mock("../api/procurementAssortment", () => ({
   applyProcurementSupplierDistribution: vi.fn(),
@@ -39,10 +38,6 @@ vi.mock("../api/procurementAssortment", () => ({
 
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock("../api/bitrix", () => ({
-  openBitrixProcurementProcess: vi.fn(),
 }));
 
 function line(overrides: Partial<ProcurementOrderFormationLine> = {}) {
@@ -150,7 +145,7 @@ const versionConflict = {
 describe("ProcurementOrderFormationApp связанный процесс", () => {
   afterEach(cleanup);
 
-  it("показывает стадию и открывает процесс без кнопки Bitrix24", async () => {
+  it("показывает стадию без второй кнопки открытия процесса", async () => {
     render(<ProcurementOrderFormationApp initialOrder={order({
       linked_process: {
         state: "linked",
@@ -167,8 +162,41 @@ describe("ProcurementOrderFormationApp связанный процесс", () =>
     expect(screen.getByText("Закупка/Заказ №324")).toBeInTheDocument();
     expect(screen.getByText("Заявка на оплату / оплата в работе")).toBeInTheDocument();
     expect(screen.queryByText("Bitrix24")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Открыть процесс" }));
-    expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
+    expect(screen.queryByRole("button", { name: "Открыть процесс" })).not.toBeInTheDocument();
+  });
+
+  it("показывает диагностируемую ошибку товаров без нарушения связи", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "linked",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+        item_id: "317",
+        product_rows_sync: {
+          state: "error",
+          expected_count: 249,
+          synced_count: 0,
+          error: "Access denied",
+        },
+      },
+    })} />);
+
+    expect(screen.getByText("Закупка/Заказ №317")).toBeInTheDocument();
+    expect(screen.getByText("Товары Smart Process не синхронизированы")).toBeInTheDocument();
+    expect(screen.getByText("Ожидается позиций: 249. Access denied")).toBeInTheDocument();
+  });
+
+  it("показывает состояние немедленной синхронизации", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "pending",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+      },
+    })} />);
+
+    expect(screen.getByText("Карточка создаётся…")).toBeInTheDocument();
+    expect(screen.getByText("Заказ уже создан в 1С; связь с процессом проверяется")).toBeInTheDocument();
   });
 
   it("объясняет, почему у черновика ещё нет процесса", () => {

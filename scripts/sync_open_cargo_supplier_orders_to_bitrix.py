@@ -107,7 +107,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mapping-path", type=Path, default=DEFAULT_MAPPING_PATH)
     parser.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--result-path", type=Path, default=DEFAULT_RESULT_PATH)
-    parser.add_argument("--assigned-by-id", default="")
+    parser.add_argument(
+        "--assigned-by-id",
+        default="",
+        help="Deprecated supplier assignee alias; it never assigns the order card.",
+    )
+    parser.add_argument("--supplier-assigned-by-id", default="")
     parser.add_argument(
         "--finance-user-id",
         default="",
@@ -769,9 +774,11 @@ def run_bitrix_import(
     webhook_base: str,
     mapping: dict[str, Any],
     apply: bool,
-    assigned_by_id: str,
-    finance_user_id: str,
+    assigned_by_id: str = "",
+    finance_user_id: str = "",
+    supplier_assigned_by_id: str = "",
 ) -> list[dict[str, Any]]:
+    resolved_supplier_assignee = clean(supplier_assigned_by_id or assigned_by_id)
     base_api = BitrixRestApi(webhook_base)
     api = base_api if apply else CachedBitrixApi(base_api)
     existing_items = list_existing_procurement_items(api, mapping)
@@ -791,7 +798,7 @@ def run_bitrix_import(
                     supplier,
                     mapping=mapping,
                     apply=apply,
-                    assigned_by_id=assigned_by_id or None,
+                    assigned_by_id=resolved_supplier_assignee or None,
                 )
                 if supplier_key:
                     supplier_results[supplier_key] = supplier_result
@@ -800,7 +807,7 @@ def run_bitrix_import(
                 order,
                 mapping=mapping,
                 apply=apply,
-                assigned_by_id=assigned_by_id,
+                assigned_by_id=resolved_supplier_assignee,
                 finance_user_id=finance_user_id,
                 supplier_result=supplier_result,
                 existing_item_id=existing_id,
@@ -815,6 +822,7 @@ def run_bitrix_import(
             rows.append(
                 {
                     "source_number": clean(order.get("number")),
+                    "onec_ref": clean(order.get("onec_ref")),
                     "action": "blocked",
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -920,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
             webhook_base=webhook_base,
             mapping=mapping,
             apply=bool(args.apply),
-            assigned_by_id=clean(args.assigned_by_id),
+            supplier_assigned_by_id=clean(args.supplier_assigned_by_id or args.assigned_by_id),
             finance_user_id=finance_user_id,
         )
         mode = "apply" if args.apply else "dry-run"

@@ -17,7 +17,7 @@ related_code:
   - app/services/customer_returns.py
   - app/services/customer_return_carriers.py
   - tasks/customer_return_bitrix_worker.py
-  - alembic/versions/c7d9e1f3a5b8_add_customer_return_deal_link.py
+  - alembic/versions/d8e0f2a4c6b9_add_customer_return_deal_link.py
   - ui/src/App.css
   - ui/src/components/CustomerReturnsWorkspace.tsx
   - ui/src/components/LogisticsWorkspace.tsx
@@ -37,7 +37,7 @@ depends_on:
   - docs/TechDesign.LogisticsTelegramMVP.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-01"
+updated_at: "2026-09-02"
 ---
 
 # Назначение

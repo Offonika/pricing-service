@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
+
 from scripts import sync_open_cargo_supplier_orders_to_bitrix as sync
 
 
@@ -162,4 +164,41 @@ def test_run_bitrix_import_passes_finance_user_and_reuses_batch_ids(monkeypatch)
 
     assert len(rows) == 2
     assert [item["finance_user_id"] for item in captured] == ["42", "42"]
+    assert [item["assigned_by_id"] for item in captured] == ["130750", "130750"]
     assert captured[0]["used_batch_ids"] is captured[1]["used_batch_ids"]
+
+
+def test_prefetched_process_lookup_reuses_guid_or_xml_id_before_number() -> None:
+    mapping = {"field_map": {"onec_document_ref": "UF_CRM_8_ONECDOCUMENTREF"}}
+    order = {
+        "onec_ref": "0x0123456789abcdef0123456789abcdef",
+        "number": "РБГУ0000592",
+    }
+
+    by_guid = sync.prefetched_procurement_item_id(
+        [{"id": "323", "ufCrm8Onecdocumentref": order["onec_ref"]}],
+        order,
+        mapping,
+    )
+    by_xml_id = sync.prefetched_procurement_item_id(
+        [{"id": "323", "xmlId": f"onec:supplier-order:{order['onec_ref']}"}],
+        order,
+        mapping,
+    )
+
+    assert by_guid == by_xml_id == "323"
+
+
+def test_prefetched_process_lookup_rejects_ambiguous_guid() -> None:
+    mapping = {"field_map": {"onec_document_ref": "UF_CRM_8_ONECDOCUMENTREF"}}
+    onec_ref = "0x0123456789abcdef0123456789abcdef"
+
+    with pytest.raises(RuntimeError, match="несколько Bitrix-карточек"):
+        sync.prefetched_procurement_item_id(
+            [
+                {"id": "323", "ufCrm8Onecdocumentref": onec_ref},
+                {"id": "324", "xmlId": f"onec:supplier-order:{onec_ref}"},
+            ],
+            {"onec_ref": onec_ref, "number": "РБГУ0000592"},
+            mapping,
+        )

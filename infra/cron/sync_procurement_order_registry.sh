@@ -32,7 +32,7 @@ set +e
 "${PYTHON_BIN}" -m tasks.sync_procurement_order_registry \
   --contours ordinary,cargo,ved_import \
   --limit "${PROCUREMENT_SYNC_LIMIT:-5000}" \
-  --assigned-by-id "${PROCUREMENT_SYNC_ASSIGNED_BY_ID:-130750}" \
+  --supplier-assigned-by-id "${PROCUREMENT_SYNC_SUPPLIER_ASSIGNED_BY_ID:-${PROCUREMENT_SYNC_ASSIGNED_BY_ID:-130750}}" \
   --finance-user-id "${PROCUREMENT_CARGO_FINANCE_USER_ID:-}" \
   --result-path "${RESULT_PATH}" \
   --apply \

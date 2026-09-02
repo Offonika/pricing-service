@@ -48,7 +48,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--mapping-path", type=Path, default=DEFAULT_MAPPING_PATH)
     parser.add_argument("--result-path", type=Path, default=DEFAULT_RESULT_PATH)
-    parser.add_argument("--assigned-by-id", default="")
+    parser.add_argument(
+        "--assigned-by-id",
+        default="",
+        help="Deprecated supplier assignee alias; it never assigns the order card.",
+    )
+    parser.add_argument("--supplier-assigned-by-id", default="")
     parser.add_argument(
         "--finance-user-id",
         default="",
@@ -767,8 +772,8 @@ def import_order(
     )
     fields = dict(payload["fields"])
     add_order_scalar_fields(fields, enriched_order, mapping)
-    if assigned_by_id and "assignedById" not in fields:
-        fields["assignedById"] = assigned_by_id
+    # The Smart Process automation owns the order assignee. The compatibility
+    # parameter remains supplier-only for one transition release.
 
     rest_payment_task_field = crm_item_rest_field_name(field_name(mapping, "payment_task_id"))
     existing_payment_task_id = clean_string(
@@ -960,7 +965,7 @@ def main(argv: list[str] | None = None) -> int:
             order,
             mapping=mapping,
             apply=args.apply,
-            assigned_by_id=args.assigned_by_id,
+            assigned_by_id=args.supplier_assigned_by_id or args.assigned_by_id,
             finance_user_id=finance_user_id,
             supplier_conflict_mode=args.supplier_conflict_mode,
             used_batch_ids=used_batch_ids,

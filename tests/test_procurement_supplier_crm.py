@@ -881,4 +881,4 @@ def test_import_order_apply_updates_existing_crm_item_without_duplicate() -> Non
     assert update["fields"]["currencyId"] == "RUB"
     assert "ufCrm8Onecsourcenumber" not in update["fields"]
     assert update["fields"]["ufCrm8Procurementcontour"] == "369"
-    assert update["fields"]["assignedById"] == "130750"
+    assert "assignedById" not in update["fields"]

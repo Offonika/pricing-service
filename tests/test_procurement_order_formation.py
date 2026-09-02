@@ -21,7 +21,11 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderAssistantResponse,
     ProcurementOrderLineUpdateRequest,
 )
-from app.services.bitrix_order_formation import BitrixCatalogProduct, build_bitrix_product_rows
+from app.services.bitrix_order_formation import (
+    BitrixCatalogProduct,
+    build_bitrix_item_fields,
+    build_bitrix_product_rows,
+)
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
@@ -56,6 +60,7 @@ from app.services.procurement_order_formation import (
     record_property_update_exchange_result,
     reject_classification_proposal,
     select_line_main_supplier,
+    serialize_order,
     serialize_order_label_source,
     transmit_order,
     update_order_line,
@@ -65,6 +70,7 @@ from app.services.procurement_order_formation_workspace import (
     build_order_assistant,
     list_classification_proposals,
 )
+from tasks import sync_procurement_order_formation_results as result_sync_task
 
 ONEC_REF = "0xBDB90025901E48EF11E1967C2685293E"
 PRODUCT_GUID = "2685293e-967c-11e1-bdb9-0025901e48ef"
@@ -1175,6 +1181,18 @@ def test_bitrix_product_rows_use_purchase_price_and_catalog_id(db_session) -> No
     assert "retailPrice" not in rows[0]
 
 
+def test_bitrix_order_fields_leave_assignee_to_process_automation(db_session) -> None:
+    order = _order(db_session)
+    order.responsible_bitrix_user_id = "130750"
+
+    fields = build_bitrix_item_fields(
+        order,
+        mapping={"process": {"category_id": 53}, "stage_map": {"draft": "NEW"}},
+    )
+
+    assert "assignedById" not in fields
+
+
 def test_property_message_builder_rejects_missing_nomenclature_code(db_session) -> None:
     order = _order(db_session)
     line = order.lines[0]
@@ -1246,6 +1264,90 @@ def test_onec_order_result_marks_card_transmitted(db_session) -> None:
     assert refreshed is not None
     assert refreshed.status == "transmitted"
     assert refreshed.onec_document_number == "РБ000001"
+    assert serialize_order(refreshed)["linked_process"]["state"] == "pending"
+
+
+def test_readback_immediately_starts_canonical_process_sync(db_session, monkeypatch) -> None:
+    order = _order(db_session)
+    order.onec_message_id = "proc-order-immediate-sync"
+    order.onec_status = "pending"
+    order.status = "transmitting"
+    db_session.commit()
+    calls: list[tuple[int, str]] = []
+
+    def fake_sync(_db, *, order_id, onec_ref, settings):
+        calls.append((order_id, onec_ref))
+        return {"state": "linked", "item_id": "323"}
+
+    monkeypatch.setattr(result_sync_task, "sync_onec_order_process_by_ref", fake_sync)
+    result = ProcurementSupplierOrderExchangeResult(
+        message_id="proc-order-immediate-sync",
+        status="success",
+        processed_at="2026-09-02T09:00:00",
+        loaded=1,
+        failed=0,
+        errors="",
+        item_results=(
+            ProcurementSupplierOrderItemResult(
+                idempotency_key="order-key-immediate",
+                result="created",
+                onec_document_ref="0x0123456789ABCDEF0123456789ABCDEF",
+                onec_document_number="РБГУ0000596",
+                onec_document_date="2026-09-02",
+            ),
+        ),
+    )
+
+    order_id, state = result_sync_task.record_and_sync_order_result(
+        db_session,
+        result,
+        settings=Settings(onec_database_url="mssql+pyodbc://readonly"),
+    )
+
+    assert order_id == order.id
+    assert state == "linked"
+    assert calls == [(order.id, "0x0123456789abcdef0123456789abcdef")]
+
+
+def test_readback_transient_process_error_remains_pending(db_session, monkeypatch) -> None:
+    order = _order(db_session)
+    order.onec_message_id = "proc-order-pending-sync"
+    order.onec_status = "pending"
+    order.status = "transmitting"
+    db_session.commit()
+    monkeypatch.setattr(
+        result_sync_task,
+        "sync_onec_order_process_by_ref",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("temporary timeout")),
+    )
+    result = ProcurementSupplierOrderExchangeResult(
+        message_id="proc-order-pending-sync",
+        status="success",
+        processed_at="2026-09-02T09:00:00",
+        loaded=1,
+        failed=0,
+        errors="",
+        item_results=(
+            ProcurementSupplierOrderItemResult(
+                idempotency_key="order-key-pending",
+                result="created",
+                onec_document_ref="0x1123456789abcdef0123456789abcdef",
+                onec_document_number="РБГУ0000597",
+                onec_document_date="2026-09-02",
+            ),
+        ),
+    )
+
+    order_id, state = result_sync_task.record_and_sync_order_result(
+        db_session,
+        result,
+        settings=Settings(onec_database_url="mssql+pyodbc://readonly"),
+    )
+
+    assert order_id == order.id
+    assert state == "pending"
+    assert serialize_order(order)["linked_process"]["state"] == "pending"
+    assert any(event.event_type == "bitrix_process_sync_deferred" for event in order.events)
 
 
 def test_onec_order_result_without_document_number_requires_reconciliation(db_session) -> None:

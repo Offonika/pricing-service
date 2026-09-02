@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -76,6 +77,58 @@ def _link_state(order: ProcurementOrderFormation) -> dict[str, Any]:
         "bitrix_stage_name": order.bitrix_stage_name,
         "bitrix_link_error": order.bitrix_link_error,
     }
+
+
+def _safe_error_message(error: BaseException | str) -> str:
+    message = str(error or "").strip() or "Неизвестная ошибка синхронизации"
+    message = re.sub(r"https?://\S+", "[url]", message, flags=re.IGNORECASE)
+    return message[:1000]
+
+
+def record_procurement_process_sync_failure(
+    db: Session,
+    order_id: int,
+    error: BaseException | str,
+    *,
+    confirmed_broken: bool = False,
+    actor: str = "system:procurement-process-immediate-sync",
+    checked_at: datetime | None = None,
+) -> ProcurementOrderFormation:
+    """Keep transient failures pending and make confirmed identity errors visible."""
+
+    order = db.get(ProcurementOrderFormation, order_id)
+    if order is None:
+        raise LookupError("order formation card was not found")
+    checked_at = (checked_at or datetime.now(UTC)).replace(tzinfo=None)
+    before = _link_state(order)
+    message = _safe_error_message(error)
+    order.bitrix_link_checked_at = checked_at
+    if confirmed_broken:
+        order.bitrix_link_error = message
+    elif order.bitrix_entity_type_id != PROCUREMENT_PROCESS_ENTITY_TYPE_ID:
+        order.bitrix_link_error = None
+    order.payload = {
+        **(order.payload or {}),
+        "bitrix_process_sync": {
+            "state": "broken" if confirmed_broken else "pending",
+            "last_error": message,
+            "checked_at": checked_at.isoformat(),
+        },
+    }
+    after = _link_state(order)
+    _audit_event(
+        db,
+        order=order,
+        event_type=(
+            "bitrix_process_link_failed" if confirmed_broken else "bitrix_process_sync_deferred"
+        ),
+        before=before,
+        after={**after, "sync_error": message},
+        actor=actor,
+    )
+    db.commit()
+    db.refresh(order)
+    return order
 
 
 def _identity_error(
@@ -153,6 +206,14 @@ def reconcile_procurement_order_process_links(
         order.bitrix_link_checked_at = checked_at
         if error or card is None:
             order.bitrix_link_error = error
+            order.payload = {
+                **(order.payload or {}),
+                "bitrix_process_sync": {
+                    "state": "broken",
+                    "last_error": error,
+                    "checked_at": checked_at.isoformat(),
+                },
+            }
             after = _link_state(order)
             if before != after:
                 _audit_event(
@@ -173,6 +234,14 @@ def reconcile_procurement_order_process_links(
         order.bitrix_stage_name = card.stage_name or None
         order.bitrix_item_url = None
         order.bitrix_link_error = None
+        order.payload = {
+            **(order.payload or {}),
+            "bitrix_process_sync": {
+                "state": "linked",
+                "last_error": None,
+                "checked_at": checked_at.isoformat(),
+            },
+        }
         item_owners[card.item_id] = order.id
         after = _link_state(order)
         if before == after:

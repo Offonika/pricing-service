@@ -11,6 +11,7 @@ from app.services.procurement_order_formation import serialize_order
 from app.services.procurement_order_process_link import (
     ProcurementProcessCardSnapshot,
     reconcile_procurement_order_process_links,
+    record_procurement_process_sync_failure,
 )
 from app.services.procurement_order_registry import upsert_onec_order_snapshot
 
@@ -78,6 +79,15 @@ def test_reconciliation_links_canonical_process_and_writes_audit(db_session) -> 
     assert linked["category_name"] == "Карго"
 
 
+def test_order_with_onec_guid_is_pending_until_process_is_linked(db_session) -> None:
+    order = _order(db_session)
+
+    linked = serialize_order(order)["linked_process"]
+
+    assert linked["state"] == "pending"
+    assert linked["item_id"] is None
+
+
 def test_reconciliation_rejects_number_mismatch(db_session) -> None:
     order = _order(db_session)
 
@@ -111,6 +121,48 @@ def test_draft_without_onec_document_has_not_created_process_state(db_session) -
     order.onec_document_number = None
 
     assert serialize_order(order)["linked_process"]["state"] == "not_created"
+
+
+def test_transient_sync_failure_stays_pending_and_cron_reconciliation_recovers(
+    db_session,
+) -> None:
+    order = _order(db_session)
+
+    record_procurement_process_sync_failure(
+        db_session,
+        order.id,
+        "Bitrix24 temporarily unavailable",
+        checked_at=datetime(2026, 9, 2, 9, 0),
+    )
+
+    assert serialize_order(order)["linked_process"]["state"] == "pending"
+    assert any(event.event_type == "bitrix_process_sync_deferred" for event in order.events)
+
+    summary = reconcile_procurement_order_process_links(
+        db_session,
+        [_card()],
+        checked_at=datetime(2026, 9, 2, 9, 30),
+        actor="system:onec-procurement-registry",
+        mark_missing=False,
+    )
+    db_session.commit()
+
+    assert summary["linked"] == 1
+    assert serialize_order(order)["linked_process"]["state"] == "linked"
+
+
+def test_confirmed_sync_ambiguity_is_broken(db_session) -> None:
+    order = _order(db_session)
+
+    record_procurement_process_sync_failure(
+        db_session,
+        order.id,
+        "Найдено несколько Bitrix-карточек для GUID 1С",
+        confirmed_broken=True,
+    )
+
+    assert serialize_order(order)["linked_process"]["state"] == "broken"
+    assert any(event.event_type == "bitrix_process_link_failed" for event in order.events)
 
 
 def _legacy_mapping() -> dict:

@@ -125,9 +125,7 @@ def get_order(db: Session, order_id: int) -> ProcurementOrderFormation:
 
 
 def serialize_linked_process(order: ProcurementOrderFormation) -> dict[str, Any]:
-    has_onec_document = bool(
-        str(order.onec_document_ref or "").strip() and str(order.onec_document_number or "").strip()
-    )
+    has_onec_document = bool(str(order.onec_document_ref or "").strip())
     canonical_link = bool(
         str(order.bitrix_item_id or "").strip()
         and order.bitrix_entity_type_id == PROCUREMENT_PROCESS_ENTITY_TYPE_ID
@@ -135,21 +133,43 @@ def serialize_linked_process(order: ProcurementOrderFormation) -> dict[str, Any]
     )
     if canonical_link:
         state = "linked"
-    elif has_onec_document:
+    elif has_onec_document and str(order.bitrix_link_error or "").strip():
         state = "broken"
+    elif has_onec_document:
+        state = "pending"
     else:
         state = "not_created"
+    is_canonical_process = order.bitrix_entity_type_id == PROCUREMENT_PROCESS_ENTITY_TYPE_ID
+    product_rows_state = order.bitrix_product_rows_sync_state
+    if not is_canonical_process or not str(order.bitrix_item_id or "").strip():
+        product_rows_state = "not_applicable"
+    elif product_rows_state not in {"pending", "synced", "error"}:
+        product_rows_state = "pending"
     return {
         "state": state,
         "process_title": PROCUREMENT_PROCESS_TITLE,
         "entity_type_id": PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
-        "item_id": str(order.bitrix_item_id or "").strip() or None,
-        "category_id": order.bitrix_category_id,
-        "category_name": PROCUREMENT_PROCESS_CATEGORY_NAMES.get(order.bitrix_category_id or 0),
-        "stage_id": order.bitrix_stage_id,
-        "stage_name": order.bitrix_stage_name,
+        "item_id": (
+            str(order.bitrix_item_id or "").strip() or None if is_canonical_process else None
+        ),
+        "category_id": order.bitrix_category_id if is_canonical_process else None,
+        "category_name": (
+            PROCUREMENT_PROCESS_CATEGORY_NAMES.get(order.bitrix_category_id or 0)
+            if is_canonical_process
+            else None
+        ),
+        "stage_id": order.bitrix_stage_id if is_canonical_process else None,
+        "stage_name": order.bitrix_stage_name if is_canonical_process else None,
         "checked_at": order.bitrix_link_checked_at,
         "error": str(order.bitrix_link_error or "").strip() or None,
+        "product_rows_sync": {
+            "state": product_rows_state,
+            "expected_count": order.bitrix_product_rows_expected_count,
+            "synced_count": order.bitrix_product_rows_synced_count,
+            "checksum": order.bitrix_product_rows_checksum,
+            "synced_at": order.bitrix_product_rows_synced_at,
+            "error": str(order.bitrix_product_rows_error or "").strip() or None,
+        },
     }
 
 
@@ -1198,13 +1218,17 @@ def record_order_exchange_result(
     )
     document_ref = str(item.onec_document_ref or "").strip() if item else ""
     if result.ok and item is not None and document_number and document_ref:
+        from app.services.procurement_order_registry import normalize_onec_ref
+
         order.status = "transmitted"
         order.lifecycle_status = "active"
         order.onec_status = "transmitted"
-        order.onec_document_ref = document_ref
+        order.onec_document_ref = normalize_onec_ref(document_ref)
         order.onec_document_number = document_number
         order.onec_document_date = document_date
         order.onec_error = None
+        if order.bitrix_entity_type_id != PROCUREMENT_PROCESS_ENTITY_TYPE_ID:
+            order.bitrix_link_error = None
     else:
         order.status = "error"
         order.lifecycle_status = "review"

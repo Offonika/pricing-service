@@ -371,7 +371,7 @@ export interface ProcurementOrderFormation {
 }
 
 export interface ProcurementLinkedProcess {
-  state: "not_created" | "linked" | "broken";
+  state: "not_created" | "pending" | "linked" | "broken";
   process_title: string;
   entity_type_id: number;
   item_id?: string | null;
@@ -380,6 +380,16 @@ export interface ProcurementLinkedProcess {
   stage_id?: string | null;
   stage_name?: string | null;
   checked_at?: string | null;
+  error?: string | null;
+  product_rows_sync?: ProcurementProductRowsSync;
+}
+
+export interface ProcurementProductRowsSync {
+  state: "not_applicable" | "pending" | "synced" | "error";
+  expected_count?: number | null;
+  synced_count?: number | null;
+  checksum?: string | null;
+  synced_at?: string | null;
   error?: string | null;
 }
 

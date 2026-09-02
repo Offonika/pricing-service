@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
@@ -397,6 +397,26 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
       <button className="btn btn--ghost" onClick={onRetry} type="button">
         Повторить
       </button>
+    </div>
+  );
+}
+
+function ProcessLinkState({
+  state,
+  error,
+  onBack,
+}: {
+  state: "pending" | "broken";
+  error?: string | null;
+  onBack: () => void;
+}) {
+  return (
+    <div className={`order-workspace__state order-workspace__state--${state === "broken" ? "error" : "loading"}`}>
+      <strong>{state === "pending" ? "Карточка создаётся…" : "Связь требует восстановления"}</strong>
+      <span>{state === "pending"
+        ? "Заказ создан в 1С. Плановая синхронизация повторит связь автоматически."
+        : error || "Связь с процессом подтверждённо нарушена."}</span>
+      <button className="btn btn--ghost" onClick={onBack} type="button">Вернуться к заказам</button>
     </div>
   );
 }
@@ -1146,10 +1166,11 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
 
   const openOrder = async (order: ProcurementOrderListItem) => {
     const processItemId = order.linked_process?.item_id;
-    if (order.linked_process?.state !== "linked" || !processItemId) {
+    if (order.linked_process?.state === "not_created") {
       onOpenOrder(order.id);
       return;
     }
+    if (order.linked_process?.state !== "linked" || !processItemId) return;
     try {
       await openBitrixProcurementProcess(processItemId);
     } catch (requestError) {
@@ -1205,6 +1226,15 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
             <tbody>
               {data.items.map((order) => {
                 const blockerCount = order.blockers?.length || 0;
+                const processState = order.linked_process?.state || "not_created";
+                const productRowsSync = order.linked_process?.product_rows_sync;
+                const actionLabel = processState === "linked"
+                  ? "Открыть заказ"
+                  : processState === "pending"
+                    ? "Карточка создаётся…"
+                    : processState === "broken"
+                      ? "Связь требует восстановления"
+                      : "Открыть проект";
                 return (
                 <tr className={blockerCount > 0 ? "order-registry__row--blocked" : ""} key={order.id}>
                   <td>
@@ -1232,11 +1262,29 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                   <td>{dateOnly(order.expected_receipt_date)}<small>{order.cargo_dropoff_date ? `Cargo: ${dateOnly(order.cargo_dropoff_date)}` : ""}</small></td>
                   <td><strong>{money(order.total_amount, order.currency)}</strong></td>
                   <td>
-                    <button className="btn btn--ghost btn--small" onClick={() => void openOrder(order)} type="button">Открыть карточку</button>
-                    {order.linked_process?.state === "linked" && order.linked_process.item_id ? (
-                      <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
-                    ) : order.linked_process?.state === "broken" ? (
-                      <small className="order-registry__process-error">Связь с процессом требует восстановления</small>
+                    <button
+                      className="btn btn--ghost btn--small"
+                      disabled={processState === "pending" || processState === "broken"}
+                      onClick={() => void openOrder(order)}
+                      type="button"
+                    >{actionLabel}</button>
+                    {processState === "linked" && order.linked_process?.item_id ? (
+                      <>
+                        <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
+                        {productRowsSync?.state === "error" ? (
+                          <small className="order-registry__product-sync-error">
+                            Товары не синхронизированы: {productRowsSync.error || "повторит плановая синхронизация"}
+                          </small>
+                        ) : productRowsSync?.state === "pending" ? (
+                          <small>Товары синхронизируются…</small>
+                        ) : productRowsSync?.state === "synced" ? (
+                          <small>Товаров в карточке: {productRowsSync.synced_count ?? 0}</small>
+                        ) : null}
+                      </>
+                    ) : processState === "pending" ? (
+                      <small>Заказ создан в 1С, связь проверяется</small>
+                    ) : processState === "broken" ? (
+                      <small className="order-registry__process-error">{order.linked_process?.error || "Требуется reconciliation"}</small>
                     ) : (
                       <small>Процесс появится после создания документа в 1С</small>
                     )}
@@ -1411,11 +1459,14 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
   const [dashboardError, setDashboardError] = useState("");
   const [order, setOrder] = useState<ProcurementOrderFormation | null>(null);
   const [orderError, setOrderError] = useState("");
+  const [processRedirectError, setProcessRedirectError] = useState("");
+  const redirectedOrderId = useRef<number | null>(null);
 
   const navigate = useCallback((next: WorkspaceRoute, replace = false) => {
     if (next.kind === "order") {
       setOrder(null);
       setOrderError("");
+      setProcessRedirectError("");
     }
     window.history[replace ? "replaceState" : "pushState"]({}, "", routeUrl(next));
     setRoute(next);
@@ -1465,6 +1516,23 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
     return () => { cancelled = true; };
   }, [bitrixItemId, route]);
 
+  useEffect(() => {
+    if (bitrixItemId || route.kind !== "order" || !order) return;
+    const processItemId = order.linked_process?.item_id;
+    if (order.linked_process?.state !== "linked" || !processItemId) {
+      redirectedOrderId.current = null;
+      return;
+    }
+    if (redirectedOrderId.current === order.id) return;
+    redirectedOrderId.current = order.id;
+    openBitrixProcurementProcess(processItemId)
+      .then(() => navigate({ kind: "tab", tab: "orders" }, true))
+      .catch((requestError) => {
+        redirectedOrderId.current = null;
+        setProcessRedirectError(errorText(requestError));
+      });
+  }, [bitrixItemId, navigate, order, route]);
+
   if (bitrixItemId) {
     if (orderError) return <ErrorState message={orderError} onRetry={() => window.location.reload()} />;
     if (!order) return <LoadingState message="Загрузка связанного заказа..." />;
@@ -1485,6 +1553,25 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
   if (route.kind === "order") {
     if (orderError) return <ErrorState message={orderError} onRetry={() => navigate(route, true)} />;
     if (!order) return <LoadingState message="Загрузка карточки заказа..." />;
+    if (order.linked_process?.state === "linked") {
+      if (processRedirectError) {
+        return <ErrorState message={processRedirectError} onRetry={() => {
+          redirectedOrderId.current = null;
+          setProcessRedirectError("");
+          setOrder({ ...order });
+        }} />;
+      }
+      return <LoadingState message="Открываем заказ в Smart Process..." />;
+    }
+    if (order.linked_process?.state === "pending" || order.linked_process?.state === "broken") {
+      return (
+        <ProcessLinkState
+          error={order.linked_process.error}
+          state={order.linked_process.state}
+          onBack={() => navigate({ kind: "tab", tab: "orders" }, true)}
+        />
+      );
+    }
     return <ProcurementOrderFormationApp bitrixUserName={bitrixUserName} focusLineId={route.focusLineId} initialOrder={order} onBack={() => navigate({ kind: "tab", tab: "orders" })} />;
   }
 

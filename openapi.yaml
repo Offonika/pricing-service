@@ -21482,9 +21482,8 @@ components:
           minLength: 1
           title: Source Ref
         terminal_warehouse_external_id:
-          anyOf:
-          - type: string
-          - type: 'null'
+          type: string
+          minLength: 1
           title: Terminal Warehouse External Id
       type: object
       required:
@@ -21492,6 +21491,7 @@ components:
       - tracking_number
       - confirmed_at
       - source_ref
+      - terminal_warehouse_external_id
       title: LogisticsExternalCarrierConfirmationSyncItem
     LogisticsExternalCarrierHandoffRequest:
       properties:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Select, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
@@ -1220,6 +1221,8 @@ def list_orders_ready_for_pickup(
     for plan in plans:
         if _plan_is_external_carrier(plan):
             continue
+        if not _is_fresh_order_plan_sync(plan.synced_at):
+            continue
         if _has_open_order_flow_conflict(session, plan=plan):
             continue
         required_units = [unit for unit in plan.units if unit.is_required]
@@ -1774,6 +1777,7 @@ def _create_order_flow_conflict(
     payload: dict,
 ) -> None:
     source_external_id = origin_order_external_id or site_order_number
+    payload = jsonable_encoder(payload)
     existing = session.scalar(
         select(LogisticsManualReview).where(
             LogisticsManualReview.review_type == "order_flow_conflict",
@@ -1855,6 +1859,15 @@ def _carrier_confirmation_plan(session: Session, item: dict) -> LogisticsOrderPl
         session.commit()
         raise _http_error(409, "carrier confirmation order link is ambiguous")
     return None
+
+
+def _order_plan_payload(existing: dict | None, incoming: dict | None) -> dict | None:
+    """Keep backend-owned facts while applying the latest read-only 1C snapshot."""
+
+    result = dict(incoming or {})
+    if isinstance(existing, dict) and "carrier_confirmation" in existing:
+        result["carrier_confirmation"] = existing["carrier_confirmation"]
+    return result or None
 
 
 def sync_order_plans(session: Session, items: list[dict]) -> dict:
@@ -1970,7 +1983,7 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
                 expected_unit_count=item["expected_unit_count"],
                 is_active=True,
                 synced_at=sync_time,
-                payload=item.get("payload"),
+                payload=_order_plan_payload(None, item.get("payload")),
             )
             session.add(row)
             session.flush()
@@ -1982,7 +1995,7 @@ def sync_order_plans(session: Session, items: list[dict]) -> dict:
             row.expected_unit_count = item["expected_unit_count"]
             row.is_active = True
             row.synced_at = sync_time
-            row.payload = item.get("payload")
+            row.payload = _order_plan_payload(row.payload, item.get("payload"))
             counters.updated += 1
 
         existing_by_key = {unit.unit_key: unit for unit in row.units}
@@ -2038,6 +2051,8 @@ def sync_external_carrier_confirmations(session: Session, items: list[dict]) -> 
         plan = _carrier_confirmation_plan(session, item)
         if plan is None:
             raise _http_error(409, "active ORDER_TRANSFER_V1 plan was not found")
+        if not _is_fresh_order_plan_sync(plan.synced_at):
+            raise _http_error(409, "order plan sync is stale; carrier confirmation is blocked")
         if _has_open_order_flow_conflict(session, plan=plan):
             raise _http_error(409, "order has an unresolved flow conflict")
         if not _plan_is_external_carrier(plan):
@@ -2157,7 +2172,6 @@ def list_external_carrier_confirmations(
             .where(
                 LogisticsOrderPlan.is_active.is_(True),
                 LogisticsOrderPlan.flow_mode == FLOW_ORDER_TRANSFER_V1,
-                LogisticsOrderPlan.status == "carrier_confirmed",
             )
             .order_by(LogisticsOrderPlan.id.asc())
         )

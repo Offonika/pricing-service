@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -15,6 +15,7 @@ from app.models import (
     Base,
     LogisticsDriver,
     LogisticsManualReview,
+    LogisticsOrderPlan,
     LogisticsTransfer,
     LogisticsTransferEvent,
     LogisticsTransferState,
@@ -1144,6 +1145,30 @@ def test_order_transfer_plan_gates_handoff_and_aggregates_pickup(monkeypatch) ->
             "source_external_ids": ["transfer-order-a", "transfer-order-b"],
         }
     ]
+    with Session(engine) as session:
+        order_plan = session.scalar(
+            select(LogisticsOrderPlan).where(
+                LogisticsOrderPlan.origin_order_external_id == "customer-order-1"
+            )
+        )
+        order_plan.synced_at = logistics.utcnow() - timedelta(
+            seconds=logistics.ORDER_PLAN_SYNC_MAX_AGE_SECONDS + 1
+        )
+        session.commit()
+    assert (
+        client.get(
+            "/api/logistics/orders/ready-for-pickup",
+            params={"warehouse_code": "central"},
+            headers=headers,
+        ).json()
+        == []
+    )
+    assert (
+        client.post(
+            "/api/logistics/sync/order-plans", json=[ready_plan], headers=headers
+        ).status_code
+        == 200
+    )
     assert (
         client.get(
             "/api/logistics/rtu/ready-for-pickup",
@@ -1312,6 +1337,27 @@ def test_order_transfer_external_carrier_uses_bitrix_confirmation(monkeypatch) -
         ).status_code
         == 422
     )
+    with Session(engine) as session:
+        order_plan = session.scalar(
+            select(LogisticsOrderPlan).where(
+                LogisticsOrderPlan.origin_order_external_id == "customer-order-cdek"
+            )
+        )
+        order_plan.synced_at = logistics.utcnow() - timedelta(
+            seconds=logistics.ORDER_PLAN_SYNC_MAX_AGE_SECONDS + 1
+        )
+        session.commit()
+    stale = client.post(
+        "/api/logistics/sync/carrier-confirmations",
+        json=[confirmation],
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert "sync is stale" in stale.text
+    assert (
+        client.post("/api/logistics/sync/order-plans", json=[plan], headers=headers).status_code
+        == 200
+    )
     first = client.post(
         "/api/logistics/sync/carrier-confirmations",
         json=[confirmation],
@@ -1326,6 +1372,10 @@ def test_order_transfer_external_carrier_uses_bitrix_confirmation(monkeypatch) -
     )
     assert repeat.status_code == 200
     assert repeat.json() == {"created": 0, "updated": 1}
+    assert (
+        client.post("/api/logistics/sync/order-plans", json=[plan], headers=headers).status_code
+        == 200
+    )
 
     feed = client.get(
         "/api/logistics/orders/carrier-confirmations",

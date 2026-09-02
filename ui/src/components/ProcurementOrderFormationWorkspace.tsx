@@ -1227,6 +1227,7 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
               {data.items.map((order) => {
                 const blockerCount = order.blockers?.length || 0;
                 const processState = order.linked_process?.state || "not_created";
+                const productRowsSync = order.linked_process?.product_rows_sync;
                 const actionLabel = processState === "linked"
                   ? "Открыть заказ"
                   : processState === "pending"
@@ -1268,7 +1269,18 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                       type="button"
                     >{actionLabel}</button>
                     {processState === "linked" && order.linked_process?.item_id ? (
-                      <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
+                      <>
+                        <small>{order.linked_process.stage_name || `Процесс №${order.linked_process.item_id}`}</small>
+                        {productRowsSync?.state === "error" ? (
+                          <small className="order-registry__product-sync-error">
+                            Товары не синхронизированы: {productRowsSync.error || "повторит плановая синхронизация"}
+                          </small>
+                        ) : productRowsSync?.state === "pending" ? (
+                          <small>Товары синхронизируются…</small>
+                        ) : productRowsSync?.state === "synced" ? (
+                          <small>Товаров в карточке: {productRowsSync.synced_count ?? 0}</small>
+                        ) : null}
+                      </>
                     ) : processState === "pending" ? (
                       <small>Заказ создан в 1С, связь проверяется</small>
                     ) : processState === "broken" ? (

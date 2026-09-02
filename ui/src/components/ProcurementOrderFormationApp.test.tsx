@@ -165,6 +165,27 @@ describe("ProcurementOrderFormationApp связанный процесс", () =>
     expect(screen.queryByRole("button", { name: "Открыть процесс" })).not.toBeInTheDocument();
   });
 
+  it("показывает диагностируемую ошибку товаров без нарушения связи", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "linked",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+        item_id: "317",
+        product_rows_sync: {
+          state: "error",
+          expected_count: 249,
+          synced_count: 0,
+          error: "Access denied",
+        },
+      },
+    })} />);
+
+    expect(screen.getByText("Закупка/Заказ №317")).toBeInTheDocument();
+    expect(screen.getByText("Товары Smart Process не синхронизированы")).toBeInTheDocument();
+    expect(screen.getByText("Ожидается позиций: 249. Access denied")).toBeInTheDocument();
+  });
+
   it("показывает состояние немедленной синхронизации", () => {
     render(<ProcurementOrderFormationApp initialOrder={order({
       linked_process: {

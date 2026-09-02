@@ -363,6 +363,32 @@ describe("OrdersRegistry", () => {
     ));
   });
 
+  it("показывает ошибку синхронизации товаров, но сохраняет открытие процесса", async () => {
+    const initial = await fetchProcurementOrders({ page_size: 100 });
+    vi.mocked(fetchProcurementOrders).mockClear();
+    vi.mocked(fetchProcurementOrders).mockResolvedValue({
+      ...initial,
+      items: [{
+        ...initial.items[0],
+        linked_process: {
+          ...initial.items[0].linked_process!,
+          product_rows_sync: {
+            state: "error",
+            expected_count: 249,
+            synced_count: 0,
+            error: "Недостаточно прав",
+          },
+        },
+      }],
+    });
+
+    render(<OrdersRegistry onOpenOrder={vi.fn()} />);
+
+    expect(await screen.findByText("Товары не синхронизированы: Недостаточно прав")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Открыть заказ" }));
+    expect(openBitrixProcurementProcess).toHaveBeenCalledWith("324");
+  });
+
   it("выделяет проект с блокерами и показывает число причин", async () => {
     const initial = await fetchProcurementOrders({ page_size: 100 });
     vi.mocked(fetchProcurementOrders).mockClear();

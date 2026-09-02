@@ -14,7 +14,7 @@ PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
 CONTOURS="${PROCUREMENT_SYNC_CONTOURS:-ved_import}"
 DAYS_BACK="${PROCUREMENT_SYNC_DAYS_BACK:-10}"
 LIMIT="${PROCUREMENT_SYNC_LIMIT:-500}"
-ASSIGNED_BY_ID="${PROCUREMENT_SYNC_ASSIGNED_BY_ID:-130750}"
+SUPPLIER_ASSIGNED_BY_ID="${PROCUREMENT_SYNC_SUPPLIER_ASSIGNED_BY_ID:-${PROCUREMENT_SYNC_ASSIGNED_BY_ID:-130750}}"
 APPLY="${PROCUREMENT_SYNC_APPLY:-true}"
 BLANK_CONTOUR_CARGO_DROPOFF_SYNC="${PROCUREMENT_SYNC_BLANK_CONTOUR_CARGO_DROPOFF:-true}"
 BLANK_CONTOUR_CARGO_DROPOFF_LIMIT="${PROCUREMENT_SYNC_BLANK_CONTOUR_CARGO_DROPOFF_LIMIT:-5000}"
@@ -87,7 +87,7 @@ run_sync() {
     scripts/sync_open_cargo_supplier_orders_to_bitrix.py
     --contours "${contours}"
     --limit "${limit}"
-    --assigned-by-id "${ASSIGNED_BY_ID}"
+    --supplier-assigned-by-id "${SUPPLIER_ASSIGNED_BY_ID}"
     --input-json "${input_json}"
     --result-path "${result_path}"
   )

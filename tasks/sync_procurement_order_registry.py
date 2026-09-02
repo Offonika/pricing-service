@@ -29,6 +29,10 @@ from app.services.procurement_order_process_link import (
     reconcile_procurement_order_process_links,
     record_procurement_process_sync_failure,
 )
+from app.services.procurement_order_product_rows import (
+    summarize_product_row_sync,
+    sync_procurement_order_product_rows,
+)
 from app.services.procurement_order_registry import (
     decimal_value,
     lifecycle_status_for_snapshot,
@@ -152,6 +156,7 @@ def sync_onec_order_process_by_ref(
     webhook_base: str = "",
     mapping_path: Path | None = None,
     assigned_by_id: str = "130750",
+    supplier_assigned_by_id: str = "",
     finance_user_id: str = "",
 ) -> dict[str, Any]:
     """Immediately refresh one 1C order and link its canonical process 1056."""
@@ -206,7 +211,7 @@ def sync_onec_order_process_by_ref(
         webhook_base=resolved_webhook,
         mapping=mapping,
         apply=True,
-        assigned_by_id=assigned_by_id,
+        supplier_assigned_by_id=supplier_assigned_by_id or assigned_by_id,
         finance_user_id=finance_user_id,
     )
     blocked = next(
@@ -231,6 +236,15 @@ def sync_onec_order_process_by_ref(
     order = db.get(ProcurementOrderFormation, order_id)
     if order is None:
         raise LookupError("order formation card was not found")
+    product_rows = sync_procurement_order_product_rows(
+        db,
+        order,
+        apply=True,
+        settings=settings,
+        webhook_base=resolved_webhook,
+        actor="system:procurement-process-immediate-sync",
+    )
+    db.commit()
     state = serialize_linked_process(order)["state"]
     return {
         "order_id": order_id,
@@ -238,6 +252,7 @@ def sync_onec_order_process_by_ref(
         "state": state,
         "item_id": order.bitrix_item_id if state == "linked" else None,
         "reconciliation": reconciliation,
+        "product_rows_sync": product_rows,
     }
 
 
@@ -252,7 +267,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Validate and report the 1C read-only source without opening the application DB.",
     )
     parser.add_argument("--sync-bitrix", action="store_true")
-    parser.add_argument("--assigned-by-id", default="130750")
+    parser.add_argument(
+        "--assigned-by-id",
+        default="",
+        help="Deprecated compatibility alias for --supplier-assigned-by-id.",
+    )
+    parser.add_argument("--supplier-assigned-by-id", default="")
     parser.add_argument("--finance-user-id", default="")
     parser.add_argument("--webhook-url", default="")
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE)
@@ -349,7 +369,12 @@ def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[
         session.close()
 
 
-def _store_bitrix_links(result_rows: list[dict[str, Any]]) -> dict[str, int]:
+def _store_bitrix_links(
+    result_rows: list[dict[str, Any]],
+    *,
+    settings: Settings,
+    webhook_base: str,
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
     session = get_application_session_factory()()
     try:
         summary = reconcile_procurement_order_process_links(
@@ -358,7 +383,6 @@ def _store_bitrix_links(result_rows: list[dict[str, Any]]) -> dict[str, int]:
             actor="system:onec-procurement-registry",
             mark_missing=False,
         )
-        session.commit()
         for row in result_rows:
             if str(row.get("action") or "").strip() != "blocked":
                 continue
@@ -378,7 +402,31 @@ def _store_bitrix_links(result_rows: list[dict[str, Any]]) -> dict[str, int]:
                 confirmed_broken=_is_confirmed_process_error_text(error),
                 actor="system:onec-procurement-registry",
             )
-        return summary
+        synced_refs = {
+            normalize_onec_ref(row.get("onec_ref"))
+            for row in result_rows
+            if str(row.get("action") or "").strip() != "blocked"
+        }
+        orders = list(
+            session.scalars(
+                select(ProcurementOrderFormation).where(
+                    func.lower(ProcurementOrderFormation.onec_document_ref).in_(synced_refs)
+                )
+            ).all()
+        )
+        product_rows = [
+            sync_procurement_order_product_rows(
+                session,
+                order,
+                apply=True,
+                settings=settings,
+                webhook_base=webhook_base,
+                actor="system:onec-procurement-registry",
+            )
+            for order in orders
+        ]
+        session.commit()
+        return summary, product_rows
     except BaseException:
         session.rollback()
         raise
@@ -486,6 +534,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         _store_missing_conflicts(missing_refs)
 
     bitrix_rows: list[dict[str, Any]] = []
+    product_row_results: list[dict[str, Any]] = []
     link_reconciliation = {"checked": 0, "linked": 0, "unchanged": 0, "broken": 0}
     if args.sync_bitrix and not args.source_only:
         webhook = bitrix_webhook(args, load_env(args.env_file))
@@ -502,11 +551,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             webhook_base=webhook,
             mapping=mapping,
             apply=bool(args.apply),
-            assigned_by_id=str(args.assigned_by_id),
+            supplier_assigned_by_id=str(args.supplier_assigned_by_id or args.assigned_by_id),
             finance_user_id=str(args.finance_user_id),
         )
         if args.apply:
-            link_reconciliation = _store_bitrix_links(bitrix_rows)
+            link_reconciliation, product_row_results = _store_bitrix_links(
+                bitrix_rows,
+                settings=settings,
+                webhook_base=webhook,
+            )
 
     return {
         "mode": "apply" if args.apply else "dry-run",
@@ -524,10 +577,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "bitrix_blocked": sum(
                 1 for row in bitrix_rows if str(row.get("action") or "") == "blocked"
             ),
+            "product_rows": summarize_product_row_sync(product_row_results),
         },
         "missing_refs": missing_refs,
         "registry_rows": registry_rows,
         "bitrix_rows": bitrix_rows,
+        "product_row_results": product_row_results,
         "link_reconciliation": link_reconciliation,
     }
 

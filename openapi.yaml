@@ -27517,9 +27517,12 @@ components:
           - type: string
           - type: 'null'
           title: Error
+        product_rows_sync:
+          $ref: '#/components/schemas/ProcurementProductRowsSyncRead'
       type: object
       required:
       - state
+      - product_rows_sync
       title: ProcurementLinkedProcessRead
     ProcurementMatchingReviewConfirmRequest:
       properties:
@@ -29048,6 +29051,46 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementProductRowsSyncRead:
+      properties:
+        state:
+          type: string
+          enum:
+          - not_applicable
+          - pending
+          - synced
+          - error
+          title: State
+        expected_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expected Count
+        synced_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Synced Count
+        checksum:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Checksum
+        synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Synced At
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - state
+      title: ProcurementProductRowsSyncRead
     ProcurementSupplierDistributionApplyRequest:
       properties:
         expected_order_version:

@@ -882,6 +882,31 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
             </>
           )}
         </div>
+        {order.linked_process?.state === "linked" && order.linked_process.product_rows_sync ? (
+          <div className={`order-formation__product-sync order-formation__product-sync--${order.linked_process.product_rows_sync.state}`}>
+            {order.linked_process.product_rows_sync.state === "error" ? (
+              <>
+                <strong>Товары Smart Process не синхронизированы</strong>
+                <small>
+                  {order.linked_process.product_rows_sync.expected_count != null
+                    ? `Ожидается позиций: ${order.linked_process.product_rows_sync.expected_count}. `
+                    : ""}
+                  {order.linked_process.product_rows_sync.error || "Плановая синхронизация повторит попытку"}
+                </small>
+              </>
+            ) : order.linked_process.product_rows_sync.state === "pending" ? (
+              <>
+                <strong>Товары синхронизируются…</strong>
+                <small>Плановая синхронизация заполнит штатную вкладку «Товары»</small>
+              </>
+            ) : order.linked_process.product_rows_sync.state === "synced" ? (
+              <>
+                <strong>Товары синхронизированы</strong>
+                <small>Позиций в Smart Process: {order.linked_process.product_rows_sync.synced_count ?? 0}</small>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       {labelsSection}

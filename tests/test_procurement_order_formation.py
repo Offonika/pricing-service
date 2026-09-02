@@ -21,7 +21,11 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderAssistantResponse,
     ProcurementOrderLineUpdateRequest,
 )
-from app.services.bitrix_order_formation import BitrixCatalogProduct, build_bitrix_product_rows
+from app.services.bitrix_order_formation import (
+    BitrixCatalogProduct,
+    build_bitrix_item_fields,
+    build_bitrix_product_rows,
+)
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
@@ -1175,6 +1179,18 @@ def test_bitrix_product_rows_use_purchase_price_and_catalog_id(db_session) -> No
     assert rows[0]["price"] == "115.0000"
     assert rows[0]["quantity"] == "5.000"
     assert "retailPrice" not in rows[0]
+
+
+def test_bitrix_order_fields_leave_assignee_to_process_automation(db_session) -> None:
+    order = _order(db_session)
+    order.responsible_bitrix_user_id = "130750"
+
+    fields = build_bitrix_item_fields(
+        order,
+        mapping={"process": {"category_id": 53}, "stage_map": {"draft": "NEW"}},
+    )
+
+    assert "assignedById" not in fields
 
 
 def test_property_message_builder_rejects_missing_nomenclature_code(db_session) -> None:

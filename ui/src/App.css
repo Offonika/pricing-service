@@ -8152,6 +8152,26 @@
   gap: 3px;
 }
 
+.order-formation__product-sync {
+  min-width: min(360px, 100%);
+  padding-left: 16px;
+  border-left: 1px solid #bfdbfe;
+}
+
+.order-formation__product-sync--error {
+  border-left-color: #fca5a5;
+}
+
+.order-formation__product-sync--error strong,
+.order-formation__product-sync--error small,
+.order-registry__product-sync-error {
+  color: #991b1b;
+}
+
+.order-formation__product-sync--pending strong {
+  color: #92400e;
+}
+
 .order-formation__linked-process span,
 .order-formation__linked-process small,
 .order-registry__process-error {
@@ -8171,7 +8191,8 @@
 
 .order-formation__linked-process--broken strong,
 .order-formation__linked-process--broken small,
-.order-registry__process-error {
+.order-registry__process-error,
+.order-registry__product-sync-error {
   color: #991b1b;
 }
 

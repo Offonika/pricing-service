@@ -305,6 +305,15 @@ class ProcurementSupplierDistributionApplyRequest(BaseModel):
     expected_order_version: int = Field(ge=1)
 
 
+class ProcurementProductRowsSyncRead(BaseModel):
+    state: Literal["not_applicable", "pending", "synced", "error"]
+    expected_count: int | None = None
+    synced_count: int | None = None
+    checksum: str | None = None
+    synced_at: datetime | None = None
+    error: str | None = None
+
+
 class ProcurementLinkedProcessRead(BaseModel):
     state: Literal["not_created", "pending", "linked", "broken"]
     process_title: str = "Закупка/Заказ"
@@ -316,6 +325,7 @@ class ProcurementLinkedProcessRead(BaseModel):
     stage_name: str | None = None
     checked_at: datetime | None = None
     error: str | None = None
+    product_rows_sync: ProcurementProductRowsSyncRead
 
 
 class ProcurementOrderFormationRead(BaseModel):

@@ -164,6 +164,7 @@ def test_run_bitrix_import_passes_finance_user_and_reuses_batch_ids(monkeypatch)
 
     assert len(rows) == 2
     assert [item["finance_user_id"] for item in captured] == ["42", "42"]
+    assert [item["assigned_by_id"] for item in captured] == ["130750", "130750"]
     assert captured[0]["used_batch_ids"] is captured[1]["used_batch_ids"]
 
 

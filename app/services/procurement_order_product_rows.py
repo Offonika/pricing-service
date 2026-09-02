@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 import urllib.parse
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -42,10 +43,48 @@ MANAGED_FIELDS = (
     "SORT",
 )
 PRODUCT_ROW_BATCH_TIMEOUT_SECONDS = 30.0
+PRODUCT_ROW_READ_TIMEOUT_SECONDS = 15.0
+PRODUCT_ROW_READ_ATTEMPTS = 4
 
 
 class ProcurementProductRowsSyncError(RuntimeError):
     """A product-row mirror could not be made exact and needs a retry."""
+
+
+def _read_bitrix_call(
+    method: str,
+    params: dict[str, Any],
+    *,
+    settings: Settings,
+    webhook_base: str = "",
+) -> dict[str, Any]:
+    transient_markers = (
+        " is unavailable",
+        "HTTP 429",
+        "HTTP 502",
+        "HTTP 503",
+        "HTTP 504",
+        "QUERY_LIMIT_EXCEEDED",
+    )
+    for attempt in range(PRODUCT_ROW_READ_ATTEMPTS):
+        try:
+            return bitrix_call(
+                method,
+                params,
+                settings=settings,
+                webhook_base=webhook_base,
+                timeout_seconds=max(
+                    PRODUCT_ROW_READ_TIMEOUT_SECONDS,
+                    float(settings.procurement_labels_bitrix_rest_timeout_seconds),
+                ),
+            )
+        except RuntimeError as exc:
+            if not any(marker in str(exc) for marker in transient_markers):
+                raise
+            if attempt + 1 >= PRODUCT_ROW_READ_ATTEMPTS:
+                raise
+            time.sleep(attempt + 1)
+    raise AssertionError("unreachable")
 
 
 def _clean(value: Any) -> str:
@@ -146,7 +185,7 @@ def _list_product_rows(
     start = 0
     seen_starts: set[int] = set()
     while True:
-        payload = bitrix_call(
+        payload = _read_bitrix_call(
             "crm.productrow.list",
             {
                 "filter": {"OWNER_TYPE": PRODUCT_ROW_OWNER_TYPE, "OWNER_ID": int(item_id)},
@@ -178,7 +217,7 @@ def _list_product_rows(
 
 
 def _item_currency(*, item_id: str, settings: Settings, webhook_base: str = "") -> str:
-    payload = bitrix_call(
+    payload = _read_bitrix_call(
         "crm.item.get",
         {"entityTypeId": PROCUREMENT_PROCESS_ENTITY_TYPE_ID, "id": int(item_id)},
         settings=settings,

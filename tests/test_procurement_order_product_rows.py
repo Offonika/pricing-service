@@ -250,6 +250,28 @@ def test_product_row_list_reads_all_bitrix_pages(monkeypatch) -> None:
     assert starts == [0, 50]
 
 
+def test_product_row_list_retries_transient_read_failure(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[int] = []
+
+    def fake_call(method, params, **_kwargs):
+        nonlocal calls
+        assert method == "crm.productrow.list"
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("Bitrix API crm.productrow.list is unavailable")
+        return {"result": [{"ID": "1"}], "total": 1}
+
+    monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)
+    monkeypatch.setattr(product_rows_service.time, "sleep", sleeps.append)
+
+    rows = product_rows_service.list_procurement_product_rows(item_id="317", settings=Settings())
+
+    assert rows == [{"ID": "1"}]
+    assert calls == 2
+    assert sleeps == [1]
+
+
 def test_currency_is_updated_on_process_card_not_product_row(db_session, monkeypatch) -> None:
     order = _order(db_session)
     desired = _readback(order)

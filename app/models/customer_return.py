@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -44,6 +45,7 @@ class CustomerReturnShipment(Base):
         ),
         Index("ix_customer_return_shipment_status_updated", "status", "updated_at"),
         Index("ix_customer_return_shipment_bitrix_case", "bitrix_case_id"),
+        Index("ix_customer_return_shipment_bitrix_deal", "bitrix_deal_id"),
     )
 
     carrier: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -59,6 +61,22 @@ class CustomerReturnShipment(Base):
     bitrix_case_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     site_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     onec_order_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bitrix_deal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bitrix_deal_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bitrix_order_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bitrix_deal_stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bitrix_deal_stage_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bitrix_deal_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    bitrix_contact_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bitrix_contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bitrix_company_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bitrix_company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bitrix_responsible_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bitrix_responsible_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bitrix_deal_linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    bitrix_deal_linked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     onec_return_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_bitrix_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     picked_up_by_bitrix_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

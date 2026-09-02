@@ -6,7 +6,7 @@ import { api } from "../api/client";
 import { CustomerReturnsWorkspace } from "./CustomerReturnsWorkspace";
 
 vi.mock("../api/client", () => ({
-  api: { get: vi.fn(), post: vi.fn() },
+  api: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
 }));
 
 const arrivedReturn = {
@@ -46,6 +46,7 @@ describe("CustomerReturnsWorkspace", () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset();
     vi.mocked(api.post).mockReset();
+    vi.mocked(api.put).mockReset();
   });
 
   afterEach(cleanup);
@@ -111,7 +112,25 @@ describe("CustomerReturnsWorkspace", () => {
   });
 
   it("регистрирует трек Почты России или СДЭК из Bitrix24", async () => {
-    vi.mocked(api.get).mockResolvedValue({ data: [] });
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/customer-returns") return { data: [] };
+      if (path === "/bitrix/logistics/customer-return-deals") {
+        return {
+          data: [
+            {
+              deal_id: 3507,
+              title: "Интернет-заказ 241094",
+              order_ref: "241094",
+              stage_name: "Новая",
+              closed: false,
+              contact_name: "Иван Петров",
+              responsible_name: "Анна Смирнова",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected GET ${path}`);
+    });
     vi.mocked(api.post).mockResolvedValue({
       data: {
         created: true,
@@ -135,9 +154,10 @@ describe("CustomerReturnsWorkspace", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Трек-номер возврата" }), {
       target: { value: "CDEK-3507" },
     });
-    fireEvent.change(screen.getByRole("textbox", { name: "Заказ 1С" }), {
-      target: { value: "ЗАКАЗ-3507" },
+    fireEvent.change(screen.getByRole("combobox", { name: "Сделка Bitrix24 (необязательно)" }), {
+      target: { value: "241094" },
     });
+    fireEvent.click(await screen.findByRole("option", { name: /Интернет-заказ 241094/ }));
     fireEvent.click(screen.getByRole("button", { name: "Зарегистрировать" }));
 
     await waitFor(() =>
@@ -146,13 +166,76 @@ describe("CustomerReturnsWorkspace", () => {
         {
           carrier: "cdek",
           tracking_number: "CDEK-3507",
-          onec_order_ref: "ЗАКАЗ-3507",
+          bitrix_deal_id: 3507,
         },
         undefined
       )
     );
     expect(await screen.findByText("Возврат зарегистрирован")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Возврат CDEK-3507" })).toBeVisible();
+  });
+
+  it("привязывает сделку позднее из карточки возврата", async () => {
+    const linkedDetail = {
+      ...arrivedDetail,
+      bitrix_deal_id: 3507,
+      bitrix_deal_title: "Интернет-заказ 241094",
+      bitrix_order_ref: "241094",
+      bitrix_deal_stage_name: "Новая",
+      bitrix_contact_name: "Иван Петров",
+      bitrix_responsible_name: "Анна Смирнова",
+      events: [
+        ...arrivedDetail.events,
+        {
+          id: 3,
+          event_type: "deal_link_changed",
+          source: "bitrix24",
+          occurred_at: "2026-09-01T12:00:00Z",
+        },
+      ],
+    };
+    vi.mocked(api.get).mockImplementation(async (path: string) => {
+      if (path === "/bitrix/logistics/customer-returns") return { data: [arrivedReturn] };
+      if (path === "/bitrix/logistics/customer-returns/35") return { data: arrivedDetail };
+      if (path === "/bitrix/logistics/customer-return-deals") {
+        return {
+          data: [
+            {
+              deal_id: 3507,
+              title: "Интернет-заказ 241094",
+              order_ref: "241094",
+              stage_name: "Новая",
+              closed: false,
+              contact_name: "Иван Петров",
+              responsible_name: "Анна Смирнова",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected GET ${path}`);
+    });
+    vi.mocked(api.put).mockResolvedValue({ data: linkedDetail });
+
+    render(<CustomerReturnsWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть карточку" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Привязать сделку" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Новая сделка Bitrix24" }), {
+      target: { value: "241094" },
+    });
+    fireEvent.click(await screen.findByRole("option", { name: /Интернет-заказ 241094/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить связь" }));
+
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith(
+        "/bitrix/logistics/customer-returns/35/deal-link",
+        { bitrix_deal_id: 3507 },
+        undefined
+      )
+    );
+    expect(await screen.findByText("Сделка привязана к возврату")).toBeVisible();
+    expect(screen.getByText(/Сделка: #3507/)).toBeVisible();
+    expect(screen.getByText("Клиент: Иван Петров")).toBeVisible();
+    expect(screen.getByText("Ответственный: Анна Смирнова")).toBeVisible();
   });
 
   it("показывает срок хранения и подтверждает действие «Забрали» текущим пользователем", async () => {

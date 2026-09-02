@@ -44,6 +44,29 @@ class BitrixCustomerReturnCreateRequest(BaseModel):
     bitrix_case_id: str | None = Field(default=None, min_length=1, max_length=64)
     site_ticket_id: str | None = Field(default=None, min_length=1, max_length=64)
     onec_order_ref: str | None = Field(default=None, min_length=1, max_length=64)
+    bitrix_deal_id: int | None = Field(default=None, ge=1)
+
+
+class BitrixCustomerReturnDealLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bitrix_deal_id: int | None = Field(default=None, ge=1)
+
+
+class BitrixCustomerReturnDealSearchItem(BaseModel):
+    deal_id: int
+    title: str
+    order_ref: str | None = None
+    stage_id: str | None = None
+    stage_name: str | None = None
+    closed: bool
+    created_at: datetime | None = None
+    contact_id: int | None = None
+    contact_name: str | None = None
+    company_id: int | None = None
+    company_name: str | None = None
+    responsible_user_id: int | None = None
+    responsible_name: str | None = None
 
 
 class BitrixCustomerReturnPickupRequest(BaseModel):

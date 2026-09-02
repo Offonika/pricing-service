@@ -57,12 +57,13 @@ def _order(db_session, *, line_count: int = 2) -> ProcurementOrderFormation:
 
 
 def _readback(order: ProcurementOrderFormation) -> list[dict[str, object]]:
-    return [
-        {"ID": str(9000 + index), **row}
-        for index, row in enumerate(
-            product_rows_service.build_procurement_product_rows(order), start=1
-        )
-    ]
+    result = []
+    for index, row in enumerate(
+        product_rows_service.build_procurement_product_rows(order), start=1
+    ):
+        api_row = {key: value for key, value in row.items() if key != "CURRENCY_ID"}
+        result.append({"ID": str(9000 + index), **api_row})
+    return result
 
 
 def test_product_rows_are_exact_onec_purchase_facts(db_session) -> None:
@@ -136,10 +137,13 @@ def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkey
     batch_commands: list[list[str]] = []
 
     def fake_call(method, params, **_kwargs):
+        if method == "crm.item.get":
+            return {"result": {"item": {"currencyId": "RMB"}}}
         if method == "crm.productrow.list":
             assert params["filter"]["OWNER_TYPE"] == "T420"
             return {"result": next(list_results)}
         assert method == "batch"
+        assert _kwargs["timeout_seconds"] >= 30
         commands = list(params["cmd"].values())
         batch_commands.append(commands)
         return {"result": {"result": {}, "result_error": {}}}
@@ -161,11 +165,14 @@ def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkey
         "add": 1,
         "update": 1,
         "delete": 1,
+        "currency_id": "RMB",
+        "currency_update": False,
         "synced_count": 2,
     }
     flattened = [command for batch in batch_commands for command in batch]
     assert flattened[0].startswith("crm.productrow.add?")
     assert "fields%5BOWNER_TYPE%5D=T420" in flattened[0]
+    assert all("CURRENCY_ID" not in command for command in flattened)
     assert flattened[1].startswith("crm.productrow.update?")
     assert flattened[-1] == "crm.productrow.delete?id=7002"
     assert order.bitrix_product_rows_synced_count == 2
@@ -179,6 +186,8 @@ def test_249_rows_are_sent_in_batches_of_at_most_50(db_session, monkeypatch) -> 
     command_counts: list[int] = []
 
     def fake_call(method, params, **_kwargs):
+        if method == "crm.item.get":
+            return {"result": {"item": {"currencyId": "RMB"}}}
         if method == "crm.productrow.list":
             return {"result": next(list_results)}
         command_counts.append(len(params["cmd"]))
@@ -201,6 +210,8 @@ def test_unchanged_rows_are_a_noop_but_still_read_back(db_session, monkeypatch) 
 
     def fake_call(method, _params, **_kwargs):
         calls.append(method)
+        if method == "crm.item.get":
+            return {"result": {"item": {"currencyId": "RMB"}}}
         return {"result": desired}
 
     monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)
@@ -211,4 +222,57 @@ def test_unchanged_rows_are_a_noop_but_still_read_back(db_session, monkeypatch) 
 
     assert result["state"] == "synced"
     assert result["add"] == result["update"] == result["delete"] == 0
-    assert calls == ["crm.productrow.list", "crm.productrow.list"]
+    assert calls == [
+        "crm.item.get",
+        "crm.productrow.list",
+        "crm.productrow.list",
+        "crm.item.get",
+    ]
+
+
+def test_product_row_list_reads_all_bitrix_pages(monkeypatch) -> None:
+    starts: list[int] = []
+
+    def fake_call(method, params, **_kwargs):
+        assert method == "crm.productrow.list"
+        starts.append(params["start"])
+        start = params["start"]
+        rows = [{"ID": str(index)} for index in range(start + 1, start + 51)]
+        if start == 0:
+            return {"result": rows, "next": 50, "total": 75}
+        return {"result": rows[:25], "total": 75}
+
+    monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)
+
+    rows = product_rows_service.list_procurement_product_rows(item_id="317", settings=Settings())
+
+    assert len(rows) == 75
+    assert starts == [0, 50]
+
+
+def test_currency_is_updated_on_process_card_not_product_row(db_session, monkeypatch) -> None:
+    order = _order(db_session)
+    desired = _readback(order)
+    currencies = iter(("RUB", "RMB"))
+    calls: list[tuple[str, dict]] = []
+
+    def fake_call(method, params, **_kwargs):
+        calls.append((method, params))
+        if method == "crm.item.get":
+            return {"result": {"item": {"currencyId": next(currencies)}}}
+        if method == "crm.item.update":
+            return {"result": {"item": {"id": 317}}}
+        if method == "crm.productrow.list":
+            return {"result": desired}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)
+
+    result = product_rows_service.sync_procurement_order_product_rows(
+        db_session, order, apply=True, settings=Settings()
+    )
+
+    assert result["state"] == "synced"
+    assert result["currency_update"] is True
+    update = next(params for method, params in calls if method == "crm.item.update")
+    assert update["fields"] == {"currencyId": "RMB"}

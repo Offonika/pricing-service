@@ -414,18 +414,20 @@ def _store_bitrix_links(
                 )
             ).all()
         )
-        product_rows = [
-            sync_procurement_order_product_rows(
-                session,
-                order,
-                apply=True,
-                settings=settings,
-                webhook_base=webhook_base,
-                actor="system:onec-procurement-registry",
-            )
-            for order in orders
-        ]
         session.commit()
+        product_rows = []
+        for order in orders:
+            product_rows.append(
+                sync_procurement_order_product_rows(
+                    session,
+                    order,
+                    apply=True,
+                    settings=settings,
+                    webhook_base=webhook_base,
+                    actor="system:onec-procurement-registry",
+                )
+            )
+            session.commit()
         return summary, product_rows
     except BaseException:
         session.rollback()

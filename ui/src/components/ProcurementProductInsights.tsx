@@ -114,6 +114,14 @@ export function ProcurementProductInsights({ productId }: Props) {
     return () => { cancelled = true; };
   }, [productId]);
 
+  useEffect(() => {
+    const previousTitle = document.title;
+    document.title = data?.identity.name
+      ? `${data.identity.name} — показатели товара`
+      : "Показатели товара";
+    return () => { document.title = previousTitle; };
+  }, [data?.identity.name]);
+
   const chart = useMemo(() => {
     if (!data) return [];
     const values = DEMAND_WINDOWS.map((item) => ({

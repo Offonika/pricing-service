@@ -108,6 +108,9 @@ describe("ProcurementProductInsights", () => {
 
     expect(await screen.findByRole("heading", { name: "Дисплей Samsung A16" }))
       .toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.title).toBe("Дисплей Samsung A16 — показатели товара");
+    });
     expect(fetchProcurementProductCard).toHaveBeenCalledWith("1646");
     expect(screen.getByText("1 блокер(а)")).toBeInTheDocument();
     expect(screen.getByText("Проверить причины возвратов")).toBeInTheDocument();

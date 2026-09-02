@@ -60,6 +60,7 @@ def _read_bitrix_call(
 ) -> dict[str, Any]:
     transient_markers = (
         " is unavailable",
+        "HTTP 500",
         "HTTP 429",
         "HTTP 502",
         "HTTP 503",

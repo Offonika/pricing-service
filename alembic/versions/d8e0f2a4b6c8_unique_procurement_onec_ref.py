@@ -1,7 +1,7 @@
 """constrain normalized procurement 1C document GUID
 
 Revision ID: d8e0f2a4b6c8
-Revises: c7d9e1f3a5b8
+Revises: a4c5e6f70819
 Create Date: 2026-09-02 12:00:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "d8e0f2a4b6c8"
-down_revision = "c7d9e1f3a5b8"
+down_revision = "a4c5e6f70819"
 branch_labels = None
 depends_on = None
 

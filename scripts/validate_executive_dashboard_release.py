@@ -51,15 +51,22 @@ def _migration_revision_error(
     return None
 
 
+def _read_database_revision() -> str | None:
+    from alembic.runtime.migration import MigrationContext
+
+    from app.infrastructure.db import session_scope
+
+    with session_scope(read_only=True) as session:
+        return MigrationContext.configure(session.connection()).get_current_revision()
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
     from alembic.config import Config
-    from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
 
     from app.core.config import get_settings
     from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
-    from app.infrastructure.db.engines import get_application_engine
     from app.main import app
     from app.services.executive_dashboard import (
         _resolve_cashflow_period_cache_path,
@@ -139,9 +146,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     code_head = script.get_current_head()
     database_head = None
     try:
-        engine = get_application_engine()
-        with engine.connect() as connection:
-            database_head = MigrationContext.configure(connection).get_current_revision()
+        database_head = _read_database_revision()
     except Exception as exc:  # pragma: no cover - operational diagnostic
         errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
     if revision_error := _migration_revision_error(

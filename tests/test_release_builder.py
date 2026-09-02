@@ -49,6 +49,33 @@ def test_executive_release_validator_defers_revision_equality_only_when_requeste
     )
 
 
+def test_executive_release_validator_uses_read_only_session_scope(monkeypatch) -> None:
+    validator = _load_executive_release_validator()
+    connection = object()
+    session = SimpleNamespace(connection=lambda: connection)
+    session_scope_calls: list[bool] = []
+    configure_calls: list[object] = []
+
+    @contextmanager
+    def fake_session_scope(*, read_only: bool = False):
+        session_scope_calls.append(read_only)
+        yield session
+
+    def fake_configure(actual_connection):
+        configure_calls.append(actual_connection)
+        return SimpleNamespace(get_current_revision=lambda: "database-head")
+
+    monkeypatch.setattr("app.infrastructure.db.session_scope", fake_session_scope)
+    monkeypatch.setattr(
+        "alembic.runtime.migration.MigrationContext.configure",
+        fake_configure,
+    )
+
+    assert validator._read_database_revision() == "database-head"
+    assert session_scope_calls == [True]
+    assert configure_calls == [connection]
+
+
 def test_receivables_release_validator_uses_read_only_session_scope(
     monkeypatch,
     tmp_path: Path,

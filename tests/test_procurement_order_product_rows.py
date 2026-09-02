@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
@@ -250,7 +252,14 @@ def test_product_row_list_reads_all_bitrix_pages(monkeypatch) -> None:
     assert starts == [0, 50]
 
 
-def test_product_row_list_retries_transient_read_failure(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "error_message",
+    (
+        "Bitrix API crm.productrow.list is unavailable",
+        "Bitrix API crm.productrow.list: HTTP 500 Internal Server Error",
+    ),
+)
+def test_product_row_list_retries_transient_read_failure(monkeypatch, error_message) -> None:
     calls = 0
     sleeps: list[int] = []
 
@@ -259,7 +268,7 @@ def test_product_row_list_retries_transient_read_failure(monkeypatch) -> None:
         assert method == "crm.productrow.list"
         calls += 1
         if calls == 1:
-            raise RuntimeError("Bitrix API crm.productrow.list is unavailable")
+            raise RuntimeError(error_message)
         return {"result": [{"ID": "1"}], "total": 1}
 
     monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)

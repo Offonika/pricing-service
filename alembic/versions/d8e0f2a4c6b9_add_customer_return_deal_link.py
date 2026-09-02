@@ -1,7 +1,7 @@
 """add customer return deal link
 
-Revision ID: c7d9e1f3a5b8
-Revises: b6e8f0a2c4d6
+Revision ID: d8e0f2a4c6b9
+Revises: c7d9e1f3a5b8
 Create Date: 2026-09-01
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "c7d9e1f3a5b8"
-down_revision: str | Sequence[str] | None = "b6e8f0a2c4d6"
+revision: str = "d8e0f2a4c6b9"
+down_revision: str | Sequence[str] | None = "c7d9e1f3a5b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -70,13 +70,13 @@ def test_customer_return_deal_link_migration(tmp_path: Path) -> None:
     base_migration = _load_migration()
     path = (
         Path(__file__).resolve().parents[1]
-        / "alembic/versions/c7d9e1f3a5b8_add_customer_return_deal_link.py"
+        / "alembic/versions/d8e0f2a4c6b9_add_customer_return_deal_link.py"
     )
     spec = importlib.util.spec_from_file_location("customer_return_deal_link_migration", path)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
-    assert migration.down_revision == "b6e8f0a2c4d6"
+    assert migration.down_revision == "c7d9e1f3a5b8"
 
     engine = create_engine(f"sqlite:///{tmp_path / 'customer-return-deal-link.db'}")
     with engine.begin() as connection:

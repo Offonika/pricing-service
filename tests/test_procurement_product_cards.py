@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 import app.services.bitrix_order_formation as bitrix_order_service
+import app.services.procurement_product_cards as product_card_service
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
@@ -36,6 +37,7 @@ from scripts.ensure_procurement_product_card_fields import (
     build_mapping,
     ensure_placement,
     ensure_product_fields,
+    field_code,
 )
 
 PRODUCT_GUID = "2685293e-967c-11e1-bdb9-0025901e48ef"
@@ -178,9 +180,12 @@ def test_product_card_snapshot_combines_metrics_blockers_and_orders(db_session) 
     assert snapshot["source"]["state"] == "ready"
 
     fields = product_card_native_fields(snapshot)
+    assert set(fields) == {spec["key"] for spec in PRODUCT_CARD_FIELD_SPECS}
+    assert len(fields) == 8
     assert fields["blocker_count"] == 1
-    assert fields["sales_30"] == "30"
-    assert fields["family"] == "Samsung A16"
+    assert Decimal(str(fields["recommended_order"])) == Decimal("7")
+    assert "sales_30" not in fields
+    assert "sellable_stock" not in fields
 
 
 def test_product_card_snapshot_uses_persisted_product_binding_without_order_line(
@@ -296,6 +301,66 @@ def test_sync_is_dry_run_by_default_and_apply_requires_flag(db_session) -> None:
         assert "disabled" in str(exc)
     else:
         raise AssertionError("apply without the server flag must fail")
+
+
+def test_dry_run_reports_missing_mapping_but_apply_stays_blocked(db_session) -> None:
+    _seed_order(db_session)
+    missing_mapping = {"catalog_id": 17, "fields": {}}
+
+    result = sync_product_cards(
+        db_session,
+        scope="displays",
+        settings=_settings(),
+        mapping=missing_mapping,
+        resolver=lambda *_args, **_kwargs: {},
+    )
+
+    assert result["mode"] == "dry_run"
+    assert result["items"][0]["status"] == "would_update"
+    assert result["missing_mapping_fields"] == [spec["key"] for spec in PRODUCT_CARD_FIELD_SPECS]
+
+    with pytest.raises(RuntimeError, match="mapping is incomplete"):
+        sync_product_cards(
+            db_session,
+            scope="displays",
+            apply=True,
+            settings=_settings(apply=True),
+            mapping=missing_mapping,
+            resolver=lambda *_args, **_kwargs: {},
+        )
+
+
+def test_dry_run_tolerates_missing_sync_state_table_but_apply_stays_blocked(
+    db_session,
+    monkeypatch,
+) -> None:
+    _seed_order(db_session)
+    monkeypatch.setattr(
+        product_card_service,
+        "_product_card_sync_state_table_exists",
+        lambda _db: False,
+    )
+
+    result = sync_product_cards(
+        db_session,
+        scope="displays",
+        settings=_settings(),
+        mapping=_mapping(),
+        resolver=lambda *_args, **_kwargs: {},
+    )
+
+    assert result["mode"] == "dry_run"
+    assert result["items"][0]["status"] == "would_update"
+
+    with pytest.raises(RuntimeError, match="sync state table is missing"):
+        sync_product_cards(
+            db_session,
+            scope="displays",
+            apply=True,
+            settings=_settings(apply=True),
+            mapping=_mapping(),
+            resolver=lambda *_args, **_kwargs: {},
+        )
 
 
 def test_apply_updates_reads_back_and_second_run_is_idempotent(db_session) -> None:
@@ -460,23 +525,35 @@ def test_field_provisioning_discovers_existing_and_creates_only_missing() -> Non
 
     def caller(method: str, params: dict, **_kwargs):
         if method == "crm.product.fields":
-            result = {"PROPERTY_900": {"title": PRODUCT_CARD_FIELD_SPECS[0]["title"]}}
+            result = {
+                "PROPERTY_900": {
+                    "title": "Переименованное существующее поле",
+                    "CODE": field_code(PRODUCT_CARD_FIELD_SPECS[0]["key"]),
+                },
+                "PROPERTY_901": {
+                    "title": "Ещё одно существующее поле",
+                    "XML_ID": field_code(PRODUCT_CARD_FIELD_SPECS[1]["key"]),
+                },
+                "PROPERTY_902": {"title": PRODUCT_CARD_FIELD_SPECS[2]["title"]},
+            }
             result.update(
-                {f"PROPERTY_{901 + index}": {"title": title} for index, title in enumerate(created)}
+                {f"PROPERTY_{903 + index}": {"title": title} for index, title in enumerate(created)}
             )
             return {"result": result}
         if method == "crm.product.property.add":
             assert params["fields"]["IBLOCK_ID"] == 17
             created.append(params["fields"]["NAME"])
-            return {"result": 901 + len(created)}
+            return {"result": 902 + len(created)}
         raise AssertionError(method)
 
     fields = ensure_product_fields(caller=caller, settings=_settings())
     mapping = build_mapping(fields, catalog_id=17, placement="CRM_PRODUCT_DETAIL_TAB")
 
-    assert len(created) == len(PRODUCT_CARD_FIELD_SPECS) - 1
+    assert len(created) == len(PRODUCT_CARD_FIELD_SPECS) - 3
     assert mapping["missing_fields"] == []
     assert set(mapping["fields"]) == {spec["key"] for spec in PRODUCT_CARD_FIELD_SPECS}
+    assert mapping["fields"][PRODUCT_CARD_FIELD_SPECS[0]["key"]] == "PROPERTY_900"
+    assert mapping["fields"][PRODUCT_CARD_FIELD_SPECS[1]["key"]] == "PROPERTY_901"
 
 
 def test_standard_cron_keeps_product_card_sync_behind_two_flags() -> None:

@@ -44,26 +44,12 @@ PRODUCT_CARD_FIELD_SPECS: tuple[dict[str, Any], ...] = (
     {"key": "blocker_count", "title": "[Авто] Количество блокеров", "type": "N", "sort": 850},
     {"key": "blocker_summary", "title": "[Авто] Блокеры", "type": "S", "sort": 860},
     {"key": "recommendation", "title": "[Авто] Рекомендация", "type": "S", "sort": 870},
-    {"key": "sales_30", "title": "[Авто] Продажи 30 дней", "type": "N", "sort": 880},
-    {"key": "sales_90", "title": "[Авто] Продажи 90 дней", "type": "N", "sort": 890},
-    {"key": "sales_180", "title": "[Авто] Продажи 180 дней", "type": "N", "sort": 900},
-    {"key": "sellable_stock", "title": "[Авто] Продаваемый остаток", "type": "N", "sort": 910},
-    {"key": "customer_orders", "title": "[Авто] Заказы покупателей", "type": "N", "sort": 920},
-    {"key": "incoming", "title": "[Авто] В пути", "type": "N", "sort": 930},
-    {"key": "target_stock", "title": "[Авто] Целевой запас", "type": "N", "sort": 940},
     {
         "key": "recommended_order",
         "title": "[Авто] Рекомендовано заказать",
         "type": "N",
-        "sort": 950,
+        "sort": 880,
     },
-    {"key": "current_order", "title": "[Авто] В текущем заказе", "type": "N", "sort": 960},
-    {"key": "supplier", "title": "[Авто] Поставщик", "type": "S", "sort": 970},
-    {"key": "profitability_pct", "title": "[Авто] Рентабельность, %", "type": "N", "sort": 980},
-    {"key": "return_qty_180", "title": "[Авто] Возвраты 180 дней", "type": "N", "sort": 990},
-    {"key": "defect_pct", "title": "[Авто] Подтверждённый брак, %", "type": "N", "sort": 1000},
-    {"key": "family", "title": "[Авто] Товарная семья", "type": "S", "sort": 1010},
-    {"key": "related_orders", "title": "[Авто] Связанные заказы", "type": "S", "sort": 1020},
 )
 
 
@@ -76,9 +62,7 @@ def bitrix_product_path(product_id: str | int | None, *, catalog_id: int = 17) -
 
 def load_product_card_mapping(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or get_settings()
-    path = Path(settings.procurement_product_card_mapping_path)
-    if not path.is_absolute():
-        path = REPO_ROOT / path
+    path = _product_card_mapping_path(settings)
     if not path.exists():
         raise RuntimeError(f"product card mapping does not exist: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -250,12 +234,8 @@ def list_product_card_snapshots(
 
 def product_card_native_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     demand = dict(snapshot.get("demand") or {})
-    quality = dict(snapshot.get("quality") or {})
-    supply = dict(snapshot.get("supply") or {})
     lifecycle = dict(snapshot.get("lifecycle") or {})
     source = dict(snapshot.get("source") or {})
-    family = dict(snapshot.get("family") or {})
-    orders = list(snapshot.get("orders") or [])
     blocker_messages = [
         str(item.get("message") or item.get("code") or "").strip()
         for item in list(snapshot.get("blockers") or [])
@@ -269,30 +249,12 @@ def product_card_native_fields(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "blocker_count": len(blocker_messages),
         "blocker_summary": "; ".join(blocker_messages),
         "recommendation": snapshot.get("recommendation"),
-        "sales_30": demand.get("sales_30"),
-        "sales_90": demand.get("sales_90"),
-        "sales_180": demand.get("sales_180"),
-        "sellable_stock": demand.get("sellable_stock"),
-        "customer_orders": demand.get("customer_orders"),
-        "incoming": demand.get("incoming"),
-        "target_stock": demand.get("target_stock"),
         "recommended_order": demand.get("recommended_order"),
-        "current_order": demand.get("current_order"),
-        "supplier": supply.get("supplier_name"),
-        "profitability_pct": supply.get("profitability_pct"),
-        "return_qty_180": quality.get("return_qty_180"),
-        "defect_pct": quality.get("defect_pct"),
-        "family": family.get("label"),
-        "related_orders": "; ".join(
-            str(item.get("label") or "").strip()
-            for item in orders
-            if isinstance(item, Mapping) and item.get("label")
-        ),
     }
     # Неизвестное значение не превращаем в ноль и не очищаем им карточку. Пустой
-    # список блокеров/заказов, напротив, является известным состоянием и должен
-    # удалить старый серверный текст из карточки.
-    clearable = {"blocker_summary", "related_orders"}
+    # список блокеров, напротив, является известным состоянием и должен удалить
+    # старый серверный текст из карточки.
+    clearable = {"blocker_summary"}
     return {
         key: _field_value(value)
         for key, value in fields.items()
@@ -314,14 +276,23 @@ def sync_product_cards(
     settings = settings or get_settings()
     if apply and not settings.procurement_product_card_apply_enabled:
         raise PermissionError("product card apply is disabled")
-    runtime_mapping = dict(mapping or load_product_card_mapping(settings))
+    mapping_path = _product_card_mapping_path(settings)
+    if mapping is not None:
+        runtime_mapping = dict(mapping)
+    elif apply or mapping_path.exists():
+        runtime_mapping = load_product_card_mapping(settings)
+    else:
+        runtime_mapping = {
+            "catalog_id": settings.procurement_product_card_catalog_id,
+            "fields": {},
+        }
     field_mapping = dict(runtime_mapping.get("fields") or {})
     missing = [
         spec["key"]
         for spec in PRODUCT_CARD_FIELD_SPECS
         if not str(field_mapping.get(spec["key"]) or "").strip()
     ]
-    if missing:
+    if apply and missing:
         raise RuntimeError("product card mapping is incomplete: " + ", ".join(missing))
     mapped_catalog_id = int(
         runtime_mapping.get("catalog_id") or settings.procurement_product_card_catalog_id
@@ -331,6 +302,11 @@ def sync_product_cards(
     batch_size = settings.procurement_product_card_batch_size
     if batch_size < 1 or batch_size > 50:
         raise ValueError("product card batch size must be between 1 and 50")
+    sync_state_table_exists = _product_card_sync_state_table_exists(db)
+    if apply and not sync_state_table_exists:
+        raise RuntimeError(
+            "product card sync state table is missing; apply the required migration first"
+        )
 
     snapshots = list_product_card_snapshots(
         db,
@@ -344,14 +320,18 @@ def sync_product_cards(
         for snapshot in snapshots
         if snapshot.get("identity", {}).get("xml_id")
     ]
-    states = {
-        state.product_xml_id: state
-        for state in db.scalars(
-            select(ProcurementProductCardSyncState).where(
-                ProcurementProductCardSyncState.product_xml_id.in_(xml_ids)
-            )
-        ).all()
-    }
+    states = (
+        {
+            state.product_xml_id: state
+            for state in db.scalars(
+                select(ProcurementProductCardSyncState).where(
+                    ProcurementProductCardSyncState.product_xml_id.in_(xml_ids)
+                )
+            ).all()
+        }
+        if sync_state_table_exists and xml_ids
+        else {}
+    )
     results: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     for snapshot in snapshots:
@@ -442,6 +422,7 @@ def sync_product_cards(
         "updated": sum(item["status"] == "synced" for item in results),
         "unchanged": sum(item["status"] == "unchanged" for item in results),
         "blocked": sum(item["status"] in {"readback_mismatch", "failed"} for item in results),
+        "missing_mapping_fields": missing,
         "items": results,
     }
 
@@ -723,6 +704,11 @@ def _classification_table_exists(db: Session) -> bool:
     return inspect(bind).has_table(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name)
 
 
+def _product_card_sync_state_table_exists(db: Session) -> bool:
+    bind = db.get_bind()
+    return inspect(bind).has_table(ProcurementProductCardSyncState.__tablename__)
+
+
 def _line_is_display(line: ProcurementOrderFormationLine) -> bool:
     payload = dict(line.payload or {})
     if isinstance(payload.get("display_family_recommendation"), Mapping):
@@ -858,6 +844,11 @@ def _date_text(value: Any) -> str | None:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
+
+
+def _product_card_mapping_path(settings: Settings) -> Path:
+    path = Path(settings.procurement_product_card_mapping_path)
+    return path if path.is_absolute() else REPO_ROOT / path
 
 
 def _field_value(value: Any) -> str | int:

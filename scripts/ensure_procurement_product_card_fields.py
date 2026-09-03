@@ -40,6 +40,30 @@ def field_code(logical_key: str) -> str:
     return "MM_AUTO_" + logical_key.upper()
 
 
+def existing_product_field_code(
+    fields: Mapping[str, Mapping[str, Any]],
+    spec: Mapping[str, Any],
+) -> str | None:
+    expected_code = field_code(str(spec["key"])).casefold()
+    for code, details in fields.items():
+        stable_values = (
+            details.get("code"),
+            details.get("CODE"),
+            details.get("xmlId"),
+            details.get("xml_id"),
+            details.get("XML_ID"),
+        )
+        if any(str(value or "").strip().casefold() == expected_code for value in stable_values):
+            return str(code)
+
+    expected_title = str(spec["title"]).strip()
+    for code, details in fields.items():
+        title = str(details.get("title") or details.get("NAME") or "").strip()
+        if title == expected_title:
+            return str(code)
+    return None
+
+
 def discover_product_fields(
     *,
     caller: Callable[..., dict[str, Any]],
@@ -57,15 +81,11 @@ def build_mapping(
     catalog_id: int,
     placement: str,
 ) -> dict[str, Any]:
-    by_title = {
-        str(details.get("title") or details.get("NAME") or "").strip(): str(code)
-        for code, details in fields.items()
-    }
-    mapped = {
-        spec["key"]: by_title[spec["title"]]
-        for spec in PRODUCT_CARD_FIELD_SPECS
-        if spec["title"] in by_title
-    }
+    mapped = {}
+    for spec in PRODUCT_CARD_FIELD_SPECS:
+        existing_code = existing_product_field_code(fields, spec)
+        if existing_code is not None:
+            mapped[spec["key"]] = existing_code
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "catalog_id": catalog_id,
@@ -84,12 +104,8 @@ def ensure_product_fields(
     settings: Settings,
 ) -> dict[str, dict[str, Any]]:
     fields = discover_product_fields(caller=caller, settings=settings)
-    titles = {
-        str(details.get("title") or details.get("NAME") or "").strip()
-        for details in fields.values()
-    }
     for spec in PRODUCT_CARD_FIELD_SPECS:
-        if spec["title"] in titles:
+        if existing_product_field_code(fields, spec) is not None:
             continue
         result = caller(
             "crm.product.property.add",

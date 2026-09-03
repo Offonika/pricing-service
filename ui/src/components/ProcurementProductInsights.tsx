@@ -72,15 +72,18 @@ function finiteNumber(value: unknown) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
 function dictionaryLabel(labels: Record<string, string>, value: unknown) {
   const raw = text(value);
   return labels[raw] || raw;
+}
+
+function blockerCountLabel(count: number) {
+  const remainder100 = count % 100;
+  const remainder10 = count % 10;
+  if (remainder100 >= 11 && remainder100 <= 14) return `${count} блокеров`;
+  if (remainder10 === 1) return `${count} блокер`;
+  if (remainder10 >= 2 && remainder10 <= 4) return `${count} блокера`;
+  return `${count} блокеров`;
 }
 
 export function ProcurementProductInsights({ productId }: Props) {
@@ -156,41 +159,35 @@ export function ProcurementProductInsights({ productId }: Props) {
   }
 
   const sourceState = text(data.source.state, "missing");
-  const characteristics = record(data.properties.characteristics);
+  const sourceClass = sourceState === "ready" ? "is-ready" : "is-warning";
   const stateClass = data.blockers.length
     ? "is-blocked"
-    : sourceState === "ready"
-      ? "is-ready"
-      : "is-warning";
+    : sourceClass;
 
   return (
     <main className={`product-insights ${stateClass}`}>
-      <header className="product-insights__hero">
-        {data.identity.photo_url ? (
-          <img alt={data.identity.name} src={data.identity.photo_url} />
-        ) : (
-          <div className="product-insights__photo-empty">Нет фото</div>
-        )}
-        <div className="product-insights__identity">
-          <div className="product-insights__eyebrow">
-            <span>{data.identity.nomenclature_code || `Bitrix #${data.identity.bitrix_product_id}`}</span>
-            <span>Расчёт: {text(data.source.calculated_at)}</span>
+      <header className="product-insights__control">
+        <div className="product-insights__control-heading">
+          <h1>Контроль закупки</h1>
+          <span>Расчёт: {text(data.source.calculated_at)}</span>
+        </div>
+        <div className="product-insights__badges">
+          <span>
+            Жизненный статус: {text(data.lifecycle.label || data.lifecycle.status, "не определён")}
+          </span>
+          <span className={sourceClass}>
+            {sourceState === "ready" ? "Данные актуальны" : "Проверьте данные"}
+          </span>
+          {data.blockers.length ? (
+            <span className="is-blocked">{blockerCountLabel(data.blockers.length)}</span>
+          ) : null}
+        </div>
+        <div className="product-insights__decision">
+          <div>
+            <span>Рекомендовано заказать</span>
+            <strong>{number(data.demand.recommended_order, " шт.")}</strong>
           </div>
-          <h1>{data.identity.name}</h1>
-          <div className="product-insights__badges">
-            <span>{text(data.lifecycle.label || data.lifecycle.status, "Статус не определён")}</span>
-            <span className={stateClass}>
-              {data.blockers.length
-                ? `${data.blockers.length} блокер(а)`
-                : sourceState === "ready"
-                  ? "Данные актуальны"
-                  : "Проверьте данные"}
-            </span>
-          </div>
-          {data.recommendation ? <p>{data.recommendation}</p> : null}
-          <div className="product-insights__links">
-            {data.identity.website_url ? <a href={data.identity.website_url} rel="noreferrer" target="_blank">Карточка на сайте</a> : null}
-          </div>
+          <p>{text(data.recommendation, "Рекомендация пока не рассчитана")}</p>
         </div>
       </header>
 
@@ -224,12 +221,11 @@ export function ProcurementProductInsights({ productId }: Props) {
       ) : null}
 
       <section className="product-insights__section">
-        <h2>Спрос и наличие</h2>
+        <h2>Спрос и потребность</h2>
         <div className="product-insights__metrics">
           <Metric label="Продажи 30 дней" value={number(data.demand.sales_30, " шт.")} />
           <Metric label="Продажи 90 дней" value={number(data.demand.sales_90, " шт.")} />
           <Metric label="Продажи 180 дней" value={number(data.demand.sales_180, " шт.")} />
-          <Metric label="Остаток" value={number(data.demand.sellable_stock, " шт.")} />
           <Metric label="Заказы покупателей" value={number(data.demand.customer_orders, " шт.")} />
           <Metric label="В пути" value={number(data.demand.incoming, " шт.")} />
           <Metric label="Целевой запас" value={number(data.demand.target_stock, " шт.")} />
@@ -271,29 +267,11 @@ export function ProcurementProductInsights({ productId }: Props) {
       </div>
 
       <section className="product-insights__section">
-        <h2>Свойства и семья</h2>
-        <div className="product-insights__metrics">
-          <Metric label="Качество" value={text(data.properties.quality)} />
-          <Metric label="Статус ассортимента" value={text(data.properties.assortment_status)} />
-          <Metric label="Профиль закупки" value={text(data.properties.procurement_profile)} />
-          <Metric label="Ручной минимум" value={number(data.properties.manual_minimum, " шт.")} />
-          <Metric label="Предмет" value={text(data.properties.subject)} />
-          <Metric label="Категория" value={text(data.properties.category)} />
-          <Metric label="Бренд" value={text(data.properties.brand)} />
-          <Metric label="Модель" value={text(data.properties.model)} />
+        <h2>Товарная семья</h2>
+        <div className="product-insights__metrics product-insights__metrics--compact">
           <Metric label="Семья" value={text(data.family.label)} />
           <Metric label="Карточек в семье" value={number(data.family.member_count)} />
         </div>
-        {Object.keys(characteristics).length ? (
-          <dl className="product-insights__characteristics">
-            {Object.entries(characteristics).map(([key, value]) => (
-              <div key={key}>
-                <dt>{key}</dt>
-                <dd>{text(value)}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : null}
       </section>
 
       <section className="product-insights__section">

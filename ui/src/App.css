@@ -30,7 +30,7 @@
   text-align: center;
 }
 
-.product-insights__hero,
+.product-insights__control,
 .product-insights__section {
   border: 1px solid #dce3ed;
   border-radius: 16px;
@@ -38,47 +38,36 @@
   box-shadow: 0 8px 28px rgb(31 45 61 / 7%);
 }
 
-.product-insights__hero {
+.product-insights__control {
   display: grid;
-  grid-template-columns: 132px 1fr;
-  gap: 18px;
+  gap: 13px;
   padding: 18px;
   border-top: 5px solid var(--insights-accent);
 }
 
-.product-insights__hero > img,
-.product-insights__photo-empty {
-  width: 132px;
-  height: 132px;
-  border-radius: 12px;
-  object-fit: contain;
-  background: #f2f5f9;
+.product-insights__control-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.product-insights__photo-empty {
-  display: grid;
-  place-items: center;
+.product-insights__control-heading h1 {
+  margin: 0;
+  font-size: clamp(21px, 3vw, 28px);
+}
+
+.product-insights__control-heading span {
   color: #718096;
-  font-size: 13px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.product-insights__identity { min-width: 0; }
-.product-insights__identity h1 { margin: 7px 0 9px; font-size: clamp(20px, 3vw, 30px); }
-.product-insights__identity p { margin: 12px 0 0; color: #48566a; }
-
-.product-insights__eyebrow,
 .product-insights__badges,
-.product-insights__links,
 .product-insights__orders nav {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-}
-
-.product-insights__eyebrow {
-  justify-content: space-between;
-  color: #65758b;
-  font-size: 12px;
 }
 
 .product-insights__badges span {
@@ -92,7 +81,18 @@
 .product-insights__badges .is-ready { color: #16704a; background: #e2f5eb; }
 .product-insights__badges .is-warning { color: #805a0a; background: #fff1ce; }
 .product-insights__badges .is-blocked { color: #9a2929; background: #fde6e6; }
-.product-insights__links { margin-top: 12px; }
+.product-insights__decision {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.35fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding-top: 13px;
+  border-top: 1px solid #e5eaf1;
+}
+.product-insights__decision > div { display: grid; gap: 3px; }
+.product-insights__decision span { color: #66758a; font-size: 12px; }
+.product-insights__decision strong { font-size: 20px; }
+.product-insights__decision p { margin: 0; color: #354154; font-weight: 600; }
 .product-insights a { color: #1769aa; font-weight: 700; text-decoration: none; }
 .product-insights a:hover { text-decoration: underline; }
 
@@ -104,6 +104,9 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+}
+.product-insights__metrics--compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .product-insights__metric {
@@ -117,22 +120,6 @@
 
 .product-insights__metric span { color: #66758a; font-size: 12px; }
 .product-insights__metric strong { overflow-wrap: anywhere; font-size: 15px; }
-
-.product-insights__characteristics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin: 14px 0 0;
-}
-
-.product-insights__characteristics > div {
-  padding: 9px 11px;
-  border: 1px solid #e5eaf1;
-  border-radius: 9px;
-}
-
-.product-insights__characteristics dt { color: #66758a; font-size: 12px; }
-.product-insights__characteristics dd { margin: 3px 0 0; overflow-wrap: anywhere; font-weight: 700; }
 
 .product-insights__chart {
   display: grid;
@@ -233,17 +220,16 @@
 
 @media (max-width: 800px) {
   .product-insights__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .product-insights__characteristics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-insights__columns { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {
   .product-insights { padding: 10px; }
-  .product-insights__hero { grid-template-columns: 82px 1fr; padding: 13px; }
-  .product-insights__hero > img,
-  .product-insights__photo-empty { width: 82px; height: 82px; }
+  .product-insights__control { padding: 13px; }
+  .product-insights__control-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .product-insights__control-heading span { white-space: normal; }
+  .product-insights__decision { grid-template-columns: 1fr; gap: 8px; }
   .product-insights__metrics { grid-template-columns: 1fr 1fr; }
-  .product-insights__characteristics { grid-template-columns: 1fr; }
   .product-insights__chart > div { grid-template-columns: 62px 1fr; }
   .product-insights__chart strong { grid-column: 2; }
   .product-insights__orders article { align-items: flex-start; flex-direction: column; }

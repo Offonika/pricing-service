@@ -47,6 +47,7 @@ function productCard(): ProcurementProductCard {
       customer_orders: "2",
       incoming: "3",
       target_stock: "9",
+      recommended_order: "7",
       current_order: "5",
     },
     quality: {
@@ -101,20 +102,28 @@ describe("ProcurementProductInsights", () => {
 
   afterEach(cleanup);
 
-  it("показывает блокеры, характеристики и не подменяет пропуски нулём", async () => {
+  it("показывает управленческие показатели без дублей штатной карточки", async () => {
     vi.mocked(fetchProcurementProductCard).mockResolvedValue(productCard());
 
     render(<ProcurementProductInsights productId="1646" />);
 
-    expect(await screen.findByRole("heading", { name: "Дисплей Samsung A16" }))
+    expect(await screen.findByRole("heading", { name: "Контроль закупки" }))
       .toBeInTheDocument();
     await waitFor(() => {
       expect(document.title).toBe("Дисплей Samsung A16 — показатели товара");
     });
     expect(fetchProcurementProductCard).toHaveBeenCalledWith("1646");
-    expect(screen.getByText("1 блокер(а)")).toBeInTheDocument();
+    expect(screen.getByText("1 блокер")).toBeInTheDocument();
     expect(screen.getByText("Проверить причины возвратов")).toBeInTheDocument();
-    expect(screen.getByText("OLED")).toBeInTheDocument();
+    expect(screen.getByText("Рекомендовано заказать")).toBeInTheDocument();
+    expect(screen.getByText("7 шт.")).toBeInTheDocument();
+    expect(screen.getByText("Samsung A16")).toBeInTheDocument();
+    expect(screen.queryByText("Дисплей Samsung A16")).not.toBeInTheDocument();
+    expect(screen.queryByText("РБ000006737")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Карточка на сайте" })).not.toBeInTheDocument();
+    expect(screen.queryByText("OLED")).not.toBeInTheDocument();
+    expect(screen.queryByText("Остаток", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(screen.getAllByText("нет данных").length).toBeGreaterThan(0);
     expect(screen.queryByText("0 шт./день")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Бизнес-процесс" })).toHaveAttribute(
@@ -132,7 +141,7 @@ describe("ProcurementProductInsights", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Повторить" }));
     await waitFor(() => expect(fetchProcurementProductCard).toHaveBeenCalledTimes(2));
-    expect(await screen.findByRole("heading", { name: "Дисплей Samsung A16" }))
+    expect(await screen.findByRole("heading", { name: "Контроль закупки" }))
       .toBeInTheDocument();
   });
 });

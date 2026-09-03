@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.validate_cli_registry import (
+    _uses_application_unit_of_work,
     _uses_central_read_only_scope,
     effective_metadata,
     find_errors,
@@ -36,6 +37,27 @@ def test_plain_session_is_not_central_read_only_scope(tmp_path) -> None:
     )
 
     assert _uses_central_read_only_scope(command) is False
+
+
+def test_application_unit_of_work_detection(tmp_path) -> None:
+    command = tmp_path / "write_command.py"
+    command.write_text(
+        "from app.infrastructure.db import SqlAlchemyUnitOfWork\n"
+        "with SqlAlchemyUnitOfWork() as unit_of_work:\n"
+        "    unit_of_work.session.execute('UPDATE example SET value = 1')\n",
+        encoding="utf-8",
+    )
+
+    assert _uses_application_unit_of_work(command) is True
+
+
+def test_publish_weekly_kpi_reports_declares_atomic_application_write() -> None:
+    metadata = effective_metadata("publish_weekly_kpi_reports.py", load_registry())
+
+    assert metadata["kind"] == "permanent_cli"
+    assert metadata["db_access"] == "application_write"
+    assert metadata["transaction_scope"] == "unit_of_work"
+    assert metadata["idempotency"] == "verified_by_draft_to_published_transition"
 
 
 def test_manual_matching_commands_require_central_read_only_db_access() -> None:

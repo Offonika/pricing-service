@@ -156,6 +156,78 @@ class ProcurementBlockerDetailRead(BaseModel):
     resolution_actions: list[ProcurementBlockerResolutionRead] = Field(default_factory=list)
 
 
+class ProcurementProductLinkRead(BaseModel):
+    bitrix_product_id: str | None = None
+    xml_id: str = ""
+    nomenclature_code: str | None = None
+    name: str = ""
+    bitrix_url: str | None = None
+
+
+class ProcurementBlockedProductRead(ProcurementProductLinkRead):
+    line_id: int
+    line_number: int
+    blocker_count: int
+    blockers: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
+
+
+class ProcurementProductCardIdentityRead(BaseModel):
+    bitrix_product_id: str
+    xml_id: str
+    nomenclature_code: str
+    name: str
+    article: str = ""
+    photo_url: str | None = None
+    website_url: str | None = None
+    bitrix_url: str | None = None
+
+
+class ProcurementProductCardOrderRead(BaseModel):
+    order_id: int
+    label: str
+    status: str
+    onec_status: str
+    onec_document_number: str | None = None
+    bitrix_process_url: str | None = None
+    app_url: str
+
+
+class ProcurementProductCardRead(BaseModel):
+    identity: ProcurementProductCardIdentityRead
+    properties: dict[str, Any] = Field(default_factory=dict)
+    lifecycle: dict[str, Any] = Field(default_factory=dict)
+    demand: dict[str, Any] = Field(default_factory=dict)
+    quality: dict[str, Any] = Field(default_factory=dict)
+    supply: dict[str, Any] = Field(default_factory=dict)
+    family: dict[str, Any] = Field(default_factory=dict)
+    blockers: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
+    orders: list[ProcurementProductCardOrderRead] = Field(default_factory=list)
+    recommendation: str | None = None
+    source: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcurementProductCardSyncItemRead(BaseModel):
+    bitrix_product_id: str
+    xml_id: str
+    nomenclature_code: str
+    name: str
+    status: str
+    changed_fields: list[str] = Field(default_factory=list)
+    fields: dict[str, Any] = Field(default_factory=dict)
+    mismatches: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class ProcurementProductCardSyncResponse(BaseModel):
+    mode: str
+    scope: str
+    total: int
+    updated: int
+    unchanged: int
+    blocked: int
+    items: list[ProcurementProductCardSyncItemRead] = Field(default_factory=list)
+
+
 class ProcurementOrderFormationLineRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -761,6 +833,7 @@ class ProcurementOrderListItem(BaseModel):
     total_quantity: Decimal
     total_amount: Decimal
     blockers: list[str] = Field(default_factory=list)
+    blocked_products: list[ProcurementBlockedProductRead] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -815,6 +888,7 @@ class ProcurementOrderFormationEventRead(BaseModel):
     before: dict[str, Any] = Field(default_factory=dict)
     after: dict[str, Any] = Field(default_factory=dict)
     payload: dict[str, Any] = Field(default_factory=dict)
+    product: ProcurementProductLinkRead | None = None
     created_at: datetime
 
 

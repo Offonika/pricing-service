@@ -78,6 +78,7 @@ function assistantData(photoOriginal: string | null = "https://cdn.example.test/
         id: 40,
         line_number: 1,
         version: 1,
+        bitrix_product_id: "2695",
         bitrix_product_xml_id: "11111111-2222-3333-4444-555555555555",
         nomenclature_ref: "11111111-2222-3333-4444-555555555555",
         nomenclature_code: "MMI-15P-OLED-TM",
@@ -144,6 +145,7 @@ function assistantData(photoOriginal: string | null = "https://cdn.example.test/
 
 describe("ProcurementOrderAssistant", () => {
   beforeEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
     vi.mocked(fetchProcurementOrderAssistant).mockReset();
     vi.mocked(assembleProcurementOrderProjects).mockReset();
     vi.mocked(approveProcurementClassification).mockReset();
@@ -168,11 +170,19 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getAllByText("Класс A").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Лучшие условия").length).toBeGreaterThan(0);
     expect(screen.getAllByText("30/70").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /Открыть карточку товара/ })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/2695/"
+    );
     expect(screen.getByRole("link", { name: /Открыть исходное фото/ })).toHaveAttribute(
       "href",
       "https://cdn.example.test/original/display.jpg"
     );
-    expect(screen.getByRole("link", { name: "Карточка товара" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Дисплей iPhone 15 Pro OLED" })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/2695/"
+    );
+    expect(screen.getByRole("link", { name: "Карточка на сайте" })).toHaveAttribute(
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );

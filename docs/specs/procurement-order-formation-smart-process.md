@@ -7,6 +7,7 @@ status: "implemented"
 owner: "operations"
 source_of_truth: true
 related_code:
+  - alembic/versions/c6d7e8f90123_add_procurement_product_card_sync_state.py
   - app/models/procurement_order_formation.py
   - app/api/procurement_order_formation.py
   - app/services/procurement_order_formation.py
@@ -20,6 +21,7 @@ related_code:
   - app/services/procurement_order_metrics.py
   - app/services/procurement_order_metrics_backfill.py
   - app/services/procurement_order_product_media.py
+  - app/services/procurement_product_cards.py
   - app/services/procurement_order_labels.py
   - app/services/procurement_order_process_link.py
   - app/services/procurement_supplier_profiles.py
@@ -34,8 +36,14 @@ related_code:
   - tasks/reconcile_procurement_order_process_links.py
   - tasks/export_manual_status_overrides.py
   - tasks/export_management_marks.py
+  - tasks/sync_procurement_product_cards.py
+  - scripts/ensure_procurement_product_card_fields.py
+  - infra/cron/display_auto_order_sync.sh
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+  - ui/src/components/ProcurementProductInsights.tsx
+  - ui/src/api/bitrix.ts
+  - ui/src/api/procurementAssortment.ts
 related_tests:
   - tests/test_procurement_order_process_link.py
   - tests/test_procurement_order_formation.py
@@ -51,6 +59,8 @@ related_tests:
   - tests/test_procurement_order_metrics_backfill.py
   - tests/test_procurement_order_product_media.py
   - tests/test_procurement_order_labels.py
+  - tests/test_procurement_product_cards.py
+  - tests/test_procurement_product_card_migration.py
   - tests/test_reconcile_procurement_order_missing_number_task.py
   - tests/test_procurement_supplier_profiles.py
 contracts:
@@ -60,7 +70,7 @@ depends_on:
   - docs/specs/assortment-lifecycle-policy.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-02"
+updated_at: "2026-09-03"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
@@ -708,6 +718,35 @@ URL исходного изображения без повторного сжа
 Проценты форматируются по русской локали, а количество возвратов — с правильным
 склонением во всех API- и UI-сообщениях.
 
+### Штатная карточка товара Bitrix24 — решение `2026-09-03`
+
+Основной рабочей поверхностью остаётся оригинальная карточка товара Bitrix24 в
+каталоге ID `17`; отдельная дублирующая товарная карточка приложения не
+создаётся. В штатной карточке `pricing-service` поддерживает восемь компактных
+расчётных полей с префиксом `[Авто]`:
+
+- дата расчёта и состояние данных;
+- жизненный статус и причина статуса;
+- количество блокеров и их краткое описание;
+- рекомендация и рекомендованное количество заказа.
+
+Отдельное строковое свойство `Показатели товара` содержит внутреннюю ссылку на
+полную детализацию в уже установленном Bitrix placement приложения
+`Формирование заказа`. Детализация показывает спрос, потребность, качество,
+поставку, товарную семью, связанные заказы и evidence блокеров, не дублируя
+штатные название, фотографию, остатки и характеристики товара. Из строки заказа
+название и фотография открывают штатную карточку товара. Индикатор одного
+проблемного товара открывает сразу его карточку; при нескольких товарах
+показывается короткий список переходов.
+
+Разрешены миграция состояния синхронизации, deploy backend/UI при выключенной
+массовой синхронизации, создание девяти свойств (восемь `[Авто]`-показателей и
+ссылка) и запись значений только в одну выбранную пилотную карточку внутри
+каталога ID `17`. Apply требует точный `--product-id`; массовый запуск без него
+дополнительно требует `--allow-multiple` и отдельного решения владельца.
+Массовое заполнение каталога, включение cron и любая запись в `1С` этим решением
+не разрешены.
+
 ### Фильтр возвратов качества «Новый» — решение `2026-08-31`
 
 При расчёте `batch_error_return_qty`, доли возвратов качества `Новый` и блокера
@@ -1261,6 +1300,10 @@ cd ui && npm run lint && npm run build
   между позициями и без разделителя после последней.
 - [x] Автор не может принять или отклонить своё предложение; причина отклонения обязательна.
 - [x] Backfill метрик поддерживает dry-run, apply, повторный запуск и rollback-manifest.
+- [x] Реализованы API полной детализации, переходы из заказа и журнала, девять
+      свойств штатной карточки и пакетная синхронизация с обязательным readback.
+- [ ] На одной выбранной карточке каталога ID `17` созданные свойства заполнены
+      пилотными значениями и подтверждены REST-readback и визуальной проверкой.
 
 # Source of Truth
 
@@ -1284,6 +1327,8 @@ cd ui && npm run lint && npm run build
 - [x] Dry-run builder, result sync и idempotent send-to-1C.
 - [x] Workspace UI и серверная проверка прав.
 - [x] Unit/integration tests и OpenAPI export.
+- [x] Native product-card API, provisioning existing-fields-first, защищённый
+      single-card apply, readback и embedded-экран покрыты backend/UI-тестами.
 - **ОТМЕНЕНО (2026-08-10) для внутренних проектов:** дополнительное
   rollout-решение после отдельной сверки рассчитанного количества с человеком.
 - [x] Убрать общий отказ сохранения партии из-за `--fail-on-blockers`; блокировать
@@ -1312,6 +1357,12 @@ cd ui && npm run lint && npm run build
 - `tests/test_procurement_order_metrics.py` — формулы и атрибуция брака.
 - `tests/test_procurement_order_metrics_backfill.py` — безопасный backfill/rollback.
 - `tests/test_procurement_supplier_profiles.py` — версии и права профиля.
+- `tests/test_procurement_product_cards.py` — снимок карточки, точная связь,
+  provisioning, single-card apply, batch readback и идемпотентность.
+- `tests/test_procurement_product_card_migration.py` — upgrade/downgrade таблицы
+  состояния синхронизации.
+- `ui/src/components/ProcurementProductInsights.test.tsx` — детализация,
+  блокеры, пропущенные значения и переходы.
 
 # Rollout
 
@@ -1346,10 +1397,31 @@ XML round-trip с 1С и отдельное бизнес-решение посл
 текущему документационному изменению переключать флаги или отправлять данные в
 1С.
 
+Пилот штатной товарной карточки выполняется отдельно и строго в таком порядке:
+
+1. Развернуть backend/UI и применить миграцию при выключенных
+   `PROCUREMENT_PRODUCT_CARD_APPLY_ENABLED` и
+   `DISPLAY_AUTO_ORDER_PRODUCT_CARD_SYNC_ENABLED`.
+2. Сохранить read-only снимок списка свойств каталога и исходных значений
+   выбранного пилотного товара для отката.
+3. Создать недостающие восемь `[Авто]`-свойств и строковое свойство-ссылку
+   `Показатели товара`; новую product-detail вкладку не регистрировать.
+4. Выбрать одну карточку дисплея с блокером и полным набором доступных
+   показателей, выполнить dry-run по её точному Bitrix product ID и сверить
+   значения.
+5. Временно включить серверный apply-флаг только на время команды с точным
+   `--product-id`, выполнить запись, сразу вернуть флаг в выключенное состояние
+   и проверить REST-readback, sync-state и открытие ссылки внутри Bitrix24.
+6. Не включать `--allow-multiple`, product-card cron и запись в `1С` без нового
+   решения владельца.
+
 # Changelog
 
 - 2026-09-03 — утверждено создание глобальной валюты `AED` в Bitrix24 по
   официальному курсу ЦБ РФ на дату операции.
+- 2026-09-03 — утверждён рекомендуемый вариант: штатная карточка товара каталога
+  ID `17`, восемь сводных `[Авто]`-полей и ссылка на детализацию; разрешён пилот
+  только на одной выбранной карточке, массовая запись и cron не разрешены.
 - 2026-09-02 — безопасный retry read-only чтения товарных строк расширен на
   кратковременный HTTP 500 Bitrix24; автоматический повтор записей не менялся.
 - 2026-09-02 — write-batch timeout синхронизации товарных строк увеличен до

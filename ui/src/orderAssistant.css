@@ -479,6 +479,23 @@
   background: #ffffff;
 }
 
+.order-assistant__photo-actions {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  width: 44px;
+}
+
+.order-assistant__photo-original {
+  color: #376b96;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.order-assistant__photo-original:hover { text-decoration: underline; }
+
 .order-assistant__photo-link img {
   width: 100%;
   height: 100%;

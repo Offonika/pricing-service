@@ -247,6 +247,27 @@ def test_large_label_download_returns_zip_with_part_files(monkeypatch) -> None:
         assert archive.namelist()[0].endswith("part-01-of-02.pdf")
 
 
+def test_native_product_card_insights_endpoints_are_exposed() -> None:
+    openapi = app.openapi()
+    paths = openapi["paths"]
+
+    assert "get" in paths["/api/procurement-order-formation/products/{product_id}/card"]
+    assert "get" in paths["/api/procurement-order-formation/products/by-xml/{xml_id}/card"]
+    schema = openapi["components"]["schemas"]["ProcurementProductCardRead"]
+    assert {
+        "identity",
+        "properties",
+        "lifecycle",
+        "demand",
+        "quality",
+        "supply",
+        "family",
+        "blockers",
+        "orders",
+        "source",
+    }.issubset(schema["properties"])
+
+
 def test_lifecycle_approval_schema_limits_batch_to_100() -> None:
     item = {
         "proposal_id": 1,

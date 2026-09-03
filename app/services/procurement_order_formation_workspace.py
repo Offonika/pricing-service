@@ -52,6 +52,8 @@ from app.services.procurement_order_formation import (
     approve_order,
     effective_assortment_status,
     get_order,
+    line_blocker_details,
+    line_blockers,
     normalize_guid,
     normalize_status,
     order_blockers,
@@ -66,6 +68,7 @@ from app.services.procurement_order_registry import (
 from app.services.procurement_order_registry import (
     lifecycle_display_status,
 )
+from app.services.procurement_product_cards import bitrix_product_path
 from app.services.procurement_supplier_profiles import (
     empty_supplier_profile,
     serialize_supplier_profile,
@@ -1478,6 +1481,7 @@ def serialize_order_list_item(order: ProcurementOrderFormation) -> dict[str, Any
         "total_quantity": total_quantity,
         "total_amount": sum((line.amount for line in active_lines), Decimal("0")),
         "blockers": blockers,
+        "blocked_products": _blocked_products(active_lines),
         "updated_at": order.updated_at,
     }
 
@@ -1495,8 +1499,72 @@ def serialize_event(event: ProcurementOrderFormationEvent) -> dict[str, Any]:
         "before": dict(event.before or {}),
         "after": dict(event.after or {}),
         "payload": dict(event.payload or {}),
+        "product": _event_product(event),
         "created_at": event.created_at,
     }
+
+
+def _blocked_products(lines: Iterable[ProcurementOrderFormationLine]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        blockers = line_blockers(line)
+        if not blockers:
+            continue
+        rows.append(
+            {
+                "line_id": line.id,
+                "line_number": line.line_number,
+                "bitrix_product_id": line.bitrix_product_id,
+                "xml_id": line.bitrix_product_xml_id,
+                "nomenclature_code": line.nomenclature_code,
+                "name": line.nomenclature_name,
+                "blocker_count": len(blockers),
+                "blockers": line_blocker_details(line),
+                "bitrix_url": bitrix_product_path(
+                    line.bitrix_product_id,
+                    catalog_id=get_settings().procurement_product_card_catalog_id,
+                ),
+            }
+        )
+    return rows
+
+
+def _event_product(event: ProcurementOrderFormationEvent) -> dict[str, Any] | None:
+    payloads = [dict(event.after or {}), dict(event.before or {}), dict(event.payload or {})]
+    line_id = str(event.entity_id) if event.entity_type == "order_line" else ""
+    for payload in payloads:
+        lines = payload.get("lines")
+        if isinstance(lines, list):
+            for line in lines:
+                if not isinstance(line, Mapping):
+                    continue
+                if line_id and str(line.get("id") or "") != line_id:
+                    continue
+                product_id = str(line.get("bitrix_product_id") or "").strip()
+                if product_id:
+                    return {
+                        "bitrix_product_id": product_id,
+                        "xml_id": str(line.get("bitrix_product_xml_id") or ""),
+                        "nomenclature_code": line.get("nomenclature_code"),
+                        "name": str(line.get("nomenclature_name") or ""),
+                        "bitrix_url": bitrix_product_path(
+                            product_id,
+                            catalog_id=get_settings().procurement_product_card_catalog_id,
+                        ),
+                    }
+        product_id = str(payload.get("bitrix_product_id") or "").strip()
+        if product_id:
+            return {
+                "bitrix_product_id": product_id,
+                "xml_id": str(payload.get("bitrix_product_xml_id") or ""),
+                "nomenclature_code": payload.get("nomenclature_code"),
+                "name": str(payload.get("nomenclature_name") or ""),
+                "bitrix_url": bitrix_product_path(
+                    product_id,
+                    catalog_id=get_settings().procurement_product_card_catalog_id,
+                ),
+            }
+    return None
 
 
 def record_lifecycle_property_update_exchange_result(

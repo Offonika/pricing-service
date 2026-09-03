@@ -8,6 +8,7 @@ import type {
 } from "../api/procurementAssortment";
 import {
   decideProcurementLifecycleTransition,
+  fetchProcurementEvents,
   fetchProcurementLifecycleTransitions,
   fetchProcurementOrder,
   fetchProcurementOrderFormation,
@@ -15,6 +16,7 @@ import {
 } from "../api/procurementAssortment";
 import { openBitrixProcurementProcess } from "../api/bitrix";
 import {
+  EventHistory,
   LifecycleQueue,
   OrdersRegistry,
   ProcurementOrderFormationWorkspace,
@@ -36,6 +38,12 @@ vi.mock("../api/procurementAssortment", () => ({
 
 vi.mock("../api/bitrix", () => ({
   openBitrixProcurementProcess: vi.fn(),
+  resolveBitrixPortalUrl: vi.fn((value?: string | null) => (
+    value ? `https://crm.master-mobile.ru${value}` : ""
+  )),
+  resolveBitrixProductUrl: vi.fn((value?: string | number | null) => (
+    value ? `https://crm.master-mobile.ru/crm/catalog/17/product/${value}/` : ""
+  )),
 }));
 
 vi.mock("./ProcurementOrderAssistant", () => ({
@@ -408,7 +416,18 @@ describe("OrdersRegistry", () => {
           process_title: "Закупка/Заказ",
           entity_type_id: 1056,
         },
-        blockers: ["line_1:catalog_product_missing", "line_2:quantity_must_be_positive"],
+        blockers: ["line_1:catalog_product_missing", "line_1:quantity_must_be_positive"],
+        blocked_products: [{
+          line_id: 901,
+          line_number: 1,
+          bitrix_product_id: "1646",
+          xml_id: "2685293e-967c-11e1-bdb9-0025901e48ef",
+          nomenclature_code: "РБ000006737",
+          name: "Дисплей тест",
+          blocker_count: 2,
+          blockers: [],
+          bitrix_url: "/crm/catalog/17/product/1646/",
+        }],
       }],
     });
 
@@ -416,7 +435,11 @@ describe("OrdersRegistry", () => {
     render(<OrdersRegistry onOpenOrder={onOpenOrder} />);
 
     const project = await screen.findByText("Проект №543");
-    expect(screen.getByText("С блокерами: 2")).toBeInTheDocument();
+    const blockerLink = screen.getByRole("link", { name: "2 блокера · 1 строка" });
+    expect(blockerLink).toHaveAttribute(
+      "href",
+      "https://crm.master-mobile.ru/crm/catalog/17/product/1646/"
+    );
     expect(screen.getByText("Процесс появится после создания документа в 1С")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Открыть проект" }));
     expect(onOpenOrder).toHaveBeenCalledWith(543);
@@ -551,5 +574,45 @@ describe("OrdersRegistry", () => {
     await waitFor(() => expect(fetchProcurementOrders).toHaveBeenLastCalledWith(
       expect.objectContaining({ page: 2, page_size: 100 })
     ));
+  });
+});
+
+describe("EventHistory product links", () => {
+  afterEach(cleanup);
+
+  it("открывает штатную карточку товара из товарного события", async () => {
+    vi.mocked(fetchProcurementEvents).mockResolvedValue({
+      total: 1,
+      page: 1,
+      page_size: 100,
+      items: [{
+        id: 77,
+        order_id: 543,
+        entity_type: "order_line",
+        entity_id: "901",
+        event_type: "line_updated",
+        actor: "bitrix",
+        bitrix_user_id: "115204",
+        user_name: "Пользователь",
+        before: {},
+        after: {},
+        payload: {},
+        product: {
+          bitrix_product_id: "1646",
+          xml_id: "2685293e-967c-11e1-bdb9-0025901e48ef",
+          nomenclature_code: "РБ000006737",
+          name: "Дисплей тест",
+          bitrix_url: "/crm/catalog/17/product/1646/",
+        },
+        created_at: "2026-09-03T09:00:00",
+      }],
+    });
+
+    render(<EventHistory />);
+
+    expect(await screen.findByRole("link", { name: "Дисплей тест" })).toHaveAttribute(
+      "href",
+      "https://crm.master-mobile.ru/crm/catalog/17/product/1646/"
+    );
   });
 });

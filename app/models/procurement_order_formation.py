@@ -386,6 +386,34 @@ class ProcurementOrderFormationEvent(Base):
     order: Mapped[Optional[ProcurementOrderFormation]] = relationship(back_populates="events")
 
 
+class ProcurementProductCardSyncState(Base):
+    """Последний подтверждённый снимок серверных полей карточки товара Bitrix24."""
+
+    __tablename__ = "procurement_product_card_sync_state"
+    __table_args__ = (
+        UniqueConstraint("product_xml_id", name="uq_proc_product_card_sync_xml_id"),
+        Index("ix_proc_product_card_sync_bitrix_product", "bitrix_product_id"),
+        Index("ix_proc_product_card_sync_status", "status", "updated_at"),
+    )
+
+    product_xml_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bitrix_product_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="displays")
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    desired_fields: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    readback_fields: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 Index(
     "uq_proc_order_formation_onec_ref_normalized",
     func.lower(func.trim(ProcurementOrderFormation.onec_document_ref)),

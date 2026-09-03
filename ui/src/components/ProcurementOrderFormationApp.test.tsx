@@ -274,12 +274,14 @@ describe("ProcurementOrderFormationApp «Допродаём»", () => {
 
 describe("ProcurementOrderFormationApp проблемные строки", () => {
   beforeEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
     vi.mocked(updateProcurementOrderLine).mockReset();
     vi.mocked(toast.success).mockReset();
     vi.mocked(toast.error).mockReset();
   });
 
   afterEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = undefined;
     vi.useRealTimers();
     cleanup();
   });
@@ -316,7 +318,11 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
     );
     expect(screen.getByText("Округление не применено: нет подтверждённой закупочной цены.")).toBeInTheDocument();
     expect(screen.queryByText(/Сигнал:/)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Проблемная строка" })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/2695/"
+    );
+    expect(screen.getByRole("link", { name: "Карточка на сайте" })).toHaveAttribute(
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );

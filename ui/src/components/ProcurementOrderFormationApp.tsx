@@ -32,6 +32,7 @@ import { resolveBitrixProductUrl } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
+  groupProcurementRiskCodes,
   procurementBlockerText,
   procurementRiskLabel,
 } from "../utils/procurementRiskLabels";
@@ -1070,6 +1071,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                 const supplierDefect = supplierDefectConfirmed ? numeric(line.supplier_defect_pct) : null;
                 const productDefect = numeric(line.product_defect_pct ?? payloadValue(line, "defect_share_pct"));
                 const bitrixProductUrl = resolveBitrixProductUrl(line.bitrix_product_id);
+                const profitability = numeric(line.profitability_pct);
+                const riskGroups = groupProcurementRiskCodes(line.risk_codes);
+                const productInsightsUrl = line.bitrix_product_id
+                  ? `/bitrix/procurement-order-formation?view=product_insights&productId=${encodeURIComponent(line.bitrix_product_id)}&orderId=${order.id}&lineId=${line.id}`
+                  : null;
                 const firstRemoved = line.removed && (index === 0 || !visibleLines[index - 1].removed);
                 return (
                   <Fragment key={line.id}>
@@ -1109,6 +1115,39 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           : `Товар Bitrix24: ${line.bitrix_product_id || "не найден"}`}
                       </small>
                       {line.quality && <small>Качество: {line.quality}</small>}
+                      {productInsightsUrl && (
+                        <a
+                          aria-label={`Открыть сигналы товара ${line.nomenclature_name}`}
+                          className="order-formation__product-signals"
+                          href={productInsightsUrl}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          <span className={`order-formation__product-signal ${problems.length ? "is-critical" : "is-success"}`}>
+                            {problems.length
+                              ? countLabel(problems.length, "блокер", "блокера", "блокеров")
+                              : "Без блокеров"}
+                          </span>
+                          {profitability !== null && (
+                            <span className={`order-formation__product-signal ${profitability < 0 ? "is-critical" : "is-info"}`}>
+                              Рентабельность {percent(profitability)}
+                            </span>
+                          )}
+                          {productDefect !== null && (
+                            <span className={`order-formation__product-signal ${productDefect > 10 ? "is-critical" : "is-warning"}`}>
+                              Брак {percent(productDefect)}
+                            </span>
+                          )}
+                          {riskGroups.length > 0 && (
+                            <span
+                              className="order-formation__product-signal is-info"
+                              title={riskGroups.map((group) => group.text).join("\n")}
+                            >
+                              {countLabel(riskGroups.length, "сигнал", "сигнала", "сигналов")}
+                            </span>
+                          )}
+                        </a>
+                      )}
                       {supplierReviewRoom && !line.removed && (
                         <div className="order-formation__supplier-picker">
                           {line.payload?.main_supplier_selection && (
@@ -1406,6 +1445,16 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           target="_blank"
                         >
                           Карточка на сайте
+                        </a>
+                      )}
+                      {productInsightsUrl && (
+                        <a
+                          className="btn btn--small order-formation__insights-link"
+                          href={productInsightsUrl}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Открыть карточку
                         </a>
                       )}
                       {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (

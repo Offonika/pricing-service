@@ -233,7 +233,13 @@ export function isBitrixProcurementOrderFormationRoute() {
 export function isBitrixProductInsightsPlacement() {
   const path = window.location.pathname.replace(/\/+$/, "");
   const placement = String(window.__MM_BITRIX_LAUNCH__?.placement || "").toUpperCase();
-  const view = String(window.__MM_BITRIX_LAUNCH__?.placement_options?.VIEW || "");
+  const params = new URLSearchParams(window.location.search);
+  const view = String(
+    window.__MM_BITRIX_LAUNCH__?.placement_options?.VIEW
+      || params.get("view")
+      || params.get("params[VIEW]")
+      || ""
+  );
   return (
     path.endsWith("/product-insights") ||
     view === "product_insights" ||
@@ -1176,7 +1182,10 @@ export function getProcurementProductId() {
     if (/^\d+$/.test(value)) return value;
   }
   const url = new URL(window.location.href);
-  return url.searchParams.get("productId") || url.searchParams.get("itemId") || "";
+  return url.searchParams.get("productId")
+    || url.searchParams.get("params[PRODUCT_ID]")
+    || url.searchParams.get("itemId")
+    || "";
 }
 
 export interface BitrixLogisticsProfile {

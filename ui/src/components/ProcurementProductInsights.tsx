@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
+  CheckCircleIcon,
+  CubeIcon,
+  ExclamationTriangleIcon,
+  ShoppingCartIcon,
+  TruckIcon,
+} from "@heroicons/react/24/outline";
+import {
+  fetchProcurementOrder,
   fetchProcurementProductCard,
+  updateProcurementOrderLine,
+  type ProcurementOrderFormation,
+  type ProcurementOrderFormationLine,
   type ProcurementProductCard,
 } from "../api/procurementAssortment";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
@@ -9,6 +22,13 @@ import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 
 interface Props {
   productId: string;
+  orderId?: number;
+  lineId?: number;
+}
+
+interface LineEdit {
+  quantity: string;
+  price: string;
 }
 
 const DEMAND_WINDOWS = [
@@ -18,9 +38,9 @@ const DEMAND_WINDOWS = [
 ] as const;
 
 const CONFIDENCE_LABELS: Record<string, string> = {
-  high: "высокая",
-  medium: "средняя",
-  low: "низкая",
+  high: "Высокая",
+  medium: "Средняя",
+  low: "Низкая",
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
@@ -39,48 +59,27 @@ const ONEC_STATUS_LABELS: Record<string, string> = {
   error: "ошибка",
 };
 
-const EVIDENCE_LABELS: Record<string, string> = {
-  return_qty: "Возвратов",
-  share_pct: "Доля возвратов, %",
-  return_share_pct: "Доля возвратов, %",
-  minimum_return_qty: "Порог возвратов",
-  minimum_share_pct: "Порог доли, %",
-  window_days: "Период, дней",
-  suspected_batch: "Предполагаемая партия",
-  defect_pct: "Брак поставщика, %",
-  history_units: "База продаж, шт.",
-  minimum_defect_pct: "Порог брака, %",
-  minimum_history_units: "Минимальная база, шт.",
-  price_change_pct: "Изменение цены, %",
-  maximum_change_pct: "Допустимое изменение, %",
-  history_count: "Закупок в истории",
-};
+const LOCKED_ORDER_STATUSES = new Set(["approved", "transmitting", "transmitted"]);
+const LINE_CHANGED_MESSAGE =
+  "Строку уже изменили в другом окне. Данные обновлены — проверьте их и повторите.";
 
-function text(value: unknown, fallback = "нет данных") {
+function text(value: unknown, fallback = "Нет данных") {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
 }
 
 function number(value: unknown, suffix = "") {
-  if (value === null || value === undefined || value === "") return "нет данных";
+  if (value === null || value === undefined || value === "") return "Нет данных";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return String(value);
   return `${parsed.toLocaleString("ru-RU", { maximumFractionDigits: 3 })}${suffix}`;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="product-insights__metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function price(value: unknown, currency: unknown) {
   const amount = number(value);
-  if (amount === "нет данных") return amount;
-  return [amount, text(currency, "")].filter(Boolean).join(" ");
+  if (amount === "Нет данных") return amount;
+  const currencyCode = text(currency, "");
+  return currencyCode === "RUB" ? `${amount} ₽` : [amount, currencyCode].filter(Boolean).join(" ");
 }
 
 function finiteNumber(value: unknown) {
@@ -94,55 +93,78 @@ function dictionaryLabel(labels: Record<string, string>, value: unknown) {
   return labels[raw] || raw;
 }
 
-function evidenceLabel(key: string) {
-  return EVIDENCE_LABELS[key] || procurementRiskLabel(key);
+function errorStatus(error: unknown) {
+  return (error as { response?: { status?: number } })?.response?.status;
 }
 
-function evidenceValue(key: string, value: unknown) {
-  if (key.endsWith("_pct") || key === "share_pct") return number(value, "%");
-  if (key === "window_days") return number(value, " дн.");
-  return text(value);
+function metricTone(value: unknown, goodBelow = false) {
+  const numeric = finiteNumber(value);
+  if (numeric === null) return "neutral";
+  if (goodBelow) return numeric <= 1 ? "positive" : numeric <= 3 ? "warning" : "negative";
+  return numeric >= 20 ? "positive" : numeric >= 10 ? "warning" : "negative";
 }
 
-function blockerCountLabel(count: number) {
-  const remainder100 = count % 100;
-  const remainder10 = count % 10;
-  if (remainder100 >= 11 && remainder100 <= 14) return `${count} блокеров`;
-  if (remainder10 === 1) return `${count} блокер`;
-  if (remainder10 >= 2 && remainder10 <= 4) return `${count} блокера`;
-  return `${count} блокеров`;
+function inventoryRows(data: ProcurementProductCard) {
+  return [
+    {
+      label: "Текущий остаток",
+      value: number(data.demand.sellable_stock, " шт."),
+      hint: "Доступно к продаже",
+      icon: CubeIcon,
+      tone: "blue",
+    },
+    {
+      label: "В пути",
+      value: number(data.demand.incoming, " шт."),
+      hint: data.supply.lead_time_days
+        ? `Срок поставки ${number(data.supply.lead_time_days, " дн.")}`
+        : "Ожидается поставка",
+      icon: TruckIcon,
+      tone: "green",
+    },
+    {
+      label: "Под заказы",
+      value: number(data.demand.customer_orders, " шт."),
+      hint: "Активный спрос клиентов",
+      icon: ShoppingCartIcon,
+      tone: "violet",
+    },
+  ];
 }
 
-export function ProcurementProductInsights({ productId }: Props) {
+export function ProcurementProductInsights({ productId, orderId, lineId }: Props) {
   const [data, setData] = useState<ProcurementProductCard | null>(null);
+  const [order, setOrder] = useState<ProcurementOrderFormation | null>(null);
   const [error, setError] = useState("");
+  const [orderError, setOrderError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [edit, setEdit] = useState<LineEdit>({ quantity: "", price: "" });
+  const hasOrderContext = Boolean(orderId && lineId);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    try {
-      setData(await fetchProcurementProductCard(productId));
-    } catch (requestError) {
-      setError(procurementErrorText(requestError));
-    } finally {
-      setLoading(false);
-    }
-  }, [productId]);
+    setOrderError("");
+    const [productResult, orderResult] = await Promise.allSettled([
+      fetchProcurementProductCard(productId),
+      hasOrderContext && orderId ? fetchProcurementOrder(orderId) : Promise.resolve(null),
+    ]);
+    if (productResult.status === "fulfilled") setData(productResult.value);
+    else setError(procurementErrorText(productResult.reason));
+    if (orderResult.status === "fulfilled") setOrder(orderResult.value);
+    else setOrderError(procurementErrorText(orderResult.reason));
+    setLoading(false);
+  }, [hasOrderContext, orderId, productId]);
 
   useEffect(() => {
     if (!productId) {
       setLoading(false);
-      return undefined;
+      return;
     }
-    let cancelled = false;
-    setLoading(true);
-    fetchProcurementProductCard(productId)
-      .then((response) => { if (!cancelled) setData(response); })
-      .catch((requestError) => { if (!cancelled) setError(procurementErrorText(requestError)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [productId]);
+    void load();
+  }, [load, productId]);
 
   useEffect(() => {
     const previousTitle = document.title;
@@ -152,6 +174,15 @@ export function ProcurementProductInsights({ productId }: Props) {
     return () => { document.title = previousTitle; };
   }, [data?.identity.name]);
 
+  const orderLine = useMemo(
+    () => order?.lines.find((line) => line.id === lineId) || null,
+    [lineId, order]
+  );
+
+  useEffect(() => {
+    if (orderLine) setEdit({ quantity: orderLine.final_quantity, price: orderLine.purchase_price });
+  }, [orderLine]);
+
   const chart = useMemo(() => {
     if (!data) return [];
     const values = DEMAND_WINDOWS.map((item) => ({
@@ -159,21 +190,60 @@ export function ProcurementProductInsights({ productId }: Props) {
       value: data.demand[item.key],
       numericValue: finiteNumber(data.demand[item.key]),
     }));
-    const max = Math.max(
-      ...values.map((item) => item.numericValue ?? 0),
-      0
-    );
+    const max = Math.max(...values.map((item) => item.numericValue ?? 0), 0);
     return values.map((item) => ({
       ...item,
-      width: item.numericValue !== null && max > 0 ? (item.numericValue / max) * 100 : 0,
+      height: item.numericValue !== null && max > 0
+        ? Math.max(18, (item.numericValue / max) * 100)
+        : 0,
     }));
   }, [data]);
+
+  const saveLine = async (line: ProcurementOrderFormationLine) => {
+    if (!order) return;
+    setSaving(true);
+    setSaveMessage("");
+    try {
+      let updated: ProcurementOrderFormation;
+      try {
+        updated = await updateProcurementOrderLine(order.id, line.id, {
+          expected_order_version: order.version,
+          expected_line_version: line.version,
+          final_quantity: edit.quantity,
+          purchase_price: edit.price,
+        });
+      } catch (requestError: unknown) {
+        if (errorStatus(requestError) !== 409) throw requestError;
+        const freshOrder = await fetchProcurementOrder(order.id);
+        setOrder(freshOrder);
+        const freshLine = freshOrder.lines.find((item) => item.id === line.id);
+        if (!freshLine || freshLine.version !== line.version) throw new Error(LINE_CHANGED_MESSAGE);
+        updated = await updateProcurementOrderLine(freshOrder.id, freshLine.id, {
+          expected_order_version: freshOrder.version,
+          expected_line_version: freshLine.version,
+          final_quantity: edit.quantity,
+          purchase_price: edit.price,
+        });
+      }
+      setOrder(updated);
+      setSaveMessage("Строка подтверждена и сохранена");
+    } catch (requestError: unknown) {
+      setSaveMessage(procurementErrorText(requestError));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!productId) {
     return <div className="product-insights product-insights--state">Bitrix24 не передал ID товара.</div>;
   }
   if (loading) {
-    return <div className="product-insights product-insights--state">Загрузка показателей товара…</div>;
+    return (
+      <div className="product-insights product-insights--state">
+        <ArrowPathIcon aria-hidden="true" className="product-insights__loading-icon" />
+        Загрузка показателей товара…
+      </div>
+    );
   }
   if (error || !data) {
     return (
@@ -187,148 +257,136 @@ export function ProcurementProductInsights({ productId }: Props) {
 
   const sourceState = text(data.source.state, "missing");
   const sourceClass = sourceState === "ready" ? "is-ready" : "is-warning";
-  const stateClass = data.blockers.length
-    ? "is-blocked"
-    : sourceClass;
+  const stateClass = data.blockers.length ? "is-blocked" : sourceClass;
+  const primaryBlocker = data.blockers[0];
+  const locked = Boolean(order && LOCKED_ORDER_STATUSES.has(order.status));
+  const editIsValid = finiteNumber(edit.quantity) !== null
+    && Number(edit.quantity) >= 0
+    && finiteNumber(edit.price) !== null
+    && Number(edit.price) >= 0;
 
   return (
     <main className={`product-insights ${stateClass}`}>
-      <header className="product-insights__control">
-        <div className="product-insights__control-heading">
-          <h1>Контроль закупки</h1>
-          <span>Расчёт: {text(data.source.calculated_at)}</span>
+      <header className="product-insights__hero">
+        <div className="product-insights__photo">
+          {data.identity.photo_url ? (
+            <img alt={data.identity.name} src={data.identity.photo_url} />
+          ) : <CubeIcon aria-label="Фото товара отсутствует" />}
         </div>
-        <div className="product-insights__badges">
-          <span>
-            Жизненный статус: {text(data.lifecycle.label || data.lifecycle.status, "не определён")}
-          </span>
-          <span className={sourceClass}>
-            {sourceState === "ready" ? "Данные актуальны" : "Проверьте данные"}
-          </span>
-          {data.blockers.length ? (
-            <span className="is-blocked">{blockerCountLabel(data.blockers.length)}</span>
-          ) : null}
-        </div>
-        <div className="product-insights__decision">
-          <div>
-            <span>Рекомендовано заказать</span>
-            <strong>{number(data.demand.recommended_order, " шт.")}</strong>
+        <div className="product-insights__identity">
+          <div className="product-insights__eyebrow">Операционный фокус</div>
+          <h1>{data.identity.name}</h1>
+          <div className="product-insights__identity-meta">
+            <span>1С: {text(data.identity.nomenclature_code)}</span>
+            <span>Bitrix24: {data.identity.bitrix_product_id}</span>
+            {data.identity.article ? <span>Артикул: {data.identity.article}</span> : null}
+            <span className="product-insights__status">
+              {text(data.lifecycle.label || data.lifecycle.status, "Не определён")}
+            </span>
+            <span>Расчёт {text(data.source.calculated_at)}</span>
           </div>
-          <p>{text(data.recommendation, "Рекомендация пока не рассчитана")}</p>
         </div>
+        {data.identity.bitrix_url ? (
+          <a className="product-insights__bitrix-link" href={resolveBitrixPortalUrl(data.identity.bitrix_url)} target="_top">
+            Открыть карточку Bitrix24 <ArrowTopRightOnSquareIcon aria-hidden="true" />
+          </a>
+        ) : null}
       </header>
 
-      {data.blockers.length ? (
-        <section className="product-insights__section product-insights__section--blocked">
-          <h2>Требует внимания</h2>
-          <div className="product-insights__blockers">
-            {data.blockers.map((blocker) => (
-              <article key={`${blocker.code}-${blocker.line_id || "product"}`}>
-                <strong>{blocker.message || procurementRiskLabel(blocker.code)}</strong>
-                <small>{procurementRiskLabel(blocker.code)}</small>
-                {Object.keys(blocker.evidence || {}).length ? (
-                  <dl>
-                    {Object.entries(blocker.evidence).map(([key, value]) => (
-                      <div key={key}>
-                        <dt>{evidenceLabel(key)}</dt>
-                        <dd>{evidenceValue(key, value)}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : null}
-                {blocker.resolution_actions?.length ? (
-                  <p>
-                    Действие: {blocker.resolution_actions.map((item) => item.label).join(" · ")}
-                  </p>
-                ) : null}
-              </article>
-            ))}
+      {hasOrderContext ? (
+        <section className="product-insights__order-context" aria-labelledby="order-context-title">
+          <div className="product-insights__order-title">
+            <span><ShoppingCartIcon aria-hidden="true" /></span>
+            <div>
+              <h2 id="order-context-title">В этом заказе</h2>
+              {order && orderLine ? <strong>Заказ №{order.id} · строка {orderLine.line_number}</strong> : null}
+            </div>
           </div>
+          {orderError ? <p className="product-insights__context-error">{orderError}</p> : null}
+          {!orderError && !orderLine ? <p className="product-insights__context-error">Строка заказа не найдена.</p> : null}
+          {order && orderLine ? (
+            <>
+              <label>Количество<span><input aria-label="Количество в заказе" disabled={saving || locked || orderLine.removed} min="0" onChange={(event) => setEdit((current) => ({ ...current, quantity: event.target.value }))} step="1" type="number" value={edit.quantity} /> шт.</span></label>
+              <label>Цена закупки<span><input aria-label="Цена закупки" disabled={saving || locked || orderLine.removed} min="0" onChange={(event) => setEdit((current) => ({ ...current, price: event.target.value }))} step="0.01" type="number" value={edit.price} /> {orderLine.currency === "RUB" ? "₽" : orderLine.currency}</span></label>
+              <div className="product-insights__supplier"><span>Поставщик</span><strong>{text(order.supplier_name || data.supply.supplier_name)}</strong></div>
+              <button className="product-insights__confirm" disabled={saving || locked || orderLine.removed || !editIsValid} onClick={() => void saveLine(orderLine)} type="button">
+                {saving ? "Сохраняем…" : locked ? "Заказ уже подтверждён" : "Подтвердить строку"}
+              </button>
+              {saveMessage ? (
+                <p className={`product-insights__save-message ${saveMessage === "Строка подтверждена и сохранена" ? "is-success" : "is-error"}`}>
+                  {saveMessage === "Строка подтверждена и сохранена" ? <CheckCircleIcon aria-hidden="true" /> : <ExclamationTriangleIcon aria-hidden="true" />}
+                  {saveMessage}
+                </p>
+              ) : null}
+            </>
+          ) : null}
         </section>
       ) : null}
 
-      <section className="product-insights__section">
-        <h2>Спрос и потребность</h2>
-        <div className="product-insights__metrics">
-          <Metric label="Продажи 30 дней" value={number(data.demand.sales_30, " шт.")} />
-          <Metric label="Продажи 90 дней" value={number(data.demand.sales_90, " шт.")} />
-          <Metric label="Продажи 180 дней" value={number(data.demand.sales_180, " шт.")} />
-          <Metric label="Заказы покупателей" value={number(data.demand.customer_orders, " шт.")} />
-          <Metric label="В пути" value={number(data.demand.incoming, " шт.")} />
-          <Metric label="Целевой запас" value={number(data.demand.target_stock, " шт.")} />
-          <Metric label="В текущем заказе" value={number(data.demand.current_order, " шт.")} />
-        </div>
-        <div className="product-insights__chart" aria-label="Скорость продаж по окнам">
-          {chart.map((item) => (
-            <div key={item.key}>
-              <span>{item.label}</span>
-              <i><b style={{ width: `${item.width}%` }} /></i>
-              <strong>{number(item.value, " шт./день")}</strong>
-            </div>
-          ))}
-        </div>
+      <section className="product-insights__decision-grid" aria-label="Решение по товару">
+        <article className="product-insights__recommendation">
+          <span>Рекомендовано заказать</span>
+          <strong>{number(data.demand.recommended_order, " шт.")}</strong>
+          <p>{text(data.recommendation, "Рекомендация пока не рассчитана")}</p>
+        </article>
+        <article className={`product-insights__blocker-summary ${primaryBlocker ? "has-blocker" : "is-clear"}`}>
+          {primaryBlocker ? <ExclamationTriangleIcon aria-hidden="true" /> : <CheckCircleIcon aria-hidden="true" />}
+          <div>
+            <span>{primaryBlocker ? "Главный блокер" : "Блокеров нет"}</span>
+            <strong>{primaryBlocker?.message || "Товар готов к решению"}</strong>
+            {primaryBlocker ? <small>{procurementRiskLabel(primaryBlocker.code)}</small> : null}
+            {primaryBlocker && data.orders[0] ? (
+              <a
+                className="product-insights__blocker-action"
+                href={`${data.orders[0].app_url}${data.orders[0].app_url.includes("?") ? "&" : "?"}line=${primaryBlocker.line_id || ""}`}
+                target="_top"
+              >
+                {primaryBlocker.resolution_actions?.[0]?.label || "Проверить блокер"}
+              </a>
+            ) : null}
+          </div>
+        </article>
+        <article className={`product-insights__signal is-${metricTone(data.supply.profitability_pct)}`}>
+          <span>Рентабельность</span><strong>{number(data.supply.profitability_pct, "%")}</strong><small>По текущей цене</small>
+        </article>
+        <article className={`product-insights__signal is-${metricTone(data.quality.defect_pct, true)}`}>
+          <span>Брак</span><strong>{number(data.quality.defect_pct, "%")}</strong><small>Надёжность: {dictionaryLabel(CONFIDENCE_LABELS, data.quality.confidence).toLowerCase()}</small>
+        </article>
       </section>
 
-      <div className="product-insights__columns">
-        <section className="product-insights__section">
-          <h2>Качество</h2>
-          <div className="product-insights__metrics">
-            <Metric label="Возвраты 180 дней" value={number(data.quality.return_qty_180, " шт.")} />
-            <Metric label="Возвраты «Новый» 90" value={number(data.quality.batch_return_qty_90, " шт.")} />
-            <Metric label="Подтверждённый брак" value={number(data.quality.defect_pct, "%")} />
-            <Metric
-              label="Надёжность"
-              value={dictionaryLabel(CONFIDENCE_LABELS, data.quality.confidence)}
-            />
+      <div className="product-insights__analytics-grid">
+        <section className="product-insights__panel product-insights__demand">
+          <div className="product-insights__panel-heading"><div><span>Спрос</span><h2>Скорость продаж</h2></div><span className={sourceClass}>{sourceState === "ready" ? "Данные актуальны" : "Проверьте данные"}</span></div>
+          <div className="product-insights__chart" aria-label="Скорость продаж по периодам">
+            {chart.map((item) => <div key={item.key}><strong>{number(item.value, " шт./день")}</strong><i><b style={{ height: `${item.height}%` }} /></i><span>{item.label}</span></div>)}
           </div>
+          <div className="product-insights__demand-totals"><span>Продано за 30 дней <strong>{number(data.demand.sales_30, " шт.")}</strong></span><span>Целевой запас <strong>{number(data.demand.target_stock, " шт.")}</strong></span></div>
         </section>
-        <section className="product-insights__section">
-          <h2>Поставка</h2>
-          <div className="product-insights__metrics">
-            <Metric label="Поставщик" value={text(data.supply.supplier_name)} />
-            <Metric label="Закупочная цена" value={price(data.supply.purchase_price, data.supply.currency)} />
-            <Metric label="Рентабельность" value={number(data.supply.profitability_pct, "%")} />
-            <Metric label="Срок поставки" value={number(data.supply.lead_time_days, " дн.")} />
+        <section className="product-insights__panel product-insights__inventory">
+          <div className="product-insights__panel-heading"><div><span>Наличие</span><h2>Остатки и поступления</h2></div></div>
+          <div className="product-insights__inventory-list">
+            {inventoryRows(data).map((item) => {
+              const Icon = item.icon;
+              return <article key={item.label}><span className={`is-${item.tone}`}><Icon aria-hidden="true" /></span><div><strong>{item.label}</strong><small>{item.hint}</small></div><b>{item.value}</b></article>;
+            })}
           </div>
         </section>
       </div>
 
-      <section className="product-insights__section">
-        <h2>Товарная семья</h2>
-        <div className="product-insights__metrics product-insights__metrics--compact">
-          <Metric label="Семья" value={text(data.family.label)} />
-          <Metric label="Карточек в семье" value={number(data.family.member_count)} />
-        </div>
-      </section>
-
-      <section className="product-insights__section">
-        <h2>Связанные заказы</h2>
-        {data.orders.length ? (
-          <div className="product-insights__orders">
-            {data.orders.map((order) => (
-              <article key={order.order_id}>
-                <div>
-                  <strong>{order.label}</strong>
-                  <span>
-                    {dictionaryLabel(ORDER_STATUS_LABELS, order.status)} · 1С:{" "}
-                    {dictionaryLabel(ONEC_STATUS_LABELS, order.onec_status)}
-                  </span>
-                </div>
-                <nav>
-                  <a href={order.app_url} target="_top">Открыть проект</a>
-                  {order.bitrix_process_url ? (
-                    <a href={resolveBitrixPortalUrl(order.bitrix_process_url)} target="_top">
-                      Бизнес-процесс
-                    </a>
-                  ) : null}
-                </nav>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p>Связанных заказов пока нет.</p>
-        )}
-      </section>
+      <div className="product-insights__details-grid">
+        <section className="product-insights__panel">
+          <div className="product-insights__panel-heading"><div><span>Поставка</span><h2>Условия закупки</h2></div></div>
+          <dl className="product-insights__facts"><div><dt>Поставщик</dt><dd>{text(data.supply.supplier_name)}</dd></div><div><dt>Закупочная цена</dt><dd>{price(data.supply.purchase_price, data.supply.currency)}</dd></div><div><dt>Срок поставки</dt><dd>{number(data.supply.lead_time_days, " дн.")}</dd></div><div><dt>Товарная семья</dt><dd>{text(data.family.label)}</dd></div></dl>
+        </section>
+        <section className="product-insights__panel">
+          <div className="product-insights__panel-heading"><div><span>Контекст</span><h2>Связанные заказы</h2></div></div>
+          {data.orders.length ? (
+            <div className="product-insights__orders">
+              {data.orders.map((relatedOrder) => <article key={relatedOrder.order_id}><div><strong>{relatedOrder.label}</strong><span>{dictionaryLabel(ORDER_STATUS_LABELS, relatedOrder.status)} · 1С: {dictionaryLabel(ONEC_STATUS_LABELS, relatedOrder.onec_status)}</span></div><nav><a href={relatedOrder.app_url} target="_top">Открыть заказ</a>{relatedOrder.bitrix_process_url ? <a href={resolveBitrixPortalUrl(relatedOrder.bitrix_process_url)} target="_top">Процесс Bitrix24</a> : null}</nav></article>)}
+            </div>
+          ) : <p className="product-insights__empty">Связанных заказов пока нет.</p>}
+        </section>
+      </div>
     </main>
   );
 }

@@ -392,6 +392,27 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );
+    const problemRow = problem.closest("tr");
+    expect(problemRow).not.toBeNull();
+    expect(within(problemRow!).getByText("1 блокер")).toBeInTheDocument();
+    expect(within(problemRow!).getByText("Рентабельность 18,4%")).toBeInTheDocument();
+    expect(within(problemRow!).getByText("Брак 12,6%")).toBeInTheDocument();
+    expect(within(problemRow!).getByText("2 сигнала")).toHaveAttribute(
+      "title",
+      "Строка пересчитана по живым срокам и готова к заказу\nГоризонт заказа задан классом скорости"
+    );
+    expect(within(problemRow!).getByRole("link", { name: "Открыть сигналы товара Проблемная строка" })).toHaveAttribute(
+      "href",
+      "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
+    );
+    expect(
+      screen.getAllByRole("link", { name: "Открыть карточку" }).find(
+        (item) => item.getAttribute("href")?.endsWith("lineId=42")
+      )
+    ).toHaveAttribute(
+      "href",
+      "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
+    );
   });
 
   it("показывает причину, когда рентабельность действительно не рассчитана", () => {

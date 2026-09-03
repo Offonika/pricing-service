@@ -43,6 +43,18 @@ describe("product insights placement", () => {
     expect(isBitrixProductInsightsPlacement()).toBe(true);
     expect(getProcurementProductId()).toBe("1646");
   });
+
+  it("recognizes a direct order-context link outside the product tab", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/bitrix/procurement-order-formation?view=product_insights&productId=1646&orderId=14&lineId=10"
+    );
+    window.__MM_BITRIX_LAUNCH__ = { placement: "LEFT_MENU", placement_options: {} };
+
+    expect(isBitrixProductInsightsPlacement()).toBe(true);
+    expect(getProcurementProductId()).toBe("1646");
+  });
 });
 
 describe("initializeBitrixLogisticsSession", () => {

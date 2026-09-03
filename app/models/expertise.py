@@ -25,6 +25,7 @@ class ExpertiseCase(Base):
         Index("ix_expertise_case_owner_user_external_id", "owner_user_external_id"),
         Index("ix_expertise_case_due_at", "due_at"),
         Index("ix_expertise_case_client_notified", "client_notified"),
+        Index("ix_expertise_case_service_request", "service_request_item_id"),
         UniqueConstraint("external_id", name="uq_expertise_case_external_id"),
         UniqueConstraint("onec_expertise_ref", name="uq_expertise_case_onec_expertise_ref"),
     )
@@ -48,6 +49,11 @@ class ExpertiseCase(Base):
     decision_comment: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     linked_customer_order_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     linked_customer_order_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_request_item_id: Mapped[int | None] = mapped_column(nullable=True)
+    service_request_linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    service_request_linked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     client_notified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )

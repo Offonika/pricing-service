@@ -5,6 +5,8 @@ import {
   getProcurementProductId,
   initializeBitrixLogisticsSession,
   isBitrixProductInsightsPlacement,
+  openBitrixCustomerReturnDeal,
+  openBitrixCustomerReturnServiceRequest,
   openBitrixProcurementProcess,
   refreshBitrixAuth,
   refreshBitrixLogisticsSession,
@@ -244,6 +246,37 @@ describe("openBitrixProcurementProcess", () => {
       "https://crm.example.test/crm/type/1056/details/324/",
       "_blank",
       "noopener,noreferrer"
+    );
+  });
+});
+
+describe("customer return Bitrix links", () => {
+  it("opens the service request and deal inside the Bitrix shell", async () => {
+    const openPath = vi.fn();
+    window.BX24 = {
+      init: (callback) => callback(),
+      getAuth: vi.fn(() => ({
+        access_token: "token",
+        domain: "portal.example",
+        member_id: "member",
+      })),
+      callMethod: vi.fn(),
+      openPath,
+    };
+
+    await openBitrixCustomerReturnServiceRequest(113401);
+    await openBitrixCustomerReturnDeal(3507);
+
+    expect(openPath).toHaveBeenNthCalledWith(1, "/crm/type/1134/details/113401/");
+    expect(openPath).toHaveBeenNthCalledWith(2, "/crm/deal/details/3507/");
+  });
+
+  it("rejects invalid IDs before opening a path", async () => {
+    await expect(openBitrixCustomerReturnServiceRequest(0)).rejects.toThrow(
+      "Некорректный номер сервисного обращения",
+    );
+    await expect(openBitrixCustomerReturnDeal(Number.NaN)).rejects.toThrow(
+      "Некорректный номер сделки",
     );
   });
 });

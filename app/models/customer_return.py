@@ -46,6 +46,10 @@ class CustomerReturnShipment(Base):
         Index("ix_customer_return_shipment_status_updated", "status", "updated_at"),
         Index("ix_customer_return_shipment_bitrix_case", "bitrix_case_id"),
         Index("ix_customer_return_shipment_bitrix_deal", "bitrix_deal_id"),
+        Index(
+            "ix_customer_return_shipment_service_request",
+            "service_request_item_id",
+        ),
     )
 
     carrier: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -77,6 +81,19 @@ class CustomerReturnShipment(Base):
         DateTime(timezone=True), nullable=True
     )
     bitrix_deal_linked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_request_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_request_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    service_request_stage_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_request_stage_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    service_request_closed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    service_request_deal_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_request_order_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    service_request_responsible_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_request_responsible_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    service_request_linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    service_request_linked_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     onec_return_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_bitrix_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     picked_up_by_bitrix_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -111,6 +128,27 @@ class CustomerReturnShipment(Base):
         cascade="all, delete-orphan",
         order_by="CustomerReturnAction.due_at, CustomerReturnAction.id",
     )
+
+    @property
+    def service_request(self) -> dict | None:
+        if self.service_request_item_id is None:
+            return None
+        return {
+            "item_id": self.service_request_item_id,
+            "title": self.service_request_title,
+            "stage_id": self.service_request_stage_id,
+            "stage_name": self.service_request_stage_name,
+            "closed": bool(self.service_request_closed),
+            "deal_id": self.service_request_deal_id,
+            "order_ref": self.service_request_order_ref,
+            "responsible_user_id": self.service_request_responsible_user_id,
+            "responsible_name": self.service_request_responsible_name,
+            "site_ticket_id": self.site_ticket_id,
+        }
+
+    @property
+    def expertise_cases(self) -> list:
+        return self.__dict__.get("_customer_return_expertise_cases", [])
 
 
 class CustomerReturnEvent(Base):

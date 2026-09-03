@@ -31,7 +31,11 @@ from app.schemas.bitrix_logistics import (
     BitrixCustomerReturnCreateRequest,
     BitrixCustomerReturnDealLinkRequest,
     BitrixCustomerReturnDealSearchItem,
+    BitrixCustomerReturnExpertiseItem,
+    BitrixCustomerReturnExpertiseLinkRequest,
     BitrixCustomerReturnPickupRequest,
+    BitrixCustomerReturnServiceRequestLinkRequest,
+    BitrixCustomerReturnServiceRequestSearchItem,
     BitrixLogisticsBootstrapResponse,
     BitrixLogisticsDraftCancelRequest,
     BitrixLogisticsDraftConfirmRequest,
@@ -58,6 +62,7 @@ from app.schemas.logistics import (
     LogisticsMonitorResponse,
 )
 from app.services import customer_return_deals as customer_return_deal_service
+from app.services import customer_return_service_requests as customer_return_request_service
 from app.services import customer_returns as customer_return_service
 from app.services import logistics as logistics_service
 from app.services.bitrix_logistics_auth import (
@@ -224,6 +229,21 @@ def _require_role(actor: LogisticsUser, allowed: set[str]) -> None:
         raise HTTPException(status_code=403, detail="operation is not allowed for logistics role")
 
 
+def _customer_return_service_links_allowed(actor: LogisticsUser) -> bool:
+    settings = get_settings()
+    allowed_roles = {
+        role.strip().casefold()
+        for role in settings.customer_return_service_links_roles
+        if role.strip()
+    }
+    return settings.customer_return_service_links_enabled and actor.role in allowed_roles
+
+
+def _require_customer_return_service_links(actor: LogisticsUser) -> None:
+    if not _customer_return_service_links_allowed(actor):
+        raise HTTPException(status_code=404, detail="customer return service links are disabled")
+
+
 def _raise_customer_return_http_error(exc: Exception) -> None:
     if isinstance(exc, customer_return_service.CustomerReturnNotFound):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -234,6 +254,16 @@ def _raise_customer_return_http_error(exc: Exception) -> None:
     if isinstance(exc, customer_return_deal_service.CustomerReturnDealNotFound):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, customer_return_deal_service.CustomerReturnDealUnavailable):
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(
+        exc,
+        customer_return_request_service.CustomerReturnServiceRequestNotFound,
+    ):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(
+        exc,
+        customer_return_request_service.CustomerReturnServiceRequestUnavailable,
+    ):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     raise exc
 
@@ -376,6 +406,8 @@ def bootstrap(
         ],
     }.get(actor.role, [])
     settings = get_settings()
+    if _customer_return_service_links_allowed(actor):
+        capabilities = [*capabilities, "customer_return_service_links"]
     warehouses = logistics_service.list_warehouses(
         db,
         allowed_external_ids=settings.logistics_stage_pilot_warehouse_external_ids,
@@ -407,12 +439,31 @@ def register_bitrix_customer_return(
 ):
     _require_role(actor, CUSTOMER_RETURN_ROLES)
     try:
+        settings = get_settings()
+        request_link = None
+        if payload.service_request_item_id is not None:
+            _require_customer_return_service_links(actor)
+            request_link = customer_return_request_service.get_customer_return_service_request(
+                settings=settings,
+                item_id=payload.service_request_item_id,
+            )
+            if (
+                payload.bitrix_deal_id is not None
+                and request_link.deal_id is not None
+                and payload.bitrix_deal_id != request_link.deal_id
+            ):
+                raise customer_return_service.CustomerReturnConflict(
+                    "service request belongs to another Bitrix24 deal"
+                )
+        effective_deal_id = payload.bitrix_deal_id or (
+            request_link.deal_id if request_link is not None else None
+        )
         deal_link = (
             customer_return_deal_service.get_customer_return_deal(
-                webhook_url=get_settings().customer_return_bitrix_webhook_url,
-                deal_id=payload.bitrix_deal_id,
+                webhook_url=settings.customer_return_bitrix_webhook_url,
+                deal_id=effective_deal_id,
             )
-            if payload.bitrix_deal_id is not None
+            if effective_deal_id is not None
             else None
         )
         shipment, created = customer_return_service.register_return(
@@ -427,11 +478,22 @@ def register_bitrix_customer_return(
             created_by_bitrix_user_id=str(actor.bitrix_user_id),
             deal_link=deal_link,
         )
+        if request_link is not None:
+            shipment = customer_return_service.update_return_service_request_link(
+                db,
+                shipment.id,
+                service_request_link=request_link,
+                actor_bitrix_user_id=str(actor.bitrix_user_id),
+                deal_link_if_missing=deal_link,
+            )
+        shipment = customer_return_service.attach_expertise_cases(db, shipment)
     except (
         customer_return_service.CustomerReturnConflict,
         CustomerReturnCarrierError,
         customer_return_deal_service.CustomerReturnDealNotFound,
         customer_return_deal_service.CustomerReturnDealUnavailable,
+        customer_return_request_service.CustomerReturnServiceRequestNotFound,
+        customer_return_request_service.CustomerReturnServiceRequestUnavailable,
     ) as exc:
         _raise_customer_return_http_error(exc)
     return {"created": created, "shipment": shipment}
@@ -476,23 +538,49 @@ def search_bitrix_customer_return_deals(
 
 
 @router.get(
+    "/customer-return-service-requests",
+    response_model=list[BitrixCustomerReturnServiceRequestSearchItem],
+)
+def search_bitrix_customer_return_service_requests(
+    search: str | None = Query(default=None, min_length=2, max_length=100),
+    deal_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=20),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    _require_customer_return_service_links(actor)
+    try:
+        return customer_return_request_service.search_customer_return_service_requests(
+            settings=get_settings(),
+            search=search,
+            deal_id=deal_id,
+            limit=limit,
+        )
+    except customer_return_request_service.CustomerReturnServiceRequestUnavailable as exc:
+        _raise_customer_return_http_error(exc)
+
+
+@router.get(
     "/customer-returns",
     response_model=list[CustomerReturnShipmentResponse],
 )
 def list_bitrix_customer_returns(
     carrier: CustomerReturnCarrier | None = Query(default=None),
     status: CustomerReturnStatus | None = Query(default=None),
+    without_service_request: bool | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=200),
     db: Session = Depends(get_db),
     actor: LogisticsUser = Depends(_actor_from_session),
 ):
     _require_role(actor, CUSTOMER_RETURN_ROLES)
-    return customer_return_service.list_returns(
+    shipments = customer_return_service.list_returns(
         db,
         carrier=carrier,
         status=status,
+        without_service_request=without_service_request,
         limit=limit,
     )
+    return customer_return_service.attach_expertise_cases(db, shipments)
 
 
 @router.get(
@@ -506,7 +594,8 @@ def get_bitrix_customer_return(
 ):
     _require_role(actor, CUSTOMER_RETURN_ROLES)
     try:
-        return customer_return_service.get_return(db, shipment_id)
+        shipment = customer_return_service.get_return(db, shipment_id)
+        return customer_return_service.attach_expertise_cases(db, shipment)
     except customer_return_service.CustomerReturnNotFound as exc:
         _raise_customer_return_http_error(exc)
 
@@ -539,8 +628,115 @@ def update_bitrix_customer_return_deal_link(
         )
     except (
         customer_return_service.CustomerReturnNotFound,
+        customer_return_service.CustomerReturnConflict,
         customer_return_deal_service.CustomerReturnDealNotFound,
         customer_return_deal_service.CustomerReturnDealUnavailable,
+    ) as exc:
+        _raise_customer_return_http_error(exc)
+
+
+@router.put(
+    "/customer-returns/{shipment_id}/service-request-link",
+    response_model=CustomerReturnDetailResponse,
+)
+def update_bitrix_customer_return_service_request_link(
+    shipment_id: int,
+    payload: BitrixCustomerReturnServiceRequestLinkRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    _require_customer_return_service_links(actor)
+    try:
+        settings = get_settings()
+        request_link = (
+            customer_return_request_service.get_customer_return_service_request(
+                settings=settings,
+                item_id=payload.service_request_item_id,
+            )
+            if payload.service_request_item_id is not None
+            else None
+        )
+        deal_link = (
+            customer_return_deal_service.get_customer_return_deal(
+                webhook_url=settings.customer_return_bitrix_webhook_url,
+                deal_id=request_link.deal_id,
+            )
+            if request_link is not None and request_link.deal_id is not None
+            else None
+        )
+        shipment = customer_return_service.update_return_service_request_link(
+            db,
+            shipment_id,
+            service_request_link=request_link,
+            actor_bitrix_user_id=str(actor.bitrix_user_id),
+            deal_link_if_missing=deal_link,
+        )
+        return customer_return_service.attach_expertise_cases(db, shipment)
+    except (
+        customer_return_service.CustomerReturnNotFound,
+        customer_return_service.CustomerReturnConflict,
+        customer_return_deal_service.CustomerReturnDealNotFound,
+        customer_return_deal_service.CustomerReturnDealUnavailable,
+        customer_return_request_service.CustomerReturnServiceRequestNotFound,
+        customer_return_request_service.CustomerReturnServiceRequestUnavailable,
+    ) as exc:
+        _raise_customer_return_http_error(exc)
+
+
+@router.get(
+    "/customer-return-expertise",
+    response_model=list[BitrixCustomerReturnExpertiseItem],
+)
+def search_bitrix_customer_return_expertise(
+    service_request_item_id: int | None = Query(default=None, ge=1),
+    search: str | None = Query(default=None, min_length=2, max_length=100),
+    limit: int = Query(default=20, ge=1, le=20),
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    _require_customer_return_service_links(actor)
+    return customer_return_service.list_customer_return_expertise(
+        db,
+        service_request_item_id=service_request_item_id,
+        search=search,
+        limit=limit,
+    )
+
+
+@router.put(
+    "/expertise/{case_id}/service-request-link",
+    response_model=BitrixCustomerReturnExpertiseItem,
+)
+def update_bitrix_customer_return_expertise_link(
+    case_id: int,
+    payload: BitrixCustomerReturnExpertiseLinkRequest,
+    db: Session = Depends(get_db),
+    actor: LogisticsUser = Depends(_actor_from_session),
+):
+    _require_role(actor, CUSTOMER_RETURN_ROLES)
+    _require_customer_return_service_links(actor)
+    try:
+        request_link = (
+            customer_return_request_service.get_customer_return_service_request(
+                settings=get_settings(),
+                item_id=payload.service_request_item_id,
+            )
+            if payload.service_request_item_id is not None
+            else None
+        )
+        return customer_return_service.update_expertise_service_request_link(
+            db,
+            case_id,
+            service_request_link=request_link,
+            actor_bitrix_user_id=str(actor.bitrix_user_id),
+        )
+    except (
+        customer_return_service.CustomerReturnNotFound,
+        customer_return_service.CustomerReturnConflict,
+        customer_return_request_service.CustomerReturnServiceRequestNotFound,
+        customer_return_request_service.CustomerReturnServiceRequestUnavailable,
     ) as exc:
         _raise_customer_return_http_error(exc)
 

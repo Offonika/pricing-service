@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 CustomerReturnCarrier = Literal["russian_post", "cdek"]
 CustomerReturnStatus = Literal[
@@ -96,8 +96,32 @@ class CustomerReturnActionResponse(BaseModel):
     updated_at: datetime
 
 
-class CustomerReturnShipmentResponse(BaseModel):
+class CustomerReturnServiceRequestSummary(BaseModel):
+    item_id: int
+    title: str | None = None
+    stage_id: str | None = None
+    stage_name: str | None = None
+    closed: bool = False
+    deal_id: int | None = None
+    order_ref: str | None = None
+    responsible_user_id: int | None = None
+    responsible_name: str | None = None
+    site_ticket_id: str | None = None
+
+
+class CustomerReturnExpertiseSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    onec_expertise_number: str | None = None
+    current_status: str
+    linked_customer_order_number: str | None = None
+    problem_summary: str | None = None
+    service_request_item_id: int | None = None
+
+
+class CustomerReturnShipmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: int
     carrier: str
@@ -123,6 +147,17 @@ class CustomerReturnShipmentResponse(BaseModel):
     bitrix_responsible_name: str | None = None
     bitrix_deal_linked_at: datetime | None = None
     bitrix_deal_linked_by_user_id: str | None = None
+    service_request_item_id: int | None = None
+    service_request: CustomerReturnServiceRequestSummary | None = Field(
+        default=None,
+        validation_alias=AliasChoices("serviceRequest", "service_request"),
+        serialization_alias="serviceRequest",
+    )
+    expertise_cases: list[CustomerReturnExpertiseSummary] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("expertiseCases", "expertise_cases"),
+        serialization_alias="expertiseCases",
+    )
     onec_return_ref: str | None = None
     created_by_bitrix_user_id: str | None = None
     picked_up_by_bitrix_user_id: str | None = None

@@ -145,6 +145,13 @@ def serialize_linked_process(order: ProcurementOrderFormation) -> dict[str, Any]
         product_rows_state = "not_applicable"
     elif product_rows_state not in {"pending", "synced", "error"}:
         product_rows_state = "pending"
+    product_rows_view: dict[str, Any] = {"rows": [], "excluded_count": 0}
+    if is_canonical_process and str(order.bitrix_item_id or "").strip():
+        from app.services.procurement_order_product_rows import (
+            build_procurement_product_rows_view,
+        )
+
+        product_rows_view = build_procurement_product_rows_view(order)
     return {
         "state": state,
         "process_title": PROCUREMENT_PROCESS_TITLE,
@@ -169,6 +176,8 @@ def serialize_linked_process(order: ProcurementOrderFormation) -> dict[str, Any]
             "checksum": order.bitrix_product_rows_checksum,
             "synced_at": order.bitrix_product_rows_synced_at,
             "error": str(order.bitrix_product_rows_error or "").strip() or None,
+            "rows": product_rows_view["rows"],
+            "excluded_count": product_rows_view["excluded_count"],
         },
     }
 

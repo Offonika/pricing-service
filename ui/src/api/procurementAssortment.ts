@@ -391,6 +391,19 @@ export interface ProcurementProductRowsSync {
   checksum?: string | null;
   synced_at?: string | null;
   error?: string | null;
+  rows?: ProcurementProductRow[];
+  excluded_count?: number;
+}
+
+export interface ProcurementProductRow {
+  line_number: number;
+  product_id?: string | null;
+  name: string;
+  quantity: string;
+  purchase_price: string;
+  currency: string;
+  sort: number;
+  catalog_matched: boolean;
 }
 
 export interface ProcurementOrderLabelSource {

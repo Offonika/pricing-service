@@ -163,6 +163,42 @@ def _excluded_product_lines(
     ]
 
 
+def build_procurement_product_rows_view(
+    order: ProcurementOrderFormation,
+    *,
+    exclusions: Mapping[str, str] | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Build the read-only product mirror shown inside the embedded order tab."""
+    if exclusions is None:
+        exclusions = load_procurement_product_row_exclusions(settings)
+    rows: list[dict[str, Any]] = []
+    excluded_count = 0
+    for line in order.lines:
+        if line.removed:
+            continue
+        source_guid = normalize_guid(line.nomenclature_ref)
+        if source_guid in exclusions:
+            excluded_count += 1
+            continue
+        product_id = _clean(line.bitrix_product_id)
+        catalog_guid = normalize_guid(line.bitrix_product_xml_id)
+        rows.append(
+            {
+                "line_number": line.line_number,
+                "product_id": product_id or None,
+                "name": _clean(line.nomenclature_name),
+                "quantity": line.final_quantity,
+                "purchase_price": line.purchase_price,
+                "currency": _clean(line.currency or order.currency).upper(),
+                "sort": int(line.line_number) * 10,
+                "catalog_matched": bool(product_id and source_guid and source_guid == catalog_guid),
+            }
+        )
+    rows.sort(key=lambda row: (int(row["sort"]), int(row["line_number"])))
+    return {"rows": rows, "excluded_count": excluded_count}
+
+
 def build_procurement_product_rows(
     order: ProcurementOrderFormation,
     *,

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
 from typing import Any
 
-from app.core.config import get_settings
-from app.infrastructure.db import get_application_session_factory
-from app.services.procurement_product_cards import sync_product_cards
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.core.config import get_settings  # noqa: E402
+from app.infrastructure.db import get_application_session_factory  # noqa: E402
+from app.services.procurement_product_cards import sync_product_cards  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

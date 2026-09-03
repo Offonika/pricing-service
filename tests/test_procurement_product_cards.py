@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -597,6 +599,20 @@ def test_standard_cron_keeps_product_card_sync_behind_two_flags() -> None:
     assert "PROCUREMENT_PRODUCT_CARD_APPLY_ENABLED" in script
     assert "-m tasks.sync_procurement_product_cards" in script
     assert "product_card_cmd+=(--apply)" in script
+
+
+def test_product_card_task_supports_direct_file_execution() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "tasks/sync_procurement_product_cards.py", "--help"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--product-id" in result.stdout
 
 
 def test_product_insights_placement_is_bound_only_when_missing() -> None:

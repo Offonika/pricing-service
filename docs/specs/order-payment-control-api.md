@@ -19,7 +19,7 @@ depends_on:
   - docs/specs/site-order-fulfillment-control-contour.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-01"
+updated_at: "2026-09-03"
 ---
 
 # Назначение
@@ -61,7 +61,9 @@ updated_at: "2026-09-01"
 - Теперь `allowed=true` возможен только с причиной
   `amount_and_full_reservation_match` и резервом `FULL`.
 - `region_xml_id` и `source_warehouse_xml_id` обязательны; числовой Bitrix Store ID
-  в интеграционном контракте не используется.
+  в интеграционном контракте не используется. Для Sotbit-региона без собственного
+  XML_ID канонической внешней идентичностью региона служит стабильный `CODE`
+  связанного местоположения Bitrix, а не внутренний ID строки региона.
 - Любой непроведённый, закрытый, неоднозначный или складски несогласованный заказ,
   неполный/лишний/чужой резерв и недоступность 1С блокируют оплату.
 
@@ -76,7 +78,7 @@ updated_at: "2026-09-01"
   "payment_amount": "5461.95",
   "stage": "cloudpayments_check",
   "payment_id": "98765",
-  "region_xml_id": "99999999-8888-4777-8666-555555555555",
+  "region_xml_id": "0000512213",
   "source_warehouse_xml_id": "11111111-2222-4333-8444-555555555555",
   "availability_snapshot_id": "sha256-semantic-snapshot"
 }
@@ -191,7 +193,8 @@ updated_at: "2026-09-01"
 
 # Acceptance Criteria
 
-- [x] Request требует UUID региона и склада; snapshot ID опционален.
+- [x] Request требует строковый `region_xml_id` с сохранением ведущих нулей и
+      UUID склада; snapshot ID опционален.
 - [x] Проверяется единственный активный проведённый заказ и отсутствие отмены.
 - [x] Склад шапки и размещение всех строк совпадают с ожидаемым UUID.
 - [x] Резерв сверяется по полному ключу и нормализованному количеству с допуском
@@ -216,6 +219,8 @@ updated_at: "2026-09-01"
       преобразовывать повреждённые ссылки 1С в fail-closed HTTP `503`.
 - [x] Обновить unit/API regression tests и `openapi.yaml`.
 - [x] Обновить канонический API-spec и project manifest.
+- [x] Выполнить runtime smoke на `Ekama_Test_Integration`: положительный `FULL`,
+      удалённый заказ и безопасный отрицательный CloudPayments callback.
 - [ ] Выполнить production release и smoke по отдельной команде.
 
 # Tests
@@ -249,6 +254,12 @@ updated_at: "2026-09-01"
 
 # Changelog
 
+- 2026-09-03 — `region_xml_id` исправлен с UUID на строковую внешнюю
+  идентичность, поэтому значение `0000512213` проходит контракт без потери
+  ведущих нулей. Для SQL Server/pytds `SERIALIZABLE` теперь задаётся через
+  `SET TRANSACTION ISOLATION LEVEL` внутри одной транзакции; 35 адресных тестов и
+  runtime/E2E на `Ekama_Test_Integration` пройдены. Production release не
+  выполнялся.
 - 2026-09-01 — guard переведён на один согласованный `SERIALIZABLE`-снимок 1С;
   повреждённые binary references теперь возвращают безопасный
   `onec_invalid_data` / HTTP `503`, а CRM-срок читается после закрытия транзакции.

@@ -35,9 +35,15 @@ class _Mappings:
         return self.rows
 
 
+class _Dialect:
+    def __init__(self, name):
+        self.name = name
+
+
 class _Connection:
     def __init__(self, engine):
         self.engine = engine
+        self.dialect = engine.dialect
 
     def __enter__(self):
         self.engine.active_connections += 1
@@ -53,6 +59,9 @@ class _Connection:
 
     def begin(self):
         return _Transaction(self.engine)
+
+    def exec_driver_sql(self, statement):
+        self.engine.driver_sql.append(statement)
 
     def execute(self, statement, params=None):
         sql = str(statement)
@@ -89,7 +98,15 @@ class _Transaction:
 
 
 class _Engine:
-    def __init__(self, rows, *, closure_rows=(), line_rows=None, reserve_rows=None):
+    def __init__(
+        self,
+        rows,
+        *,
+        closure_rows=(),
+        line_rows=None,
+        reserve_rows=None,
+        dialect_name="sqlite",
+    ):
         self.header_rows = list(rows)
         self.closure_rows = list(closure_rows)
         self.line_rows = list(line_rows if line_rows is not None else [_line_row()])
@@ -98,6 +115,8 @@ class _Engine:
         self.active_connections = 0
         self.active_transactions = 0
         self.isolation_options = []
+        self.driver_sql = []
+        self.dialect = _Dialect(dialect_name)
 
     def connect(self):
         self.connect_count += 1
@@ -245,6 +264,22 @@ def test_payment_control_reads_onec_in_one_serializable_transaction() -> None:
     assert decision.allowed is True
     assert engine.connect_count == 1
     assert engine.isolation_options == [{"isolation_level": "SERIALIZABLE"}]
+
+
+def test_payment_control_uses_sql_server_set_isolation_for_pytds() -> None:
+    engine = _Engine([_row()], dialect_name="mssql")
+
+    decision = service.check_order_payment(
+        engine,
+        site_order_number="225550",
+        site_amount=Decimal("5461.95"),
+        payment_amount=Decimal("5461.95"),
+        source_warehouse_xml_id=WAREHOUSE_GUID,
+    )
+
+    assert decision.allowed is True
+    assert engine.isolation_options == []
+    assert engine.driver_sql == ["SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"]
 
 
 @pytest.mark.parametrize(
@@ -398,7 +433,7 @@ def _payload() -> OrderPaymentCheckRequest:
             "payment_amount": "5461.95",
             "stage": "cloudpayments_check",
             "payment_id": "cp-1414",
-            "region_xml_id": "99999999-8888-7777-6666-555555555555",
+            "region_xml_id": "0000512213",
             "source_warehouse_xml_id": WAREHOUSE_GUID,
             "availability_snapshot_id": "availability-3520",
         }
@@ -412,6 +447,10 @@ def test_payment_control_endpoint_requires_dedicated_token(monkeypatch) -> None:
         require_order_payment_control_internal_token(None)
 
     assert exc_info.value.status_code == 401
+
+
+def test_payment_control_accepts_non_uuid_region_xml_identity() -> None:
+    assert _payload().region_xml_id == "0000512213"
 
 
 def test_payment_control_endpoint_returns_structured_decision(monkeypatch) -> None:

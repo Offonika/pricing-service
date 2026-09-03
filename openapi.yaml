@@ -25329,7 +25329,9 @@ components:
           title: Payment Id
         region_xml_id:
           type: string
-          format: uuid
+          maxLength: 128
+          minLength: 1
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
           title: Region Xml Id
         source_warehouse_xml_id:
           type: string

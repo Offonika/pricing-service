@@ -35,11 +35,20 @@ class OrderPaymentCheckRequest(BaseModel):
     payment_amount: Decimal = Field(ge=0, max_digits=15, decimal_places=2)
     stage: PaymentCheckStage
     payment_id: str | None = Field(default=None, max_length=128)
-    region_xml_id: UUID
+    region_xml_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
     source_warehouse_xml_id: UUID
     availability_snapshot_id: str | None = Field(default=None, max_length=128)
 
-    @field_validator("site_order_number", "payment_id", "availability_snapshot_id")
+    @field_validator(
+        "site_order_number",
+        "payment_id",
+        "region_xml_id",
+        "availability_snapshot_id",
+    )
     @classmethod
     def strip_identifiers(cls, value: str | None) -> str | None:
         if value is None:

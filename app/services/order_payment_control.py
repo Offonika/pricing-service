@@ -655,8 +655,23 @@ def check_order_payment(
         )
 
     with engine.connect() as raw_connection:
-        connection = raw_connection.execution_options(isolation_level="SERIALIZABLE")
+        # sqlalchemy-pytds 1.0.0 treats ``autocommit`` as a callable while the
+        # installed python-tds exposes it as a bool property.  Asking SQLAlchemy
+        # to switch isolation through ``execution_options`` therefore raises a
+        # TypeError before the first query.  SQL Server supports changing the
+        # session isolation level with SET inside the transaction marker, which
+        # keeps the guard snapshot atomic without exercising that broken adapter
+        # path.  Other dialects retain the portable SQLAlchemy code path used by
+        # the offline fixtures.
+        dialect_name = getattr(getattr(raw_connection, "dialect", None), "name", "")
+        connection = (
+            raw_connection
+            if dialect_name == "mssql"
+            else raw_connection.execution_options(isolation_level="SERIALIZABLE")
+        )
         with connection.begin():
+            if dialect_name == "mssql":
+                connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
             decision = _check_order_payment_on_source(
                 connection,
                 site_order_number=site_order_number,

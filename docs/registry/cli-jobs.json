@@ -364,6 +364,17 @@
       "spec": "docs/specs/assortment-lifecycle-policy.md",
       "remove_after": null
     },
+    "publish_weekly_kpi_reports.py": {
+      "owner": "management",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "verified_by_draft_to_published_transition",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "transaction_scope": "unit_of_work",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "report_competitor_items_needs_compat_review.py": {
       "owner": "matching",
       "kind": "report",

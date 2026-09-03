@@ -35,6 +35,7 @@ ALLOWED_DB_ACCESS = {
     "onec_read_only",
     "mixed",
 }
+ALLOWED_TRANSACTION_SCOPES = {"unit_of_work"}
 
 
 def _uses_central_read_only_scope(path: Path) -> bool:
@@ -58,6 +59,23 @@ def _uses_central_read_only_scope(path: Path) -> bool:
         for node in ast.walk(tree)
     )
     return imports_scope and calls_read_only_scope
+
+
+def _uses_application_unit_of_work(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports_unit_of_work = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module in {"app.infrastructure.db", "app.infrastructure.db.unit_of_work"}
+        and any(alias.name == "SqlAlchemyUnitOfWork" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    calls_unit_of_work = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SqlAlchemyUnitOfWork"
+        for node in ast.walk(tree)
+    )
+    return imports_unit_of_work and calls_unit_of_work
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
@@ -109,6 +127,9 @@ def find_errors(registry: dict[str, Any] | None = None) -> list[str]:
         db_access = metadata.get("db_access")
         if db_access is not None and db_access not in ALLOWED_DB_ACCESS:
             errors.append(f"{path.name}: unsupported db_access {db_access!r}")
+        transaction_scope = metadata.get("transaction_scope")
+        if transaction_scope is not None and transaction_scope not in ALLOWED_TRANSACTION_SCOPES:
+            errors.append(f"{path.name}: unsupported transaction_scope {transaction_scope!r}")
         if db_access == "application_read_only":
             source = path.read_text(encoding="utf-8")
             if not _uses_central_read_only_scope(path):
@@ -119,6 +140,14 @@ def find_errors(registry: dict[str, Any] | None = None) -> list[str]:
                 errors.append(
                     f"{path.name}: application_read_only must not construct/access an engine"
                 )
+        if transaction_scope == "unit_of_work":
+            source = path.read_text(encoding="utf-8")
+            if db_access != "application_write":
+                errors.append(f"{path.name}: unit_of_work requires db_access='application_write'")
+            if not _uses_application_unit_of_work(path):
+                errors.append(f"{path.name}: unit_of_work requires SqlAlchemyUnitOfWork")
+            if "build_engine" in source or "get_application_engine(" in source:
+                errors.append(f"{path.name}: unit_of_work must not construct/access an engine")
         spec_path = REPO_ROOT / str(metadata["spec"])
         if not spec_path.is_file():
             errors.append(f"{path.name}: spec does not exist: {metadata['spec']}")

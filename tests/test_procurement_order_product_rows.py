@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -110,6 +111,77 @@ def test_missing_catalog_product_keeps_link_and_records_error(db_session, monkey
     assert serialize_linked_process(order)["state"] == "linked"
     assert serialize_linked_process(order)["product_rows_sync"]["state"] == "error"
     assert any(event.event_type == "bitrix_product_rows_sync_failed" for event in order.events)
+
+
+def test_configured_consumable_is_excluded_and_audited(db_session, monkeypatch, tmp_path) -> None:
+    order = _order(db_session)
+    excluded_line = order.lines[0]
+    excluded_line.bitrix_product_id = None
+    config_path = tmp_path / "product-row-exclusions.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "exclusions": [
+                    {
+                        "nomenclature_ref": excluded_line.nomenclature_ref,
+                        "reason": "household_consumable",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(procurement_product_row_exclusions_path=str(config_path))
+    exclusions = product_rows_service.load_procurement_product_row_exclusions(settings)
+    desired = []
+    for index, row in enumerate(
+        product_rows_service.build_procurement_product_rows(order, exclusions=exclusions),
+        start=1,
+    ):
+        desired.append(
+            {
+                "ID": str(9000 + index),
+                **{key: value for key, value in row.items() if key != "CURRENCY_ID"},
+            }
+        )
+    list_results = iter(([], desired))
+
+    def fake_call(method, _params, **_kwargs):
+        if method == "crm.item.get":
+            return {"result": {"item": {"currencyId": "RMB"}}}
+        if method == "crm.productrow.list":
+            return {"result": next(list_results)}
+        if method == "batch":
+            return {"result": {"result": {}, "result_error": {}}}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(product_rows_service, "bitrix_call", fake_call)
+
+    result = product_rows_service.sync_procurement_order_product_rows(
+        db_session, order, apply=True, settings=settings
+    )
+    db_session.commit()
+
+    assert result["state"] == "synced"
+    assert result["expected_count"] == 1
+    assert result["excluded_count"] == 1
+    event = next(
+        event for event in order.events if event.event_type == "bitrix_product_rows_synced"
+    )
+    assert event.payload["excluded_lines"] == [
+        {
+            "line_number": 1,
+            "nomenclature_ref": excluded_line.nomenclature_ref,
+            "reason": "household_consumable",
+        }
+    ]
+
+
+def test_versioned_consumable_exclusion_list_contains_twenty_unique_guids() -> None:
+    exclusions = product_rows_service.load_procurement_product_row_exclusions(Settings())
+
+    assert len(exclusions) == 20
+    assert set(exclusions.values()) == {"household_consumable"}
 
 
 def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkeypatch) -> None:

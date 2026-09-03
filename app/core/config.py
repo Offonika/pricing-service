@@ -732,6 +732,7 @@ class Settings(BaseSettings):
     )
     procurement_order_formation_entity_type_id: int | None = None
     procurement_order_formation_mapping_path: str = "build/bitrix/order_formation_mapping.json"
+    procurement_product_row_exclusions_path: str = "config/procurement-product-row-exclusions.json"
     procurement_order_formation_bitrix_enabled: bool = False
     procurement_order_formation_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list

@@ -1,0 +1,25 @@
+{
+  "version": "2026-09-03",
+  "exclusions": [
+    {"nomenclature_ref": "0x81d1002590803daf11f1648b91a130c4", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x81d1002590803daf11f17063f27a1a24", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x81d1002590803daf11f17063f27a1a34", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x81d1002590803daf11f1709b1d45c649", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x81d1002590803daf11f1709b1d45c659", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x82490025901e48ee11e7ca8f4581ce86", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x8266002590803daf11f1415ad3faac0f", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x901f002590803daf11ef3cf3edfe20e5", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x9097002590803daf11f092ba2692463c", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x9097002590803daf11f092ba26924642", "reason": "household_consumable"},
+    {"nomenclature_ref": "0x9097002590803daf11f0afebb878c488", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xa4e40025901e48ee11ed284759a0e77e", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb07d002590803daf11f0dbcd0b407164", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f105850f97fc73", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f105850f97fc8e", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f105850f97fc91", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f10586efdb14df", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f10586efdb14e2", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f10586efdb14eb", "reason": "household_consumable"},
+    {"nomenclature_ref": "0xb9b1002590803daf11f10586efdb14ee", "reason": "household_consumable"}
+  ]
+}

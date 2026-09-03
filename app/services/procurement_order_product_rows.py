@@ -8,6 +8,7 @@ import urllib.parse
 from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import select
@@ -19,7 +20,12 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationEvent,
 )
 from app.services.bitrix_order_formation import bitrix_call
-from app.services.procurement_order_formation import PROCUREMENT_PROCESS_ENTITY_TYPE_ID
+from app.services.procurement_order_formation import (
+    PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+    normalize_guid,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def dynamic_product_row_owner_type(entity_type_id: int) -> str:
@@ -49,6 +55,36 @@ PRODUCT_ROW_READ_ATTEMPTS = 4
 
 class ProcurementProductRowsSyncError(RuntimeError):
     """A product-row mirror could not be made exact and needs a retry."""
+
+
+def load_procurement_product_row_exclusions(
+    settings: Settings | None = None,
+) -> dict[str, str]:
+    settings = settings or get_settings()
+    path = Path(settings.procurement_product_row_exclusions_path)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if not path.exists():
+        raise RuntimeError(f"procurement product-row exclusions do not exist: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload.get("exclusions") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError("procurement product-row exclusions must contain a list")
+    exclusions: dict[str, str] = {}
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise RuntimeError(f"product-row exclusion #{index} must be an object")
+        raw_ref = _clean(row.get("nomenclature_ref"))
+        normalized_ref = normalize_guid(raw_ref)
+        if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", normalized_ref):
+            raise RuntimeError(f"invalid product-row exclusion GUID at item #{index}")
+        if normalized_ref in exclusions:
+            raise RuntimeError(f"duplicate product-row exclusion GUID at item #{index}")
+        reason = _clean(row.get("reason"))
+        if not reason:
+            raise RuntimeError(f"product-row exclusion reason is required at item #{index}")
+        exclusions[normalized_ref] = reason
+    return exclusions
 
 
 def _read_bitrix_call(
@@ -112,12 +148,34 @@ def _safe_error_message(error: BaseException | str) -> str:
     return re.sub(r"https?://\S+", "[url]", message, flags=re.IGNORECASE)[:1000]
 
 
-def build_procurement_product_rows(order: ProcurementOrderFormation) -> list[dict[str, Any]]:
+def _excluded_product_lines(
+    order: ProcurementOrderFormation,
+    exclusions: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "line_number": line.line_number,
+            "nomenclature_ref": _clean(line.nomenclature_ref),
+            "reason": exclusions[normalize_guid(line.nomenclature_ref)],
+        }
+        for line in order.lines
+        if not line.removed and normalize_guid(line.nomenclature_ref) in exclusions
+    ]
+
+
+def build_procurement_product_rows(
+    order: ProcurementOrderFormation,
+    *,
+    exclusions: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    exclusions = exclusions or {}
     rows: list[dict[str, Any]] = []
     missing: list[int] = []
     mismatched: list[int] = []
     for line in order.lines:
         if line.removed:
+            continue
+        if normalize_guid(line.nomenclature_ref) in exclusions:
             continue
         product_id = _clean(line.bitrix_product_id)
         if not product_id:
@@ -346,6 +404,7 @@ def _audit(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
     actor: str,
+    payload: Mapping[str, Any] | None = None,
 ) -> None:
     safe_before = json.loads(json.dumps(before, ensure_ascii=False, default=str))
     safe_after = json.loads(json.dumps(after, ensure_ascii=False, default=str))
@@ -371,7 +430,10 @@ def _audit(
             idempotency_key=idempotency_key,
             before=safe_before,
             after=safe_after,
-            payload={"entity_type_id": PROCUREMENT_PROCESS_ENTITY_TYPE_ID},
+            payload={
+                "entity_type_id": PROCUREMENT_PROCESS_ENTITY_TYPE_ID,
+                **json.loads(json.dumps(payload or {}, ensure_ascii=False, default=str)),
+            },
         )
     )
 
@@ -398,8 +460,12 @@ def sync_procurement_order_product_rows(
         return result
 
     before = _product_rows_state(order)
+    exclusions: dict[str, str] = {}
+    excluded_lines: list[dict[str, Any]] = []
     try:
-        desired = build_procurement_product_rows(order)
+        exclusions = load_procurement_product_row_exclusions(settings)
+        excluded_lines = _excluded_product_lines(order, exclusions)
+        desired = build_procurement_product_rows(order, exclusions=exclusions)
         currencies = {_clean(_row_value(row, "CURRENCY_ID")).upper() for row in desired}
         if not currencies:
             currencies = {_clean(order.currency).upper()}
@@ -431,6 +497,8 @@ def sync_procurement_order_product_rows(
             "currency_id": desired_currency,
             "currency_update": current_currency != desired_currency,
         }
+        if excluded_lines:
+            result["excluded_count"] = len(excluded_lines)
         if not apply:
             return result
 
@@ -504,12 +572,17 @@ def sync_procurement_order_product_rows(
             before=before,
             after=after,
             actor=actor,
+            payload={"excluded_lines": excluded_lines},
         )
         return {**result, "state": "synced", "synced_count": len(readback)}
     except Exception as exc:
         message = _safe_error_message(exc)
         if apply:
-            expected_count = sum(1 for line in order.lines if not line.removed)
+            expected_count = sum(
+                1
+                for line in order.lines
+                if not line.removed and normalize_guid(line.nomenclature_ref) not in exclusions
+            )
             order.bitrix_product_rows_sync_state = "error"
             order.bitrix_product_rows_expected_count = expected_count
             order.bitrix_product_rows_error = message
@@ -521,14 +594,22 @@ def sync_procurement_order_product_rows(
                 before=before,
                 after=after,
                 actor=actor,
+                payload={"excluded_lines": excluded_lines},
             )
-        return {
+        result = {
             "state": "error",
             "order_id": order.id,
             "item_id": _clean(order.bitrix_item_id),
-            "expected_count": sum(1 for line in order.lines if not line.removed),
+            "expected_count": sum(
+                1
+                for line in order.lines
+                if not line.removed and normalize_guid(line.nomenclature_ref) not in exclusions
+            ),
             "error": message,
         }
+        if excluded_lines:
+            result["excluded_count"] = len(excluded_lines)
+        return result
 
 
 def preflight_procurement_product_rows(

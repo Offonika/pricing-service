@@ -184,6 +184,45 @@ def test_versioned_consumable_exclusion_list_contains_twenty_unique_guids() -> N
     assert set(exclusions.values()) == {"household_consumable"}
 
 
+def test_linked_process_product_view_hides_exclusions_and_keeps_source_order(
+    db_session,
+) -> None:
+    order = _order(db_session)
+    exclusions = product_rows_service.load_procurement_product_row_exclusions(Settings())
+    excluded_ref = next(iter(exclusions))
+    order.lines[0].nomenclature_ref = excluded_ref
+    order.lines[0].bitrix_product_xml_id = excluded_ref
+    order.lines[0].nomenclature_name = "Скотч хозяйственный"
+
+    linked_process = serialize_linked_process(order)
+    product_sync = linked_process["product_rows_sync"]
+
+    assert product_sync["excluded_count"] == 1
+    assert [row["name"] for row in product_sync["rows"]] == ["Товар 2"]
+    assert product_sync["rows"][0] == {
+        "line_number": 2,
+        "product_id": "2002",
+        "name": "Товар 2",
+        "quantity": Decimal("2"),
+        "purchase_price": Decimal("2.5"),
+        "currency": "RMB",
+        "sort": 20,
+        "catalog_matched": True,
+    }
+    assert len([line for line in order.lines if not line.removed]) == 2
+
+
+def test_product_view_marks_other_unmatched_goods_for_diagnostics(db_session) -> None:
+    order = _order(db_session, line_count=1)
+    order.lines[0].bitrix_product_id = None
+
+    view = product_rows_service.build_procurement_product_rows_view(order, exclusions={})
+
+    assert view["excluded_count"] == 0
+    assert view["rows"][0]["name"] == "Товар 1"
+    assert view["rows"][0]["catalog_matched"] is False
+
+
 def test_sync_updates_adds_then_deletes_and_verifies_readback(db_session, monkeypatch) -> None:
     order = _order(db_session)
     desired = _readback(order)

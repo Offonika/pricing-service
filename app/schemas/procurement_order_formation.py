@@ -377,6 +377,17 @@ class ProcurementSupplierDistributionApplyRequest(BaseModel):
     expected_order_version: int = Field(ge=1)
 
 
+class ProcurementProductRowRead(BaseModel):
+    line_number: int
+    product_id: str | None = None
+    name: str
+    quantity: Decimal
+    purchase_price: Decimal
+    currency: str
+    sort: int
+    catalog_matched: bool
+
+
 class ProcurementProductRowsSyncRead(BaseModel):
     state: Literal["not_applicable", "pending", "synced", "error"]
     expected_count: int | None = None
@@ -384,6 +395,8 @@ class ProcurementProductRowsSyncRead(BaseModel):
     checksum: str | None = None
     synced_at: datetime | None = None
     error: str | None = None
+    rows: list[ProcurementProductRowRead] = Field(default_factory=list)
+    excluded_count: int = Field(default=0, ge=0)
 
 
 class ProcurementLinkedProcessRead(BaseModel):

@@ -910,6 +910,55 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         ) : null}
       </section>
 
+      {order.linked_process?.state === "linked" && order.linked_process.product_rows_sync ? (
+        <section aria-labelledby="smart-process-products-title" className="order-formation__product-mirror">
+          <header>
+            <div>
+              <h2 id="smart-process-products-title">Товары заказа</h2>
+              <span>Источник: 1С · только для просмотра</span>
+            </div>
+            <strong>{countLabel(order.linked_process.product_rows_sync.rows?.length ?? 0, "позиция", "позиции", "позиций")}</strong>
+          </header>
+          {(order.linked_process.product_rows_sync.excluded_count ?? 0) > 0 ? (
+            <p className="order-formation__product-mirror-exclusions">
+              Исключено из товарного зеркала: {countLabel(order.linked_process.product_rows_sync.excluded_count ?? 0, "расходник", "расходника", "расходников")}.
+              Они остаются в заказе 1С, но не передаются в товары Smart Process.
+            </p>
+          ) : null}
+          {(order.linked_process.product_rows_sync.rows?.length ?? 0) > 0 ? (
+            <div className="order-formation__product-mirror-table-wrap">
+              <table className="order-formation__product-mirror-table">
+                <thead>
+                  <tr>
+                    <th>Строка</th>
+                    <th>Товар</th>
+                    <th>Количество</th>
+                    <th>Цена закупки</th>
+                    <th>Валюта</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {order.linked_process.product_rows_sync.rows?.map((row) => (
+                    <tr className={row.catalog_matched ? undefined : "is-unmatched"} key={`${row.sort}-${row.line_number}`}>
+                      <td>{row.line_number}</td>
+                      <td>
+                        <strong>{row.name}</strong>
+                        {!row.catalog_matched ? <small>Нет связи с каталогом Bitrix24</small> : null}
+                      </td>
+                      <td>{quantity(row.quantity)}</td>
+                      <td>{quantity(row.purchase_price)}</td>
+                      <td>{row.currency}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="order-formation__product-mirror-empty">В товарном зеркале нет позиций.</p>
+          )}
+        </section>
+      ) : null}
+
       {labelsSection}
 
       {supplierReviewRoom && !locked && (

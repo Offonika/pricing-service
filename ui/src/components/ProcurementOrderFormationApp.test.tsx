@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type {
@@ -184,6 +184,72 @@ describe("ProcurementOrderFormationApp связанный процесс", () =>
     expect(screen.getByText("Закупка/Заказ №317")).toBeInTheDocument();
     expect(screen.getByText("Товары Smart Process не синхронизированы")).toBeInTheDocument();
     expect(screen.getByText("Ожидается позиций: 249. Access denied")).toBeInTheDocument();
+  });
+
+  it("показывает товарное зеркало и отдельно объясняет исключённые расходники", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "linked",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+        item_id: "317",
+        product_rows_sync: {
+          state: "synced",
+          expected_count: 1,
+          synced_count: 1,
+          excluded_count: 2,
+          rows: [{
+            line_number: 7,
+            product_id: "2695",
+            name: "Дисплей для Huawei P10 Lite",
+            quantity: "3.000",
+            purchase_price: "39.5000",
+            currency: "CNY",
+            sort: 70,
+            catalog_matched: true,
+          }],
+        },
+      },
+    })} />);
+
+    const mirror = screen.getByRole("region", { name: "Товары заказа" });
+    expect(within(mirror).getByText("Источник: 1С · только для просмотра")).toBeInTheDocument();
+    expect(within(mirror).getByText("1 позиция")).toBeInTheDocument();
+    expect(within(mirror).getByText("Дисплей для Huawei P10 Lite")).toBeInTheDocument();
+    expect(within(mirror).getByText("3")).toBeInTheDocument();
+    expect(within(mirror).getByText("39,5")).toBeInTheDocument();
+    expect(within(mirror).getByText("CNY")).toBeInTheDocument();
+    expect(within(mirror).getByText(/Исключено из товарного зеркала: 2 расходника/)).toBeInTheDocument();
+  });
+
+  it("оставляет несопоставленный товар в таблице и показывает причину", () => {
+    render(<ProcurementOrderFormationApp initialOrder={order({
+      linked_process: {
+        state: "linked",
+        process_title: "Закупка/Заказ",
+        entity_type_id: 1056,
+        item_id: "314",
+        product_rows_sync: {
+          state: "error",
+          error: "нет товара Bitrix в строке 1",
+          rows: [{
+            line_number: 1,
+            product_id: null,
+            name: "Кабель USB-C",
+            quantity: "4",
+            purchase_price: "2.1",
+            currency: "CNY",
+            sort: 10,
+            catalog_matched: false,
+          }],
+        },
+      },
+    })} />);
+
+    const mirror = screen.getByRole("region", { name: "Товары заказа" });
+    expect(within(mirror).getByText("Кабель USB-C")).toBeInTheDocument();
+    expect(within(mirror).getByText("Нет связи с каталогом Bitrix24")).toBeInTheDocument();
+    expect(screen.getByText("Товары Smart Process не синхронизированы")).toBeInTheDocument();
   });
 
   it("показывает состояние немедленной синхронизации", () => {

@@ -29310,6 +29310,46 @@ components:
           title: Bitrix Url
       type: object
       title: ProcurementProductLinkRead
+    ProcurementProductRowRead:
+      properties:
+        line_number:
+          type: integer
+          title: Line Number
+        product_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Id
+        name:
+          type: string
+          title: Name
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        purchase_price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Price
+        currency:
+          type: string
+          title: Currency
+        sort:
+          type: integer
+          title: Sort
+        catalog_matched:
+          type: boolean
+          title: Catalog Matched
+      type: object
+      required:
+      - line_number
+      - name
+      - quantity
+      - purchase_price
+      - currency
+      - sort
+      - catalog_matched
+      title: ProcurementProductRowRead
     ProcurementProductRowsSyncRead:
       properties:
         state:
@@ -29346,6 +29386,16 @@ components:
           - type: string
           - type: 'null'
           title: Error
+        rows:
+          items:
+            $ref: '#/components/schemas/ProcurementProductRowRead'
+          type: array
+          title: Rows
+        excluded_count:
+          type: integer
+          minimum: 0.0
+          title: Excluded Count
+          default: 0
       type: object
       required:
       - state

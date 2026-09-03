@@ -37,6 +37,7 @@ related_tests:
   - tests/test_export_receivable_work_report_task.py
   - tests/test_export_sms_journal_xlsx.py
   - tests/test_product_classification.py
+  - tests/test_publish_weekly_kpi_reports_task.py
   - tests/test_release_builder.py
   - tests/test_report_display_auto_order_backtest.py
   - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
@@ -49,7 +50,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-31"
+updated_at: "2026-09-03"
 ---
 
 # Назначение
@@ -219,6 +220,10 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Перевести `scripts/validate_executive_dashboard_release.py` на central
   read-only session scope с сохранением UI, routes, snapshots, Alembic revision,
   JSON и exit code контрактов.
+- [x] Перевести `tasks/publish_weekly_kpi_reports.py` с ручных
+  `build_engine` / `Session` / `commit` на application Unit of Work; объявить
+  `application_write` и атомарную транзакцию в CLI registry, подтвердить полный
+  rollback и идемпотентный повтор. Production, cron и миграции в срез не входят.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -415,9 +420,20 @@ JSON/CSV/XLSX артефактов сохраняются.
     release требуют отдельных подтверждений.
 70. После зелёного CI разрешён merge PR №137. Production migration, deploy и
     cutover в это решение не входят.
+71. Для `tasks/publish_weekly_kpi_reports.py` разрешены commit проверенного среза,
+    push ветки и создание отдельного PR. Merge и production release требуют
+    отдельных подтверждений.
+72. После зелёного CI разрешён merge PR №167. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-09-03 — разрешён merge PR №167; production release оставлен отдельным
+  решением.
+- 2026-09-03 — разрешены commit, push и создание отдельного PR для первого Unit
+  of Work среза; merge и production оставлены отдельными решениями.
+- 2026-09-02 — утверждён и реализован первый Unit of Work срез для
+  `publish_weekly_kpi_reports.py`; production, cron и миграции исключены.
 - 2026-08-31 — разрешён merge PR №137; production release оставлен отдельным
   решением.
 - 2026-08-31 — разрешены commit проверенного read-only среза

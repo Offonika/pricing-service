@@ -193,6 +193,11 @@ test("blocked project explains resolution and stays usable at all target widths"
     contentType: "image/gif",
     body: Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64"),
   }));
+  await page.route("https://api.bitrix24.com/api/v1/", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/javascript",
+    body: "",
+  }));
   await page.route("**/api/procurement-order-formation/assistant**", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -264,7 +269,7 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(page.getByText("Возвраты партии: 72,7%")).toBeVisible();
   await expect(page.getByText("24 возврата · порог 5 возвратов и 40%")).toBeVisible();
   await expect(page.getByText("Подтверждённый брак поставщика: данных нет").first()).toBeVisible();
-  await expect(page.getByText("Рентабельность: не рассчитана").first()).toBeVisible();
+  await expect(page.getByText("Рентабельность: нет данных").first()).toBeVisible();
   await expect(page.getByText(/24 возвратов/)).toHaveCount(0);
   await expect(page.getByText("Брак: 0%")).toHaveCount(0);
   const transferAlert = page.locator(".order-formation__alert");
@@ -273,6 +278,17 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(page.getByText("Обычная закупка")).toBeVisible();
   await expect(page.getByText("1С: Не отправлен")).toBeVisible();
   await expect(page.getByText("Товар Bitrix24: 40699").first()).toBeVisible();
+  await expect(focusedRow.getByText("1 блокер")).toBeVisible();
+  await expect(
+    focusedRow.getByRole("link", { name: "Открыть сигналы товара Проблемная строка 20" })
+  ).toHaveAttribute(
+    "href",
+    "/bitrix/procurement-order-formation?view=product_insights&productId=40699&orderId=94&lineId=50"
+  );
+  await expect(focusedRow.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+    "href",
+    "/bitrix/procurement-order-formation?view=product_insights&productId=40699&orderId=94&lineId=50"
+  );
   await expect(page.getByRole("button", { name: "Проверить и создать черновик в 1С" })).toBeDisabled();
   await expect(page.getByText("Сначала разберите строки 20, 30.")).toBeVisible();
   await expect(page.getByText(/not_sent|ordinary|Bitrix product/)).toHaveCount(0);
@@ -290,6 +306,9 @@ test("blocked project explains resolution and stays usable at all target widths"
       path: testInfo.outputPath(`order-${viewport.width}.png`),
       fullPage: false,
     });
+    if (viewport.width === 1440 || viewport.width === 390) {
+      await focusedRow.screenshot({ path: testInfo.outputPath(`order-row-${viewport.width}.png`) });
+    }
   }
 
   await page.setViewportSize({ width: 390, height: 844 });

@@ -14,10 +14,12 @@ related_code:
   - app/schemas/customer_returns.py
   - app/services/customer_return_bitrix.py
   - app/services/customer_return_deals.py
+  - app/services/customer_return_service_requests.py
   - app/services/customer_returns.py
   - app/services/customer_return_carriers.py
   - tasks/customer_return_bitrix_worker.py
   - alembic/versions/d8e0f2a4c6b9_add_customer_return_deal_link.py
+  - alembic/versions/b7c8d9e0f1a2_add_customer_return_service_links.py
   - ui/src/App.css
   - ui/src/components/CustomerReturnsWorkspace.tsx
   - ui/src/components/LogisticsWorkspace.tsx
@@ -26,9 +28,12 @@ related_tests:
   - tests/test_bitrix_logistics.py
   - tests/test_customer_return_bitrix_worker.py
   - tests/test_customer_return_deals.py
+  - tests/test_customer_return_service_links.py
+  - tests/test_customer_return_service_requests.py
   - tests/test_customer_returns_api.py
   - tests/test_customer_return_carriers.py
   - tests/test_customer_returns_migration.py
+  - tests/test_bitrix_customer_return_service_links.py
   - ui/src/components/CustomerReturnsWorkspace.test.tsx
   - ui/src/components/LogisticsWorkspace.test.tsx
 contracts:
@@ -108,6 +113,29 @@ updated_at: "2026-09-02"
   в истории возврата с автором, прежней и новой связью;
 - номер заказа, клиент и ответственный берутся backend из выбранной сделки, а не
   принимаются как доверенные данные браузера.
+
+## Решения по связям сервисного обращения
+
+- корневой заявкой остаётся карточка смарт-процесса Bitrix24 с
+  `entityTypeId=1134`; отдельная сущность «Заявка на возврат» не создаётся;
+- одно обращение может объединять несколько возвратных отправлений и несколько
+  экспертиз; у отправления и экспертизы может быть не более одного обращения;
+- прямой связи `отправление -> экспертиза` нет: список экспертиз определяется по
+  общему `service_request_item_id`;
+- трек разрешено зарегистрировать без обращения с явной меткой «Обращение не
+  привязано» и связать позднее;
+- создание нового сервисного обращения из раздела возвратов в этот релиз не входит;
+- backend повторно читает карточку 1134 и сохраняет доверенный снимок названия,
+  стадии, сделки, заказа, ответственного и времени привязки; браузер передаёт
+  только ID;
+- если у обращения есть сделка, она автоматически заполняет пустую сделку
+  отправления; разные сделки блокируются, а удаление обращения не удаляет сделку;
+- экспертиза привязывается вручную из карточки возврата; разные известные номера
+  заказа блокируются, отсутствие номера допускается и отражается в аудите;
+- rollout управляется `CUSTOMER_RETURN_SERVICE_LINKS_ENABLED` и списком
+  `CUSTOMER_RETURN_SERVICE_LINKS_ROLES`: сначала `admin`, после smoke —
+  `admin,returns`;
+- rollback выполняется выключением feature flag без удаления новых полей и аудита.
 
 # Acceptance Criteria
 
@@ -231,6 +259,25 @@ side effects в Bitrix24 и подтверждает их результат.
 - `POST /api/bitrix/logistics/customer-returns/{shipment_id}/pickup` — действие
   «Забрали» от имени текущего пользователя сессии.
 
+Следующий релиз связей добавляет:
+
+- `GET /api/bitrix/logistics/customer-return-service-requests` — поиск обращений
+  по сделке, ID, заголовку или ID тикета, включая закрытые;
+- `PUT /api/bitrix/logistics/customer-returns/{shipment_id}/service-request-link`
+  — установить, заменить или удалить связь; тело содержит только
+  `serviceRequestItemId`;
+- `GET /api/bitrix/logistics/customer-return-expertise` — связанные экспертизы
+  и поиск кандидатов по номеру экспертизы или заказа;
+- `PUT /api/bitrix/logistics/expertise/{case_id}/service-request-link` —
+  установить или удалить связь экспертизы с обращением;
+- реестр и карточка возвращают вложенные объекты `serviceRequest` и
+  `expertiseCases`, сохраняя старые `bitrix_case_id` и `site_ticket_id` для
+  совместимости.
+
+Все методы используют существующую Bitrix-сессию, роль `returns`/`admin` и
+backend-определение сотрудника и времени. Недоступность Bitrix24 при поиске или
+чтении выбранной карточки возвращает `503` до изменения существующей связи.
+
 BFF не принимает от браузера `created_by_bitrix_user_id`,
 `picked_up_by_bitrix_user_id`, произвольный `source` или время получения:
 идентификатор сотрудника и время проставляет backend из проверенной сессии.
@@ -280,6 +327,13 @@ webhook и ответственном. Outbox использует lease, backof
   календарные напоминания;
 - падение Bitrix24 не откатывает полученный статус: outbox остаётся готовым к
   повторной обработке.
+- миграция заполняет `service_request_item_id` из числового `bitrix_case_id`,
+  затем через локальную пару `site_ticket_id -> site_service_request_case`;
+  неразрешённые ссылки остаются пустыми;
+- изменение или удаление обращения не может удалить уже привязанную сделку;
+  изменить сделку на несовместимую при активном обращении нельзя;
+- каждое фактическое link/relink/unlink отправления и экспертизы содержит автора,
+  прежний и новый ID в истории.
 
 # Implementation Checklist
 
@@ -299,6 +353,12 @@ webhook и ответственном. Outbox использует lease, backof
 - [ ] Выполнить production rollout: применить миграцию, проверить текущий app URL,
   назначить пилотным сотрудникам `admin` или `returns` и включить worker только
   после controlled smoke.
+- [x] Добавить каноническую связь отправления и экспертизы с обращением 1134,
+  backfill совместимых ссылок и доверенные снимки Bitrix24.
+- [x] Реализовать поиск, link/relink/unlink, аудит, защиту сделок и номеров заказа,
+  метку/фильтр «Без обращения» и список экспертиз в карточке.
+- [x] Скрыть новый UI и endpoints за поэтапным feature flag для `admin` и
+  `returns`, сохранив прежнее поведение при выключенном флаге.
 
 # Review Notes / Risks
 
@@ -325,6 +385,11 @@ webhook и ответственном. Outbox использует lease, backof
   returns-only навигация;
 - migration: upgrade создаёт только таблицы `customer_return_*`, downgrade удаляет
   только их;
+- migration links: прямой и ticket-based backfill, неразрешённые ссылки и
+  совместимость старого приложения с расширенной схемой;
+- service links: поиск активных/закрытых обращений, link/relink/unlink, аудит,
+  конфликт сделок, несколько отправлений и несколько экспертиз, отсутствие номера
+  заказа и недоступность Bitrix24;
 - worker: dry-run не пишет БД и Bitrix24, apply использует одну задачу, lease,
   retry/backoff, идемпотентные комментарии и завершение после факта 1С;
 - regression: существующие `tests/test_logistics_api.py` проходят без изменений;
@@ -346,8 +411,20 @@ webhook и ответственном. Outbox использует lease, backof
 Rollback: выключить producers/workers и оставить данные реестра для аудита;
 откатывать миграцию только если таблицы пусты либо данные отдельно сохранены.
 
+Для релиза связей rollback ограничен выключением
+`CUSTOMER_RETURN_SERVICE_LINKS_ENABLED`; новые поля и аудит сохраняются, downgrade
+миграции в Production не выполняется. После локальной приёмки отдельной командой
+выполняется production smoke: обращение со сделкой, поздняя привязка, две отправки
+по одному обращению, обращение с экспертизой и конфликт разных сделок.
+
+Следующие отдельные релизы: worker задач и напоминаний с read-only сверкой 1С;
+официальные API Почты России и СДЭК; адаптер Яндекс Доставки после проверки
+контракта и доступов.
+
 # Changelog
 
+- 2026-09-02 — утверждён отдельный релиз связей возврата с обращением 1134 и
+  экспертизами без новой сущности «Заявка на возврат».
 - 2026-09-01 — утверждён выбор сделки Bitrix24 вместо ручного ввода номера заказа:
   все найденные сделки с пометкой закрытых, регистрация без сделки и изменение
   связи с аудитом.

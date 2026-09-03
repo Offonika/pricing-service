@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.schemas.customer_returns import CustomerReturnCarrier
 from app.schemas.logistics import (
@@ -45,6 +45,11 @@ class BitrixCustomerReturnCreateRequest(BaseModel):
     site_ticket_id: str | None = Field(default=None, min_length=1, max_length=64)
     onec_order_ref: str | None = Field(default=None, min_length=1, max_length=64)
     bitrix_deal_id: int | None = Field(default=None, ge=1)
+    service_request_item_id: int | None = Field(
+        default=None,
+        ge=1,
+        validation_alias=AliasChoices("serviceRequestItemId", "service_request_item_id"),
+    )
 
 
 class BitrixCustomerReturnDealLinkRequest(BaseModel):
@@ -67,6 +72,52 @@ class BitrixCustomerReturnDealSearchItem(BaseModel):
     company_name: str | None = None
     responsible_user_id: int | None = None
     responsible_name: str | None = None
+
+
+class BitrixCustomerReturnServiceRequestLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_request_item_id: int | None = Field(
+        default=None,
+        ge=1,
+        validation_alias=AliasChoices("serviceRequestItemId", "service_request_item_id"),
+    )
+
+
+class BitrixCustomerReturnServiceRequestSearchItem(BaseModel):
+    item_id: int
+    title: str
+    stage_id: str | None = None
+    stage_name: str | None = None
+    closed: bool = False
+    category_id: int | None = None
+    deal_id: int | None = None
+    order_ref: str | None = None
+    responsible_user_id: int | None = None
+    responsible_name: str | None = None
+    site_ticket_id: str | None = None
+
+
+class BitrixCustomerReturnExpertiseLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_request_item_id: int | None = Field(
+        default=None,
+        ge=1,
+        validation_alias=AliasChoices("serviceRequestItemId", "service_request_item_id"),
+    )
+
+
+class BitrixCustomerReturnExpertiseItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    external_id: str
+    onec_expertise_number: str | None = None
+    current_status: str
+    linked_customer_order_number: str | None = None
+    problem_summary: str | None = None
+    service_request_item_id: int | None = None
 
 
 class BitrixCustomerReturnPickupRequest(BaseModel):

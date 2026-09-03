@@ -1119,7 +1119,10 @@ export function LogisticsWorkspace() {
         )}
 
         {screen === "returns" && (
-          <CustomerReturnsWorkspace showTestingGuide={bootstrap.profile.role === "admin"} />
+          <CustomerReturnsWorkspace
+            serviceLinksEnabled={capabilities.has("customer_return_service_links")}
+            showTestingGuide={bootstrap.profile.role === "admin"}
+          />
         )}
 
         {message && <div className="logistics-toast" role="status">{message}</div>}

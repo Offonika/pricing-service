@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { isAxiosError } from "axios";
 
 import { logisticsApi as api } from "../api/logistics";
+import {
+  openBitrixCustomerReturnDeal,
+  openBitrixCustomerReturnServiceRequest,
+} from "../api/bitrix";
 
 type CustomerReturnCarrier = "russian_post" | "cdek";
 type CustomerReturnStatus =
@@ -33,6 +37,9 @@ type CustomerReturnShipment = {
   bitrix_company_name?: string | null;
   bitrix_responsible_user_id?: number | null;
   bitrix_responsible_name?: string | null;
+  service_request_item_id?: number | null;
+  serviceRequest?: CustomerReturnServiceRequest | null;
+  expertiseCases?: CustomerReturnExpertise[];
   onec_return_ref?: string | null;
   carrier_last_status_text?: string | null;
   storage_deadline_at?: string | null;
@@ -77,7 +84,32 @@ type CustomerReturnDeal = {
   responsible_name?: string | null;
 };
 
+type CustomerReturnServiceRequest = {
+  item_id: number;
+  title?: string | null;
+  stage_id?: string | null;
+  stage_name?: string | null;
+  closed: boolean;
+  category_id?: number | null;
+  deal_id?: number | null;
+  order_ref?: string | null;
+  responsible_user_id?: number | null;
+  responsible_name?: string | null;
+  site_ticket_id?: string | null;
+};
+
+type CustomerReturnExpertise = {
+  id: number;
+  external_id?: string;
+  onec_expertise_number?: string | null;
+  current_status: string;
+  linked_customer_order_number?: string | null;
+  problem_summary?: string | null;
+  service_request_item_id?: number | null;
+};
+
 type CustomerReturnsWorkspaceProps = {
+  serviceLinksEnabled?: boolean;
   showTestingGuide?: boolean;
 };
 
@@ -88,6 +120,7 @@ type CustomerReturnsHelpProps = {
   closeButtonRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   onTabChange: (tab: HelpTab) => void;
+  serviceLinksEnabled: boolean;
   showTestingGuide: boolean;
 };
 
@@ -112,6 +145,7 @@ const EVENT_LABELS: Record<string, string> = {
   pickup_confirmed: "Сотрудник подтвердил получение",
   onec_return_confirmed: "Возврат найден в 1С",
   deal_link_changed: "Привязка сделки изменена",
+  service_request_link_changed: "Привязка сервисного обращения изменена",
 };
 
 const STATUS_HELP: Array<{ status: CustomerReturnStatus; description: string }> = [
@@ -129,6 +163,7 @@ function CustomerReturnsHelp({
   closeButtonRef,
   onClose,
   onTabChange,
+  serviceLinksEnabled,
   showTestingGuide,
 }: CustomerReturnsHelpProps) {
   return (
@@ -231,6 +266,34 @@ function CustomerReturnsHelp({
               </ol>
             </section>
 
+            {serviceLinksEnabled ? (
+              <section>
+                <h3>Обращения и экспертизы</h3>
+                <ol>
+                  <li>
+                    После выбора сделки выберите связанное сервисное обращение. Закрытые
+                    обращения остаются в поиске и помечаются как закрытые.
+                  </li>
+                  <li>
+                    Если обращения ещё нет, зарегистрируйте трек без него: возврат появится с
+                    меткой «Обращение не привязано».
+                  </li>
+                  <li>
+                    В карточке возврата можно привязать, заменить или убрать обращение, открыть
+                    обращение и сделку в Bitrix24.
+                  </li>
+                  <li>
+                    Экспертизу добавляйте через поиск по номеру экспертизы или заказа. Разные
+                    известные номера заказа связать нельзя.
+                  </li>
+                </ol>
+                <p>
+                  Удаление обращения не удаляет сделку. Для поиска непривязанных записей
+                  используйте фильтр «Без обращения».
+                </p>
+              </section>
+            ) : null}
+
             <section>
               <h3>Что означают состояния</h3>
               <dl className="customer-returns-help__statuses">
@@ -275,6 +338,12 @@ function CustomerReturnsHelp({
               <h3>Проверка пилота</h3>
               <ol>
                 <li>Зарегистрируйте оба возврата и проверьте карточки и историю.</li>
+                {serviceLinksEnabled ? (
+                  <li>
+                    Один возврат оставьте без обращения, затем привяжите существующее обращение
+                    из карточки и проверьте фильтр «Без обращения».
+                  </li>
+                ) : null}
                 <li>Проверьте фильтры по перевозчику и состоянию «Трек зарегистрирован».</li>
                 <li>
                   Передайте ID возвратов техническому исполнителю для безопасной имитации
@@ -328,11 +397,14 @@ function upsertShipment(
   current: CustomerReturnShipment[],
   shipment: CustomerReturnShipment,
   carrierFilter: string,
-  statusFilter: string
+  statusFilter: string,
+  serviceRequestFilter: string,
 ) {
   if (
     (carrierFilter && shipment.carrier !== carrierFilter) ||
-    (statusFilter && shipment.status !== statusFilter)
+    (statusFilter && shipment.status !== statusFilter) ||
+    (serviceRequestFilter === "missing" && shipment.service_request_item_id) ||
+    (serviceRequestFilter === "linked" && !shipment.service_request_item_id)
   ) {
     return current.filter((item) => item.id !== shipment.id);
   }
@@ -547,18 +619,277 @@ function CustomerReturnDealPicker({
   );
 }
 
+type ServiceRequestPickerProps = {
+  dealId?: number | null;
+  disabled?: boolean;
+  idPrefix: string;
+  label: string;
+  onSelect: (request: CustomerReturnServiceRequest | null) => void;
+  selected: CustomerReturnServiceRequest | null;
+};
+
+function CustomerReturnServiceRequestPicker({
+  dealId,
+  disabled = false,
+  idPrefix,
+  label,
+  onSelect,
+  selected,
+}: ServiceRequestPickerProps) {
+  const [query, setQuery] = useState(selected?.title || "");
+  const [options, setOptions] = useState<CustomerReturnServiceRequest[]>([]);
+  const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const listId = `${idPrefix}-service-request-options`;
+
+  useEffect(() => {
+    setQuery(selected?.title || "");
+  }, [selected?.item_id, selected?.title]);
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (selected && normalized === selected.title) return undefined;
+    if (!dealId && normalized.length < 2) {
+      setOptions([]);
+      setOpen(false);
+      setError("");
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setSearching(true);
+      setError("");
+      try {
+        const params: Record<string, string | number> = { limit: 20 };
+        if (dealId) params.deal_id = dealId;
+        if (normalized.length >= 2) params.search = normalized;
+        const { data } = await api.get<CustomerReturnServiceRequest[]>(
+          "/bitrix/logistics/customer-return-service-requests",
+          { params, signal: controller.signal },
+        );
+        setOptions(data);
+        setActiveIndex(0);
+        setOpen(true);
+      } catch (searchError) {
+        if (isAxiosError(searchError) && searchError.code === "ERR_CANCELED") return;
+        setOptions([]);
+        setOpen(true);
+        setError(apiError(searchError));
+      } finally {
+        if (!controller.signal.aborted) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [dealId, query, selected]);
+
+  const choose = (request: CustomerReturnServiceRequest) => {
+    onSelect(request);
+    setQuery(request.title || `Обращение #${request.item_id}`);
+    setOpen(false);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || !options.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.min(current + 1, options.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.max(current - 1, 0));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      choose(options[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.stopPropagation();
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="logistics-field customer-return-deal-picker">
+      <span>{label}</span>
+      <div className="customer-return-deal-picker__control">
+        <input
+          aria-activedescendant={open && options.length ? `${idPrefix}-service-request-${options[activeIndex].item_id}` : undefined}
+          aria-autocomplete="list"
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-label={label}
+          autoComplete="off"
+          disabled={disabled}
+          onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            onSelect(null);
+          }}
+          onFocus={() => {
+            if (options.length || error) setOpen(true);
+          }}
+          onKeyDown={onKeyDown}
+          placeholder="ID, заголовок или ID тикета"
+          role="combobox"
+          value={query}
+        />
+        {selected ? (
+          <button
+            aria-label="Очистить выбранное обращение"
+            className="customer-return-deal-picker__clear"
+            disabled={disabled}
+            onClick={() => {
+              onSelect(null);
+              setQuery("");
+            }}
+            type="button"
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
+      {selected ? (
+        <small className="customer-return-deal-picker__selected">
+          #{selected.item_id}{selected.stage_name ? ` · ${selected.stage_name}` : ""}
+          {selected.closed ? " · закрыто" : ""}
+        </small>
+      ) : null}
+      {searching ? <small role="status">Ищем обращения…</small> : null}
+      {open ? (
+        <div className="customer-return-deal-picker__options" id={listId} role="listbox">
+          {error ? (
+            <p role="alert">{error}. Возврат можно оставить без обращения.</p>
+          ) : options.length ? (
+            options.map((request, index) => (
+              <button
+                aria-selected={index === activeIndex}
+                className={index === activeIndex ? "is-active" : ""}
+                id={`${idPrefix}-service-request-${request.item_id}`}
+                key={request.item_id}
+                onClick={() => choose(request)}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveIndex(index)}
+                role="option"
+                type="button"
+              >
+                <strong>#{request.item_id} · {request.title || "Без названия"}</strong>
+                <span>
+                  {request.order_ref ? `Заказ ${request.order_ref}` : "Заказ не указан"}
+                  {request.stage_name ? ` · ${request.stage_name}` : ""}
+                  {request.closed ? " · Закрыто" : ""}
+                </span>
+                {request.responsible_name ? (
+                  <small>Ответственный: {request.responsible_name}</small>
+                ) : null}
+              </button>
+            ))
+          ) : (
+            <p>Обращения не найдены. Трек можно зарегистрировать без связи.</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CustomerReturnExpertisePicker({
+  disabled,
+  onSelect,
+}: {
+  disabled: boolean;
+  onSelect: (item: CustomerReturnExpertise) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [options, setOptions] = useState<CustomerReturnExpertise[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (normalized.length < 2) {
+      setOptions([]);
+      setError("");
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      try {
+        const { data } = await api.get<CustomerReturnExpertise[]>(
+          "/bitrix/logistics/customer-return-expertise",
+          { params: { search: normalized, limit: 20 }, signal: controller.signal },
+        );
+        setOptions(data);
+        setError("");
+      } catch (searchError) {
+        if (isAxiosError(searchError) && searchError.code === "ERR_CANCELED") return;
+        setOptions([]);
+        setError(apiError(searchError));
+      }
+    }, 300);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [query]);
+
+  return (
+    <div className="customer-return-expertise-picker">
+      <label className="logistics-field">
+        <span>Добавить экспертизу</span>
+        <input
+          aria-label="Поиск экспертизы"
+          autoComplete="off"
+          disabled={disabled}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Номер экспертизы или заказа"
+          value={query}
+        />
+      </label>
+      {error ? <small role="alert">{error}</small> : null}
+      {options.length ? (
+        <div className="customer-return-expertise-picker__options">
+          {options.map((item) => (
+            <button
+              className="btn btn--ghost"
+              disabled={disabled}
+              key={item.id}
+              onClick={() => {
+                onSelect(item);
+                setQuery("");
+                setOptions([]);
+              }}
+              type="button"
+            >
+              Экспертиза {item.onec_expertise_number || `#${item.id}`}
+              {item.linked_customer_order_number ? ` · заказ ${item.linked_customer_order_number}` : ""}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function CustomerReturnsWorkspace({
+  serviceLinksEnabled = false,
   showTestingGuide = false,
 }: CustomerReturnsWorkspaceProps) {
   const [returns, setReturns] = useState<CustomerReturnShipment[]>([]);
   const [detail, setDetail] = useState<CustomerReturnDetail | null>(null);
   const [carrierFilter, setCarrierFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [serviceRequestFilter, setServiceRequestFilter] = useState("");
   const [carrier, setCarrier] = useState<CustomerReturnCarrier>("russian_post");
   const [trackingNumber, setTrackingNumber] = useState("");
   const [selectedDeal, setSelectedDeal] = useState<CustomerReturnDeal | null>(null);
+  const [selectedServiceRequest, setSelectedServiceRequest] =
+    useState<CustomerReturnServiceRequest | null>(null);
   const [detailDeal, setDetailDeal] = useState<CustomerReturnDeal | null>(null);
+  const [detailServiceRequest, setDetailServiceRequest] =
+    useState<CustomerReturnServiceRequest | null>(null);
   const [editingDealLink, setEditingDealLink] = useState(false);
+  const [editingServiceRequestLink, setEditingServiceRequestLink] = useState(false);
   const [pickupComment, setPickupComment] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -585,7 +916,9 @@ export function CustomerReturnsWorkspace({
   const closeDetail = () => {
     setDetail(null);
     setDetailDeal(null);
+    setDetailServiceRequest(null);
     setEditingDealLink(false);
+    setEditingServiceRequestLink(false);
     detailTriggerRef.current?.focus();
   };
 
@@ -612,6 +945,8 @@ export function CustomerReturnsWorkspace({
       const params: Record<string, string | number> = { limit: 100 };
       if (carrierFilter) params.carrier = carrierFilter;
       if (statusFilter) params.status = statusFilter;
+      if (serviceRequestFilter === "missing") params.without_service_request = "true";
+      if (serviceRequestFilter === "linked") params.without_service_request = "false";
       const { data } = await api.get<CustomerReturnShipment[]>(
         "/bitrix/logistics/customer-returns",
         { params }
@@ -623,7 +958,7 @@ export function CustomerReturnsWorkspace({
     } finally {
       setLoading(false);
     }
-  }, [carrierFilter, statusFilter]);
+  }, [carrierFilter, serviceRequestFilter, statusFilter]);
 
   useEffect(() => {
     void loadReturns();
@@ -641,16 +976,27 @@ export function CustomerReturnsWorkspace({
           carrier,
           tracking_number: normalizedTrack,
           bitrix_deal_id: selectedDeal?.deal_id || null,
+          ...(serviceLinksEnabled
+            ? { serviceRequestItemId: selectedServiceRequest?.item_id || null }
+            : {}),
         }
       );
       setReturns((current) =>
-        upsertShipment(current, data.shipment, carrierFilter, statusFilter)
+        upsertShipment(
+          current,
+          data.shipment,
+          carrierFilter,
+          statusFilter,
+          serviceRequestFilter,
+        )
       );
       detailTriggerRef.current = registerButtonRef.current;
       setDetail(data.shipment);
       setDetailDeal(dealFromShipment(data.shipment));
+      setDetailServiceRequest(data.shipment.serviceRequest || null);
       setTrackingNumber("");
       setSelectedDeal(null);
+      setSelectedServiceRequest(null);
       setMessage(data.created ? "Возврат зарегистрирован" : "Этот трек уже есть в реестре");
     } catch (error) {
       setMessage(apiError(error));
@@ -672,7 +1018,9 @@ export function CustomerReturnsWorkspace({
       detailTriggerRef.current = trigger;
       setDetail(data);
       setDetailDeal(dealFromShipment(data));
+      setDetailServiceRequest(data.serviceRequest || null);
       setEditingDealLink(false);
+      setEditingServiceRequestLink(false);
       setPickupComment("");
       setMessage("");
     } catch (error) {
@@ -694,7 +1042,9 @@ export function CustomerReturnsWorkspace({
         }
       );
       setDetail(data);
-      setReturns((current) => upsertShipment(current, data, carrierFilter, statusFilter));
+      setReturns((current) =>
+        upsertShipment(current, data, carrierFilter, statusFilter, serviceRequestFilter)
+      );
       setPickupComment("");
       setMessage("Получение возврата подтверждено. Поставлен контроль сверки с 1С.");
     } catch (error) {
@@ -714,9 +1064,62 @@ export function CustomerReturnsWorkspace({
       );
       setDetail(data);
       setDetailDeal(dealFromShipment(data));
-      setReturns((current) => upsertShipment(current, data, carrierFilter, statusFilter));
+      setReturns((current) =>
+        upsertShipment(current, data, carrierFilter, statusFilter, serviceRequestFilter)
+      );
       setEditingDealLink(false);
       setMessage(deal ? "Сделка привязана к возврату" : "Привязка сделки удалена");
+    } catch (error) {
+      setMessage(apiError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveServiceRequestLink = async (
+    request: CustomerReturnServiceRequest | null = detailServiceRequest,
+  ) => {
+    if (!detail || busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.put<CustomerReturnDetail>(
+        `/bitrix/logistics/customer-returns/${detail.id}/service-request-link`,
+        { serviceRequestItemId: request?.item_id || null },
+      );
+      setDetail(data);
+      setDetailDeal(dealFromShipment(data));
+      setDetailServiceRequest(data.serviceRequest || null);
+      setReturns((current) =>
+        upsertShipment(current, data, carrierFilter, statusFilter, serviceRequestFilter)
+      );
+      setEditingServiceRequestLink(false);
+      setMessage(request ? "Сервисное обращение привязано" : "Привязка обращения удалена");
+    } catch (error) {
+      setMessage(apiError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeExpertiseLink = async (
+    expertise: CustomerReturnExpertise,
+    serviceRequestItemId: number | null,
+  ) => {
+    if (!detail || busy) return;
+    setBusy(true);
+    try {
+      await api.put(
+        `/bitrix/logistics/expertise/${expertise.id}/service-request-link`,
+        { serviceRequestItemId },
+      );
+      const { data } = await api.get<CustomerReturnDetail>(
+        `/bitrix/logistics/customer-returns/${detail.id}`,
+      );
+      setDetail(data);
+      setReturns((current) =>
+        upsertShipment(current, data, carrierFilter, statusFilter, serviceRequestFilter)
+      );
+      setMessage(serviceRequestItemId ? "Экспертиза привязана" : "Привязка экспертизы удалена");
     } catch (error) {
       setMessage(apiError(error));
     } finally {
@@ -769,9 +1172,27 @@ export function CustomerReturnsWorkspace({
             disabled={busy}
             idPrefix="customer-return-registration"
             label="Сделка Bitrix24 (необязательно)"
-            onSelect={setSelectedDeal}
+            onSelect={(deal) => {
+              setSelectedDeal(deal);
+              if (
+                selectedServiceRequest?.deal_id &&
+                deal?.deal_id !== selectedServiceRequest.deal_id
+              ) {
+                setSelectedServiceRequest(null);
+              }
+            }}
             selected={selectedDeal}
           />
+          {serviceLinksEnabled ? (
+            <CustomerReturnServiceRequestPicker
+              dealId={selectedDeal?.deal_id}
+              disabled={busy}
+              idPrefix="customer-return-registration"
+              label="Сервисное обращение (необязательно)"
+              onSelect={setSelectedServiceRequest}
+              selected={selectedServiceRequest}
+            />
+          ) : null}
           <button
             className="btn logistics-primary"
             type="submit"
@@ -801,6 +1222,20 @@ export function CustomerReturnsWorkspace({
               <option value="cdek">СДЭК</option>
             </select>
           </label>
+          {serviceLinksEnabled ? (
+            <label className="logistics-field">
+              <span>Сервисное обращение</span>
+              <select
+                aria-label="Фильтр по сервисному обращению"
+                onChange={(event) => setServiceRequestFilter(event.target.value)}
+                value={serviceRequestFilter}
+              >
+                <option value="">Все</option>
+                <option value="linked">Привязано</option>
+                <option value="missing">Без обращения</option>
+              </select>
+            </label>
+          ) : null}
           <label className="logistics-field">
             <span>Состояние</span>
             <select
@@ -844,6 +1279,13 @@ export function CustomerReturnsWorkspace({
                   </span>
                 ) : shipment.onec_order_ref ? (
                   <span>Ранее указанный заказ: {shipment.onec_order_ref}</span>
+                ) : null}
+                {serviceLinksEnabled ? (
+                  shipment.service_request_item_id ? (
+                    <span>Обращение #{shipment.service_request_item_id}</span>
+                  ) : (
+                    <span className="customer-returns__missing-link">Обращение не привязано</span>
+                  )
                 ) : null}
               </div>
               <button
@@ -982,6 +1424,150 @@ export function CustomerReturnsWorkspace({
                 )}
               </div>
 
+              {detail.bitrix_deal_id ? (
+                <button
+                  className="btn btn--ghost customer-return-open-link"
+                  onClick={() => {
+                    void openBitrixCustomerReturnDeal(detail.bitrix_deal_id!).catch((error) =>
+                      setMessage(apiError(error)),
+                    );
+                  }}
+                  type="button"
+                >
+                  Открыть сделку
+                </button>
+              ) : null}
+
+              {serviceLinksEnabled ? (
+                <div className="customer-return-service-links">
+                  <div className="customer-return-deal-link">
+                    <div>
+                      <strong>Сервисное обращение</strong>
+                      <span>
+                        {detail.serviceRequest
+                          ? `#${detail.serviceRequest.item_id} · ${detail.serviceRequest.title || "Без названия"}${detail.serviceRequest.closed ? " · закрыто" : ""}`
+                          : "Обращение не привязано"}
+                      </span>
+                    </div>
+                    {!editingServiceRequestLink ? (
+                      <div className="customer-return-deal-link__actions">
+                        {detail.serviceRequest ? (
+                          <button
+                            className="btn btn--ghost"
+                            disabled={busy}
+                            onClick={() => {
+                              void openBitrixCustomerReturnServiceRequest(
+                                detail.serviceRequest!.item_id,
+                              ).catch((error) => setMessage(apiError(error)));
+                            }}
+                            type="button"
+                          >
+                            Открыть обращение
+                          </button>
+                        ) : null}
+                        <button
+                          className="btn btn--ghost"
+                          disabled={busy}
+                          onClick={() => {
+                            setDetailServiceRequest(detail.serviceRequest || null);
+                            setEditingServiceRequestLink(true);
+                          }}
+                          type="button"
+                        >
+                          {detail.serviceRequest ? "Изменить обращение" : "Привязать обращение"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="customer-return-deal-link__editor">
+                        <CustomerReturnServiceRequestPicker
+                          dealId={detail.bitrix_deal_id}
+                          disabled={busy}
+                          idPrefix={`customer-return-service-${detail.id}`}
+                          label="Сервисное обращение"
+                          onSelect={setDetailServiceRequest}
+                          selected={detailServiceRequest}
+                        />
+                        <div className="customer-return-deal-link__actions">
+                          <button
+                            className="btn logistics-primary"
+                            disabled={busy || !detailServiceRequest}
+                            onClick={() => void saveServiceRequestLink()}
+                            type="button"
+                          >
+                            Сохранить обращение
+                          </button>
+                          {detail.serviceRequest ? (
+                            <button
+                              className="btn btn--ghost"
+                              disabled={busy}
+                              onClick={() => void saveServiceRequestLink(null)}
+                              type="button"
+                            >
+                              Убрать связь
+                            </button>
+                          ) : null}
+                          <button
+                            className="btn btn--ghost"
+                            disabled={busy}
+                            onClick={() => {
+                              setDetailServiceRequest(detail.serviceRequest || null);
+                              setEditingServiceRequestLink(false);
+                            }}
+                            type="button"
+                          >
+                            Отмена
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {detail.serviceRequest ? (
+                    <div className="customer-return-expertise">
+                      <div>
+                        <strong>Экспертизы</strong>
+                        <span>{detail.expertiseCases?.length || 0}</span>
+                      </div>
+                      {detail.expertiseCases?.length ? (
+                        <div className="customer-return-expertise__list">
+                          {detail.expertiseCases.map((item) => (
+                            <article key={item.id}>
+                              <div>
+                                <strong>
+                                  Экспертиза {item.onec_expertise_number || `#${item.id}`}
+                                </strong>
+                                <span>
+                                  {item.current_status}
+                                  {item.linked_customer_order_number
+                                    ? ` · заказ ${item.linked_customer_order_number}`
+                                    : ""}
+                                </span>
+                              </div>
+                              <button
+                                className="btn btn--ghost"
+                                disabled={busy}
+                                onClick={() => void changeExpertiseLink(item, null)}
+                                type="button"
+                              >
+                                Убрать
+                              </button>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <p>Связанных экспертиз пока нет</p>
+                      )}
+                      <CustomerReturnExpertisePicker
+                        disabled={busy}
+                        onSelect={(item) =>
+                          void changeExpertiseLink(item, detail.serviceRequest!.item_id)
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {detail.status === "arrived_at_pickup_point" && (
                 <div className="customer-returns__pickup">
                   <label className="logistics-field">
@@ -1024,6 +1610,7 @@ export function CustomerReturnsWorkspace({
           closeButtonRef={helpCloseButtonRef}
           onClose={closeHelp}
           onTabChange={setHelpTab}
+          serviceLinksEnabled={serviceLinksEnabled}
           showTestingGuide={showTestingGuide}
         />
       )}

@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     sms_journal_export_allowed_actors: str = ""
     logistics_internal_api_token: str | None = None
     customer_return_bitrix_writes_enabled: bool = False
+    customer_return_service_links_enabled: bool = False
+    customer_return_service_links_roles: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["admin"]
+    )
     customer_return_bitrix_webhook_url: str | None = None
     customer_return_bitrix_group_id: int | None = Field(default=None, ge=1)
     customer_return_bitrix_created_by_user_id: int | None = Field(default=None, ge=1)
@@ -880,6 +884,7 @@ class Settings(BaseSettings):
         "logistics_bitrix_allowed_member_ids",
         "logistics_stage_pilot_warehouse_external_ids",
         "pickup_ready_sms_pilot_warehouse_external_ids",
+        "customer_return_service_links_roles",
         mode="before",
     )
     @classmethod

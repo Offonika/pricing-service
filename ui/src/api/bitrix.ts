@@ -144,6 +144,42 @@ export async function openBitrixProcurementProcess(itemId: string) {
   window.open(target.toString(), "_blank", "noopener,noreferrer");
 }
 
+async function openBitrixPath(path: string) {
+  try {
+    await loadBitrixSdk();
+    await initBitrix();
+  } catch {
+    // The portal-domain fallback below remains available without the SDK.
+  }
+  if (window.BX24?.openPath) {
+    window.BX24.openPath(path);
+    return;
+  }
+  const domain = String(window.__MM_BITRIX_LAUNCH__?.domain || "").trim();
+  if (!domain || !/^[a-z0-9.-]+(?::[0-9]+)?$/i.test(domain)) {
+    throw new Error("Bitrix24 не передал адрес портала");
+  }
+  window.open(
+    new URL(path, `https://${domain}`).toString(),
+    "_blank",
+    "noopener,noreferrer",
+  );
+}
+
+export async function openBitrixCustomerReturnServiceRequest(itemId: number) {
+  if (!Number.isSafeInteger(itemId) || itemId <= 0) {
+    throw new Error("Некорректный номер сервисного обращения");
+  }
+  await openBitrixPath(`/crm/type/1134/details/${itemId}/`);
+}
+
+export async function openBitrixCustomerReturnDeal(dealId: number) {
+  if (!Number.isSafeInteger(dealId) || dealId <= 0) {
+    throw new Error("Некорректный номер сделки");
+  }
+  await openBitrixPath(`/crm/deal/details/${dealId}/`);
+}
+
 declare global {
   interface Window {
     BX24?: BX24Api;

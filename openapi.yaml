@@ -2916,6 +2916,14 @@ paths:
             type: string
           - type: 'null'
           title: Status
+      - name: without_service_request
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Without Service Request
       - name: limit
         in: query
         required: false
@@ -2981,6 +2989,58 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-return-service-requests:
+    get:
+      summary: Search Bitrix Customer Return Service Requests
+      operationId: search_bitrix_customer_return_service_requests_api_bitrix_logistics_customer_return_service_requests_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 2
+            maxLength: 100
+          - type: 'null'
+          title: Search
+      - name: deal_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Deal Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 20
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BitrixCustomerReturnServiceRequestSearchItem'
+                title: Response Search Bitrix Customer Return Service Requests Api Bitrix Logistics Customer Return Service
+                  Requests Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/logistics/customer-returns/{shipment_id}:
     get:
       summary: Get Bitrix Customer Return
@@ -3033,6 +3093,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-returns/{shipment_id}/service-request-link:
+    put:
+      summary: Update Bitrix Customer Return Service Request Link
+      operationId: update_bitrix_customer_return_service_request_link_api_bitrix_logistics_customer_returns__shipment_id__service_request_link_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: shipment_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Shipment Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCustomerReturnServiceRequestLinkRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerReturnDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/customer-return-expertise:
+    get:
+      summary: Search Bitrix Customer Return Expertise
+      operationId: search_bitrix_customer_return_expertise_api_bitrix_logistics_customer_return_expertise_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: service_request_item_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Service Request Item Id
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 2
+            maxLength: 100
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 20
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BitrixCustomerReturnExpertiseItem'
+                title: Response Search Bitrix Customer Return Expertise Api Bitrix Logistics Customer Return Expertise Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/logistics/expertise/{case_id}/service-request-link:
+    put:
+      summary: Update Bitrix Customer Return Expertise Link
+      operationId: update_bitrix_customer_return_expertise_link_api_bitrix_logistics_expertise__case_id__service_request_link_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixCustomerReturnExpertiseLinkRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixCustomerReturnExpertiseItem'
         '422':
           description: Validation Error
           content:
@@ -13164,6 +13339,12 @@ components:
             minimum: 1.0
           - type: 'null'
           title: Bitrix Deal Id
+        serviceRequestItemId:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Servicerequestitemid
       additionalProperties: false
       type: object
       required:
@@ -13249,6 +13430,54 @@ components:
       - title
       - closed
       title: BitrixCustomerReturnDealSearchItem
+    BitrixCustomerReturnExpertiseItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          type: string
+          title: External Id
+        onec_expertise_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Expertise Number
+        current_status:
+          type: string
+          title: Current Status
+        linked_customer_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Linked Customer Order Number
+        problem_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Problem Summary
+        service_request_item_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Service Request Item Id
+      type: object
+      required:
+      - id
+      - external_id
+      - current_status
+      title: BitrixCustomerReturnExpertiseItem
+    BitrixCustomerReturnExpertiseLinkRequest:
+      properties:
+        serviceRequestItemId:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Servicerequestitemid
+      additionalProperties: false
+      type: object
+      title: BitrixCustomerReturnExpertiseLinkRequest
     BitrixCustomerReturnPickupRequest:
       properties:
         idempotency_key:
@@ -13267,6 +13496,74 @@ components:
       additionalProperties: false
       type: object
       title: BitrixCustomerReturnPickupRequest
+    BitrixCustomerReturnServiceRequestLinkRequest:
+      properties:
+        serviceRequestItemId:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Servicerequestitemid
+      additionalProperties: false
+      type: object
+      title: BitrixCustomerReturnServiceRequestLinkRequest
+    BitrixCustomerReturnServiceRequestSearchItem:
+      properties:
+        item_id:
+          type: integer
+          title: Item Id
+        title:
+          type: string
+          title: Title
+        stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Id
+        stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Name
+        closed:
+          type: boolean
+          title: Closed
+          default: false
+        category_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Category Id
+        deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Deal Id
+        order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Order Ref
+        responsible_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Responsible User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        site_ticket_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Ticket Id
+      type: object
+      required:
+      - item_id
+      - title
+      title: BitrixCustomerReturnServiceRequestSearchItem
     BitrixExecutiveDashboardSessionRequest:
       properties:
         access_token:
@@ -18150,6 +18447,20 @@ components:
           - type: string
           - type: 'null'
           title: Bitrix Deal Linked By User Id
+        service_request_item_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Service Request Item Id
+        serviceRequest:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerReturnServiceRequestSummary'
+          - type: 'null'
+        expertiseCases:
+          items:
+            $ref: '#/components/schemas/CustomerReturnExpertiseSummary'
+          type: array
+          title: Expertisecases
         onec_return_ref:
           anyOf:
           - type: string
@@ -18306,6 +18617,39 @@ components:
       - occurred_at
       - created_at
       title: CustomerReturnEventResponse
+    CustomerReturnExpertiseSummary:
+      properties:
+        id:
+          type: integer
+          title: Id
+        onec_expertise_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Expertise Number
+        current_status:
+          type: string
+          title: Current Status
+        linked_customer_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Linked Customer Order Number
+        problem_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Problem Summary
+        service_request_item_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Service Request Item Id
+      type: object
+      required:
+      - id
+      - current_status
+      title: CustomerReturnExpertiseSummary
     CustomerReturnOneCConfirmationRequest:
       properties:
         onec_return_ref:
@@ -18368,6 +18712,59 @@ components:
       - created
       - shipment
       title: CustomerReturnRegistrationResponse
+    CustomerReturnServiceRequestSummary:
+      properties:
+        item_id:
+          type: integer
+          title: Item Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Id
+        stage_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage Name
+        closed:
+          type: boolean
+          title: Closed
+          default: false
+        deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Deal Id
+        order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Order Ref
+        responsible_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Responsible User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        site_ticket_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Ticket Id
+      type: object
+      required:
+      - item_id
+      title: CustomerReturnServiceRequestSummary
     CustomerReturnShipmentResponse:
       properties:
         id:
@@ -18488,6 +18885,20 @@ components:
           - type: string
           - type: 'null'
           title: Bitrix Deal Linked By User Id
+        service_request_item_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Service Request Item Id
+        serviceRequest:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerReturnServiceRequestSummary'
+          - type: 'null'
+        expertiseCases:
+          items:
+            $ref: '#/components/schemas/CustomerReturnExpertiseSummary'
+          type: array
+          title: Expertisecases
         onec_return_ref:
           anyOf:
           - type: string

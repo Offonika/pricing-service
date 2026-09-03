@@ -1345,7 +1345,16 @@ function ProcurementOrderFormationBitrixApp() {
   }
 
   if (isBitrixProductInsightsPlacement()) {
-    return <ProcurementProductInsights productId={getProcurementProductId()} />;
+    const params = new URLSearchParams(window.location.search);
+    const orderId = Number(params.get("orderId"));
+    const lineId = Number(params.get("lineId"));
+    return (
+      <ProcurementProductInsights
+        productId={getProcurementProductId()}
+        orderId={Number.isInteger(orderId) && orderId > 0 ? orderId : undefined}
+        lineId={Number.isInteger(lineId) && lineId > 0 ? lineId : undefined}
+      />
+    );
   }
 
   return (

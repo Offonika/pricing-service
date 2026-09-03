@@ -1408,6 +1408,15 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           Карточка на сайте
                         </a>
                       )}
+                      {line.bitrix_product_id && (
+                        <a
+                          className="order-formation__product-card-link"
+                          href={`/bitrix/procurement-order-formation?view=product_insights&productId=${encodeURIComponent(line.bitrix_product_id)}&orderId=${order.id}&lineId=${line.id}`}
+                          target="_blank"
+                        >
+                          Показатели товара
+                        </a>
+                      )}
                       {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
                         <button
                           className="btn btn--ghost btn--small"

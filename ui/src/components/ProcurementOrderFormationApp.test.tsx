@@ -392,6 +392,14 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );
+    expect(
+      screen.getAllByRole("link", { name: "Показатели товара" }).find(
+        (item) => item.getAttribute("href")?.endsWith("lineId=42")
+      )
+    ).toHaveAttribute(
+      "href",
+      "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
+    );
   });
 
   it("показывает причину, когда рентабельность действительно не рассчитана", () => {

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./client";
 import {
+  getProcurementProductId,
   initializeBitrixLogisticsSession,
+  isBitrixProductInsightsPlacement,
   openBitrixProcurementProcess,
   refreshBitrixAuth,
   refreshBitrixLogisticsSession,
@@ -19,11 +21,28 @@ afterEach(() => {
   vi.useRealTimers();
   window.BX24 = originalBX24;
   window.__MM_BITRIX_LAUNCH__ = originalLaunch;
+  window.history.replaceState({}, "", "/");
   window.sessionStorage.removeItem("mm_logistics_bitrix_session");
   window.sessionStorage.removeItem("mm_logistics_bitrix_left_menu_bound");
   document
     .querySelectorAll('script[src="https://api.bitrix24.com/api/v1/"]')
     .forEach((script) => script.remove());
+});
+
+describe("product insights placement", () => {
+  it("recognizes the internal Bitrix placement link and its exact product", () => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation/");
+    window.__MM_BITRIX_LAUNCH__ = {
+      placement: "LEFT_MENU",
+      placement_options: {
+        VIEW: "product_insights",
+        PRODUCT_ID: "1646",
+      },
+    };
+
+    expect(isBitrixProductInsightsPlacement()).toBe(true);
+    expect(getProcurementProductId()).toBe("1646");
+  });
 });
 
 describe("initializeBitrixLogisticsSession", () => {

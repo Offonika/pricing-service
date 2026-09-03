@@ -28,6 +28,7 @@ import {
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
+import { resolveBitrixProductUrl } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
@@ -1019,6 +1020,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                 const supplierDefectConfirmed = line.supplier_defect_attribution === "supplier_exact";
                 const supplierDefect = supplierDefectConfirmed ? numeric(line.supplier_defect_pct) : null;
                 const productDefect = numeric(line.product_defect_pct ?? payloadValue(line, "defect_share_pct"));
+                const bitrixProductUrl = resolveBitrixProductUrl(line.bitrix_product_id);
                 const firstRemoved = line.removed && (index === 0 || !visibleLines[index - 1].removed);
                 return (
                   <Fragment key={line.id}>
@@ -1044,7 +1046,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                   >
                     <td className="order-formation__line-number">{line.line_number}</td>
                     <td>
-                      <strong>{line.nomenclature_name}</strong>
+                      <strong>
+                        {bitrixProductUrl ? (
+                          <a href={bitrixProductUrl} rel="noreferrer" target="_blank">
+                            {line.nomenclature_name}
+                          </a>
+                        ) : line.nomenclature_name}
+                      </strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
                       <small>
                         {importedFromOnec && !line.bitrix_product_id
@@ -1348,7 +1356,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           rel="noreferrer"
                           target="_blank"
                         >
-                          Открыть карточку
+                          Карточка на сайте
                         </a>
                       )}
                       {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (

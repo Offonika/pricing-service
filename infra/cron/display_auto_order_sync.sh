@@ -80,6 +80,8 @@ OUTPUT_JSON="${DISPLAY_AUTO_ORDER_OUTPUT_JSON:-${REPORT_DIR}/display-auto-order-
 ORDER_FORMATION_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-formation-dry-run.json}"
 ORDER_FORMATION_OUTPUT_CSV="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_CSV:-${REPORT_DIR}/procurement-order-formation-lines-dry-run.csv}"
 ORDER_METRICS_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_METRICS_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-metrics.json}"
+PRODUCT_CARD_SYNC_ENABLED="${DISPLAY_AUTO_ORDER_PRODUCT_CARD_SYNC_ENABLED:-false}"
+PRODUCT_CARD_MAPPING="${PROCUREMENT_PRODUCT_CARD_MAPPING_PATH:-${REPO_DIR}/build/bitrix/procurement_product_card_mapping.json}"
 CONFIGURED_ORDER_FORMATION_PERSIST_DB="${DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB:-false}"
 ORDER_FORMATION_PERSIST_DB="false"
 USE_ADAPTIVE_LEAD_TIME="${DISPLAY_AUTO_ORDER_USE_ADAPTIVE_LEAD_TIME:-true}"
@@ -278,6 +280,30 @@ if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then
   set -e
   cat "${tmp_output}" >> "${LOG_FILE}"
   echo "[$(date -Iseconds)] finished persisted order metrics (status=${exit_code})" >> "${LOG_FILE}"
+fi
+
+if [[ "${exit_code}" -eq 0 ]] && is_truthy "${PRODUCT_CARD_SYNC_ENABLED}"; then
+  if [[ ! -f "${PRODUCT_CARD_MAPPING}" ]]; then
+    echo "[$(date -Iseconds)] product-card sync skipped: mapping is missing (${PRODUCT_CARD_MAPPING})" >> "${LOG_FILE}"
+  else
+    product_card_cmd=(
+      "${PYTHON_BIN}"
+      -m tasks.sync_procurement_product_cards
+      --scope displays
+    )
+    if is_truthy "${PROCUREMENT_PRODUCT_CARD_APPLY_ENABLED:-false}"; then
+      product_card_cmd+=(--apply)
+    fi
+    set +e
+    "${product_card_cmd[@]}" > "${tmp_output}" 2>&1
+    product_card_exit_code=$?
+    set -e
+    cat "${tmp_output}" >> "${LOG_FILE}"
+    echo "[$(date -Iseconds)] finished native Bitrix product-card sync (status=${product_card_exit_code})" >> "${LOG_FILE}"
+    if [[ "${product_card_exit_code}" -ne 0 ]]; then
+      exit_code="${product_card_exit_code}"
+    fi
+  fi
 fi
 
 exit "${exit_code}"

@@ -22,9 +22,16 @@ import {
   type ProcurementOrderList,
   type ProcurementOrderListItem,
 } from "../api/procurementAssortment";
-import { openBitrixProcurementProcess } from "../api/bitrix";
+import {
+  openBitrixProcurementProcess,
+  resolveBitrixPortalUrl,
+  resolveBitrixProductUrl,
+} from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
-import { procurementRiskLabel } from "../utils/procurementRiskLabels";
+import {
+  procurementBlockerSummaryLabel,
+  procurementRiskLabel,
+} from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
@@ -148,6 +155,57 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   received: "Поступил",
   cancelled: "Отменён",
 };
+
+export function OrderBlockerCell({ order }: { order: ProcurementOrderList["items"][number] }) {
+  const blockerCount = order.blockers?.length || 0;
+  if (!blockerCount) return null;
+
+  const products = order.blocked_products || [];
+  const label = procurementBlockerSummaryLabel(order.blockers);
+  if (products.length === 1) {
+    const product = products[0];
+    const href = resolveBitrixPortalUrl(product.bitrix_url)
+      || resolveBitrixProductUrl(product.bitrix_product_id);
+    return href ? (
+      <a
+        className="state-pill state-pill--blocked order-registry__blocker-pill"
+        href={href}
+        rel="noreferrer"
+        target="_blank"
+      >
+        {label}
+      </a>
+    ) : (
+      <span className="state-pill state-pill--blocked order-registry__blocker-pill">{label}</span>
+    );
+  }
+  if (products.length > 1) {
+    return (
+      <details className="order-registry__blocker-products">
+        <summary className="state-pill state-pill--blocked order-registry__blocker-pill">
+          {label}
+        </summary>
+        <div>
+          {products.map((product) => {
+            const href = resolveBitrixPortalUrl(product.bitrix_url)
+              || resolveBitrixProductUrl(product.bitrix_product_id);
+            return href ? (
+              <a href={href} key={product.line_id} rel="noreferrer" target="_blank">
+                <strong>{product.name}</strong>
+                <small>{product.blocker_count} блокер(а) · строка {product.line_number}</small>
+              </a>
+            ) : (
+              <span key={product.line_id}><strong>{product.name}</strong></span>
+            );
+          })}
+        </div>
+      </details>
+    );
+  }
+  return (
+    <span className="state-pill state-pill--blocked order-registry__blocker-pill">{label}</span>
+  );
+}
 
 const ORDER_CONTOUR_LABELS: Record<string, string> = {
   ordinary: "Обычный",
@@ -1251,11 +1309,7 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                     <span className={`state-pill ${order.lifecycle_status === "blocked" || order.sync_conflict ? "state-pill--blocked" : "state-pill--ready"}`}>
                       {order.lifecycle_status_label}
                     </span>
-                    {blockerCount > 0 && (
-                      <span className="state-pill state-pill--blocked order-registry__blocker-pill">
-                        С блокерами: {blockerCount}
-                      </span>
-                    )}
+                    <OrderBlockerCell order={order} />
                     {(order.sync_conflict || order.onec_error) && <small>{order.sync_conflict || order.onec_error}</small>}
                   </td>
                   <td><strong>{number(order.ordered_quantity)}</strong><small>{number(order.received_quantity || 0)} / {number(order.open_quantity ?? order.ordered_quantity)}</small></td>
@@ -1409,7 +1463,7 @@ function ClassificationQueue() {
   );
 }
 
-function EventHistory() {
+export function EventHistory() {
   const [data, setData] = useState<ProcurementEventList | null>(null);
   const [eventType, setEventType] = useState("");
   const [error, setError] = useState("");
@@ -1444,7 +1498,16 @@ function EventHistory() {
             <article key={event.id}>
               <time>{dateTime(event.created_at)}</time>
               <div><strong>{EVENT_LABELS[event.event_type] || event.event_type}</strong><span>{event.user_name || event.actor}</span></div>
-              <small>{event.entity_type} #{event.entity_id}{event.order_id ? ` · заказ #${event.order_id}` : ""}</small>
+              <small>
+                {event.entity_type} #{event.entity_id}{event.order_id ? ` · заказ #${event.order_id}` : ""}
+                {event.product ? (
+                  <> · <a
+                    href={resolveBitrixPortalUrl(event.product.bitrix_url) || resolveBitrixProductUrl(event.product.bitrix_product_id)}
+                    rel="noreferrer"
+                    target="_blank"
+                  >{event.product.name || "Карточка товара"}</a></>
+                ) : null}
+              </small>
             </article>
           ))}
         </div>

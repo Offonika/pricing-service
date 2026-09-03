@@ -315,6 +315,7 @@ documents:
     owner: operations
     source_of_truth: true
     related_code:
+      - alembic/versions/c6d7e8f90123_add_procurement_product_card_sync_state.py
       - app/models/procurement_order_formation.py
       - app/api/procurement_order_formation.py
       - app/services/procurement_order_formation.py
@@ -419,15 +420,22 @@ documents:
       - app/services/procurement_order_process_link.py
       - app/services/bitrix_procurement_order_formation_auth.py
       - app/services/bitrix_order_formation.py
+      - app/services/procurement_product_cards.py
+      - scripts/ensure_procurement_product_card_fields.py
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/sync_open_cargo_supplier_orders_to_bitrix.py
       - tasks/build_procurement_order_formation_dry_run.py
       - tasks/sync_procurement_order_formation_results.py
       - tasks/sync_procurement_order_registry.py
       - tasks/reconcile_procurement_order_process_links.py
+      - tasks/sync_procurement_product_cards.py
+      - infra/cron/display_auto_order_sync.sh
       - infra/cron/sync_procurement_order_registry.sh
       - ui/src/components/ProcurementOrderFormationApp.tsx
       - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+      - ui/src/components/ProcurementProductInsights.tsx
+      - ui/src/api/bitrix.ts
+      - ui/src/api/procurementAssortment.ts
     related_tests:
       - tests/test_procurement_order_formation.py
       - tests/test_procurement_order_formation_workspace.py
@@ -435,8 +443,10 @@ documents:
       - tests/test_procurement_order_formation_dry_run.py
       - tests/test_procurement_order_registry.py
       - tests/test_procurement_order_process_link.py
+      - tests/test_procurement_product_cards.py
+      - tests/test_procurement_product_card_migration.py
       - tests/test_unified_procurement_registry_migration.py
-    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle, формирование, заказ, поставщик]
+    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle, product-card, blockers, формирование, заказ, поставщик, товар]
   - path: docs/specs/display-auto-order-project-brief.md
     title: Display Auto Order Project Brief
     doc_type: spec

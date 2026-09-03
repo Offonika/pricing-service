@@ -6,6 +6,7 @@ import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
   getProcurementLabelsItemId,
+  getProcurementProductId,
   initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
@@ -20,6 +21,7 @@ import {
   isBitrixLogisticsRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
+  isBitrixProductInsightsPlacement,
   isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
   isBitrixSiteServiceRequestsRoute,
@@ -37,6 +39,10 @@ const CompatibilityMappingSettings = lazy(async () => {
 const PropertyMappingSettings = lazy(async () => {
   const module = await import("./components/PropertyMappingSettings");
   return { default: module.PropertyMappingSettings };
+});
+const ProcurementProductInsights = lazy(async () => {
+  const module = await import("./components/ProcurementProductInsights");
+  return { default: module.ProcurementProductInsights };
 });
 const CameraScanner = lazy(async () => {
   const module = await import("./components/LogisticsWorkspace");
@@ -1336,6 +1342,10 @@ function ProcurementOrderFormationBitrixApp() {
         </div>
       </div>
     );
+  }
+
+  if (isBitrixProductInsightsPlacement()) {
+    return <ProcurementProductInsights productId={getProcurementProductId()} />;
   }
 
   return (

@@ -179,6 +179,34 @@ def resolve_catalog_products_by_xml_ids(
     return resolved
 
 
+def resolve_catalog_product_by_id(
+    product_id: str | int,
+    *,
+    settings: Settings | None = None,
+    mapping: dict[str, Any] | None = None,
+) -> BitrixCatalogProduct | None:
+    """Read one native catalog product by its numeric Bitrix24 identifier."""
+
+    value = str(product_id or "").strip()
+    if not value.isdigit():
+        raise ValueError("numeric Bitrix product ID is required")
+    settings = settings or get_settings()
+    mapping = mapping or load_order_formation_mapping(settings)
+    result = bitrix_call(
+        "crm.product.get",
+        {"id": int(value)},
+        settings=settings,
+    ).get("result")
+    if not isinstance(result, dict):
+        return None
+    product = _catalog_product_from_row(result, catalog=mapping.get("catalog") or {})
+    if product.product_id != value:
+        raise RuntimeError(
+            f"Bitrix product readback ID {product.product_id or 'empty'} does not match {value}"
+        )
+    return product
+
+
 def _catalog_product_from_row(
     row: dict[str, Any], *, catalog: dict[str, Any]
 ) -> BitrixCatalogProduct:

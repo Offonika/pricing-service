@@ -18,6 +18,7 @@ import {
   type ProcurementOrderFormationLine,
   type ProcurementSupplierProfile,
 } from "../api/procurementAssortment";
+import { resolveBitrixProductUrl } from "../api/bitrix";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import "../orderAssistant.css";
@@ -410,32 +411,51 @@ function downloadSupplierPackage(rows: AssistantRow[], mode: "list" | "photos") 
   toast.success("Файл заказа поставщику подготовлен");
 }
 
-function ProductPhoto({ line }: { line: ProcurementOrderFormationLine }) {
+function ProductPhoto({
+  line,
+  bitrixProductUrl,
+}: {
+  line: ProcurementOrderFormationLine;
+  bitrixProductUrl: string;
+}) {
   const [failed, setFailed] = useState(false);
   const [source, setSource] = useState(line.photo_thumbnail_url || line.photo_original_url || "");
   if (!line.photo_original_url || failed) {
     return <span className="order-assistant__photo-missing">Нет фото</span>;
   }
   return (
-    <a
-      aria-label={`Открыть исходное фото: ${line.nomenclature_name}`}
-      className="order-assistant__photo-link"
-      href={line.photo_original_url}
-      rel="noreferrer"
-      target="_blank"
-      title="Открыть оригинал без сжатия"
-    >
-      <img
-        alt=""
-        loading="lazy"
-        onError={() => {
-          if (source !== line.photo_original_url) setSource(line.photo_original_url || "");
-          else setFailed(true);
-        }}
-        src={source}
-      />
-      <span>Оригинал</span>
-    </a>
+    <div className="order-assistant__photo-actions">
+      <a
+        aria-label={`${bitrixProductUrl ? "Открыть карточку товара" : "Открыть исходное фото"}: ${line.nomenclature_name}`}
+        className="order-assistant__photo-link"
+        href={bitrixProductUrl || line.photo_original_url}
+        rel="noreferrer"
+        target="_blank"
+        title={bitrixProductUrl ? "Открыть карточку товара Bitrix24" : "Открыть оригинал без сжатия"}
+      >
+        <img
+          alt=""
+          loading="lazy"
+          onError={() => {
+            if (source !== line.photo_original_url) setSource(line.photo_original_url || "");
+            else setFailed(true);
+          }}
+          src={source}
+        />
+        <span>{bitrixProductUrl ? "Товар" : "Оригинал"}</span>
+      </a>
+      {bitrixProductUrl ? (
+        <a
+          aria-label={`Открыть исходное фото: ${line.nomenclature_name}`}
+          className="order-assistant__photo-original"
+          href={line.photo_original_url}
+          rel="noreferrer"
+          target="_blank"
+        >
+          Оригинал
+        </a>
+      ) : null}
+    </div>
   );
 }
 
@@ -933,6 +953,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                   const batchMinimumReturns = numeric(batch?.minimum_return_qty as string | number | null);
                   const priceChange = numeric(row.line.price_change_pct);
                   const familyRecommendation = row.line.display_family_recommendation;
+                  const bitrixProductUrl = resolveBitrixProductUrl(row.line.bitrix_product_id);
                   const isSelected = selected.has(row.key);
                   const selectable = rowSelectable(row);
                   const unavailableReason = rowUnavailableReason(row);
@@ -970,7 +991,38 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                     )}
                     <tr className={row.line.blockers.length > 0 ? "is-blocked" : selectable ? "" : "is-unavailable"}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
-                      <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
+                      <td>
+                        <div className="order-assistant__product">
+                          <ProductPhoto
+                            bitrixProductUrl={bitrixProductUrl}
+                            line={row.line}
+                          />
+                          <div>
+                            <strong>
+                              {bitrixProductUrl ? (
+                                <a
+                                  href={bitrixProductUrl}
+                                  rel="noreferrer"
+                                  target="_blank"
+                                >
+                                  {row.line.nomenclature_name}
+                                </a>
+                              ) : row.line.nomenclature_name}
+                            </strong>
+                            <small>{row.line.nomenclature_code || "Код не указан"}</small>
+                            {row.line.product_card_url ? (
+                              <a
+                                className="order-assistant__product-card-link"
+                                href={row.line.product_card_url}
+                                rel="noreferrer"
+                                target="_blank"
+                              >
+                                Карточка на сайте
+                              </a>
+                            ) : <small>Карточка сайта не найдена</small>}
+                          </div>
+                        </div>
+                      </td>
                       <td>
                         <strong>{quantity(row.line.final_quantity)} шт.</strong>
                         <small>к {dateLabel(row.order.order_date)}</small>

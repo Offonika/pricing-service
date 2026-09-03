@@ -1120,8 +1120,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           aria-label={`Открыть сигналы товара ${line.nomenclature_name}`}
                           className="order-formation__product-signals"
                           href={productInsightsUrl}
-                          rel="noreferrer"
-                          target="_blank"
                         >
                           <span className={`order-formation__product-signal ${problems.length ? "is-critical" : "is-success"}`}>
                             {problems.length
@@ -1451,8 +1449,6 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                         <a
                           className="btn btn--small order-formation__insights-link"
                           href={productInsightsUrl}
-                          rel="noreferrer"
-                          target="_blank"
                         >
                           Открыть карточку
                         </a>

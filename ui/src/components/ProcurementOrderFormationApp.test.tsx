@@ -401,18 +401,21 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
       "title",
       "Строка пересчитана по живым срокам и готова к заказу\nГоризонт заказа задан классом скорости"
     );
-    expect(within(problemRow!).getByRole("link", { name: "Открыть сигналы товара Проблемная строка" })).toHaveAttribute(
+    const signalsLink = within(problemRow!).getByRole("link", { name: "Открыть сигналы товара Проблемная строка" });
+    expect(signalsLink).toHaveAttribute(
       "href",
       "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
     );
-    expect(
+    expect(signalsLink).not.toHaveAttribute("target");
+    const insightsLink =
       screen.getAllByRole("link", { name: "Открыть карточку" }).find(
         (item) => item.getAttribute("href")?.endsWith("lineId=42")
-      )
-    ).toHaveAttribute(
+      );
+    expect(insightsLink).toHaveAttribute(
       "href",
       "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
     );
+    expect(insightsLink).not.toHaveAttribute("target");
   });
 
   it("показывает причину, когда рентабельность действительно не рассчитана", () => {

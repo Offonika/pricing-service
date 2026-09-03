@@ -8701,6 +8701,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/assembly-events:
+    post:
+      summary: Ingest Assembly Event
+      operationId: ingest_assembly_event_api_order_fulfillment_assembly_events_post
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Body_ingest_assembly_event_api_order_fulfillment_assembly_events_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssemblyEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/bitrix/messages:
     post:
       summary: Ingest Bitrix Message
@@ -10432,6 +10457,31 @@ components:
       - created_count
       - skipped_count
       title: AcceptSafePropertyValueSuggestionsResponse
+    AssemblyEventIngestResponse:
+      properties:
+        accepted:
+          type: boolean
+          title: Accepted
+          default: true
+        event_key:
+          type: string
+          title: Event Key
+        outbox_id:
+          type: integer
+          title: Outbox Id
+        status:
+          type: string
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+          default: false
+      type: object
+      required:
+      - event_key
+      - outbox_id
+      - status
+      title: AssemblyEventIngestResponse
     BICanonicalizationSummary:
       properties:
         phone_models:
@@ -11956,6 +12006,54 @@ components:
       required:
       - user_id
       title: BitrixReceivablesUser
+    Body_ingest_assembly_event_api_order_fulfillment_assembly_events_post:
+      properties:
+        event_key:
+          type: string
+          title: Event Key
+        order:
+          type: string
+          title: Order
+        status:
+          type: string
+          title: Status
+          default: assembled
+        assembly_source:
+          type: string
+          title: Assembly Source
+        assembly_ref:
+          type: string
+          title: Assembly Ref
+        assembled_at:
+          type: string
+          format: date-time
+          title: Assembled At
+        execution_status:
+          type: string
+          title: Execution Status
+        delivery_code:
+          type: string
+          title: Delivery Code
+        payment_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Mode
+        onec_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Number
+      type: object
+      required:
+      - event_key
+      - order
+      - assembly_source
+      - assembly_ref
+      - assembled_at
+      - execution_status
+      - delivery_code
+      title: Body_ingest_assembly_event_api_order_fulfillment_assembly_events_post
     Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post:
       properties:
         file:
@@ -23504,7 +23602,8 @@ components:
           title: Payment Id
         region_xml_id:
           type: string
-          format: uuid
+          maxLength: 128
+          minLength: 1
           title: Region Xml Id
         source_warehouse_xml_id:
           type: string

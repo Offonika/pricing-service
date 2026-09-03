@@ -96,6 +96,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         OrchestrationJobRun,
     )
     from app.models.order_assembly_queue import (
+        OrderAssemblyCrmOutbox,
         OrderAssemblyQueueItem,
         OrderAssemblyQueueSyncState,
     )
@@ -248,6 +249,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsRouteRunItem",
         "LogisticsManualReview",
         "OneCSalesDailyKpi",
+        "OrderAssemblyCrmOutbox",
         "OrderAssemblyQueueItem",
         "OrderAssemblyQueueSyncState",
         "LogisticsOrderPlan",

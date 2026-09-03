@@ -398,7 +398,7 @@ def _payload() -> OrderPaymentCheckRequest:
             "payment_amount": "5461.95",
             "stage": "cloudpayments_check",
             "payment_id": "cp-1414",
-            "region_xml_id": "99999999-8888-7777-6666-555555555555",
+            "region_xml_id": "0000512213",
             "source_warehouse_xml_id": WAREHOUSE_GUID,
             "availability_snapshot_id": "availability-3520",
         }
@@ -428,6 +428,12 @@ def test_payment_control_endpoint_returns_structured_decision(monkeypatch) -> No
     assert response.onec_amount == Decimal("5461.95")
     assert response.reservation_state == "FULL"
     assert str(response.source_warehouse_xml_id) == WAREHOUSE_GUID
+
+
+def test_payment_control_request_preserves_non_uuid_region_xml_id() -> None:
+    payload = _payload()
+
+    assert payload.region_xml_id == "0000512213"
 
 
 def test_payment_control_endpoint_fails_closed_when_onec_is_unavailable(monkeypatch) -> None:

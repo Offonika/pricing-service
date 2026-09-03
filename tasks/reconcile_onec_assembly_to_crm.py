@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -12,9 +13,12 @@ from typing import Any
 
 import requests
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db.engines import build_engine, get_application_engine
+from app.models.order_assembly_queue import OrderAssemblyCrmOutbox
+from app.services import order_assembly_outbox
 
 DEFAULT_CRM_URL = "https://crm.master-mobile.ru/local/tools/mm_crm_1c_assembly_status.php"
 DEFAULT_STATE_PATH = Path(".local/onec_assembly_crm_reconciler.sqlite3")
@@ -37,6 +41,9 @@ class AssemblyEvent:
     onec_order_number: str
     site_order_number: str
     is_posted: bool
+    execution_status: str
+    delivery_code: str
+    payment_mode: str | None = None
     document_amount: str | None = None
 
 
@@ -82,6 +89,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not filter events already recorded in local state.",
     )
+    parser.add_argument("--max-attempts", type=int, default=8)
+    parser.add_argument("--retry-base-seconds", type=int, default=60)
     return parser.parse_args()
 
 
@@ -116,6 +125,9 @@ def _event_from_row(row: Any) -> AssemblyEvent:
         onec_order_number=(data["onec_order_number"] or "").strip(),
         site_order_number=(data["site_order_number"] or "").strip(),
         is_posted=bool(data["is_posted"]),
+        execution_status=(data["execution_status"] or "").strip(),
+        delivery_code=(data["delivery_code"] or "").strip().upper(),
+        payment_mode=(data["payment_mode"] or "").strip().lower() or None,
         document_amount=(
             str(data["document_amount"]) if data.get("document_amount") is not None else None
         ),
@@ -123,8 +135,13 @@ def _event_from_row(row: Any) -> AssemblyEvent:
 
 
 def fetch_assembly_events(
-    onec_database_url: str, *, since: datetime, limit: int
+    onec_database_url: str,
+    *,
+    since: datetime,
+    limit: int,
+    delivery_code_column: str | None = None,
 ) -> list[AssemblyEvent]:
+    delivery_expression = _delivery_code_expression(delivery_code_column)
     limit_clause = f"TOP ({max(1, int(limit))})"
     statement = text(f"""
         WITH crm_events AS (
@@ -140,14 +157,20 @@ def fetch_assembly_events(
                 LTRIM(RTRIM(ord._Number)) AS onec_order_number,
                 NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
                 CASE WHEN ord._Posted = 0x01 THEN 1 ELSE 0 END AS is_posted,
+                LTRIM(RTRIM(execution_status._Code)) AS execution_status,
+                {delivery_expression} AS delivery_code,
+                CAST(NULL AS nvarchar(32)) AS payment_mode,
                 CAST(NULL AS decimal(18, 2)) AS document_amount
             FROM dbo._InfoRg9448 AS hist WITH (NOLOCK)
             JOIN dbo._Document132 AS ord WITH (NOLOCK)
                 ON ord._IDRRef = hist._Fld9449_RRRef
+            JOIN dbo._Reference10081 AS execution_status WITH (NOLOCK)
+                ON execution_status._IDRRef = ord._Fld10083RRef
             WHERE hist._Fld9454 = N'Собран'
               AND hist._Fld9449_RTRef = 0x00000084
               AND hist._Fld9450 >= :since
               AND ord._Marked = 0x00
+              AND LTRIM(RTRIM(execution_status._Code)) IN (N'05', N'06')
               AND NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') IS NOT NULL
 
             UNION ALL
@@ -164,12 +187,17 @@ def fetch_assembly_events(
                 LTRIM(RTRIM(ord._Number)) AS onec_order_number,
                 NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
                 CASE WHEN rtu._Posted = 0x01 THEN 1 ELSE 0 END AS is_posted,
+                LTRIM(RTRIM(execution_status._Code)) AS execution_status,
+                {delivery_expression} AS delivery_code,
+                CAST(NULL AS nvarchar(32)) AS payment_mode,
                 CAST(rtu._Fld4948 AS decimal(18, 2)) AS document_amount
             FROM dbo._InfoRg9448 AS scan_event WITH (NOLOCK)
             JOIN dbo._Document203 AS rtu WITH (NOLOCK)
                 ON rtu._IDRRef = scan_event._Fld9449_RRRef
             JOIN dbo._Document132 AS ord WITH (NOLOCK)
                 ON ord._IDRRef = rtu._Fld4939_RRRef
+            JOIN dbo._Reference10081 AS execution_status WITH (NOLOCK)
+                ON execution_status._IDRRef = ord._Fld10083RRef
             WHERE scan_event._Fld9454 = N'Отсканирован'
               AND scan_event._Fld9449_RTRef = 0x000000CB
               AND scan_event._Fld9450 >= :since
@@ -197,6 +225,9 @@ def fetch_assembly_events(
             onec_order_number,
             site_order_number,
             is_posted,
+            execution_status,
+            delivery_code,
+            payment_mode,
             document_amount
         FROM crm_events
         ORDER BY event_at ASC, rtu_date ASC, crm_status ASC
@@ -204,6 +235,24 @@ def fetch_assembly_events(
     engine = build_engine(onec_database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         return [_event_from_row(row) for row in connection.execute(statement, {"since": since})]
+
+
+def _delivery_code_expression(column: str | None) -> str:
+    fallback = """CASE
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u0421\u0410\u041c\u041e\u0412\u042b\u0412\u041e\u0417%' THEN N'PICKUP'
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u0414\u041e\u0421\u0422\u0410\u0412\u0418\u0421\u0422%' THEN N'DOSTAVISTA'
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u042f\u041d\u0414\u0415\u041a\u0421%\u0422\u0410\u041a\u0421\u0418%' THEN N'YANDEX_TAXI'
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u041a\u0423\u0420\u042c\u0415\u0420%' THEN N'MM_COURIER'
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u0421\u0414\u042d\u041a%' THEN N'CDEK_COURIER'
+        WHEN UPPER(COALESCE(CAST(ord._Fld9266 AS nvarchar(max)), N'')) LIKE N'%\u041f\u041e\u0427\u0422\u0410%' THEN N'RUSSIAN_POST'
+        ELSE N'OTHER'
+    END"""
+    if column:
+        if not re.fullmatch(r"_Fld\d+", column):
+            raise ValueError("ONEC_ORDER_DELIVERY_CODE_COLUMN must look like _Fld12345")
+        configured = f"UPPER(LTRIM(RTRIM(COALESCE(CAST(ord.{column} AS nvarchar(32)), N''))))"
+        return f"COALESCE(NULLIF({configured}, N''), {fallback})"
+    return fallback
 
 
 def ensure_state(connection: sqlite3.Connection) -> None:
@@ -263,7 +312,11 @@ def send_to_crm(
         "assembly_source": event.assembly_source,
         "assembly_ref": event.assembly_ref,
         "idempotency_key": event.event_key,
+        "execution_status": event.execution_status,
+        "delivery_code": event.delivery_code,
     }
+    if event.payment_mode:
+        payload["payment_mode"] = event.payment_mode
     if event.rtu_number:
         payload["rtu"] = event.rtu_number
     if event.crm_status == "issued":
@@ -281,6 +334,47 @@ def send_to_crm(
     except ValueError:
         response_json = {"ok": False, "raw": response_text}
     response_json.setdefault("http_status", response.status_code)
+    return response_json
+
+
+def enqueue_assembled_event(
+    session: Session,
+    event: AssemblyEvent,
+) -> order_assembly_outbox.AssemblyOutboxEnqueueResult:
+    return order_assembly_outbox.enqueue_assembly_event(
+        session,
+        order_assembly_outbox.AssemblyOutboxInput(
+            event_key=event.event_key,
+            event_at=event.event_at,
+            assembly_source=event.assembly_source,
+            assembly_ref=event.assembly_ref,
+            site_order_number=event.site_order_number,
+            execution_status=event.execution_status,
+            delivery_code=event.delivery_code,
+            payment_mode=event.payment_mode,
+            onec_order_number=event.onec_order_number,
+            crm_status=event.crm_status,
+        ),
+    )
+
+
+def send_outbox_row_to_crm(
+    row: OrderAssemblyCrmOutbox,
+    *,
+    crm_url: str,
+    token: str,
+) -> dict[str, Any]:
+    payload = order_assembly_outbox.crm_payload(row)
+    payload["token"] = token
+    response = requests.post(crm_url, data=payload, timeout=20)
+    response_text = response.text[:1000]
+    try:
+        response_json: dict[str, Any] = response.json()
+    except ValueError:
+        response_json = {"ok": False, "raw": response_text}
+    response_json.setdefault("http_status", response.status_code)
+    if not 200 <= response.status_code < 300:
+        response_json["ok"] = False
     return response_json
 
 
@@ -327,33 +421,114 @@ def main() -> int:
         settings.onec_database_url,
         since=since,
         limit=max(1, int(args.limit)),
+        delivery_code_column=os.environ.get("ONEC_ORDER_DELIVERY_CODE_COLUMN") or None,
     )
 
-    args.state_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(args.state_path) as state_connection:
-        processed = set() if args.include_processed else load_processed(state_connection)
-        pending_events = [event for event in events if event.event_key not in processed]
+    if args.no_send:
+        print(
+            json.dumps(
+                {
+                    "mode": "no-send",
+                    "since": _format_dt(since),
+                    "found": len(events),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        for event in events:
+            print_event_result(event, status="candidate")
+        return 0
 
-        summary = {
-            "mode": "apply" if args.apply else "no-send" if args.no_send else "dry-run",
-            "since": _format_dt(since),
-            "found": len(events),
-            "pending": len(pending_events),
-            "already_processed": len(events) - len(pending_events),
-        }
-        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-
+    if not args.apply:
+        print(
+            json.dumps(
+                {
+                    "mode": "dry-run",
+                    "since": _format_dt(since),
+                    "found": len(events),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         exit_code = 0
-        for event in pending_events:
-            if args.no_send:
-                print_event_result(event, status="candidate")
-                continue
-
+        for event in events:
             crm_response = send_to_crm(
                 event,
                 crm_url=args.crm_url,
                 token=token,
-                dry_run=not args.apply,
+                dry_run=True,
+            )
+            ok = bool(crm_response.get("ok"))
+            print_event_result(
+                event,
+                status="dry_run_sent" if ok else "crm_rejected",
+                crm_response=crm_response,
+            )
+            if not ok:
+                exit_code = 1
+        return exit_code
+
+    assembled_events = [event for event in events if event.crm_status == "assembled"]
+    issued_events = [event for event in events if event.crm_status == "issued"]
+    exit_code = 0
+
+    application_engine = get_application_engine()
+    with Session(application_engine) as application_session:
+        for event in assembled_events:
+            try:
+                result = enqueue_assembled_event(application_session, event)
+                application_session.commit()
+                print_event_result(
+                    event,
+                    status="outbox_enqueued" if result.created else result.row.status,
+                )
+            except order_assembly_outbox.AssemblyOutboxError as exc:
+                application_session.rollback()
+                print_event_result(
+                    event,
+                    status=f"outbox_rejected:{type(exc).__name__}",
+                )
+                exit_code = 1
+
+    with Session(application_engine) as application_session:
+        delivery_result = order_assembly_outbox.deliver_due_events(
+            application_session,
+            sender=lambda row: send_outbox_row_to_crm(
+                row,
+                crm_url=args.crm_url,
+                token=token,
+            ),
+            limit=max(1, int(args.limit)),
+            max_attempts=max(1, int(args.max_attempts)),
+            retry_base_seconds=max(1, int(args.retry_base_seconds)),
+        )
+        application_session.commit()
+    print(json.dumps({"outbox_delivery": delivery_result}, sort_keys=True))
+    if delivery_result["retry"] or delivery_result["manual_review"]:
+        exit_code = 1
+
+    args.state_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(args.state_path) as state_connection:
+        processed = set() if args.include_processed else load_processed(state_connection)
+        pending_events = [event for event in issued_events if event.event_key not in processed]
+
+        summary = {
+            "mode": "apply" if args.apply else "no-send" if args.no_send else "dry-run",
+            "since": _format_dt(since),
+            "found": len(issued_events),
+            "pending": len(pending_events),
+            "already_processed": len(issued_events) - len(pending_events),
+        }
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+
+        for event in pending_events:
+            crm_response = send_to_crm(
+                event,
+                crm_url=args.crm_url,
+                token=token,
+                dry_run=False,
             )
             ok = bool(crm_response.get("ok"))
             print_event_result(
@@ -361,7 +536,7 @@ def main() -> int:
                 status="sent" if ok else "crm_rejected",
                 crm_response=crm_response,
             )
-            if ok and args.apply:
+            if ok:
                 record_processed(state_connection, event, crm_response=crm_response)
             if not ok:
                 exit_code = 1

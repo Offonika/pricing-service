@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
 from app.core.config import get_settings
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.schemas.order_fulfillment import (
+    AssemblyEventIngestResponse,
     BitrixChatIngestResponse,
     BitrixChatMessageIngestRequest,
     BitrixChatMessageIngestResponse,
@@ -17,6 +18,7 @@ from app.schemas.order_fulfillment import (
     OrderFulfillmentRecommendationsResponse,
     OrderFulfillmentReviewResponse,
 )
+from app.services import order_assembly_outbox as assembly_outbox
 from app.services import order_assembly_queue as assembly_queue
 from app.services import site_order_fulfillment as fulfillment
 
@@ -79,6 +81,52 @@ def get_assembly_queue(
     return Response(
         content=assembly_queue.render_queue_xml(snapshot),
         media_type="application/xml",
+    )
+
+
+@router.post("/assembly-events", response_model=AssemblyEventIngestResponse)
+def ingest_assembly_event(
+    event_key: str = Form(...),
+    order: str = Form(...),
+    status: str = Form(default="assembled"),
+    assembly_source: str = Form(...),
+    assembly_ref: str = Form(...),
+    assembled_at: datetime = Form(...),
+    execution_status: str = Form(...),
+    delivery_code: str = Form(...),
+    payment_mode: str | None = Form(default=None),
+    onec_order_number: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+) -> AssemblyEventIngestResponse:
+    try:
+        result = assembly_outbox.enqueue_assembly_event(
+            db,
+            assembly_outbox.AssemblyOutboxInput(
+                event_key=event_key,
+                event_at=assembled_at,
+                assembly_source=assembly_source,
+                assembly_ref=assembly_ref,
+                site_order_number=order,
+                execution_status=execution_status,
+                delivery_code=delivery_code,
+                payment_mode=payment_mode,
+                onec_order_number=onec_order_number,
+                crm_status=status,
+            ),
+        )
+        db.commit()
+    except assembly_outbox.AssemblyOutboxConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except assembly_outbox.AssemblyOutboxError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return AssemblyEventIngestResponse(
+        event_key=result.row.event_key,
+        outbox_id=result.row.id,
+        status=result.row.status,
+        duplicate=not result.created,
     )
 
 

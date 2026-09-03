@@ -45,6 +45,14 @@ class BitrixChatIngestResponse(BaseModel):
     ocr_images: int = 0
 
 
+class AssemblyEventIngestResponse(BaseModel):
+    accepted: bool = True
+    event_key: str
+    outbox_id: int
+    status: str
+    duplicate: bool = False
+
+
 class OrderFulfillmentRecommendationItem(BaseModel):
     site_order_number: str
     bitrix_deal_id: int | None = None

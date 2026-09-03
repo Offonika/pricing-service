@@ -77,7 +77,7 @@ updated_at: "2026-09-01"
   "payment_amount": "5461.95",
   "stage": "cloudpayments_check",
   "payment_id": "98765",
-  "region_xml_id": "99999999-8888-4777-8666-555555555555",
+  "region_xml_id": "0000512213",
   "source_warehouse_xml_id": "11111111-2222-4333-8444-555555555555",
   "availability_snapshot_id": "sha256-semantic-snapshot"
 }

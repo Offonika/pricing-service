@@ -36,6 +36,8 @@ def test_send_to_crm_uses_issued_payload_for_printed_scanned_pickup(monkeypatch)
         onec_order_number="РБГУ0033819",
         site_order_number="214577",
         is_posted=True,
+        execution_status="07",
+        delivery_code="PICKUP",
         document_amount="1560.00",
     )
 
@@ -56,6 +58,8 @@ def test_send_to_crm_uses_issued_payload_for_printed_scanned_pickup(monkeypatch)
     assert payload["assembly_source"] == "rtu"
     assert payload["assembly_ref"] == "0xrtu"
     assert payload["idempotency_key"] == "issued-scan:0x01"
+    assert payload["execution_status"] == "07"
+    assert payload["delivery_code"] == "PICKUP"
     assert payload["dry_run"] == "1"
     assert "assembled_at" not in payload
 
@@ -81,6 +85,9 @@ def test_send_to_crm_keeps_assembled_payload_for_assembly_event(monkeypatch) -> 
         onec_order_number="РБГУ0033819",
         site_order_number="214577",
         is_posted=True,
+        execution_status="06",
+        delivery_code="MM_COURIER",
+        payment_mode="by_agreement",
     )
 
     task.send_to_crm(
@@ -96,5 +103,60 @@ def test_send_to_crm_keeps_assembled_payload_for_assembly_event(monkeypatch) -> 
     assert payload["assembly_source"] == "customer_order"
     assert payload["assembly_ref"] == "0xorder"
     assert payload["idempotency_key"] == "assembled-order:0x01"
+    assert payload["execution_status"] == "06"
+    assert payload["delivery_code"] == "MM_COURIER"
+    assert payload["payment_mode"] == "by_agreement"
     assert "rtu" not in payload
     assert "issued_at" not in payload
+
+
+def test_issued_query_is_not_restricted_to_ready_statuses(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeResult:
+        def __iter__(self):
+            return iter(())
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, statement, _params):
+            captured["sql"] = str(statement)
+            return FakeResult()
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+    monkeypatch.setattr(task, "build_engine", lambda *_args, **_kwargs: FakeEngine())
+
+    assert (
+        task.fetch_assembly_events(
+            "mssql://example",
+            since=datetime(2026, 5, 1),
+            limit=10,
+        )
+        == []
+    )
+
+    assembled_sql, issued_sql = captured["sql"].split("UNION ALL", maxsplit=1)
+    assert "IN (N'05', N'06')" in assembled_sql
+    assert "IN (N'05', N'06')" not in issued_sql
+
+
+def test_delivery_code_column_accepts_only_physical_field_name() -> None:
+    expression = task._delivery_code_expression("_Fld12345")
+    assert "ord._Fld12345" in expression
+    assert "COALESCE(NULLIF(" in expression
+    assert "ord._Fld9266" in expression
+
+    try:
+        task._delivery_code_expression("_Fld12345; DROP TABLE orders")
+    except ValueError as exc:
+        assert "must look like" in str(exc)
+    else:
+        raise AssertionError("unsafe delivery code column was accepted")

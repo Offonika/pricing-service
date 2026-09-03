@@ -25,6 +25,7 @@ import { resolveBitrixPortalUrl, resolveBitrixProductUrl } from "../api/bitrix";
 import { procurementBlockerSummaryLabel, procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
+import { ProcurementProductInsights } from "./ProcurementProductInsights";
 
 interface Props {
   bitrixUserName?: string | null;
@@ -43,7 +44,8 @@ type WorkspaceRoute =
       readiness: LifecycleReadiness;
       proposalId?: number;
     }
-  | { kind: "order"; orderId: number; focusLineId?: number };
+  | { kind: "order"; orderId: number; focusLineId?: number }
+  | { kind: "review"; nomenclatureCode: string };
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   dashboard: "Витрина",
@@ -267,6 +269,13 @@ function routeFromLocation(): WorkspaceRoute {
       focusLineId: Number.isInteger(lineId) && lineId > 0 ? lineId : undefined,
     };
   }
+  const reviewMatch = relative.match(/^\/review\/([^/]+)$/);
+  if (reviewMatch) {
+    return {
+      kind: "review",
+      nomenclatureCode: decodeURIComponent(reviewMatch[1]),
+    };
+  }
   if (relative === "/assistant") return { kind: "tab", tab: "assistant" };
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
@@ -285,6 +294,9 @@ function routeUrl(route: WorkspaceRoute) {
   if (route.kind === "order") {
     const suffix = route.focusLineId ? `?line=${route.focusLineId}` : "";
     return `${root}/orders/${route.orderId}${suffix}`;
+  }
+  if (route.kind === "review") {
+    return `${root}/review/${encodeURIComponent(route.nomenclatureCode)}`;
   }
   if (route.tab === "dashboard") return root;
   return `${root}/${route.tab}`;
@@ -365,6 +377,7 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
 function Dashboard({
   data,
   onOpenLifecycle,
+  onOpenReview,
 }: {
   data: ProcurementDashboard;
   onOpenLifecycle: (
@@ -372,6 +385,7 @@ function Dashboard({
     scope: "action" | "all",
     options?: { readiness?: LifecycleReadiness; proposalId?: number }
   ) => void;
+  onOpenReview: (nomenclatureCode: string) => void;
 }) {
   const [manualFilter, setManualFilter] = useState<string | null>(null);
   const manualFilterLabel = manualFilter ? MANUAL_STATUS_LABELS[manualFilter] : null;
@@ -385,6 +399,8 @@ function Dashboard({
       proposalId: item.proposal_id,
     });
   };
+  const canOpenReview = (item: ProcurementDashboard["attention"][number]) =>
+    item.kind !== "lifecycle" && item.filter_status === "review";
   return (
     <main className="order-workspace__content">
       <section className="order-workspace__section-heading">
@@ -530,9 +546,15 @@ function Dashboard({
               <tbody>
                 {attentionRows.map((item) => (
                   <tr
-                    className={item.kind === "lifecycle" ? "attention-row attention-row--clickable" : "attention-row"}
+                    className={item.kind === "lifecycle" || canOpenReview(item)
+                      ? "attention-row attention-row--clickable"
+                      : "attention-row"}
                     key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}
-                    onClick={item.kind === "lifecycle" ? () => openAttention(item) : undefined}
+                    onClick={item.kind === "lifecycle"
+                      ? () => openAttention(item)
+                      : canOpenReview(item)
+                        ? () => onOpenReview(item.nomenclature_code)
+                        : undefined}
                   >
                     <td>
                       <strong>{item.product_name}</strong>
@@ -554,6 +576,17 @@ function Dashboard({
                           type="button"
                         >
                           Проверить
+                        </button>
+                      ) : canOpenReview(item) ? (
+                        <button
+                          className="attention-action"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenReview(item.nomenclature_code);
+                          }}
+                          type="button"
+                        >
+                          Открыть разбор
                         </button>
                       ) : <span>—</span>}
                     </td>
@@ -1326,18 +1359,33 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
     if (!order) return <LoadingState message="Загрузка карточки заказа..." />;
     return <ProcurementOrderFormationApp bitrixUserName={bitrixUserName} focusLineId={route.focusLineId} initialOrder={order} onBack={() => navigate({ kind: "tab", tab: "orders" })} />;
   }
+  if (route.kind === "review") {
+    return (
+      <ProcurementProductInsights
+        nomenclatureCode={route.nomenclatureCode}
+        onBack={() => navigate({ kind: "tab", tab: "dashboard" })}
+      />
+    );
+  }
 
   return (
     <AppShell bitrixUserName={bitrixUserName} activeTab={route.tab} onNavigate={navigate}>
       {route.tab === "dashboard" && (
         dashboardError ? <ErrorState message={dashboardError} onRetry={() => void loadDashboard()} />
-          : dashboard ? <Dashboard data={dashboard} onOpenLifecycle={(status, scope, options) => navigate({
-              kind: "lifecycle",
-              status,
-              scope,
-              readiness: options?.readiness || "all",
-              proposalId: options?.proposalId,
-            })} />
+          : dashboard ? <Dashboard
+              data={dashboard}
+              onOpenLifecycle={(status, scope, options) => navigate({
+                kind: "lifecycle",
+                status,
+                scope,
+                readiness: options?.readiness || "all",
+                proposalId: options?.proposalId,
+              })}
+              onOpenReview={(nomenclatureCode) => navigate({
+                kind: "review",
+                nomenclatureCode,
+              })}
+            />
             : <LoadingState message="Загрузка витрины..." />
       )}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}

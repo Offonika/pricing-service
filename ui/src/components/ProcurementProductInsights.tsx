@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchProcurementProductCard,
+  fetchProcurementProductCardByCode,
   type ProcurementProductCard,
 } from "../api/procurementAssortment";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
@@ -8,7 +9,9 @@ import { procurementErrorText } from "../utils/procurementErrorMessages";
 import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 
 interface Props {
-  productId: string;
+  productId?: string;
+  nomenclatureCode?: string;
+  onBack?: () => void;
 }
 
 const DEMAND_WINDOWS = [
@@ -21,6 +24,33 @@ const CONFIDENCE_LABELS: Record<string, string> = {
   high: "высокая",
   medium: "средняя",
   low: "низкая",
+};
+
+const LIFECYCLE_LABELS: Record<string, string> = {
+  fruit: "Рассматриваем",
+  newborn: "Заказали",
+  newborn_need: "Добираем",
+  new_item: "Завезли",
+  sales_start: "Пошли продажи",
+  sale: "Растим",
+  working: "Поддерживаем",
+  pension: "Допродаём",
+  review: "Разбор",
+};
+
+const SOURCE_STATE_LABELS: Record<string, string> = {
+  ready: "данные актуальны",
+  stale: "данные устарели",
+  partial: "данные загружены частично",
+  missing: "данных нет",
+};
+
+const CURRENCY_LABELS: Record<string, string> = {
+  RUB: "руб.",
+  AED: "дирхам ОАЭ",
+  CNY: "юань",
+  USD: "доллар США",
+  EUR: "евро",
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
@@ -63,7 +93,10 @@ function Metric({ label, value }: { label: string; value: string }) {
 function price(value: unknown, currency: unknown) {
   const amount = number(value);
   if (amount === "нет данных") return amount;
-  return [amount, text(currency, "")].filter(Boolean).join(" ");
+  const currencyCode = text(currency, "");
+  const currencyLabel = CURRENCY_LABELS[currencyCode]
+    || (/[a-z]/i.test(currencyCode) ? `${currencyCode} (код валюты)` : currencyCode);
+  return [amount, currencyLabel].filter(Boolean).join(" ");
 }
 
 function finiteNumber(value: unknown) {
@@ -74,7 +107,24 @@ function finiteNumber(value: unknown) {
 
 function dictionaryLabel(labels: Record<string, string>, value: unknown) {
   const raw = text(value);
-  return labels[raw] || raw;
+  return labels[raw] || (/[a-z]/i.test(raw) ? `${raw} (техническое значение)` : raw);
+}
+
+function lifecycleLabel(card: ProcurementProductCard) {
+  const label = text(card.lifecycle.label, "");
+  if (label) return label;
+  const status = text(card.lifecycle.status, "не определён");
+  return LIFECYCLE_LABELS[status]
+    || (/[a-z]/i.test(status) ? `${status} (технический статус)` : status);
+}
+
+function supplierLabel(card: ProcurementProductCard) {
+  const supplier = text(card.supply.supplier_name, "");
+  if (supplier) return supplier;
+  const need = finiteNumber(card.demand.recommended_order) || 0;
+  return need > 0
+    ? "не выбран — требуется перед заказом"
+    : "не требуется до появления потребности";
 }
 
 function blockerCountLabel(count: number) {
@@ -86,7 +136,203 @@ function blockerCountLabel(count: number) {
   return `${count} блокеров`;
 }
 
-export function ProcurementProductInsights({ productId }: Props) {
+const COMPARISON_ROWS: Array<{
+  section: string;
+  label: string;
+  value: (card: ProcurementProductCard) => string;
+}> = [
+  {
+    section: "Решение по карточке",
+    label: "Жизненный статус",
+    value: lifecycleLabel,
+  },
+  {
+    section: "Решение по карточке",
+    label: "Блокеры",
+    value: (card) => card.blockers.length ? blockerCountLabel(card.blockers.length) : "нет",
+  },
+  {
+    section: "Решение по карточке",
+    label: "Рекомендация",
+    value: (card) => text(card.recommendation, "нет рекомендации"),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Продажи за 180 дней",
+    value: (card) => number(card.demand.sales_180, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Продажи за 90 дней",
+    value: (card) => number(card.demand.sales_90, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Продажи за 30 дней",
+    value: (card) => number(card.demand.sales_30, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Скорость за 180 дней",
+    value: (card) => number(card.demand.rate_180, " шт./день"),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Скорость за 90 дней",
+    value: (card) => number(card.demand.rate_90, " шт./день"),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Скорость за 30 дней",
+    value: (card) => number(card.demand.rate_30, " шт./день"),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Доступный остаток",
+    value: (card) => number(card.demand.sellable_stock, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Заказы покупателей",
+    value: (card) => number(card.demand.customer_orders, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Товар в пути",
+    value: (card) => number(card.demand.incoming, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Целевой запас",
+    value: (card) => number(card.demand.target_stock, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "Рекомендовано заказать",
+    value: (card) => number(card.demand.recommended_order, " шт."),
+  },
+  {
+    section: "Спрос и количество — отвечает Омар",
+    label: "В текущем заказе",
+    value: (card) => number(card.demand.current_order, " шт."),
+  },
+  {
+    section: "Возвраты и качество — отвечает Сергей",
+    label: "Возвраты за 180 дней",
+    value: (card) => number(card.quality.return_qty_180, " шт."),
+  },
+  {
+    section: "Возвраты и качество — отвечает Сергей",
+    label: "Возвраты «Новый» за 90 дней",
+    value: (card) => number(card.quality.batch_return_qty_90, " шт."),
+  },
+  {
+    section: "Возвраты и качество — отвечает Сергей",
+    label: "Подтверждённый брак",
+    value: (card) => number(card.quality.defect_pct, "%"),
+  },
+  {
+    section: "Возвраты и качество — отвечает Сергей",
+    label: "Надёжность показателя",
+    value: (card) => dictionaryLabel(CONFIDENCE_LABELS, card.quality.confidence),
+  },
+  {
+    section: "Поставка",
+    label: "Поставщик",
+    value: supplierLabel,
+  },
+  {
+    section: "Поставка",
+    label: "Закупочная цена",
+    value: (card) => price(card.supply.purchase_price, card.supply.currency),
+  },
+  {
+    section: "Поставка",
+    label: "Рентабельность",
+    value: (card) => number(card.supply.profitability_pct, "%"),
+  },
+  {
+    section: "Поставка",
+    label: "Срок поставки",
+    value: (card) => number(card.supply.lead_time_days, " дн."),
+  },
+];
+
+function FamilyComparison({ data }: { data: ProcurementProductCard }) {
+  const members = data.family.comparison_members?.length
+    ? data.family.comparison_members
+    : [{
+        role: "primary",
+        role_label: "Основная карточка",
+        rank: 0,
+        speed_score: 0,
+        card: data,
+      }];
+  const hiddenCount = Number(data.family.hidden_member_count || 0);
+  const rankingLabel = text(
+    data.family.ranking_source_label,
+    "скорость завершённых продаж за 30 и 90 дней",
+  );
+  return (
+    <section className="product-insights__section product-insights__family-review">
+      <div className="product-insights__family-heading">
+        <div>
+          <h2>Сравнение семьи: {text(data.family.label)}</h2>
+          <p>Основная карточка выделена цветом. Кандидаты выбраны по показателю: {rankingLabel}.</p>
+        </div>
+        <span>
+          Показано {members.length} из {number(data.family.total_member_count || members.length)}
+          {hiddenCount > 0 ? ` · ещё ${hiddenCount} не вошли в четвёрку кандидатов` : ""}
+        </span>
+      </div>
+      <div className="product-insights__comparison-wrap">
+        <table aria-label="Сравнение основной карточки и кандидатов семьи" className="product-insights__comparison">
+          <thead>
+            <tr>
+              <th>Показатель</th>
+              {members.map((member, index) => (
+                <th
+                  className={member.role === "primary" ? "is-primary" : ""}
+                  key={`${member.card.identity.nomenclature_code}-${index}`}
+                >
+                  <span>{member.role === "primary" ? "Основная карточка" : `Кандидат ${member.rank}`}</span>
+                  <strong>{text(member.card.identity.name, "Без названия")}</strong>
+                  <small>Код 1С: {text(member.card.identity.nomenclature_code)}</small>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARISON_ROWS.map((row, rowIndex) => {
+              const showSection = rowIndex === 0
+                || COMPARISON_ROWS[rowIndex - 1].section !== row.section;
+              return [
+                showSection ? (
+                  <tr className="product-insights__comparison-section" key={`section-${row.section}`}>
+                    <th colSpan={members.length + 1}>{row.section}</th>
+                  </tr>
+                ) : null,
+                <tr key={`${row.section}-${row.label}`}>
+                  <th>{row.label}</th>
+                  {members.map((member, index) => (
+                    <td
+                      className={member.role === "primary" ? "is-primary" : ""}
+                      key={`${member.card.identity.nomenclature_code}-${row.label}-${index}`}
+                    >
+                      {row.value(member.card)}
+                    </td>
+                  ))}
+                </tr>,
+              ];
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+export function ProcurementProductInsights({ productId, nomenclatureCode, onBack }: Props) {
   const [data, setData] = useState<ProcurementProductCard | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -95,35 +341,43 @@ export function ProcurementProductInsights({ productId }: Props) {
     setLoading(true);
     setError("");
     try {
-      setData(await fetchProcurementProductCard(productId));
+      setData(
+        nomenclatureCode
+          ? await fetchProcurementProductCardByCode(nomenclatureCode)
+          : await fetchProcurementProductCard(productId || "")
+      );
     } catch (requestError) {
       setError(procurementErrorText(requestError));
     } finally {
       setLoading(false);
     }
-  }, [productId]);
+  }, [nomenclatureCode, productId]);
 
   useEffect(() => {
-    if (!productId) {
+    if (!productId && !nomenclatureCode) {
       setLoading(false);
       return undefined;
     }
     let cancelled = false;
     setLoading(true);
-    fetchProcurementProductCard(productId)
+    setError("");
+    const request = nomenclatureCode
+      ? fetchProcurementProductCardByCode(nomenclatureCode)
+      : fetchProcurementProductCard(productId || "");
+    request
       .then((response) => { if (!cancelled) setData(response); })
       .catch((requestError) => { if (!cancelled) setError(procurementErrorText(requestError)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [productId]);
+  }, [nomenclatureCode, productId]);
 
   useEffect(() => {
     const previousTitle = document.title;
     document.title = data?.identity.name
-      ? `${data.identity.name} — показатели товара`
-      : "Показатели товара";
+      ? `${data.identity.name} — ${nomenclatureCode ? "разбор карточки" : "показатели товара"}`
+      : nomenclatureCode ? "Разбор карточки" : "Показатели товара";
     return () => { document.title = previousTitle; };
-  }, [data?.identity.name]);
+  }, [data?.identity.name, nomenclatureCode]);
 
   const chart = useMemo(() => {
     if (!data) return [];
@@ -142,8 +396,8 @@ export function ProcurementProductInsights({ productId }: Props) {
     }));
   }, [data]);
 
-  if (!productId) {
-    return <div className="product-insights product-insights--state">Bitrix24 не передал ID товара.</div>;
+  if (!productId && !nomenclatureCode) {
+    return <div className="product-insights product-insights--state">Bitrix24 не передал код товара.</div>;
   }
   if (loading) {
     return <div className="product-insights product-insights--state">Загрузка показателей товара…</div>;
@@ -166,17 +420,28 @@ export function ProcurementProductInsights({ productId }: Props) {
 
   return (
     <main className={`product-insights ${stateClass}`}>
+      {onBack ? (
+        <nav className="product-insights__review-nav" aria-label="Навигация разбора карточки">
+          <button className="btn btn--ghost" onClick={onBack} type="button">
+            ← Вернуться на Витрину
+          </button>
+          <span>Витрина → Разбор → {data.identity.nomenclature_code}</span>
+        </nav>
+      ) : null}
       <header className="product-insights__control">
         <div className="product-insights__control-heading">
-          <h1>Контроль закупки</h1>
+          <h1>{nomenclatureCode ? "Разбор карточки и семьи" : "Контроль закупки"}</h1>
           <span>Расчёт: {text(data.source.calculated_at)}</span>
         </div>
         <div className="product-insights__badges">
           <span>
-            Жизненный статус: {text(data.lifecycle.label || data.lifecycle.status, "не определён")}
+            Жизненный статус: {lifecycleLabel(data)}
           </span>
           <span className={sourceClass}>
-            {sourceState === "ready" ? "Данные актуальны" : "Проверьте данные"}
+            {SOURCE_STATE_LABELS[sourceState]
+              || (/[a-z]/i.test(sourceState)
+                ? `${sourceState} (техническое состояние)`
+                : sourceState)}
           </span>
           {data.blockers.length ? (
             <span className="is-blocked">{blockerCountLabel(data.blockers.length)}</span>
@@ -190,6 +455,8 @@ export function ProcurementProductInsights({ productId }: Props) {
           <p>{text(data.recommendation, "Рекомендация пока не рассчитана")}</p>
         </div>
       </header>
+
+      {nomenclatureCode ? <FamilyComparison data={data} /> : null}
 
       {data.blockers.length ? (
         <section className="product-insights__section product-insights__section--blocked">

@@ -85,7 +85,10 @@ from app.services.procurement_order_labels import (
 from app.services.procurement_order_labels import (
     build_xlsx as build_order_labels_xlsx,
 )
-from app.services.procurement_product_cards import build_product_card_snapshot
+from app.services.procurement_product_cards import (
+    build_product_card_review_snapshot,
+    build_product_card_snapshot,
+)
 from app.services.procurement_supplier_profiles import (
     empty_supplier_profile,
     get_supplier_profile,
@@ -455,6 +458,28 @@ def read_events(
                 event_type=event_type,
                 page=page,
                 page_size=page_size,
+            )
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/products/by-code/{nomenclature_code}/card",
+    response_model=ProcurementProductCardRead,
+)
+def read_product_card_by_nomenclature_code(
+    nomenclature_code: str,
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementProductCardRead:
+    try:
+        return ProcurementProductCardRead.model_validate(
+            build_product_card_review_snapshot(
+                db,
+                nomenclature_code=nomenclature_code,
             )
         )
     except Exception as exc:

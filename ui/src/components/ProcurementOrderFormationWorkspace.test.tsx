@@ -3,11 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type {
+  ProcurementDashboard,
   ProcurementLifecycleTransitionList,
   ProcurementOrderListItem,
 } from "../api/procurementAssortment";
 import {
   decideProcurementLifecycleTransition,
+  fetchProcurementDashboard,
   fetchProcurementEvents,
   fetchProcurementLifecycleTransitions,
 } from "../api/procurementAssortment";
@@ -15,6 +17,7 @@ import {
   EventHistory,
   LifecycleQueue,
   OrderBlockerCell,
+  ProcurementOrderFormationWorkspace,
 } from "./ProcurementOrderFormationWorkspace";
 
 vi.mock("../api/procurementAssortment", () => ({
@@ -36,6 +39,21 @@ vi.mock("./ProcurementOrderAssistant", () => ({
 
 vi.mock("./ProcurementOrderFormationApp", () => ({
   ProcurementOrderFormationApp: () => null,
+}));
+
+vi.mock("./ProcurementProductInsights", () => ({
+  ProcurementProductInsights: ({
+    nomenclatureCode,
+    onBack,
+  }: {
+    nomenclatureCode: string;
+    onBack: () => void;
+  }) => (
+    <div>
+      <span>Карточка разбора {nomenclatureCode}</span>
+      <button onClick={onBack} type="button">Назад на Витрину</button>
+    </div>
+  ),
 }));
 
 vi.mock("react-hot-toast", () => ({
@@ -118,6 +136,66 @@ function blockedOrder(productCount = 1): ProcurementOrderListItem {
     updated_at: "2026-09-02T10:00:00",
   };
 }
+
+function dashboardWithManualReview(): ProcurementDashboard {
+  return {
+    folder: "Дисплеи",
+    responsible_user_id: "130757",
+    responsible_name: "Омар",
+    run_id: 361,
+    run_key: "display-run-361",
+    updated_at: "2026-09-03T09:32:22",
+    cards: [],
+    decision_summary: {
+      ready_count: 0,
+      review_count: 0,
+      blocked_count: 0,
+    },
+    manual_status_counts: { review: 1 },
+    attention: [],
+    manual_attention: [{
+      proposal_id: null,
+      nomenclature_code: "РБ000006737",
+      product_name: "Дисплей Samsung A16",
+      current_status: "review",
+      current_status_label: "Разбор",
+      kind: "manual",
+      filter_status: "review",
+      action_label: "Принять решение",
+      fact_summary: "Нужно сравнить семью",
+      decision_state: "review",
+      decision_state_label: "Нужен разбор",
+      reason: "Семейное решение",
+      recommendation: "Сравнить карточки",
+      deadline_label: "Сегодня",
+      urgency: "review",
+    }],
+  };
+}
+
+describe("Dashboard review navigation", () => {
+  beforeEach(() => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation");
+    vi.mocked(fetchProcurementDashboard).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("открывает семейный разбор из карточки Разбор и возвращает на Витрину", async () => {
+    vi.mocked(fetchProcurementDashboard).mockResolvedValue(dashboardWithManualReview());
+
+    render(<ProcurementOrderFormationWorkspace bitrixUserName="Омар" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Показать товары: Разбор" }));
+    fireEvent.click(screen.getByRole("button", { name: "Открыть разбор" }));
+    expect(await screen.findByText("Карточка разбора РБ000006737")).toBeInTheDocument();
+    expect(window.location.pathname).toContain("/review/");
+
+    fireEvent.click(screen.getByRole("button", { name: "Назад на Витрину" }));
+    expect(await screen.findByRole("heading", { name: "Жизненные статусы" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/bitrix/procurement-order-formation");
+  });
+});
 
 describe("OrderBlockerCell", () => {
   beforeEach(() => {

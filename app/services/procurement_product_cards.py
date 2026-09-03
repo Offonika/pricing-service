@@ -13,6 +13,12 @@ from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings, get_settings
+from app.models.display_family_registry import (
+    DisplayFamily,
+    DisplayFamilyMember,
+    DisplayFamilyRegistryVersion,
+)
+from app.models.product import Product
 from app.models.procurement_order_formation import (
     ProcurementOrderFormationLine,
     ProcurementProductCardSyncState,
@@ -26,6 +32,7 @@ from app.services.bitrix_order_formation import (
     resolve_catalog_product_by_id,
     resolve_catalog_products_by_xml_ids,
 )
+from app.services.display_family_order_recommendation import demand_speed_scores
 from app.services.procurement_order_formation import (
     line_blocker_details,
     normalize_guid,
@@ -132,6 +139,99 @@ def build_product_card_snapshot(
         product=product,
         settings=settings,
     )
+
+
+def build_product_card_review_snapshot(
+    db: Session,
+    *,
+    nomenclature_code: str,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Build one decision card with the primary SKU and up to four family candidates."""
+
+    settings = settings or get_settings()
+    primary = build_product_card_snapshot(
+        db,
+        nomenclature_code=nomenclature_code,
+        settings=settings,
+    )
+    primary_code = str(primary["identity"].get("nomenclature_code") or "").strip()
+    family_context = _active_family_member_rows(db, nomenclature_code=primary_code)
+    member_rows = list((family_context or {}).get("members") or [])
+    if not any(str(item.get("nomenclature_code") or "").strip() == primary_code for item in member_rows):
+        member_rows.insert(
+            0,
+            {
+                "nomenclature_code": primary_code,
+                "name": primary["identity"].get("name") or "",
+                "article": primary["identity"].get("article") or "",
+            },
+        )
+
+    cards_by_code: dict[str, dict[str, Any]] = {primary_code: primary}
+    for member in member_rows:
+        code = str(member.get("nomenclature_code") or "").strip()
+        if not code or code in cards_by_code:
+            continue
+        try:
+            cards_by_code[code] = build_product_card_snapshot(
+                db,
+                nomenclature_code=code,
+                settings=settings,
+            )
+        except LookupError:
+            cards_by_code[code] = _empty_product_card_snapshot(member)
+
+    score_rows = {
+        code: {
+            "sales_qty_window_short": card["demand"].get("sales_30"),
+            "sales_qty_window_medium": card["demand"].get("sales_90"),
+            "sales_qty_window": card["demand"].get("sales_180"),
+        }
+        for code, card in cards_by_code.items()
+    }
+    scores, ranking_source = demand_speed_scores(score_rows)
+    candidate_codes = sorted(
+        (code for code in cards_by_code if code != primary_code),
+        key=lambda code: (-scores.get(code, Decimal("0")), code),
+    )[:4]
+    visible_codes = [primary_code, *candidate_codes]
+    comparison = [
+        {
+            "role": "primary" if code == primary_code else "candidate",
+            "role_label": "Основная карточка" if code == primary_code else "Кандидат семьи",
+            "rank": 0 if code == primary_code else position,
+            "speed_score": scores.get(code, Decimal("0")),
+            "card": _comparison_card(cards_by_code[code]),
+        }
+        for position, code in enumerate(visible_codes, start=0)
+    ]
+    total_member_count = int(
+        (family_context or {}).get("member_count")
+        or primary.get("family", {}).get("member_count")
+        or len(cards_by_code)
+    )
+    family = dict(primary.get("family") or {})
+    if family_context:
+        family["id"] = family_context.get("family_key") or family.get("id")
+        family["label"] = family_context.get("label") or family.get("label")
+    family.update(
+        {
+            "member_count": total_member_count,
+            "total_member_count": total_member_count,
+            "visible_member_count": len(comparison),
+            "hidden_member_count": max(0, total_member_count - len(comparison)),
+            "ranking_source": ranking_source,
+            "ranking_source_label": (
+                "скорость завершённых продаж за 30 и 90 дней"
+                if ranking_source == "completed_sales_rate_30_90"
+                else "скорость завершённых продаж за 180 дней"
+            ),
+            "comparison_members": comparison,
+        }
+    )
+    primary["family"] = family
+    return primary
 
 
 def list_product_card_snapshots(
@@ -588,6 +688,141 @@ def _snapshot_from_sources(
             "calculated_at": calculated_at,
             "updated_at": _date_text(line.updated_at if line else classification.get("updated_at")),
         },
+    }
+
+
+def _active_family_member_rows(
+    db: Session,
+    *,
+    nomenclature_code: str,
+) -> dict[str, Any] | None:
+    """Read family membership only from the active registry, never from product names."""
+
+    required_tables = (
+        DisplayFamilyRegistryVersion.__tablename__,
+        DisplayFamily.__tablename__,
+        DisplayFamilyMember.__tablename__,
+        Product.__tablename__,
+    )
+    inspector = inspect(db.get_bind())
+    if not all(inspector.has_table(table_name) for table_name in required_tables):
+        return None
+    active_version_id = db.scalar(
+        select(DisplayFamilyRegistryVersion.id).where(
+            DisplayFamilyRegistryVersion.status == "active"
+        )
+    )
+    if active_version_id is None:
+        return None
+    family_id = db.scalar(
+        select(DisplayFamilyMember.family_id)
+        .join(Product, Product.id == DisplayFamilyMember.product_id)
+        .where(
+            DisplayFamilyMember.registry_version_id == active_version_id,
+            Product.code_1c == nomenclature_code,
+        )
+    )
+    if family_id is None:
+        return None
+    family = db.scalar(
+        select(DisplayFamily).where(
+            DisplayFamily.id == family_id,
+            DisplayFamily.registry_version_id == active_version_id,
+        )
+    )
+    if family is None:
+        return None
+    raw_members = db.execute(
+        select(Product.code_1c, Product.name, Product.article)
+        .join(DisplayFamilyMember, DisplayFamilyMember.product_id == Product.id)
+        .where(
+            DisplayFamilyMember.registry_version_id == active_version_id,
+            DisplayFamilyMember.family_id == family_id,
+            Product.code_1c.is_not(None),
+        )
+        .order_by(Product.code_1c, Product.id)
+    ).all()
+    members: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
+    for row in raw_members:
+        code = str(row.code_1c or "").strip()
+        if not code or code in seen_codes:
+            continue
+        seen_codes.add(code)
+        members.append(
+            {
+                "nomenclature_code": code,
+                "name": str(row.name or "").strip(),
+                "article": str(row.article or "").strip(),
+            }
+        )
+    labels = sorted(
+        {
+            " ".join(
+                str(value).strip()
+                for value in (model.get("brand"), model.get("model_name"), model.get("variant"))
+                if value is not None and str(value).strip()
+            )
+            for model in list(family.phone_models_json or [])
+            if isinstance(model, Mapping)
+        }
+        - {""}
+    )
+    return {
+        "family_key": family.family_key,
+        "label": ", ".join(labels) or family.family_key,
+        "member_count": family.member_count,
+        "members": members,
+    }
+
+
+def _empty_product_card_snapshot(member: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep a registry member visible even when its latest calculated facts are unavailable."""
+
+    return {
+        "identity": {
+            "bitrix_product_id": "",
+            "xml_id": "",
+            "nomenclature_code": str(member.get("nomenclature_code") or "").strip(),
+            "name": str(member.get("name") or "").strip(),
+            "article": str(member.get("article") or "").strip(),
+            "photo_url": None,
+            "website_url": None,
+            "bitrix_url": None,
+        },
+        "properties": {},
+        "lifecycle": {},
+        "demand": {},
+        "quality": {},
+        "supply": {},
+        "family": {},
+        "blockers": [],
+        "orders": [],
+        "recommendation": None,
+        "source": {"state": "missing", "calculated_at": None, "updated_at": None},
+    }
+
+
+def _comparison_card(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy the fields needed by the matrix without nesting comparison data recursively."""
+
+    family = {
+        key: value
+        for key, value in dict(snapshot.get("family") or {}).items()
+        if key != "comparison_members"
+    }
+    return {
+        "identity": dict(snapshot.get("identity") or {}),
+        "properties": dict(snapshot.get("properties") or {}),
+        "lifecycle": dict(snapshot.get("lifecycle") or {}),
+        "demand": dict(snapshot.get("demand") or {}),
+        "quality": dict(snapshot.get("quality") or {}),
+        "supply": dict(snapshot.get("supply") or {}),
+        "family": family,
+        "blockers": list(snapshot.get("blockers") or []),
+        "orders": list(snapshot.get("orders") or []),
+        "recommendation": snapshot.get("recommendation"),
+        "source": dict(snapshot.get("source") or {}),
     }
 
 

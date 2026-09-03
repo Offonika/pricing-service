@@ -57,6 +57,18 @@ def test_select_order_rows_keeps_only_positive_order_decisions() -> None:
     assert [row["nomenclature_code"] for row in select_order_rows(rows)] == ["A"]
 
 
+def test_zero_need_without_supplier_does_not_create_an_order_or_blocker_card() -> None:
+    row = _source("NEW", "0", "NEW")
+    row.update(
+        dry_run_decision="do_not_order",
+        supplier_ref="",
+        supplier_code="",
+        supplier_name="",
+    )
+
+    assert select_order_rows([row]) == []
+
+
 def test_shadow_mode_rejects_every_persistence_flag() -> None:
     with pytest.raises(SystemExit):
         parse_args(["--shadow", "--persist-db"])

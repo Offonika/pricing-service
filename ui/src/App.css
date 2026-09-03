@@ -180,6 +180,109 @@
 .product-insights__orders article > div { display: grid; gap: 3px; }
 .product-insights__orders article span { color: #65758b; font-size: 12px; }
 
+.product-insights__review-nav,
+.product-insights__family-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.product-insights__review-nav {
+  color: #65758b;
+  font-size: 13px;
+}
+
+.product-insights__family-heading {
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.product-insights__family-heading h2 { margin-bottom: 5px; }
+.product-insights__family-heading p { margin: 0; color: #65758b; font-size: 13px; }
+.product-insights__family-heading > span {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #eef3f8;
+  color: #4b5c70;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.product-insights__comparison-wrap {
+  overflow: auto;
+  border: 1px solid #dce3ed;
+  border-radius: 12px;
+}
+
+.product-insights__comparison {
+  width: max(100%, 980px);
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+.product-insights__comparison th,
+.product-insights__comparison td {
+  padding: 10px 12px;
+  border-right: 1px solid #e3e8ef;
+  border-bottom: 1px solid #e3e8ef;
+  background: #fff;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.product-insights__comparison thead th {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  height: 112px;
+  background: #f3f6fa;
+}
+
+.product-insights__comparison thead th:first-child {
+  z-index: 6;
+  left: 0;
+  width: 190px;
+}
+
+.product-insights__comparison thead th:not(:first-child) { width: 190px; }
+.product-insights__comparison thead th span,
+.product-insights__comparison thead th small,
+.product-insights__comparison thead th strong { display: block; }
+.product-insights__comparison thead th span { color: #617287; font-size: 11px; text-transform: uppercase; }
+.product-insights__comparison thead th strong { margin-top: 7px; font-size: 14px; }
+.product-insights__comparison thead th small { margin-top: 7px; color: #65758b; }
+
+.product-insights__comparison tbody tr:not(.product-insights__comparison-section) > th {
+  position: sticky;
+  z-index: 2;
+  left: 0;
+  background: #f8fafc;
+  color: #526277;
+  font-weight: 600;
+}
+
+.product-insights__comparison .is-primary {
+  background: #e9f4ff;
+  box-shadow: inset 3px 0 #3286c6;
+}
+
+.product-insights__comparison thead .is-primary { background: #dceeff; }
+.product-insights__comparison-section th {
+  position: sticky;
+  z-index: 3;
+  left: 0;
+  padding: 8px 12px;
+  background: #e8edf4;
+  color: #344359;
+  font-size: 12px;
+  letter-spacing: .01em;
+}
+
 .order-registry__blocker-products {
   position: relative;
 }
@@ -221,6 +324,7 @@
 @media (max-width: 800px) {
   .product-insights__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-insights__columns { grid-template-columns: 1fr; }
+  .product-insights__family-heading { flex-direction: column; }
 }
 
 @media (max-width: 520px) {
@@ -233,6 +337,7 @@
   .product-insights__chart > div { grid-template-columns: 62px 1fr; }
   .product-insights__chart strong { grid-column: 2; }
   .product-insights__orders article { align-items: flex-start; flex-direction: column; }
+  .product-insights__review-nav { align-items: flex-start; flex-direction: column; }
 }
 
 .app--center {

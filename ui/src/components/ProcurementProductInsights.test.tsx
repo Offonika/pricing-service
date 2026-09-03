@@ -1,15 +1,17 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   fetchProcurementProductCard,
+  fetchProcurementProductCardByCode,
   type ProcurementProductCard,
 } from "../api/procurementAssortment";
 import { ProcurementProductInsights } from "./ProcurementProductInsights";
 
 vi.mock("../api/procurementAssortment", () => ({
   fetchProcurementProductCard: vi.fn(),
+  fetchProcurementProductCardByCode: vi.fn(),
 }));
 
 function productCard(): ProcurementProductCard {
@@ -98,6 +100,7 @@ describe("ProcurementProductInsights", () => {
   beforeEach(() => {
     window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
     vi.mocked(fetchProcurementProductCard).mockReset();
+    vi.mocked(fetchProcurementProductCardByCode).mockReset();
   });
 
   afterEach(cleanup);
@@ -143,5 +146,70 @@ describe("ProcurementProductInsights", () => {
     await waitFor(() => expect(fetchProcurementProductCard).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("heading", { name: "Контроль закупки" }))
       .toBeInTheDocument();
+  });
+
+  it("показывает основную карточку и кандидатов семьи в вертикальных колонках", async () => {
+    const primary = productCard();
+    const candidate = productCard();
+    candidate.identity = {
+      ...candidate.identity,
+      bitrix_product_id: "1647",
+      nomenclature_code: "РБ000006738",
+      name: "Дисплей Samsung A16 второй",
+    };
+    candidate.demand = {
+      ...candidate.demand,
+      recommended_order: "0",
+    };
+    candidate.supply = {
+      ...candidate.supply,
+      supplier_name: "",
+    };
+    primary.family = {
+      label: "Samsung A16",
+      member_count: 2,
+      total_member_count: 2,
+      visible_member_count: 2,
+      hidden_member_count: 0,
+      ranking_source: "completed_sales_rate_30_90",
+      ranking_source_label: "скорость завершённых продаж за 30 и 90 дней",
+      comparison_members: [
+        {
+          role: "primary",
+          role_label: "Основная карточка",
+          rank: 0,
+          speed_score: "1",
+          card: productCard(),
+        },
+        {
+          role: "candidate",
+          role_label: "Кандидат семьи",
+          rank: 1,
+          speed_score: "0.8",
+          card: candidate,
+        },
+      ],
+    };
+    const onBack = vi.fn();
+    vi.mocked(fetchProcurementProductCardByCode).mockResolvedValue(primary);
+
+    render(
+      <ProcurementProductInsights
+        nomenclatureCode="РБ000006737"
+        onBack={onBack}
+      />
+    );
+
+    const table = await screen.findByRole("table", {
+      name: "Сравнение основной карточки и кандидатов семьи",
+    });
+    expect(fetchProcurementProductCardByCode).toHaveBeenCalledWith("РБ000006737");
+    expect(within(table).getByText("Основная карточка")).toBeInTheDocument();
+    expect(within(table).getByText("Кандидат 1")).toBeInTheDocument();
+    expect(within(table).getByText("Дисплей Samsung A16 второй")).toBeInTheDocument();
+    expect(within(table).getByText("не требуется до появления потребности")).toBeInTheDocument();
+    expect(screen.queryByText("completed_sales_rate_30_90")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "← Вернуться на Витрину" }));
+    expect(onBack).toHaveBeenCalledTimes(1);
   });
 });

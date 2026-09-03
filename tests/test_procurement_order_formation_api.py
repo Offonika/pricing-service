@@ -104,6 +104,9 @@ def test_native_product_card_insights_endpoints_are_exposed() -> None:
     paths = openapi["paths"]
 
     assert "get" in paths["/api/procurement-order-formation/products/{product_id}/card"]
+    assert "get" in paths[
+        "/api/procurement-order-formation/products/by-code/{nomenclature_code}/card"
+    ]
     assert "get" in paths["/api/procurement-order-formation/products/by-xml/{xml_id}/card"]
     schema = openapi["components"]["schemas"]["ProcurementProductCardRead"]
     assert {

@@ -115,7 +115,11 @@ def _bounded_shares(
     return shares
 
 
-def _demand_scores(rows_by_code: Mapping[str, Mapping[str, Any]]) -> tuple[dict[str, Decimal], str]:
+def demand_speed_scores(
+    rows_by_code: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Decimal], str]:
+    """Return the canonical family ranking scores used by order allocation and review UI."""
+
     scores = {
         code: max(ZERO, _decimal(row.get("sales_qty_window_short"))) / Decimal("30")
         + max(ZERO, _decimal(row.get("sales_qty_window_medium"))) / Decimal("90")
@@ -336,7 +340,7 @@ def apply_display_family_order_recommendations(
                     "Не для всех SKU подтверждена закупочная цена; перераспределение заблокировано."
                 )
             else:
-                scores, source = _demand_scores(eligible_rows)
+                scores, source = demand_speed_scores(eligible_rows)
                 score_total = sum(scores.values(), ZERO)
                 if score_total <= ZERO:
                     status = "identity_demand_history_missing"

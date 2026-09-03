@@ -568,7 +568,23 @@ export interface ProcurementProductCard {
   demand: Record<string, unknown>;
   quality: Record<string, unknown>;
   supply: Record<string, unknown>;
-  family: Record<string, unknown>;
+  family: Record<string, unknown> & {
+    id?: string | null;
+    label?: string | null;
+    member_count?: number | null;
+    total_member_count?: number | null;
+    visible_member_count?: number | null;
+    hidden_member_count?: number | null;
+    ranking_source?: string | null;
+    ranking_source_label?: string | null;
+    comparison_members?: Array<{
+      role: "primary" | "candidate" | string;
+      role_label: string;
+      rank: number;
+      speed_score: string | number;
+      card: ProcurementProductCard;
+    }>;
+  };
   blockers: ProcurementBlockerDetail[];
   orders: Array<{
     order_id: number;
@@ -600,6 +616,13 @@ export async function fetchProcurementOrder(orderId: number) {
 export async function fetchProcurementProductCard(productId: string) {
   const { data } = await api.get<ProcurementProductCard>(
     `/procurement-order-formation/products/${encodeURIComponent(productId)}/card`
+  );
+  return data;
+}
+
+export async function fetchProcurementProductCardByCode(nomenclatureCode: string) {
+  const { data } = await api.get<ProcurementProductCard>(
+    `/procurement-order-formation/products/by-code/${encodeURIComponent(nomenclatureCode)}/card`
   );
   return data;
 }

@@ -9992,6 +9992,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/by-code/{nomenclature_code}/card:
+    get:
+      summary: Read Product Card By Nomenclature Code
+      operationId: read_product_card_by_nomenclature_code_api_procurement_order_formation_products_by_code__nomenclature_code__card_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: nomenclature_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Nomenclature Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementProductCardRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/products/by-xml/{xml_id}/card:
     get:
       summary: Read Product Card By Xml Id

@@ -133,6 +133,11 @@ describe("ProcurementProductInsights", () => {
     expect(screen.getByText("РБ000006737", { exact: false })).toBeInTheDocument();
     expect(screen.getByText("7 шт.")).toBeInTheDocument();
     expect(screen.getByText("Проверить причины возвратов")).toBeInTheDocument();
+    expect(screen.getByText("Подробнее")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Разобрать блокер" })).toHaveAttribute(
+      "href",
+      "/bitrix/procurement-order-formation/orders/14?line=10"
+    );
     expect(screen.getByRole("link", { name: "Проверить документы" })).toHaveAttribute(
       "href",
       "/bitrix/procurement-order-formation/orders/14?line=10"
@@ -152,6 +157,7 @@ describe("ProcurementProductInsights", () => {
     render(<ProcurementProductInsights productId="1646" orderId={14} lineId={10} />);
 
     expect(await screen.findByRole("heading", { name: "В этом заказе" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Разобрать блокер" })).not.toBeInTheDocument();
     expect(screen.getByText("Заказ №14 · строка 2")).toBeInTheDocument();
     const quantityInput = screen.getByRole("spinbutton", { name: "Количество в заказе" });
     const priceInput = screen.getByRole("spinbutton", { name: "Цена закупки" });

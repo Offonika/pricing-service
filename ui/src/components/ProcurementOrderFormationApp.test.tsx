@@ -1,22 +1,18 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type {
   ProcurementOrderFormation,
   ProcurementOrderFormationLine,
-  ProcurementOrderLabelPreview,
 } from "../api/procurementAssortment";
 import {
   previewProcurementSupplierDistribution,
   searchProcurementSupplierOptions,
   selectProcurementLineMainSupplier,
   createProcurementClassification,
-  downloadProcurementOrderLabels,
   fetchProcurementOrder,
-  fetchProcurementOrderLabelPreview,
-  linkProcurementOrderLabelSource,
   updateProcurementOrderLine,
 } from "../api/procurementAssortment";
 import { ProcurementOrderFormationApp as ProductionOrderFormationApp } from "./ProcurementOrderFormationApp";
@@ -26,10 +22,7 @@ vi.mock("../api/procurementAssortment", () => ({
   applyProcurementSupplierDistribution: vi.fn(),
   approveProcurementClassification: vi.fn(),
   createProcurementClassification: vi.fn(),
-  downloadProcurementOrderLabels: vi.fn(),
   fetchProcurementOrder: vi.fn(),
-  fetchProcurementOrderLabelPreview: vi.fn(),
-  linkProcurementOrderLabelSource: vi.fn(),
   previewProcurementSupplierDistribution: vi.fn(),
   searchProcurementSupplierOptions: vi.fn(),
   selectProcurementLineMainSupplier: vi.fn(),
@@ -96,35 +89,6 @@ function order(overrides: Partial<ProcurementOrderFormation> = {}) {
   } satisfies ProcurementOrderFormation;
 }
 
-function labelPreview(overrides: Partial<ProcurementOrderLabelPreview> = {}) {
-  return {
-    order_id: 12,
-    onec_number: "РБГУ0000543",
-    onec_date: "2026-08-03",
-    label_size: "50x40",
-    source_checksum: "a".repeat(64),
-    max_page_count: 1000,
-    position_count: 1,
-    product_label_count: 2,
-    separator_count: 0,
-    total_page_count: 2,
-    export_file_count: 1,
-    ready: true,
-    blockers: [],
-    rows: [
-      {
-        line_no: 1,
-        onec_item_code: "062852",
-        item_name: "Дисплей HUA NV 10 Pro",
-        article_1c: "062852",
-        barcode: "2900000636873",
-        quantity: 2,
-      },
-    ],
-    ...overrides,
-  } satisfies ProcurementOrderLabelPreview;
-}
-
 async function proposeClassification() {
   fireEvent.click(screen.getByRole("button", { name: "Изменить классификацию" }));
   fireEvent.change(screen.getByPlaceholderText("Обязательная причина"), {
@@ -172,12 +136,20 @@ describe("ProcurementOrderFormationApp компактный список и от
     render(<ProductionOrderFormationApp initialOrder={order({ lines: [productLine] })} />);
 
     expect(screen.getByRole("columnheader", { name: "Блокеры" })).toBeInTheDocument();
-    expect(screen.getByText("1 блокер")).toBeInTheDocument();
+    expect(screen.getByText("1 блокер")).toHaveAttribute(
+      "data-tooltip",
+      expect.stringContaining("Высокий процент брака")
+    );
     expect(screen.getByText("37,5%")).toBeInTheDocument();
     expect(screen.getByText("0,4%")).toBeInTheDocument();
     const compactRow = screen.getByText("Проблемная строка").closest("tr");
     expect(compactRow).not.toBeNull();
-    expect(within(compactRow!).getAllByText("2")).toHaveLength(2);
+    const compactTwos = within(compactRow!).getAllByText("2");
+    expect(compactTwos).toHaveLength(2);
+    expect(compactTwos[1]).toHaveAttribute(
+      "data-tooltip",
+      "Строка пересчитана по живым срокам и готова к заказу\nГоризонт заказа задан классом скорости"
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Отчёты по товару Проблемная строка" }));
 
@@ -896,249 +868,28 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
   });
 });
 
-describe("ProcurementOrderFormationApp массовые этикетки", () => {
-  beforeEach(() => {
-    vi.mocked(downloadProcurementOrderLabels).mockReset();
-    vi.mocked(fetchProcurementOrderLabelPreview).mockReset();
-    vi.mocked(linkProcurementOrderLabelSource).mockReset();
-    vi.mocked(toast.error).mockReset();
-    vi.mocked(toast.success).mockReset();
-  });
+describe("ProcurementOrderFormationApp без печати этикеток", () => {
+  afterEach(cleanup);
 
-  afterEach(() => {
-    vi.useRealTimers();
-    cleanup();
-  });
+  it("не показывает инструменты печати: они принадлежат смарт-процессу", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          label_source: {
+            origin: "manual",
+            onec_number: "РБГУ0000543",
+            onec_date: "2026-08-03",
+          },
+        })}
+      />
+    );
 
-  it("подключает существующий заказ 1С, показывает состав и лимит до таблицы заказа", async () => {
-    vi.mocked(linkProcurementOrderLabelSource).mockResolvedValue({
-      label_source: {
-        origin: "manual",
-        onec_number: "РБГУ0000543",
-        onec_date: "2026-08-03",
-        linked_at: "2026-08-31T12:00:00",
-      },
-      preview: labelPreview(),
-    });
-    render(<ProcurementOrderFormationApp initialOrder={order()} />);
-
-    const labels = screen.getByRole("region", { name: "Массовые этикетки" });
-    const orderTable = document.querySelector(".order-formation__table");
-    expect(orderTable).not.toBeNull();
-    expect(
-      labels.compareDocumentPosition(orderTable as Node) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy();
-    expect(screen.getByText(/Один номер для всех товаров проекта/)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Введите номер заказа 1С")).toHaveValue("");
-    expect(screen.getByRole("button", { name: "Подключить весь заказ" })).toBeDisabled();
+    expect(screen.queryByRole("region", { name: "Массовые этикетки" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Этикетки на весь заказ")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Скачать PDF" })).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText("Полный номер заказа 1С для этикеток"), {
-      target: { value: "РБГУ0000543" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Подключить весь заказ" }));
-
-    await waitFor(() => expect(linkProcurementOrderLabelSource).toHaveBeenCalledWith(
-      12,
-      "РБГУ0000543",
-      "50x40"
-    ));
-    await waitFor(() => {
-      expect(screen.getByText("Страниц:").parentElement).toHaveTextContent("2 / 1000");
-    });
-    expect(fetchProcurementOrderLabelPreview).not.toHaveBeenCalled();
-    expect(screen.getByText(/Дисплей HUA NV 10 Pro/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled();
   });
 
-  it("заменяет ошибочную ручную привязку", async () => {
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
-      onec_number: "РБГУ0000496",
-    }));
-    vi.mocked(linkProcurementOrderLabelSource).mockResolvedValue({
-      label_source: {
-        origin: "manual",
-        onec_number: "РБГУ0000543",
-        onec_date: "2026-08-03",
-        linked_at: "2026-08-31T12:00:00",
-      },
-      preview: labelPreview(),
-    });
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          label_source: {
-            origin: "manual",
-            onec_number: "РБГУ0000496",
-            onec_date: "2026-08-01",
-          },
-        })}
-      />
-    );
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Обновить данные из 1С" })).toBeEnabled();
-    });
-    fireEvent.click(screen.getByText("Изменить привязанный заказ 1С"));
-    fireEvent.change(screen.getByLabelText("Полный номер заказа 1С для этикеток"), {
-      target: { value: "РБГУ0000543" },
-    });
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Сохранить другой заказ" })).toBeEnabled();
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Сохранить другой заказ" }));
-
-    await waitFor(() => expect(linkProcurementOrderLabelSource).toHaveBeenCalledWith(
-      12,
-      "РБГУ0000543",
-      "50x40"
-    ));
-    expect(screen.getByText(/Заказ 1С РБГУ0000543/)).toBeInTheDocument();
-  });
-
-  it("автоматически проверяет весь привязанный заказ при открытии и смене размера", async () => {
-    vi.mocked(fetchProcurementOrderLabelPreview)
-      .mockResolvedValueOnce(labelPreview())
-      .mockResolvedValueOnce(labelPreview({ label_size: "40x30" }));
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          label_source: {
-            origin: "manual",
-            onec_number: "РБГУ0000543",
-            onec_date: "2026-08-03",
-          },
-        })}
-      />
-    );
-
-    await waitFor(() => expect(fetchProcurementOrderLabelPreview).toHaveBeenCalledWith(
-      12,
-      "50x40"
-    ));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Размер этикетки" }), {
-      target: { value: "40x30" },
-    });
-
-    await waitFor(() => expect(fetchProcurementOrderLabelPreview).toHaveBeenLastCalledWith(
-      12,
-      "40x30"
-    ));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
-  });
-
-  it("передаёт checksum проверенного preview и безопасно завершает скачивание", async () => {
-    const preview = labelPreview();
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(preview);
-    vi.mocked(downloadProcurementOrderLabels).mockResolvedValue({
-      blob: new Blob(["pdf"]),
-      filename: "supplier-order-РБГУ0000543-labels-50x40.pdf",
-    });
-    const createObjectURL = vi.fn(() => "blob:labels");
-    const revokeObjectURL = vi.fn();
-    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
-    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          label_source: {
-            origin: "manual",
-            onec_number: "РБГУ0000543",
-            onec_date: "2026-08-03",
-          },
-        })}
-      />
-    );
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled());
-    vi.useFakeTimers();
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    fireEvent.click(screen.getByRole("button", { name: "Скачать PDF" }));
-
-    await act(async () => Promise.resolve());
-    expect(downloadProcurementOrderLabels).toHaveBeenCalledWith(
-      12,
-      "50x40",
-      "pdf",
-      preview.source_checksum
-    );
-    expect(createObjectURL).toHaveBeenCalledTimes(1);
-    const link = document.querySelector<HTMLAnchorElement>(`a[download="supplier-order-РБГУ0000543-labels-50x40.pdf"]`);
-    expect(link).toBeInTheDocument();
-    expect(revokeObjectURL).not.toHaveBeenCalled();
-
-    act(() => vi.advanceTimersByTime(1000));
-
-    expect(link).not.toBeInTheDocument();
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:labels");
-    clickSpy.mockRestore();
-  });
-
-  it("передаёт checksum проверенного preview при скачивании XLSX", async () => {
-    const preview = labelPreview();
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(preview);
-    vi.mocked(downloadProcurementOrderLabels).mockResolvedValue({
-      blob: new Blob(["xlsx"]),
-      filename: "supplier-order-РБГУ0000543-labels-50x40.xlsx",
-    });
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: vi.fn(() => "blob:labels-xlsx"),
-    });
-    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          label_source: {
-            origin: "manual",
-            onec_number: "РБГУ0000543",
-            onec_date: "2026-08-03",
-          },
-        })}
-      />
-    );
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Скачать XLSX" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Скачать XLSX" }));
-
-    await waitFor(() => expect(downloadProcurementOrderLabels).toHaveBeenCalledWith(
-      12,
-      "50x40",
-      "xlsx",
-      preview.source_checksum
-    ));
-    clickSpy.mockRestore();
-  });
-
-  it("показывает каждый blocker отдельным пунктом и блокирует файлы", async () => {
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
-      ready: false,
-      blockers: ["строка 1: не найден штрихкод 1С"],
-    }));
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          label_source: {
-            origin: "exchange",
-            onec_number: "РБГУ0000543",
-            onec_date: "2026-08-03",
-          },
-        })}
-      />
-    );
-
-    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
-    expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeDisabled();
-    expect(screen.queryByLabelText("Полный номер заказа 1С для этикеток")).not.toBeInTheDocument();
-  });
-
-  it("для импортированного заказа показывает источник и скрывает повторную передачу", async () => {
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
-      onec_number: "РБГУ0000590",
-    }));
+  it("для импортированного заказа сохраняет источник и скрывает повторную передачу", () => {
     render(
       <ProcurementOrderFormationApp
         initialOrder={order({
@@ -1156,42 +907,12 @@ describe("ProcurementOrderFormationApp массовые этикетки", () =>
       />
     );
 
-    expect(screen.getByText("Источник").parentElement).toHaveTextContent(
-      "Заказ 1С РБГУ0000590"
-    );
+    expect(screen.getByText("Источник").parentElement).toHaveTextContent("Заказ 1С РБГУ0000590");
     expect(screen.queryByText("onec-РБГУ0000590")).not.toBeInTheDocument();
     expect(screen.queryByText("Передача заблокирована")).not.toBeInTheDocument();
     expect(screen.getByText("Связь с каталогом Bitrix24 обновляется")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Проверить и создать черновик в 1С" })
     ).not.toBeInTheDocument();
-  });
-
-  it("разрешает крупный заказ и предупреждает о ZIP-архиве", async () => {
-    vi.mocked(fetchProcurementOrderLabelPreview).mockResolvedValue(labelPreview({
-      onec_number: "РБГУ0000590",
-      product_label_count: 5765,
-      separator_count: 248,
-      total_page_count: 6013,
-      export_file_count: 7,
-    }));
-    render(
-      <ProcurementOrderFormationApp
-        initialOrder={order({
-          origin: "onec_import",
-          onec_document_number: "РБГУ0000590",
-          label_source: {
-            origin: "exchange",
-            onec_number: "РБГУ0000590",
-            onec_date: "2026-08-31",
-          },
-        })}
-      />
-    );
-
-    expect(await screen.findByText("7 файлов")).toBeInTheDocument();
-    expect(screen.getByText(/до 1000 страниц каждый/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Скачать PDF" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Скачать XLSX" })).toBeEnabled();
   });
 });

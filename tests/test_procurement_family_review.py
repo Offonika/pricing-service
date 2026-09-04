@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import func, select
 
@@ -258,3 +260,33 @@ def test_needs_data_quality_decision_does_not_close_blocker(db_session, monkeypa
     assert result["decisions"]["quality"] is not None
     assert result["decisions"]["distribution"] is not None
     assert result["blocker_ready"] is False
+
+
+def test_facts_snapshot_is_json_safe_before_event_insert(db_session, monkeypatch) -> None:
+    version, family = _seed_registry(db_session)
+    snapshot = _snapshot(version, family, sales=Decimal("10.25"))
+    monkeypatch.setattr(
+        review_service,
+        "build_product_card_review_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    settings = Settings(procurement_family_review_decisions_enabled=True)
+
+    card = build_family_review_card(db_session, nomenclature_code="A", settings=settings)
+
+    json.dumps(card["facts_snapshot"])
+    result = save_family_review_decision(
+        db_session,
+        nomenclature_code="A",
+        kind="quality",
+        expected_facts_hash=card["facts_hash"],
+        expected_registry_version_number=7,
+        decision={"result": "needs_data", "root_cause": "Нужны документы"},
+        actor="bitrix:42:Сергей",
+        settings=settings,
+    )
+    db_session.flush()
+
+    event = db_session.get(DisplayFamilyDecisionEvent, result["event"]["id"])
+    assert event is not None
+    json.dumps(event.evidence_snapshot_json)

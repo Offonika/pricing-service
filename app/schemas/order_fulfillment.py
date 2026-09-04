@@ -115,6 +115,16 @@ class OnecExecutionEventIngestResponse(BaseModel):
     reconciliation_queued: bool = False
 
 
+class SiteCrmSignalIngestRequest(BaseModel):
+    signal: Literal["in_delivery", "delivered", "cdek_address_mismatch"]
+    event_at: datetime
+    site_order_number: str = Field(min_length=1, max_length=32)
+    bitrix_deal_id: int = Field(ge=1)
+    source_revision: str = Field(min_length=1, max_length=128)
+    current_stage: str | None = Field(default=None, max_length=64)
+    dry_run: bool = False
+
+
 class ShipmentLineInput(BaseModel):
     product_ref: str = Field(min_length=1, max_length=64)
     product_code: str | None = None

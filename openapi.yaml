@@ -10032,6 +10032,31 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/order-fulfillment/site/events:
+    post:
+      summary: Ingest Site Crm Signal
+      operationId: ingest_site_crm_signal_api_order_fulfillment_site_events_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteCrmSignalIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnecExecutionEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/assembly-queue:
     get:
       summary: Get Assembly Queue
@@ -34022,6 +34047,51 @@ components:
           title: Payload
       type: object
       title: ShipmentSnapshotInput
+    SiteCrmSignalIngestRequest:
+      properties:
+        signal:
+          type: string
+          enum:
+          - in_delivery
+          - delivered
+          - cdek_address_mismatch
+          title: Signal
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        site_order_number:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Site Order Number
+        bitrix_deal_id:
+          type: integer
+          minimum: 1.0
+          title: Bitrix Deal Id
+        source_revision:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Source Revision
+        current_stage:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Current Stage
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - signal
+      - event_at
+      - site_order_number
+      - bitrix_deal_id
+      - source_revision
+      title: SiteCrmSignalIngestRequest
     SiteDefectArchiveCaseDetailResponse:
       properties:
         id:

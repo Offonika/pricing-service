@@ -179,6 +179,42 @@ def test_projection_marks_old_snapshot_stale_and_identifier_conflict_for_review(
         os.remove(path)
 
 
+def test_projection_exposes_cdek_signal_as_review_without_faking_crm_stage() -> None:
+    engine, path = _setup_db()
+    try:
+        with Session(engine) as session:
+            now = datetime(2026, 9, 4, 13, 30)
+            session.add(
+                SiteOrderExecutionCase(
+                    site_order_number="245388",
+                    current_derived_status="site_cdek_address_mismatch",
+                    current_crm_stage="IN_DELIVERY",
+                    payload={
+                        "site_crm_signal": {
+                            "signal": "cdek_address_mismatch",
+                            "review_required": True,
+                            "review_reason": "cdek_result_address_differs_from_order_address",
+                        }
+                    },
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            rows = load_state_projection(
+                session,
+                [StateProjectionLookup(None, "245388")],
+                stale_after_seconds=900,
+                now=now,
+            )
+
+        assert rows[0].crm_stage == "IN_DELIVERY"
+        assert rows[0].review_required is True
+        assert rows[0].review_reason == "cdek_result_address_differs_from_order_address"
+    finally:
+        engine.dispose()
+        os.remove(path)
+
+
 @pytest.mark.parametrize("batch_size", [1, 100, 500])
 def test_state_batch_handles_contract_batch_sizes_within_two_seconds(
     monkeypatch,

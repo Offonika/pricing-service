@@ -12,6 +12,7 @@ from app.models import SiteOrderExecutionCase
 from app.services import site_order_fulfillment as fulfillment
 
 ExecutionSignal = Literal["assembled", "issued"]
+SiteCrmSignal = Literal["in_delivery", "delivered", "cdek_address_mismatch"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,16 @@ class OnecExecutionIngestResult:
     event_id: int | None
     duplicate: bool
     source_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class SiteCrmSignalFact:
+    signal: SiteCrmSignal
+    event_at: datetime
+    site_order_number: str
+    bitrix_deal_id: int
+    source_revision: str
+    current_stage: str | None = None
 
 
 def canonical_onec_execution_source_ref(fact: OnecExecutionFact) -> str:
@@ -95,6 +106,84 @@ def ingest_onec_execution_fact(
         case.onec_order_external_id = _clean(fact.onec_order_number) or None
     if fact.rtu_external_id:
         case.rtu_external_id = _clean(fact.rtu_external_id) or None
+    case.updated_at = datetime.now()
+    session.flush()
+    return OnecExecutionIngestResult(
+        event_id=persisted.id if persisted is not None else None,
+        duplicate=persisted is None,
+        source_ref=source_ref,
+    )
+
+
+def canonical_site_crm_signal_source_ref(fact: SiteCrmSignalFact) -> str:
+    return "|".join(
+        (
+            "site-crm-signal-v1",
+            fact.signal,
+            str(fact.bitrix_deal_id),
+            _clean(fact.site_order_number),
+            _clean(fact.source_revision),
+        )
+    )
+
+
+def ingest_site_crm_signal_fact(
+    session: Session,
+    fact: SiteCrmSignalFact,
+) -> OnecExecutionIngestResult:
+    site_order_number = _clean(fact.site_order_number)
+    if not site_order_number:
+        raise ValueError("site_order_number is required")
+    event_types = {
+        "in_delivery": fulfillment.EVENT_SITE_CARRIER_IN_DELIVERY,
+        "delivered": fulfillment.EVENT_SITE_CARRIER_DELIVERED,
+        "cdek_address_mismatch": fulfillment.EVENT_SITE_CDEK_ADDRESS_MISMATCH,
+    }
+    event_type = event_types.get(fact.signal)
+    if event_type is None:
+        raise ValueError("unsupported site CRM signal")
+    source_ref = canonical_site_crm_signal_source_ref(fact)
+    persisted = fulfillment.upsert_execution_event(
+        session,
+        site_order_number=site_order_number,
+        event_type=event_type,
+        event_at=fact.event_at,
+        source=fulfillment.SOURCE_SITE_CRM,
+        source_ref=source_ref,
+        confidence="strong",
+        raw_message_id=None,
+        payload={
+            "pipeline": "site_crm_signal",
+            "bitrix_deal_id": fact.bitrix_deal_id,
+            "source_revision": _clean(fact.source_revision),
+            "current_stage": _clean(fact.current_stage) or None,
+        },
+        bitrix_deal_id=fact.bitrix_deal_id,
+    )
+    case = session.scalar(
+        select(SiteOrderExecutionCase).where(
+            SiteOrderExecutionCase.site_order_number == site_order_number
+        )
+    )
+    if case is None:
+        raise RuntimeError("execution_case_not_created")
+    if fact.current_stage:
+        case.current_crm_stage = _clean(fact.current_stage) or case.current_crm_stage
+    current_payload = case.payload if isinstance(case.payload, dict) else {}
+    case.payload = {
+        **current_payload,
+        "site_crm_signal": {
+            "signal": fact.signal,
+            "source_revision": _clean(fact.source_revision),
+            "event_at": _naive(fact.event_at).isoformat(),
+            "review_required": fact.signal == "cdek_address_mismatch",
+            "review_reason": (
+                "cdek_result_address_differs_from_order_address"
+                if fact.signal == "cdek_address_mismatch"
+                else None
+            ),
+        },
+    }
     case.updated_at = datetime.now()
     session.flush()
     return OnecExecutionIngestResult(

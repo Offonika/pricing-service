@@ -16,6 +16,7 @@ from app.models.site_order_fulfillment import (
     BitrixChatMessage,
     SiteOrderExecutionCase,
     SiteOrderExecutionEvent,
+    SiteOrderStageOutbox,
 )
 from app.services import site_order_fulfillment as service
 from app.services import site_order_shipments as shipment_service
@@ -168,6 +169,85 @@ def test_onec_execution_event_ingest_is_gated_and_idempotent(monkeypatch) -> Non
     assert reconciled == [("245383", False)]
     with Session(engine) as session:
         assert len(session.scalars(select(SiteOrderExecutionEvent)).all()) == 1
+
+
+def test_site_crm_signal_ingest_is_gated_idempotent_and_queues_narrow_processing(
+    monkeypatch,
+) -> None:
+    _configure(monkeypatch)
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SiteOrderExecutionCase.__table__.create(engine)
+    SiteOrderExecutionEvent.__table__.create(engine)
+    SiteOrderStageOutbox.__table__.create(engine)
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    request = {
+        "signal": "delivered",
+        "event_at": "2026-09-04T13:30:00+03:00",
+        "site_order_number": "245388",
+        "bitrix_deal_id": 39002,
+        "source_revision": "tracking-sha256",
+        "current_stage": "IN_DELIVERY",
+    }
+    try:
+        blocked = client.post(
+            "/api/order-fulfillment/site/events",
+            json=request,
+            headers=_headers(),
+        )
+        assert blocked.status_code == 409
+
+        dry_run = client.post(
+            "/api/order-fulfillment/site/events",
+            json={**request, "dry_run": True},
+            headers=_headers(),
+        )
+        assert dry_run.status_code == 200
+        assert dry_run.json()["event_id"] is None
+
+        monkeypatch.setenv("ORDER_FULFILLMENT_EXECUTION_MASTER_ENABLED", "true")
+        monkeypatch.setenv("ORDER_FULFILLMENT_SITE_SIGNAL_INGEST_ENABLED", "true")
+        processed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            order_fulfillment_api,
+            "_process_direct_site_signal",
+            lambda order, *, apply: processed.append((order, apply)),
+        )
+        get_settings.cache_clear()
+        first = client.post(
+            "/api/order-fulfillment/site/events",
+            json=request,
+            headers=_headers(),
+        )
+        second = client.post(
+            "/api/order-fulfillment/site/events",
+            json=request,
+            headers=_headers(),
+        )
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert first.json()["duplicate"] is False
+    assert first.json()["reconciliation_queued"] is True
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert processed == [("245388", False)]
+    with Session(engine) as session:
+        event = session.scalar(select(SiteOrderExecutionEvent))
+        outbox = session.scalar(select(SiteOrderStageOutbox))
+        case = session.scalar(select(SiteOrderExecutionCase))
+        assert event is not None and event.event_type == "site_carrier_delivered"
+        assert outbox is not None and outbox.target_stage == "WON"
+        assert outbox.bitrix_deal_id == 39002
+        assert case is not None and case.bitrix_deal_id == 39002
+        assert case.current_crm_stage == "IN_DELIVERY"
+        assert case.payload["site_crm_signal"]["review_required"] is False
 
 
 def test_shipment_sync_dry_run_reports_partial_assembly_without_db(monkeypatch) -> None:

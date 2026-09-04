@@ -309,6 +309,8 @@ class Settings(BaseSettings):
     order_fulfillment_execution_ingest_enabled: bool = False
     order_fulfillment_execution_reconciliation_enabled: bool = False
     order_fulfillment_execution_stage_apply_enabled: bool = False
+    order_fulfillment_site_signal_ingest_enabled: bool = False
+    order_fulfillment_site_signal_stage_apply_enabled: bool = False
     order_fulfillment_dismantling_auto_apply_enabled: bool = False
     order_fulfillment_execution_historical_apply_enabled: bool = False
     order_fulfillment_execution_cutover_at: datetime | None = None

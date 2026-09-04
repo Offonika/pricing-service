@@ -773,6 +773,100 @@ def _seed_shipment_stage_row(
     return case, row
 
 
+def _seed_site_crm_signal_row(
+    db_session,
+    *,
+    target_stage: str,
+    event_type: str,
+):
+    case = SiteOrderExecutionCase(
+        site_order_number="245388",
+        bitrix_deal_id=39002,
+        current_derived_status=event_type,
+    )
+    db_session.add(case)
+    db_session.flush()
+    event = SiteOrderExecutionEvent(
+        case_id=case.id,
+        event_type=event_type,
+        event_at=datetime(2026, 9, 4, 13, 30),
+        source="site_crm",
+        source_ref=f"site:{event_type}",
+        confidence="strong",
+        idempotency_key=f"site-event:{event_type}",
+        payload={"pipeline": "site_crm_signal"},
+    )
+    db_session.add(event)
+    db_session.flush()
+    case.last_evidence_event_id = event.id
+    row = SiteOrderStageOutbox(
+        case_id=case.id,
+        event_id=event.id,
+        idempotency_key=f"site-stage:{event_type}",
+        site_order_number=case.site_order_number,
+        bitrix_deal_id=case.bitrix_deal_id,
+        source_event_type=event_type,
+        target_stage=target_stage,
+        payload={"pipeline": "site_crm_signal", "event_at": event.event_at.isoformat()},
+    )
+    db_session.add(row)
+    db_session.commit()
+    return row
+
+
+def test_site_crm_delivery_signal_applies_only_with_separate_gate(db_session) -> None:
+    _seed_site_crm_signal_row(
+        db_session,
+        target_stage="IN_DELIVERY",
+        event_type="site_carrier_in_delivery",
+    )
+    client = FakeBitrixClient(_deal("FINAL_INVOICE", deal_id=39002, site_order_number="245388"))
+
+    disabled = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(order_fulfillment_execution_master_enabled=True),
+    )
+    assert disabled[0].result == "site_signal_automation_disabled"
+    assert client.updates == []
+
+    enabled = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_site_signal_stage_apply_enabled=True,
+        ),
+    )
+    assert enabled[0].result == "applied"
+    assert client.deal.stage_id == "IN_DELIVERY"
+
+
+def test_site_crm_signal_cannot_move_protected_dismantling(db_session) -> None:
+    _seed_site_crm_signal_row(
+        db_session,
+        target_stage="WON",
+        event_type="site_carrier_delivered",
+    )
+    client = FakeBitrixClient(_deal("DISMANTLING", deal_id=39002, site_order_number="245388"))
+
+    result = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_site_signal_stage_apply_enabled=True,
+        ),
+    )
+
+    assert result[0].result == "manual_review"
+    assert client.updates == []
+    assert client.deal.stage_id == "DISMANTLING"
+
+
 def test_shipment_stage_outbox_applies_partial_then_full_dispatch(db_session) -> None:
     case, partial_row = _seed_shipment_stage_row(
         db_session,

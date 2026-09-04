@@ -55,6 +55,7 @@ SHIPMENT_TARGET_STAGES = {
     "IN_DELIVERY",
     CRM_STAGE_PICKUP_TRANSIT,
 }
+SITE_CRM_SIGNAL_TARGET_STAGES = {"IN_DELIVERY", "WON", CRM_STAGE_DELIVERY_REVIEW}
 FULL_ASSEMBLY_FIELD = "UF_CRM_MM_FULL_ASSEMBLY_CONFIRMED_AT"
 EXECUTION_HISTORICAL_APPLY_BATCH_LIMIT = 20
 
@@ -106,6 +107,15 @@ def _is_shipment_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
     return payload.get("pipeline") == "shipment_reconciliation" or row.source_event_type.startswith(
         "shipment_"
     )
+
+
+def _is_site_crm_signal_row(row: SiteOrderStageOutbox) -> bool:
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    return payload.get("pipeline") == "site_crm_signal" or row.source_event_type in {
+        "site_carrier_in_delivery",
+        "site_carrier_delivered",
+        "site_cdek_address_mismatch",
+    }
 
 
 def _is_order_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
@@ -532,13 +542,16 @@ def _process_row(
         return _result(row, "waiting_for_predecessor")
     execution_row = _is_execution_reconciliation_row(row)
     shipment_row = _is_shipment_reconciliation_row(row)
-    if (execution_row or shipment_row) and row.case.last_evidence_event_id != row.event_id:
+    site_crm_signal_row = _is_site_crm_signal_row(row)
+    if (
+        execution_row or shipment_row or site_crm_signal_row
+    ) and row.case.last_evidence_event_id != row.event_id:
         if apply:
             row.status = STATUS_APPLIED
             row.last_error = "superseded_by_newer_evidence"
             row.updated_at = now
         return _result(row, "superseded_by_newer_evidence")
-    if not (execution_row or shipment_row) and not _pilot_warehouse_allowed(
+    if not (execution_row or shipment_row or site_crm_signal_row) and not _pilot_warehouse_allowed(
         session,
         row,
         settings.logistics_stage_pilot_warehouse_external_ids,
@@ -593,9 +606,36 @@ def _process_row(
                 "PARTIALLY_SHIPPED",
             },
         }[row.target_stage]
+    elif site_crm_signal_row:
+        if row.target_stage not in SITE_CRM_SIGNAL_TARGET_STAGES:
+            reason = f"site_crm_signal_target_not_allowed:{row.target_stage or '-'}"
+            if apply:
+                _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
+            return _result(row, "manual_review", live_stage=live_stage, reason=reason)
+        expected_stages = {
+            "IN_DELIVERY": {"FINAL_INVOICE"},
+            "WON": {"FINAL_INVOICE", "IN_DELIVERY"},
+            CRM_STAGE_DELIVERY_REVIEW: {
+                "NEW",
+                "PREPARATION",
+                "PREPAYMENT_INVOICE",
+                "EXECUTING",
+                "FINAL_INVOICE",
+                "PARTIALLY_SHIPPED",
+                CRM_STAGE_PICKUP_TRANSIT,
+                CRM_STAGE_PICKUP_WAITING,
+                "PICKUP_STORAGE",
+                "IN_DELIVERY",
+            },
+        }[row.target_stage]
     else:
         expected_stages = {ALLOWED_FROM_STAGE[row.target_stage]}
     if live_stage not in {*expected_stages, row.target_stage}:
+        if site_crm_signal_row:
+            reason = f"unexpected_live_stage:{live_stage or '-'}"
+            if apply:
+                _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
+            return _result(row, "manual_review", live_stage=live_stage, reason=reason)
         if STAGE_ORDER.get(live_stage, 0) > STAGE_ORDER.get(row.target_stage, 0):
             if apply:
                 row.status = STATUS_APPLIED
@@ -780,6 +820,13 @@ def process_stage_outbox(
                     and settings.order_fulfillment_shipments_stage_apply_enabled
                 ):
                     results.append(_result(row, "shipment_automation_disabled"))
+                    continue
+            elif _is_site_crm_signal_row(row):
+                if not (
+                    settings.order_fulfillment_execution_master_enabled
+                    and settings.order_fulfillment_site_signal_stage_apply_enabled
+                ):
+                    results.append(_result(row, "site_signal_automation_disabled"))
                     continue
             elif not settings.logistics_stage_automation_enabled:
                 results.append(_result(row, "automation_disabled"))

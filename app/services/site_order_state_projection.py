@@ -243,17 +243,28 @@ def load_state_projection(
         snapshot = snapshot if isinstance(snapshot, dict) else {}
         decision = reconciliation.get("decision")
         decision = decision if isinstance(decision, dict) else {}
+        site_signal = payload.get("site_crm_signal")
+        site_signal = site_signal if isinstance(site_signal, dict) else {}
         review = reviews_by_order.get(case.site_order_number)
         ambiguous = len(ordered) > 1
         decision_review = decision.get("action") == "manual_review"
-        review_required = bool(review or ambiguous or decision_review)
+        site_signal_review = site_signal.get("review_required") is True
+        review_required = bool(review or ambiguous or decision_review or site_signal_review)
         review_reason = (
             "order_identifiers_conflict"
             if ambiguous
             else (
                 review.reason
                 if review is not None
-                else str(decision.get("reason") or "") or None if decision_review else None
+                else (
+                    str(decision.get("reason") or "") or None
+                    if decision_review
+                    else (
+                        str(site_signal.get("review_reason") or "") or None
+                        if site_signal_review
+                        else None
+                    )
+                )
             )
         )
         observed_at = case.updated_at or case.created_at

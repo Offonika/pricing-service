@@ -16,6 +16,7 @@ const PROCUREMENT_ORDER_FORMATION_PLACEMENT_STORAGE_KEY =
   "mm_procurement_order_formation_left_menu_v3_bound";
 const LOGISTICS_SESSION_STORAGE_KEY = "mm_logistics_bitrix_session";
 const LOGISTICS_LEFT_MENU_STORAGE_KEY = "mm_logistics_bitrix_left_menu_bound";
+const ORDER_CLOSURE_SESSION_STORAGE_KEY = "mm_order_closure_bitrix_session";
 const REFRESH_SKEW_MS = 60_000;
 const MATCHING_LEFT_MENU_PLACEMENT = "LEFT_MENU";
 const PROCUREMENT_LABELS_DETAIL_PLACEMENT = "CRM_DYNAMIC_1056_DETAIL_TAB";
@@ -169,6 +170,11 @@ export function isBitrixProductInsightsPlacement() {
 export function isBitrixLogisticsRoute() {
   const path = window.location.pathname.replace(/\/+$/, "");
   return path === "/bitrix/logistics" || path.startsWith("/bitrix/logistics/");
+}
+
+export function isBitrixOrderClosuresRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path === "/bitrix/order-closures" || path.startsWith("/bitrix/order-closures/");
 }
 
 function readCachedSession(): CachedBitrixSession | null {
@@ -1023,6 +1029,55 @@ export async function initializeBitrixCustomerPriceTypesSession() {
   );
   setApiAuthToken(data.session_token);
   cacheCustomerPriceTypesSession(data);
+  return data;
+}
+
+export interface BitrixOrderClosureSessionResponse {
+  session_token: string;
+  expires_at: string;
+  expires_in: number;
+  user: {
+    user_id: string;
+    name?: string | null;
+    role: "viewer" | "order_closure_operator";
+    can_confirm: boolean;
+  };
+}
+
+export async function initializeBitrixOrderClosureSession() {
+  try {
+    const raw = window.sessionStorage.getItem(ORDER_CLOSURE_SESSION_STORAGE_KEY);
+    if (raw) {
+      const cached = JSON.parse(raw) as BitrixOrderClosureSessionResponse;
+      if (Date.parse(cached.expires_at) - Date.now() > REFRESH_SKEW_MS) {
+        setApiAuthToken(cached.session_token);
+        return cached;
+      }
+      window.sessionStorage.removeItem(ORDER_CLOSURE_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Embedded browsers may deny storage; create a fresh short-lived session.
+  }
+  clearApiAuthToken();
+  let auth = getLaunchAuth();
+  if (!auth) {
+    await loadBitrixSdk();
+    auth = await initBitrix();
+  }
+  const { data } = await api.post<BitrixOrderClosureSessionResponse>(
+    "/order-closures/session",
+    {
+      access_token: auth.access_token,
+      domain: auth.domain,
+      member_id: auth.member_id,
+    }
+  );
+  setApiAuthToken(data.session_token);
+  try {
+    window.sessionStorage.setItem(ORDER_CLOSURE_SESSION_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // Axios retains the token for this page lifetime.
+  }
   return data;
 }
 

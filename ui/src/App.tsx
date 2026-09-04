@@ -12,6 +12,7 @@ import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
 import { CustomerPriceTypesWorkspace } from "./components/CustomerPriceTypesWorkspace";
+import { OrderClosuresWorkspace } from "./components/OrderClosuresWorkspace";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
@@ -21,6 +22,7 @@ import {
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
   initializeBitrixLogisticsSession,
+  initializeBitrixOrderClosureSession,
   initializeBitrixProcurementAssortmentSession,
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
@@ -29,6 +31,7 @@ import {
   isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
   isBitrixLogisticsRoute,
+  isBitrixOrderClosuresRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
   isBitrixProductInsightsPlacement,
@@ -1154,6 +1157,7 @@ function ProcurementOrderFormationBitrixApp() {
 }
 
 function App() {
+  if (isBitrixOrderClosuresRoute()) return <OrderClosuresBitrixApp />;
   if (isBitrixLogisticsRoute()) return <BitrixLogisticsApp />;
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
   if (isBitrixProcurementOrderFormationRoute()) return <ProcurementOrderFormationBitrixApp />;
@@ -1167,6 +1171,54 @@ function App() {
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   if (isBitrixCustomerPriceTypesRoute()) return <CustomerPriceTypesApp />;
   return <MatchingApp />;
+}
+
+function OrderClosuresBitrixApp() {
+  const [session, setSession] = useState<{
+    status: "loading" | "ready" | "error";
+    userName?: string | null;
+    canConfirm: boolean;
+    message?: string;
+  }>({ status: "loading", canConfirm: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixOrderClosureSession()
+      .then((value) => {
+        if (!cancelled) {
+          setSession({
+            status: "ready",
+            userName: value.user.name,
+            canConfirm: value.user.can_confirm,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setSession({
+            status: "error",
+            canConfirm: false,
+            message: error instanceof Error ? error.message : "Нет доступа",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (session.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Закрытие заказов</h1>
+          <p>{session.status === "loading" ? "Подключение к Bitrix24…" : "Нет доступа к приложению."}</p>
+          {session.message ? <small>{session.message}</small> : null}
+        </div>
+      </div>
+    );
+  }
+  return <OrderClosuresWorkspace canConfirm={session.canConfirm} userName={session.userName} />;
 }
 
 export default App;

@@ -8922,6 +8922,275 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/order-closures/session:
+    post:
+      tags:
+      - order-closures
+      summary: Create Session
+      operationId: create_session_api_order_closures_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderClosureSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/batches:
+    post:
+      tags:
+      - order-closures
+      summary: Create Batch
+      operationId: create_batch_api_order_closures_batches_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderClosureBatchCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureBatchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/order-closures/batches/{batch_id}/diagnose:
+    post:
+      tags:
+      - order-closures
+      summary: Diagnose Batch
+      operationId: diagnose_batch_api_order_closures_batches__batch_id__diagnose_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureBatchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/batches/{batch_id}/confirm:
+    post:
+      tags:
+      - order-closures
+      summary: Confirm Batch
+      operationId: confirm_batch_api_order_closures_batches__batch_id__confirm_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderClosureConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureBatchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/batches/{batch_id}:
+    get:
+      tags:
+      - order-closures
+      summary: Read Batch
+      operationId: read_batch_api_order_closures_batches__batch_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureBatchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/candidates:
+    get:
+      tags:
+      - order-closures
+      summary: Candidates
+      operationId: candidates_api_order_closures_candidates_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureCandidateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/reasons:
+    get:
+      tags:
+      - order-closures
+      summary: Reasons
+      operationId: reasons_api_order_closures_reasons_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrderClosureReasonResponse'
+                title: Response Reasons Api Order Closures Reasons Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/internal/commands:
+    get:
+      tags:
+      - order-closures
+      summary: Commands
+      operationId: commands_api_order_closures_internal_commands_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 10
+          minimum: 1
+          default: 1
+          title: Limit
+      - name: allow_apply
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Allow Apply
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-closures/internal/commands/{batch_id}/ack:
+    post:
+      tags:
+      - order-closures
+      summary: Ack Command
+      operationId: ack_command_api_order_closures_internal_commands__batch_id__ack_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Batch Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderClosureCommandAckRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderClosureCommandAckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/internal/orchestration/runs/claim:
     post:
       tags:
@@ -23427,6 +23696,599 @@ components:
       - stale_run_count
       - manual_review_count
       title: OrchestrationHealthResponse
+    OrderClosureAckItem:
+      properties:
+        position:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Position
+        input_number:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Input Number
+        input_period:
+          anyOf:
+          - type: string
+            maxLength: 10
+          - type: 'null'
+          title: Input Period
+        onec_order_ref:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          - type: 'null'
+          title: Onec Order Ref
+        onec_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Number
+        onec_order_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Onec Order Date
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        department_ref:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        eligible:
+          type: boolean
+          title: Eligible
+          default: false
+        blocker_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blocker Code
+        blocker_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blocker Text
+        facts:
+          additionalProperties: true
+          type: object
+          title: Facts
+        state_hash:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: State Hash
+        result_document_ref:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          - type: 'null'
+          title: Result Document Ref
+        result_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Document Number
+      type: object
+      required:
+      - position
+      - input_number
+      title: OrderClosureAckItem
+    OrderClosureBatchCreateRequest:
+      properties:
+        source_type:
+          type: string
+          enum:
+          - excel
+          - filter
+          title: Source Type
+        pasted_text:
+          anyOf:
+          - type: string
+            maxLength: 20000
+          - type: 'null'
+          title: Pasted Text
+        lines:
+          items:
+            $ref: '#/components/schemas/OrderClosureInputLine'
+          type: array
+          maxItems: 200
+          title: Lines
+        filters:
+          anyOf:
+          - $ref: '#/components/schemas/OrderClosureFilter'
+          - type: 'null'
+      type: object
+      required:
+      - source_type
+      title: OrderClosureBatchCreateRequest
+    OrderClosureBatchResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        status:
+          type: string
+          title: Status
+        source_type:
+          type: string
+          title: Source Type
+        actor_id:
+          type: string
+          title: Actor Id
+        actor_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Name
+        confirmed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Confirmed By
+        diagnosis_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Diagnosis Hash
+        command_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command Kind
+        attempt_count:
+          type: integer
+          title: Attempt Count
+        last_error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error Code
+        last_polled_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Polled At
+        lease_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Lease Until
+        applied_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Applied At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        items:
+          items:
+            $ref: '#/components/schemas/OrderClosureItemResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - id
+      - status
+      - source_type
+      - actor_id
+      - actor_name
+      - confirmed_by
+      - diagnosis_hash
+      - command_kind
+      - attempt_count
+      - last_error_code
+      - last_polled_at
+      - lease_until
+      - applied_at
+      - created_at
+      - updated_at
+      - items
+      title: OrderClosureBatchResponse
+    OrderClosureCandidateResponse:
+      properties:
+        batch_id:
+          type: string
+          title: Batch Id
+        diagnosis_hash:
+          type: string
+          title: Diagnosis Hash
+        items:
+          items:
+            $ref: '#/components/schemas/OrderClosureItemResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - batch_id
+      - diagnosis_hash
+      - items
+      title: OrderClosureCandidateResponse
+    OrderClosureCommandAckRequest:
+      properties:
+        lease_token:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Lease Token
+        outcome:
+          type: string
+          enum:
+          - diagnosed
+          - applied
+          - stale
+          - failed
+          title: Outcome
+        diagnosis_hash:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Diagnosis Hash
+        receipt_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Receipt Hash
+        error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Error Code
+        items:
+          items:
+            $ref: '#/components/schemas/OrderClosureAckItem'
+          type: array
+          maxItems: 200
+          title: Items
+      type: object
+      required:
+      - lease_token
+      - outcome
+      - receipt_hash
+      title: OrderClosureCommandAckRequest
+    OrderClosureCommandAckResponse:
+      properties:
+        batch_id:
+          type: string
+          title: Batch Id
+        status:
+          type: string
+          title: Status
+        duplicate:
+          type: boolean
+          title: Duplicate
+          default: false
+      type: object
+      required:
+      - batch_id
+      - status
+      title: OrderClosureCommandAckResponse
+    OrderClosureConfirmRequest:
+      properties:
+        diagnosis_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Diagnosis Hash
+        assignments:
+          items:
+            $ref: '#/components/schemas/OrderClosureReasonAssignment'
+          type: array
+          maxItems: 200
+          minItems: 1
+          title: Assignments
+      type: object
+      required:
+      - diagnosis_hash
+      - assignments
+      title: OrderClosureConfirmRequest
+    OrderClosureFilter:
+      properties:
+        year:
+          type: integer
+          maximum: 2100.0
+          minimum: 2000.0
+          title: Year
+        department_ref:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          - type: 'null'
+          title: Department Ref
+        category:
+          type: string
+          enum:
+          - all
+          - web
+          - onec
+          title: Category
+          default: all
+        state:
+          type: string
+          enum:
+          - all
+          - eligible
+          - blocked
+          - closed
+          title: State
+          default: all
+      type: object
+      required:
+      - year
+      title: OrderClosureFilter
+    OrderClosureInputLine:
+      properties:
+        number:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Number
+        period:
+          anyOf:
+          - type: string
+            maxLength: 10
+          - type: 'null'
+          title: Period
+      type: object
+      required:
+      - number
+      title: OrderClosureInputLine
+    OrderClosureItemResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        position:
+          type: integer
+          title: Position
+        input_number:
+          type: string
+          title: Input Number
+        input_period:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Period
+        onec_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Ref
+        onec_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Number
+        onec_order_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Onec Order Date
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        status:
+          type: string
+          title: Status
+        eligible:
+          type: boolean
+          title: Eligible
+        blocker_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blocker Code
+        blocker_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Blocker Text
+        facts:
+          additionalProperties: true
+          type: object
+          title: Facts
+        state_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State Hash
+        reason_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Code
+        reason_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Ref
+        reason_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Name
+        result_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Document Ref
+        result_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Document Number
+      type: object
+      required:
+      - id
+      - position
+      - input_number
+      - input_period
+      - onec_order_ref
+      - onec_order_number
+      - onec_order_date
+      - site_order_number
+      - department_name
+      - status
+      - eligible
+      - blocker_code
+      - blocker_text
+      - facts
+      - state_hash
+      - reason_code
+      - reason_ref
+      - reason_name
+      - result_document_ref
+      - result_document_number
+      title: OrderClosureItemResponse
+    OrderClosureReasonAssignment:
+      properties:
+        item_id:
+          type: integer
+          title: Item Id
+        reason_code:
+          type: string
+          enum:
+          - execution
+          - cancellation
+          title: Reason Code
+        reason_ref:
+          type: string
+          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          title: Reason Ref
+        reason_name:
+          type: string
+          enum:
+          - Исполнение заказа
+          - Отмена заказа
+          title: Reason Name
+      type: object
+      required:
+      - item_id
+      - reason_code
+      - reason_ref
+      - reason_name
+      title: OrderClosureReasonAssignment
+    OrderClosureReasonResponse:
+      properties:
+        code:
+          type: string
+          enum:
+          - execution
+          - cancellation
+          title: Code
+        name:
+          type: string
+          enum:
+          - Исполнение заказа
+          - Отмена заказа
+          title: Name
+        ref:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+          - type: 'null'
+          title: Ref
+      type: object
+      required:
+      - code
+      - name
+      title: OrderClosureReasonResponse
+    OrderClosureSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: OrderClosureSessionRequest
+    OrderClosureSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/OrderClosureSessionUser'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      title: OrderClosureSessionResponse
+    OrderClosureSessionUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        role:
+          type: string
+          enum:
+          - viewer
+          - order_closure_operator
+          title: Role
+        can_confirm:
+          type: boolean
+          title: Can Confirm
+      type: object
+      required:
+      - user_id
+      - role
+      - can_confirm
+      title: OrderClosureSessionUser
     OrderFulfillmentMentionResponse:
       properties:
         site_order_number:

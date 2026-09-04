@@ -432,9 +432,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 73. Для `tasks/build_weekly_kpi_artifacts.py` разрешены commit проверенного среза,
     push ветки и создание отдельного PR. Merge и production release требуют
     отдельных подтверждений.
+74. После зелёного CI разрешён merge PR №177. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-09-04 — разрешён merge PR №177; production release оставлен отдельным
+  решением.
 - 2026-09-04 — разрешены commit, push и создание отдельного PR для второго Unit
   of Work среза; merge и production оставлены отдельными решениями.
 - 2026-09-04 — выбран и реализован второй Unit of Work срез для

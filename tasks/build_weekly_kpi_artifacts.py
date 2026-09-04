@@ -5,10 +5,8 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import SqlAlchemyUnitOfWork
 from app.services.weekly_kpi_reports import build_pending_weekly_kpi_artifacts
 
 
@@ -16,6 +14,23 @@ def _parse_date(value: str | None) -> date | None:
     if value:
         return date.fromisoformat(value)
     return None
+
+
+def build_artifacts(
+    *,
+    output_dir: Path,
+    week_end: date | None,
+    report_ids: list[int] | None,
+) -> dict[str, object]:
+    with SqlAlchemyUnitOfWork() as unit_of_work:
+        if unit_of_work.session is None:
+            raise RuntimeError("application Unit of Work did not provide a session")
+        return build_pending_weekly_kpi_artifacts(
+            unit_of_work.session,
+            output_dir=output_dir,
+            week_end=week_end,
+            report_ids=report_ids,
+        )
 
 
 def main() -> None:
@@ -39,15 +54,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    engine = build_engine(get_settings().database_url)
-    with Session(engine) as session:
-        result = build_pending_weekly_kpi_artifacts(
-            session,
-            output_dir=Path(args.output_dir),
-            week_end=_parse_date(args.week_end),
-            report_ids=args.report_ids,
-        )
-        session.commit()
+    result = build_artifacts(
+        output_dir=Path(args.output_dir),
+        week_end=_parse_date(args.week_end),
+        report_ids=args.report_ids,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

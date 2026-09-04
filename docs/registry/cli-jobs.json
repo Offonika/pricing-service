@@ -364,6 +364,17 @@
       "spec": "docs/specs/assortment-lifecycle-policy.md",
       "remove_after": null
     },
+    "build_weekly_kpi_artifacts.py": {
+      "owner": "management",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "verified_by_deterministic_path_overwrite_and_ready_transition",
+      "side_effect_level": "mixed",
+      "db_access": "application_write",
+      "transaction_scope": "unit_of_work",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
     "publish_weekly_kpi_reports.py": {
       "owner": "management",
       "kind": "permanent_cli",

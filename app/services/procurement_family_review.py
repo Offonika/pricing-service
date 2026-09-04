@@ -131,7 +131,7 @@ def build_family_review_card(
         nomenclature_code=nomenclature_code,
         settings=settings,
     )
-    facts = _facts_snapshot(card)
+    facts = _json_value(_facts_snapshot(card))
     facts_hash = _hash(facts)
     family = dict(card.get("family") or {})
     card["facts_hash"] = facts_hash

@@ -43,6 +43,8 @@ from app.api.logistics_web import router as logistics_web_router
 from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.orchestration import router as orchestration_router
+from app.api.order_closure import page_router as order_closure_page_router
+from app.api.order_closure import router as order_closure_router
 from app.api.order_fulfillment import router as order_fulfillment_router
 from app.api.order_fulfillment_bot import internal_router as order_fulfillment_bot_internal_router
 from app.api.order_fulfillment_bot import router as order_fulfillment_bot_router
@@ -184,6 +186,7 @@ app.include_router(procurement_labels_page_router)
 app.include_router(procurement_assortment_page_router)
 app.include_router(procurement_order_formation_page_router)
 app.include_router(customer_price_types_page_router)
+app.include_router(order_closure_page_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")
@@ -229,6 +232,7 @@ app.include_router(
     prefix="/api/order-fulfillment/bitrix-bot/internal",
 )
 app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
+app.include_router(order_closure_router)
 app.include_router(orchestration_router)
 app.include_router(sms_journal_router)
 app.include_router(procurement_labels_router, prefix="/api")

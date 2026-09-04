@@ -759,6 +759,21 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
+    order_closure_bitrix_enabled: bool = False
+    order_closure_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_closure_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_closure_bitrix_allowed_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    order_closure_operator_user_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    order_closure_bitrix_session_secret: str | None = None
+    order_closure_bitrix_session_ttl_seconds: int = 3600
+    order_closure_apply_enabled: bool = False
+    order_closure_internal_api_token: str | None = None
     procurement_order_formation_label_max_pages: int = Field(default=1000, ge=1, le=10000)
     procurement_product_card_mapping_path: str = (
         "build/bitrix/procurement_product_card_mapping.json"
@@ -917,6 +932,10 @@ class Settings(BaseSettings):
         "procurement_order_formation_bitrix_allowed_user_ids",
         "procurement_order_formation_classification_approver_user_ids",
         "procurement_order_formation_lifecycle_approver_user_ids",
+        "order_closure_bitrix_allowed_domains",
+        "order_closure_bitrix_allowed_member_ids",
+        "order_closure_bitrix_allowed_user_ids",
+        "order_closure_operator_user_ids",
         mode="before",
     )
     @classmethod

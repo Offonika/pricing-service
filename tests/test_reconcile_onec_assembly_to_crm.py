@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
+from app.core.config import Settings
 from app.models import SiteOrderExecutionCase, SiteOrderExecutionEvent
+from app.services import site_order_execution_reconciliation as reconciliation
 from tasks import reconcile_onec_assembly_to_crm as task
 
 
@@ -132,3 +135,82 @@ def test_service_db_transport_persists_append_only_onec_event(
     assert events[0].event_type == "execution_assembled_raw"
     assert case is not None
     assert case.onec_order_external_id == "РБГУ0002001"
+
+
+def test_service_db_reconciliation_is_scoped_to_affected_orders(
+    db_session,
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def fake_session_scope():
+        yield db_session
+
+    class FakeClient:
+        def __init__(self, url: str) -> None:
+            assert url == "https://bitrix.example/rest"
+
+        def call(self, method: str, params: dict):
+            assert method == "crm.deal.list"
+            assert params["filter"] == {"@UF_CRM_1772784329053": ["245383"]}
+            return {"result": []}
+
+    snapshot = reconciliation.ExecutionEvidenceSnapshot(
+        site_order_number="245383",
+        bitrix_deal_id=90383,
+        current_stage="EXECUTING",
+        delivery_class="pickup",
+        duplicate_deal_ids=(90383,),
+        rtu_count=1,
+        assembled_rtu_count=1,
+        line_coverage_status="complete",
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        task,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            order_fulfillment_bitrix_webhook_url="https://bitrix.example/rest",
+        ),
+    )
+    monkeypatch.setattr(task.fulfillment, "BitrixChatClient", FakeClient)
+    monkeypatch.setattr(task.fulfillment_sync, "fetch_sale_order_statuses", lambda orders: {})
+    monkeypatch.setattr(
+        task.fulfillment_sync,
+        "fetch_onec_order_settlements",
+        lambda orders, strict: {},
+    )
+    monkeypatch.setattr(task.fulfillment_sync, "query_rtu_signal_by_orders", lambda orders: {})
+    monkeypatch.setattr(
+        task.fulfillment_sync,
+        "query_onec_order_states_by_orders",
+        lambda orders: {},
+    )
+    monkeypatch.setattr(
+        task.fulfillment_sync,
+        "_dismantling_started_at_for_deals",
+        lambda client, deals: {},
+    )
+    monkeypatch.setattr(
+        task.fulfillment_sync,
+        "build_execution_snapshots",
+        lambda *args, **kwargs: [snapshot],
+    )
+    monkeypatch.setattr(
+        task.fulfillment_sync,
+        "persist_execution_snapshots",
+        lambda snapshots, decisions: [SimpleNamespace(outbox_id=17)],
+    )
+
+    def fake_worker(session, **kwargs):
+        captured.update(kwargs)
+        return [SimpleNamespace(result="dismantling_auto_apply_disabled")]
+
+    monkeypatch.setattr(task.stage_outbox_service, "process_stage_outbox", fake_worker)
+    monkeypatch.setattr(task, "session_scope", fake_session_scope)
+
+    result = task.reconcile_service_db_orders(["245383", "245383"], apply=False)
+
+    assert result == {"orders": 1, "snapshots": 1, "outbox": 1, "worker": 1}
+    assert captured["site_order_numbers"] == ["245383"]
+    assert captured["apply"] is False

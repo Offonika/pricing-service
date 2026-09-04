@@ -35,6 +35,7 @@ class ExecutionEvidenceSnapshot:
     bitrix_deal_id: int
     current_stage: str | None
     delivery_class: str | None
+    onec_order_number: str | None = None
     raw_delivery: str | None = None
     duplicate_deal_ids: tuple[int, ...] = ()
     crm_assembled: bool = False
@@ -50,6 +51,8 @@ class ExecutionEvidenceSnapshot:
     returned_rtu_count: int = 0
     posted_sale_amount: Decimal | None = None
     returned_amount: Decimal | None = None
+    payment_amount: Decimal | None = None
+    debt_amount: Decimal | None = None
     line_coverage_status: str | None = None
     expected_item_quantity: Decimal | None = None
     assembled_item_quantity: Decimal | None = None
@@ -60,6 +63,8 @@ class ExecutionEvidenceSnapshot:
     latest_assembled_at: datetime | None = None
     latest_issued_at: datetime | None = None
     latest_return_at: datetime | None = None
+    dismantling_started_at: datetime | None = None
+    dismantling_started_source: str | None = None
     onec_evidence_available: bool = True
     historical: bool = False
 
@@ -72,7 +77,9 @@ class ExecutionEvidenceSnapshot:
     @property
     def assembled(self) -> bool:
         if self.line_coverage_status:
-            return self.line_coverage_status == "complete"
+            return self.line_coverage_status == "complete" and bool(
+                self.crm_assembled or self.assembled_rtu_count > 0
+            )
         return self.crm_assembled or self.assembled_rtu_count > 0
 
     @property
@@ -137,7 +144,7 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         or stage.endswith(":LOSE")
     ):
         return _noop("terminal_crm_stage", "execution_terminal_stage")
-    if stage != "EXECUTING":
+    if stage not in {"EXECUTING", "DISMANTLING"}:
         return _noop(f"outside_executing:{stage or '-'}", "execution_outside_stage")
     if len(duplicate_ids) > 1:
         return _manual("multiple_bitrix_deals", "execution_duplicate_deals")
@@ -158,23 +165,8 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
         )
     ):
         return _manual("rtu_evidence_count_mismatch", "execution_rtu_count_conflict")
-    if snapshot.line_coverage_status == "unavailable":
-        return _manual(
-            "assembly_line_coverage_unavailable",
-            "execution_assembly_coverage_unavailable",
-            "weak",
-        )
-    if snapshot.line_coverage_status == "conflict" or snapshot.excess_item_count > 0:
-        return _manual(
-            "assembly_line_quantity_conflict",
-            "execution_assembly_quantity_conflict",
-        )
-    if snapshot.line_coverage_status == "partial" or snapshot.missing_item_count > 0:
-        return _noop(
-            "waiting_for_full_order_item_assembly",
-            "execution_waiting_for_full_item_assembly",
-            "medium",
-        )
+    if stage == "DISMANTLING":
+        return _decide_dismantling_outcome(snapshot, delivery_class=delivery_class)
 
     if snapshot.has_return:
         if snapshot.issued_rtu_count > 0:
@@ -202,6 +194,11 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
     if snapshot.site_canceled:
         return _manual("canceled_without_confirmed_return", "execution_canceled_unresolved")
 
+    if snapshot.issued_rtu_count > 0 or snapshot.assembled_rtu_count > 0 or snapshot.crm_assembled:
+        coverage_decision = _validate_fulfillment_coverage(snapshot)
+        if coverage_decision is not None:
+            return coverage_decision
+
     if snapshot.issued_rtu_count > 0:
         if snapshot.partial_rtu_issue:
             return _manual("partial_rtu_issue", "execution_partial_issue")
@@ -228,6 +225,163 @@ def decide_execution_stage(snapshot: ExecutionEvidenceSnapshot) -> ExecutionDeci
     return _noop("waiting_for_assembly_evidence", "execution_waiting_evidence", "medium")
 
 
+def _decide_dismantling_outcome(
+    snapshot: ExecutionEvidenceSnapshot,
+    *,
+    delivery_class: str,
+) -> ExecutionDecision:
+    started_at = snapshot.dismantling_started_at
+    if started_at is None:
+        return _manual(
+            "dismantling_start_time_unconfirmed",
+            "execution_dismantling_time_missing",
+            "weak",
+        )
+
+    if snapshot.has_return:
+        if not snapshot.full_return:
+            return _manual(
+                "dismantling_partial_or_unquantified_return",
+                "execution_dismantling_partial_return",
+            )
+        if snapshot.latest_return_at is None:
+            return _manual(
+                "dismantling_return_chronology_missing",
+                "execution_dismantling_return_time_missing",
+            )
+        if not _is_after(snapshot.latest_return_at, started_at):
+            return _manual(
+                "dismantling_return_precedes_start",
+                "execution_dismantling_return_chronology_conflict",
+            )
+        if snapshot.issued_rtu_count > 0 and snapshot.latest_issued_at is None:
+            return _manual(
+                "dismantling_issue_return_chronology_missing",
+                "execution_dismantling_issue_return_time_missing",
+            )
+        if snapshot.latest_issued_at is not None and not _is_after(
+            snapshot.latest_return_at,
+            snapshot.latest_issued_at,
+        ):
+            return _manual(
+                "dismantling_return_not_after_issue",
+                "execution_dismantling_issue_return_conflict",
+            )
+        return _update(
+            "LOSE",
+            "dismantling_full_return_confirmed",
+            "execution_dismantling_full_return",
+        )
+
+    if snapshot.site_canceled:
+        if (
+            snapshot.payment_confirmed
+            or snapshot.assembled
+            or snapshot.rtu_count > 0
+            or not snapshot.onec_order_inactive_marked
+        ):
+            return _manual(
+                "dismantling_canceled_with_fulfillment_evidence",
+                "execution_dismantling_cancel_conflict",
+            )
+        return _update(
+            "LOSE",
+            "dismantling_canceled_before_fulfillment",
+            "execution_dismantling_canceled",
+        )
+
+    if snapshot.issued_rtu_count > 0:
+        coverage_decision = _validate_fulfillment_coverage(
+            snapshot,
+            partial_is_review=True,
+        )
+        if coverage_decision is not None:
+            return coverage_decision
+        if snapshot.partial_rtu_issue:
+            return _manual(
+                "dismantling_partial_rtu_issue",
+                "execution_dismantling_partial_issue",
+            )
+        if delivery_class != fulfillment.DELIVERY_CLASS_PICKUP:
+            return _manual(
+                "dismantling_issue_not_internal_pickup",
+                "execution_dismantling_non_pickup_issue",
+            )
+        if snapshot.rtu_count <= 0 or snapshot.issued_rtu_count != snapshot.rtu_count:
+            return _manual(
+                "dismantling_issue_not_full",
+                "execution_dismantling_issue_incomplete",
+            )
+        if snapshot.line_coverage_status != "complete":
+            return _manual(
+                "dismantling_item_coverage_unconfirmed",
+                "execution_dismantling_coverage_missing",
+                "weak",
+            )
+        if snapshot.latest_issued_at is None:
+            return _manual(
+                "dismantling_issue_chronology_missing",
+                "execution_dismantling_issue_time_missing",
+            )
+        if not _is_after(snapshot.latest_issued_at, started_at):
+            return _manual(
+                "dismantling_issue_precedes_start",
+                "execution_dismantling_issue_chronology_conflict",
+            )
+        return _update(
+            "WON",
+            "dismantling_full_pickup_issued",
+            "execution_dismantling_pickup_issued",
+        )
+
+    if snapshot.rtu_count > 0 and not snapshot.assembled:
+        return _manual(
+            "dismantling_rtu_without_assembly",
+            "execution_dismantling_rtu_without_assembly",
+        )
+    return _noop(
+        "dismantling_waiting_for_outcome_evidence",
+        "execution_dismantling_waiting_evidence",
+        "medium",
+    )
+
+
+def _validate_fulfillment_coverage(
+    snapshot: ExecutionEvidenceSnapshot,
+    *,
+    partial_is_review: bool = False,
+) -> ExecutionDecision | None:
+    if snapshot.line_coverage_status == "complete":
+        return None
+    if snapshot.line_coverage_status == "conflict" or snapshot.excess_item_count > 0:
+        return _manual(
+            "assembly_line_quantity_conflict",
+            "execution_assembly_quantity_conflict",
+        )
+    if snapshot.line_coverage_status == "partial" or snapshot.missing_item_count > 0:
+        if partial_is_review:
+            return _manual(
+                "dismantling_partial_item_fulfillment",
+                "execution_dismantling_partial_fulfillment",
+            )
+        return _noop(
+            "waiting_for_full_order_item_assembly",
+            "execution_waiting_for_full_item_assembly",
+            "medium",
+        )
+    return _manual(
+        "assembly_line_coverage_unavailable",
+        "execution_assembly_coverage_unavailable",
+        "weak",
+    )
+
+
+def _is_after(value: datetime, reference: datetime) -> bool:
+    left = value.replace(tzinfo=None) if value.tzinfo is not None else value
+    right = reference.replace(tzinfo=None) if reference.tzinfo is not None else reference
+    return left > right
+
+
 def snapshot_fingerprint(snapshot: ExecutionEvidenceSnapshot) -> str:
     payload = _json_ready(asdict(snapshot))
     encoded = json.dumps(
@@ -237,6 +391,40 @@ def snapshot_fingerprint(snapshot: ExecutionEvidenceSnapshot) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def dismantling_started_at_by_order(
+    session: Session,
+    order_numbers: list[str],
+) -> dict[str, tuple[datetime, str]]:
+    normalized = [item.strip() for item in dict.fromkeys(order_numbers) if item.strip()]
+    if not normalized:
+        return {}
+    rows = session.execute(
+        select(
+            SiteOrderExecutionCase.site_order_number,
+            SiteOrderExecutionEvent.event_at,
+            SiteOrderExecutionEvent.created_at,
+        )
+        .join(
+            SiteOrderExecutionEvent,
+            SiteOrderExecutionEvent.case_id == SiteOrderExecutionCase.id,
+        )
+        .where(
+            SiteOrderExecutionCase.site_order_number.in_(normalized),
+            SiteOrderExecutionEvent.event_type == fulfillment.EVENT_PICKUP_DISMANTLING,
+            SiteOrderExecutionEvent.confidence == "strong",
+        )
+    ).all()
+    result: dict[str, tuple[datetime, str]] = {}
+    for order_number, event_at, created_at in rows:
+        observed_at = event_at or created_at
+        if not isinstance(observed_at, datetime):
+            continue
+        current = result.get(order_number)
+        if current is None or _is_after(observed_at, current[0]):
+            result[order_number] = (observed_at, "service_event")
+    return result
 
 
 def persist_execution_decision(
@@ -317,13 +505,24 @@ def persist_execution_decision(
 
     if case.bitrix_deal_id in (None, snapshot.bitrix_deal_id):
         case.bitrix_deal_id = snapshot.bitrix_deal_id
+    if snapshot.onec_order_number:
+        case.onec_order_external_id = snapshot.onec_order_number
     case.current_crm_stage = snapshot.current_stage
     case.raw_delivery_method = snapshot.raw_delivery
     case.delivery_method = snapshot.delivery_class
     case.payment_status = "paid" if snapshot.payment_confirmed else "unconfirmed"
+    projection = {
+        "payment_amount": _json_ready(snapshot.payment_amount),
+        "debt_amount": _json_ready(snapshot.debt_amount),
+        "site_status": snapshot.site_status,
+        "site_canceled": snapshot.site_canceled,
+        "site_paid": snapshot.site_paid,
+        "observed_at": datetime.now().isoformat(),
+    }
     case.payload = {
         **(case.payload if isinstance(case.payload, dict) else {}),
         "execution_reconciliation": payload,
+        "state_projection": projection,
     }
     case.updated_at = datetime.now()
     case.current_derived_status = persisted_event_type

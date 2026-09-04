@@ -309,6 +309,7 @@ class Settings(BaseSettings):
     order_fulfillment_execution_ingest_enabled: bool = False
     order_fulfillment_execution_reconciliation_enabled: bool = False
     order_fulfillment_execution_stage_apply_enabled: bool = False
+    order_fulfillment_dismantling_auto_apply_enabled: bool = False
     order_fulfillment_execution_historical_apply_enabled: bool = False
     order_fulfillment_execution_cutover_at: datetime | None = None
     order_fulfillment_execution_recent_limit: int = Field(default=100, ge=1, le=1000)
@@ -317,6 +318,14 @@ class Settings(BaseSettings):
         "/opt/MM/pricing-service/.local/order-fulfillment-pilot/"
         "executing-reconciliation-cursor.json"
     )
+    order_fulfillment_state_projection_stale_after_seconds: int = Field(
+        default=15 * 60, ge=60, le=24 * 60 * 60
+    )
+    order_fulfillment_crm_projection_cursor_path: str = (
+        "/opt/MM/pricing-service/.local/order-fulfillment-pilot/" "crm-projection-cursor.json"
+    )
+    order_fulfillment_crm_projection_overlap_minutes: int = Field(default=10, ge=1, le=120)
+    order_fulfillment_crm_projection_batch_limit: int = Field(default=500, ge=1, le=5000)
     order_fulfillment_shipments_master_enabled: bool = False
     order_fulfillment_shipments_ingest_enabled: bool = False
     order_fulfillment_shipments_crm_fields_enabled: bool = False

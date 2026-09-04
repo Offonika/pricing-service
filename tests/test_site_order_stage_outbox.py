@@ -161,32 +161,49 @@ def test_logistics_stage_outbox_health_reports_pilot_delay_and_reviews(db_sessio
     assert report["delayed_outbox_ids"] == [rows[0].id]
 
 
-def _deal(stage: str = "FINAL_INVOICE"):
+def _deal(
+    stage: str = "FINAL_INVOICE",
+    *,
+    deal_id: int = 9001,
+    site_order_number: str = "216951",
+):
     return BitrixDealSnapshot(
-        deal_id=9001,
+        deal_id=deal_id,
         stage_id=stage,
         raw={
-            "ID": "9001",
+            "ID": str(deal_id),
             "STAGE_ID": stage,
-            CRM_ORDER_NUMBER_FIELD: "216951",
+            CRM_ORDER_NUMBER_FIELD: site_order_number,
             "CONTACT_ID": "77",
         },
     )
 
 
-def _seed_execution_outbox(db_session, *, historical: bool = False):
+def _seed_execution_outbox(
+    db_session,
+    *,
+    historical: bool = False,
+    current_stage: str = "EXECUTING",
+    site_order_number: str = "216951",
+    deal_id: int = 9001,
+):
     snapshot = execution_reconciliation.ExecutionEvidenceSnapshot(
-        site_order_number="216951",
-        bitrix_deal_id=9001,
-        current_stage="EXECUTING",
+        site_order_number=site_order_number,
+        bitrix_deal_id=deal_id,
+        current_stage=current_stage,
         delivery_class="pickup",
         raw_delivery="Самовывоз",
-        duplicate_deal_ids=(9001,),
+        duplicate_deal_ids=(deal_id,),
         rtu_count=1,
         assembled_rtu_count=1,
         line_coverage_status="complete",
         latest_rtu_at=datetime(2026, 8, 26, 9, 0),
         latest_assembled_at=datetime(2026, 8, 26, 9, 5),
+        issued_rtu_count=1 if current_stage == "DISMANTLING" else 0,
+        latest_issued_at=(datetime(2026, 8, 26, 10, 0) if current_stage == "DISMANTLING" else None),
+        dismantling_started_at=(
+            datetime(2026, 8, 26, 9, 30) if current_stage == "DISMANTLING" else None
+        ),
         historical=historical,
     )
     result = execution_reconciliation.persist_execution_decision(
@@ -197,6 +214,66 @@ def _seed_execution_outbox(db_session, *, historical: bool = False):
     db_session.commit()
     assert result.outbox_id is not None
     return db_session.get(SiteOrderStageOutbox, result.outbox_id)
+
+
+def test_execution_outbox_can_be_scoped_to_affected_orders(db_session) -> None:
+    target = _seed_execution_outbox(db_session)
+    untouched = _seed_execution_outbox(
+        db_session,
+        site_order_number="216952",
+        deal_id=9002,
+    )
+    client = FakeBitrixClient(_deal("EXECUTING"))
+
+    results = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+        ),
+        site_order_numbers=["216951"],
+    )
+
+    assert [item.outbox_id for item in results] == [target.id]
+    db_session.refresh(untouched)
+    assert untouched.status == "pending"
+
+
+def test_dismantling_execution_outbox_stays_shadow_until_separate_gate(db_session) -> None:
+    row = _seed_execution_outbox(db_session, current_stage="DISMANTLING")
+    client = FakeBitrixClient(_deal("DISMANTLING"))
+    settings = _settings(
+        order_fulfillment_execution_master_enabled=True,
+        order_fulfillment_execution_stage_apply_enabled=True,
+        order_fulfillment_dismantling_auto_apply_enabled=False,
+    )
+
+    shadow = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=settings,
+    )
+
+    assert [item.result for item in shadow] == ["dismantling_auto_apply_disabled"]
+    assert client.updates == []
+    db_session.refresh(row)
+    assert row.status == "pending"
+
+    enabled = process_stage_outbox(
+        db_session,
+        client=client,
+        apply=True,
+        settings=_settings(
+            order_fulfillment_execution_master_enabled=True,
+            order_fulfillment_execution_stage_apply_enabled=True,
+            order_fulfillment_dismantling_auto_apply_enabled=True,
+        ),
+    )
+    assert [item.result for item in enabled] == ["applied"]
+    assert client.deal.stage_id == "WON"
 
 
 def test_stage_outbox_applies_chain_in_order_and_is_idempotent(db_session) -> None:

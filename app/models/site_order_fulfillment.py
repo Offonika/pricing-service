@@ -28,6 +28,7 @@ class SiteOrderExecutionCase(Base):
         UniqueConstraint("site_order_number", name="uq_site_order_execution_case_order"),
         Index("ix_site_order_execution_case_status", "current_derived_status"),
         Index("ix_site_order_execution_case_delivery", "delivery_method"),
+        Index("ix_site_order_execution_case_onec_order", "onec_order_external_id"),
     )
 
     site_order_number: Mapped[str] = mapped_column(String(32), nullable=False)

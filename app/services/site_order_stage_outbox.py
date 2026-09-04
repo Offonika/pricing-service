@@ -93,6 +93,14 @@ def _is_historical_execution_row(row: SiteOrderStageOutbox) -> bool:
     )
 
 
+def _is_dismantling_execution_row(row: SiteOrderStageOutbox) -> bool:
+    if not _is_execution_reconciliation_row(row):
+        return False
+    payload = row.payload if isinstance(row.payload, dict) else {}
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+    return _clean(snapshot.get("current_stage")).upper() == "DISMANTLING"
+
+
 def _is_shipment_reconciliation_row(row: SiteOrderStageOutbox) -> bool:
     payload = row.payload if isinstance(row.payload, dict) else {}
     return payload.get("pipeline") == "shipment_reconciliation" or row.source_event_type.startswith(
@@ -568,7 +576,7 @@ def _process_row(
             if apply:
                 _mark_manual_review(session, row, reason=reason, live_stage=live_stage)
             return _result(row, "manual_review", live_stage=live_stage, reason=reason)
-        expected_stages = {"EXECUTING"}
+        expected_stages = {"DISMANTLING"} if _is_dismantling_execution_row(row) else {"EXECUTING"}
     elif shipment_row:
         if row.target_stage not in SHIPMENT_TARGET_STAGES:
             reason = f"shipment_target_not_allowed:{row.target_stage or '-'}"
@@ -693,6 +701,7 @@ def process_stage_outbox(
     limit: int | None = None,
     settings: Settings | None = None,
     now: datetime | None = None,
+    site_order_numbers: list[str] | None = None,
 ) -> list[StageOutboxResult]:
     settings = settings or get_settings()
     current_time = now or datetime.now()
@@ -707,16 +716,22 @@ def process_stage_outbox(
         )
         .correlate(SiteOrderStageOutbox)
     )
+    query = select(SiteOrderStageOutbox).where(
+        SiteOrderStageOutbox.status.in_([STATUS_PENDING, STATUS_RETRY]),
+        or_(
+            SiteOrderStageOutbox.next_attempt_at.is_(None),
+            SiteOrderStageOutbox.next_attempt_at <= current_time,
+        ),
+    )
+    if site_order_numbers is not None:
+        normalized_orders = [
+            item.strip() for item in dict.fromkeys(site_order_numbers) if item.strip()
+        ]
+        if not normalized_orders:
+            return []
+        query = query.where(SiteOrderStageOutbox.site_order_number.in_(normalized_orders))
     rows = session.scalars(
-        select(SiteOrderStageOutbox)
-        .where(
-            SiteOrderStageOutbox.status.in_([STATUS_PENDING, STATUS_RETRY]),
-            or_(
-                SiteOrderStageOutbox.next_attempt_at.is_(None),
-                SiteOrderStageOutbox.next_attempt_at <= current_time,
-            ),
-        )
-        .order_by(
+        query.order_by(
             case((has_blocking_predecessor, 1), else_=0),
             case(
                 (
@@ -740,6 +755,12 @@ def process_stage_outbox(
                     and settings.order_fulfillment_execution_stage_apply_enabled
                 ):
                     results.append(_result(row, "automation_disabled"))
+                    continue
+                if (
+                    _is_dismantling_execution_row(row)
+                    and not settings.order_fulfillment_dismantling_auto_apply_enabled
+                ):
+                    results.append(_result(row, "dismantling_auto_apply_disabled"))
                     continue
                 if (
                     _is_historical_execution_row(row)

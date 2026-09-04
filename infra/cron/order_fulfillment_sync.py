@@ -50,6 +50,7 @@ QUICK_STAGE_IDS = (
     "PREPARATION",
     "PREPAYMENT_INVOICE",
     "EXECUTING",
+    "DISMANTLING",
     "PICKUP_WAITING",
     "DELIVERY_REVIEW",
 )
@@ -595,21 +596,36 @@ def fetch_executing_deal_scan(
     historical_limit: int,
     cursor: int,
 ) -> ExecutingDealScan:
-    recent = _fetch_stage_deal_batch(
-        client,
-        stage_id="EXECUTING",
-        limit=recent_limit,
-        order="DESC",
-    )
-    historical = _fetch_stage_deal_batch(
+    recent: list[fulfillment.BitrixDealSnapshot] = []
+    for stage_id in ("EXECUTING", "DISMANTLING"):
+        recent.extend(
+            _fetch_stage_deal_batch(
+                client,
+                stage_id=stage_id,
+                limit=recent_limit,
+                order="DESC",
+            )
+        )
+    executing_historical = _fetch_stage_deal_batch(
         client,
         stage_id="EXECUTING",
         limit=historical_limit,
         order="ASC",
         after_id=cursor,
     )
-    cycle_completed = len(historical) < historical_limit
-    cursor_after = 0 if cycle_completed else max(deal.deal_id for deal in historical)
+    cycle_completed = len(executing_historical) < historical_limit
+    cursor_after = 0 if cycle_completed else max(deal.deal_id for deal in executing_historical)
+    historical = list(executing_historical)
+    # DISMANTLING is intentionally rescanned in full within the bounded history
+    # window: a single EXECUTING cursor cannot safely represent a protected stage.
+    historical.extend(
+        _fetch_stage_deal_batch(
+            client,
+            stage_id="DISMANTLING",
+            limit=historical_limit,
+            order="ASC",
+        )
+    )
     deals_by_id = {deal.deal_id: deal for deal in recent}
     deals_by_id.update({deal.deal_id: deal for deal in historical})
     recent_ids = {deal.deal_id for deal in recent}
@@ -655,6 +671,63 @@ def _fetch_stage_deal_batch(
                 break
         next_value = response.get("next")
         start = int(next_value) if next_value is not None else None
+    return result
+
+
+def _dismantling_started_at_for_deals(
+    client: fulfillment.BitrixChatClient,
+    deals: list[fulfillment.BitrixDealSnapshot],
+) -> dict[str, tuple[datetime, str]]:
+    dismantling_deals = [
+        deal
+        for deal in deals
+        if fulfillment._clean_string(deal.stage_id).upper() == "DISMANTLING"  # noqa: SLF001
+    ]
+    order_by_deal = {
+        deal.deal_id: fulfillment._clean_string(  # noqa: SLF001
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )
+        for deal in dismantling_deals
+    }
+    order_numbers = [item for item in order_by_deal.values() if item]
+    with session_scope() as session:
+        result = execution_reconciliation.dismantling_started_at_by_order(
+            session,
+            order_numbers,
+        )
+    known = set(result)
+    for deal in dismantling_deals:
+        order_number = order_by_deal.get(deal.deal_id)
+        if not order_number or order_number in known:
+            continue
+        try:
+            response = client.call(
+                "crm.stagehistory.list",
+                {
+                    "entityTypeId": 2,
+                    "filter": {"ENTITY_ID": deal.deal_id},
+                    "order": {"CREATED_TIME": "DESC"},
+                    "select": ["STAGE_ID", "CREATED_TIME"],
+                    "start": 0,
+                },
+            )
+        except Exception:
+            continue
+        history_rows = response.get("result") or []
+        if isinstance(history_rows, dict):
+            history_rows = history_rows.get("items") or history_rows.get("ITEMS") or []
+        for row in history_rows if isinstance(history_rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            stage_id = fulfillment._clean_string(  # noqa: SLF001
+                row.get("STAGE_ID") or row.get("stageId")
+            ).upper()
+            if stage_id != "DISMANTLING":
+                continue
+            created_at = _parse_bitrix_datetime(row.get("CREATED_TIME") or row.get("createdTime"))
+            if created_at is not None:
+                result[order_number] = (created_at, "bitrix_stage_history")
+                break
     return result
 
 
@@ -1067,6 +1140,7 @@ def build_execution_snapshots(
     rtu_signals: dict[str, dict[str, Any]],
     cutover_at: datetime | None,
     onec_evidence_available: bool,
+    dismantling_started_at: dict[str, tuple[datetime, str]] | None = None,
 ) -> list[execution_reconciliation.ExecutionEvidenceSnapshot]:
     deals_by_order: dict[str, list[int]] = defaultdict(list)
     for deal in deals:
@@ -1084,6 +1158,7 @@ def build_execution_snapshots(
         order_status = order_statuses.get(order_number)
         settlement = onec_settlements.get(order_number)
         signal = rtu_signals.get(order_number) or {}
+        dismantling_evidence = (dismantling_started_at or {}).get(order_number)
         latest_rtu_at = _datetime_or_none(signal.get("latest_rtu_date"))
         latest_assembled_at = _datetime_or_none(signal.get("latest_assembled_at"))
         latest_issued_at = _datetime_or_none(signal.get("latest_issued_at"))
@@ -1107,6 +1182,10 @@ def build_execution_snapshots(
                 bitrix_deal_id=deal.deal_id,
                 current_stage=fulfillment._clean_string(deal.stage_id) or None,  # noqa: SLF001
                 delivery_class=fulfillment.classify_delivery_method(deal.delivery),
+                onec_order_number=(
+                    fulfillment._clean_string(signal.get("onec_order_number"))
+                    or None  # noqa: SLF001
+                ),
                 raw_delivery=fulfillment._clean_string(deal.delivery) or None,  # noqa: SLF001
                 duplicate_deal_ids=tuple(sorted(set(deals_by_order.get(order_number, [])))),
                 crm_assembled=_truthy_bitrix_value((deal.raw or {}).get(CRM_ASSEMBLED_FIELD)),
@@ -1133,6 +1212,8 @@ def build_execution_snapshots(
                 returned_rtu_count=int(signal.get("returned_rtu_count") or 0),
                 posted_sale_amount=_decimal_or_none(signal.get("posted_sale_amount")),
                 returned_amount=_decimal_or_none(signal.get("returned_amount")),
+                payment_amount=(settlement.payment_amount if settlement is not None else None),
+                debt_amount=(settlement.debt_amount if settlement is not None else None),
                 onec_payment_confirmed=(
                     settlement.payment_confirmed if settlement is not None else False
                 ),
@@ -1140,6 +1221,12 @@ def build_execution_snapshots(
                 latest_assembled_at=latest_assembled_at,
                 latest_issued_at=latest_issued_at,
                 latest_return_at=latest_return_at,
+                dismantling_started_at=(
+                    dismantling_evidence[0] if dismantling_evidence is not None else None
+                ),
+                dismantling_started_source=(
+                    dismantling_evidence[1] if dismantling_evidence is not None else None
+                ),
                 onec_evidence_available=onec_evidence_available,
                 historical=_historical_execution_evidence(
                     evidence_at=evidence_at,
@@ -1284,7 +1371,9 @@ def run_quick_sync(
         deals = fetch_new_deals(
             client,
             limit=limit,
-            stage_ids=tuple(stage for stage in QUICK_STAGE_IDS if stage != "EXECUTING"),
+            stage_ids=tuple(
+                stage for stage in QUICK_STAGE_IDS if stage not in {"EXECUTING", "DISMANTLING"}
+            ),
         )
         execution_scan = fetch_executing_deal_scan(
             client,
@@ -1323,7 +1412,8 @@ def run_quick_sync(
         deal
         for deal in deals
         if execution_scan is None
-        or fulfillment._clean_string(deal.stage_id) != "EXECUTING"  # noqa: SLF001
+        or fulfillment._clean_string(deal.stage_id)  # noqa: SLF001
+        not in {"EXECUTING", "DISMANTLING"}
     ]
     decisions = [
         decide_new_deal_stage(
@@ -1373,6 +1463,10 @@ def run_quick_sync(
             rtu_signals=rtu_signals,
             cutover_at=settings.order_fulfillment_execution_cutover_at,
             onec_evidence_available=onec_execution_evidence_available,
+            dismantling_started_at=_dismantling_started_at_for_deals(
+                client,
+                execution_scan.deals,
+            ),
         )
         execution_decisions = [
             execution_reconciliation.decide_execution_stage(snapshot)
@@ -2414,7 +2508,7 @@ def query_multi_shipment_onec_snapshots(
     return result
 
 
-def query_onec_order_states_by_orders(order_numbers: list[str]) -> dict[str, dict[str, int]]:
+def query_onec_order_states_by_orders(order_numbers: list[str]) -> dict[str, dict[str, Any]]:
     settings = get_settings()
     unique_orders = [
         order_number
@@ -2429,6 +2523,7 @@ def query_onec_order_states_by_orders(order_numbers: list[str]) -> dict[str, dic
     statement = text(f"""
         SELECT
             NULLIF(LTRIM(RTRIM(ord._Fld2425)), N'') AS site_order_number,
+            MAX(LTRIM(RTRIM(ord._Number))) AS onec_order_number,
             COUNT(*) AS onec_order_count,
             SUM(
                 CASE
@@ -2453,12 +2548,16 @@ def query_onec_order_states_by_orders(order_numbers: list[str]) -> dict[str, dic
         order_number = clean_csv_value(mapping["site_order_number"])
         if not order_number:
             continue
-        result[order_number] = {
+        order_state: dict[str, Any] = {
             "onec_order_count": int(mapping["onec_order_count"] or 0),
             "onec_inactive_marked_order_count": int(
                 mapping["onec_inactive_marked_order_count"] or 0
             ),
         }
+        onec_order_number = clean_csv_value(mapping.get("onec_order_number"))
+        if onec_order_number:
+            order_state["onec_order_number"] = onec_order_number
+        result[order_number] = order_state
     return result
 
 

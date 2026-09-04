@@ -3,10 +3,11 @@ from __future__ import annotations
 from collections.abc import Generator
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api import order_fulfillment as order_fulfillment_api
 from app.api.dependencies import get_db
 from app.core.config import get_settings
 from app.main import app
@@ -96,6 +97,77 @@ def test_order_fulfillment_message_endpoint_dry_run_parses_without_db(monkeypatc
         "218014",
         "217624",
     ]
+
+
+def test_onec_execution_event_ingest_is_gated_and_idempotent(monkeypatch) -> None:
+    _configure(monkeypatch)
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SiteOrderExecutionCase.__table__.create(engine)
+    SiteOrderExecutionEvent.__table__.create(engine)
+    app.dependency_overrides = {get_db: _override_db(engine)}
+    client = TestClient(app)
+    request = {
+        "signal": "issued",
+        "event_at": "2026-09-04T12:30:00+03:00",
+        "site_order_number": "245383",
+        "onec_order_number": "РБГУ0063466",
+        "rtu_number": "РБГУ0197082",
+        "is_posted": True,
+        "document_amount": "1560.00",
+    }
+    try:
+        blocked = client.post(
+            "/api/order-fulfillment/execution/events",
+            json=request,
+            headers=_headers(),
+        )
+        assert blocked.status_code == 409
+
+        dry_run = client.post(
+            "/api/order-fulfillment/execution/events",
+            json={**request, "dry_run": True},
+            headers=_headers(),
+        )
+        assert dry_run.status_code == 200
+        assert dry_run.json()["event_id"] is None
+
+        monkeypatch.setenv("ORDER_FULFILLMENT_EXECUTION_MASTER_ENABLED", "true")
+        monkeypatch.setenv("ORDER_FULFILLMENT_EXECUTION_INGEST_ENABLED", "true")
+        monkeypatch.setenv("ORDER_FULFILLMENT_EXECUTION_RECONCILIATION_ENABLED", "true")
+        reconciled: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            order_fulfillment_api,
+            "_reconcile_direct_execution_event",
+            lambda order, *, apply: reconciled.append((order, apply)),
+        )
+        get_settings.cache_clear()
+        first = client.post(
+            "/api/order-fulfillment/execution/events",
+            json=request,
+            headers=_headers(),
+        )
+        second = client.post(
+            "/api/order-fulfillment/execution/events",
+            json=request,
+            headers=_headers(),
+        )
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert first.json()["duplicate"] is False
+    assert first.json()["reconciliation_queued"] is True
+    assert second.status_code == 200
+    assert second.json()["duplicate"] is True
+    assert second.json()["reconciliation_queued"] is False
+    assert reconciled == [("245383", False)]
+    with Session(engine) as session:
+        assert len(session.scalars(select(SiteOrderExecutionEvent)).all()) == 1
 
 
 def test_shipment_sync_dry_run_reports_partial_assembly_without_db(monkeypatch) -> None:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
@@ -14,6 +15,8 @@ from app.schemas.order_fulfillment import (
     BitrixChatMessageIngestRequest,
     BitrixChatMessageIngestResponse,
     DeliveryMethodReportResponse,
+    OnecExecutionEventIngestRequest,
+    OnecExecutionEventIngestResponse,
     OrderFulfillmentMentionResponse,
     OrderFulfillmentRecommendationsResponse,
     OrderFulfillmentReviewResponse,
@@ -23,10 +26,78 @@ from app.schemas.order_fulfillment import (
     ShipmentNotificationStatusResponse,
 )
 from app.services import order_assembly_queue as assembly_queue
+from app.services import site_order_execution_ingest, site_order_shipments
 from app.services import site_order_fulfillment as fulfillment
-from app.services import site_order_shipments
 
 router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+logger = logging.getLogger(__name__)
+
+
+def _reconcile_direct_execution_event(site_order_number: str, *, apply: bool) -> None:
+    try:
+        from tasks.reconcile_onec_assembly_to_crm import reconcile_service_db_orders
+
+        reconcile_service_db_orders([site_order_number], apply=apply)
+    except Exception:
+        logger.exception(
+            "Narrow execution reconciliation failed for site order %s",
+            site_order_number,
+        )
+
+
+@router.post(
+    "/execution/events",
+    response_model=OnecExecutionEventIngestResponse,
+)
+def ingest_onec_execution_event(
+    payload: OnecExecutionEventIngestRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> OnecExecutionEventIngestResponse:
+    settings = get_settings()
+    fact = site_order_execution_ingest.OnecExecutionFact(
+        signal=payload.signal,
+        event_at=payload.event_at,
+        site_order_number=payload.site_order_number,
+        onec_order_number=payload.onec_order_number,
+        rtu_external_id=payload.rtu_external_id,
+        rtu_number=payload.rtu_number,
+        rtu_date=payload.rtu_date,
+        is_posted=payload.is_posted,
+        document_amount=payload.document_amount,
+    )
+    source_ref = site_order_execution_ingest.canonical_onec_execution_source_ref(fact)
+    if payload.dry_run:
+        return OnecExecutionEventIngestResponse(
+            accepted=True,
+            duplicate=False,
+            event_id=None,
+            source_ref=source_ref,
+            reconciliation_queued=False,
+        )
+    if not (
+        settings.order_fulfillment_execution_master_enabled
+        and settings.order_fulfillment_execution_ingest_enabled
+    ):
+        raise HTTPException(status_code=409, detail="execution ingest is disabled")
+    result = site_order_execution_ingest.ingest_onec_execution_fact(db, fact)
+    db.commit()
+    reconciliation_queued = bool(
+        not result.duplicate and settings.order_fulfillment_execution_reconciliation_enabled
+    )
+    if reconciliation_queued:
+        background_tasks.add_task(
+            _reconcile_direct_execution_event,
+            payload.site_order_number,
+            apply=settings.order_fulfillment_execution_stage_apply_enabled,
+        )
+    return OnecExecutionEventIngestResponse(
+        accepted=True,
+        duplicate=result.duplicate,
+        event_id=result.event_id,
+        source_ref=result.source_ref,
+        reconciliation_queued=reconciliation_queued,
+    )
 
 
 @router.get(

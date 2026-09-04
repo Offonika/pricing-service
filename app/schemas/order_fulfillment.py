@@ -94,6 +94,27 @@ class DeliveryMethodReportResponse(BaseModel):
     items: list[DeliveryMethodReportItem] = Field(default_factory=list)
 
 
+class OnecExecutionEventIngestRequest(BaseModel):
+    signal: Literal["assembled", "issued"]
+    event_at: datetime
+    site_order_number: str = Field(min_length=1, max_length=32)
+    onec_order_number: str | None = Field(default=None, max_length=64)
+    rtu_external_id: str | None = Field(default=None, max_length=64)
+    rtu_number: str | None = Field(default=None, max_length=64)
+    rtu_date: datetime | None = None
+    is_posted: bool = True
+    document_amount: Decimal | None = None
+    dry_run: bool = False
+
+
+class OnecExecutionEventIngestResponse(BaseModel):
+    accepted: bool
+    duplicate: bool = False
+    event_id: int | None = None
+    source_ref: str
+    reconciliation_queued: bool = False
+
+
 class ShipmentLineInput(BaseModel):
     product_ref: str = Field(min_length=1, max_length=64)
     product_code: str | None = None

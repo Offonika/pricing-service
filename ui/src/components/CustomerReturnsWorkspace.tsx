@@ -711,7 +711,7 @@ function CustomerReturnServiceRequestPicker({
   };
 
   return (
-    <div className="logistics-field customer-return-deal-picker">
+    <div className="logistics-field customer-return-deal-picker customer-return-service-request-picker">
       <span>{label}</span>
       <div className="customer-return-deal-picker__control">
         <input
@@ -807,11 +807,7 @@ function CustomerReturnExpertisePicker({
 
   useEffect(() => {
     const normalized = query.trim();
-    if (normalized.length < 2) {
-      setOptions([]);
-      setError("");
-      return undefined;
-    }
+    if (normalized.length < 2) return undefined;
     const controller = new AbortController();
     const timeout = window.setTimeout(async () => {
       try {
@@ -841,7 +837,14 @@ function CustomerReturnExpertisePicker({
           aria-label="Поиск экспертизы"
           autoComplete="off"
           disabled={disabled}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            const nextQuery = event.target.value;
+            setQuery(nextQuery);
+            if (nextQuery.trim().length < 2) {
+              setOptions([]);
+              setError("");
+            }
+          }}
           placeholder="Номер экспертизы или заказа"
           value={query}
         />

@@ -222,6 +222,7 @@ documents:
     status: accepted
     owner: operations
     source_of_truth: true
+    updated_at: "2026-08-22"
     related_code:
       - app/services/assortment_lifecycle.py
       - app/services/assortment_lifecycle_facts.py
@@ -651,6 +652,8 @@ documents:
     status: active
     owner: operations
     source_of_truth: false
+    updated_at: "2026-08-10"
+    depends_on: [docs/specs/assortment-lifecycle-policy.md]
     related_code:
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/import_onec_supplier_order_to_procurement.py

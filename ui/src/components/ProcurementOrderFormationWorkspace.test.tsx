@@ -3,11 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type {
+  ProcurementDashboard,
   ProcurementLifecycleTransitionList,
   ProcurementOrderFormation,
 } from "../api/procurementAssortment";
 import {
   decideProcurementLifecycleTransition,
+  fetchProcurementDashboard,
   fetchProcurementEvents,
   fetchProcurementLifecycleTransitions,
   fetchProcurementOrder,
@@ -142,8 +144,55 @@ function linkedOrder(): ProcurementOrderFormation {
   };
 }
 
+function dashboardOverview(): ProcurementDashboard {
+  return {
+    folder: "Дисплеи",
+    responsible_user_id: "130757",
+    responsible_name: "Омар",
+    updated_at: "2026-09-04T12:00:00Z",
+    cards: [{
+      status: "working",
+      label: "Поддерживаем",
+      total_count: 56,
+      action_count: 1,
+      action_kind: "review",
+      action_label: "На пересмотр",
+      action_breakdown: { review: 1 },
+      ready_count: 0,
+      blocked_count: 0,
+      review_count: 1,
+      overdue_count: 0,
+      urgency: "action",
+    }],
+    decision_summary: { ready_count: 0, review_count: 1, blocked_count: 0 },
+    manual_status_counts: { review: 1 },
+    attention: [{
+      proposal_id: 77,
+      nomenclature_code: "РБ000037607",
+      product_name: "Дисплей семейства Samsung",
+      current_status: "working",
+      current_status_label: "Поддерживаем",
+      kind: "lifecycle",
+      filter_status: "review",
+      action_label: "Открыть разбор",
+      fact_summary: "Возвраты требуют проверки",
+      decision_state: "review",
+      decision_state_label: "Нужен разбор",
+      reason: "Возвраты",
+      recommendation: "Открыть семейный отчёт",
+      deadline_label: "Сегодня",
+      urgency: "review",
+      responsible_name: "Сергей",
+      overdue: false,
+    }],
+    manual_attention: [],
+  };
+}
+
 describe("ProcurementOrderFormationWorkspace placement", () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
+    vi.mocked(fetchProcurementDashboard).mockReset();
     vi.mocked(fetchProcurementOrder).mockReset();
     vi.mocked(fetchProcurementOrderFormation).mockReset();
     vi.mocked(fetchProcurementOrders).mockReset();
@@ -206,6 +255,22 @@ describe("ProcurementOrderFormationWorkspace placement", () => {
     render(<ProcurementOrderFormationWorkspace bitrixUserName="Закупщик" />);
 
     expect(screen.getByText("Семейный разбор РБ0001")).toBeInTheDocument();
+  });
+
+  it("показывает обзор до выбора сигнала и затем открывает его очередь", async () => {
+    vi.mocked(fetchProcurementDashboard).mockResolvedValue(dashboardOverview());
+
+    render(<ProcurementOrderFormationWorkspace bitrixUserName="Закупщик" />);
+
+    expect(await screen.findByRole("heading", { name: "Общая картина" })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Поиск товара или причины")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Нужен разбор/ }));
+    expect(await screen.findByRole("heading", { name: "Нужен разбор" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Поиск товара или причины")).toBeInTheDocument();
+    expect(screen.getByText("Семейный отчёт")).toBeInTheDocument();
+    expect(screen.getAllByText("Открыть разбор")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Назад к обзору" }));
+    expect(screen.queryByPlaceholderText("Поиск товара или причины")).not.toBeInTheDocument();
   });
 });
 

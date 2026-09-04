@@ -10022,12 +10022,12 @@
 
 .order-workspace__section-heading p {
   margin: 4px 0 0;
-  color: #69778c;
+  color: #526075;
   font-size: 13px;
 }
 
 .order-workspace__section-heading > span {
-  color: #7d8aa0;
+  color: #526075;
   font-size: 12px;
 }
 
@@ -10246,9 +10246,99 @@
   display: grid;
   gap: 12px;
   margin-top: 4px;
+  scroll-margin-top: 16px;
 }
 
-.procurement-dashboard .attention-panel { order: -1; }
+.dashboard-overview__heading {
+  align-items: end;
+}
+
+.dashboard-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-overview button {
+  display: grid;
+  min-height: 112px;
+  padding: 16px;
+  border: 1px solid #dce4ee;
+  border-radius: 10px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.dashboard-overview button:hover:not(:disabled),
+.dashboard-queue-entry .btn:hover:not(:disabled) {
+  border-color: #8fb5e5;
+  box-shadow: 0 8px 20px rgb(46 67 92 / 10%);
+  transform: translateY(-1px);
+}
+
+.dashboard-overview button:focus-visible,
+.dashboard-queue-entry .btn:focus-visible {
+  outline: 3px solid rgb(33 110 232 / 28%);
+  outline-offset: 2px;
+}
+
+.dashboard-overview button:disabled {
+  cursor: default;
+  opacity: .62;
+}
+
+.dashboard-overview span {
+  color: #4f5f76;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dashboard-overview strong {
+  margin: 8px 0;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.dashboard-overview small,
+.dashboard-signals small {
+  align-self: end;
+  color: #526075;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dashboard-signals__heading {
+  margin-top: 4px;
+}
+
+.dashboard-signals {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-queue-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 18px;
+  border: 1px solid #dce4ee;
+  border-radius: 10px;
+  background: #f7f9fc;
+}
+
+.dashboard-queue-entry > div {
+  display: grid;
+  gap: 3px;
+}
+
+.dashboard-queue-entry span {
+  color: #526075;
+  font-size: 12px;
+}
 
 .attention-toolbar {
   display: grid;
@@ -10331,6 +10421,10 @@
 }
 
 .attention-summary__item--blocked {
+  background: #fff0f1;
+}
+
+.attention-summary__item--overdue {
   background: #fff0f1;
 }
 
@@ -11742,6 +11836,7 @@
 
 @media (max-width: 1180px) {
   .attention-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lifecycle-cards,
   .manual-status-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
   .lifecycle-cards > article,
@@ -11755,6 +11850,11 @@
   .order-workspace__tabs button { min-height: 44px; flex: 1 1 calc(33.333% - 4px); }
   .attention-toolbar { grid-template-columns: 1fr; }
   .attention-toolbar .btn { min-height: 44px; }
+  .dashboard-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-overview button { min-height: 108px; padding: 14px; }
+  .dashboard-overview strong { font-size: 27px; }
+  .dashboard-queue-entry { align-items: stretch; flex-direction: column; }
+  .dashboard-queue-entry .btn { min-height: 44px; }
   .procurement-dashboard .order-workspace__table-wrap { overflow: visible; border: 0; background: transparent; }
   .procurement-dashboard .order-workspace__table,
   .procurement-dashboard .order-workspace__table tbody { display: block; }

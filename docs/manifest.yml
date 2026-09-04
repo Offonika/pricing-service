@@ -988,6 +988,16 @@ documents:
     related_code: [app/api/order_fulfillment.py, app/services/order_assembly_queue.py, app/models/order_assembly_queue.py, tasks/reconcile_onec_assembly_to_crm.py, alembic/versions/a4c5e6f70819_add_order_assembly_queue.py]
     related_tests: [tests/test_order_assembly_queue.py, tests/test_reconcile_onec_assembly_to_crm.py]
     keywords: [order-assembly, queue, crm, bitrix24, 1c, customer-order, executing, fail-closed, contract, сборка, очередь]
+  - path: docs/IntegrationContract.CustomerOrderClosureQueue1C.md
+    title: Pricing Service to UT 10.3 Customer Order Closure Queue Contract
+    doc_type: integration_contract
+    domain: order_fulfillment
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_closure.py, app/services/order_closure.py, app/services/bitrix_order_closure_auth.py, app/models/order_closure.py, app/schemas/order_closure.py, ui/src/components/OrderClosuresWorkspace.tsx, alembic/versions/e8f9012345a6_add_order_closure_queue.py]
+    related_tests: [tests/test_order_closure.py, tests/test_order_closure_migration.py, ui/src/components/OrderClosuresWorkspace.test.tsx]
+    keywords: [order-closure, customer-order, ut103, 1c, bitrix24, dry-run, diagnose, apply, idempotency, atomic, закрытие, заказ]
   - path: docs/Onepage.LogisticsTelegramMVP.md
     title: Logistics Telegram Onepage
     doc_type: onepager

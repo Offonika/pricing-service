@@ -10,6 +10,7 @@ import {
   initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
+  initializeBitrixOrderClosureSession,
   initializeBitrixProcurementAssortmentSession,
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
@@ -19,6 +20,7 @@ import {
   isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
   isBitrixLogisticsRoute,
+  isBitrixOrderClosuresRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
   isBitrixProductInsightsPlacement,
@@ -79,6 +81,10 @@ const CustomerPriceTypesWorkspace = lazy(async () => {
 const SiteServiceRequestConversation = lazy(async () => {
   const module = await import("./components/SiteServiceRequestConversation");
   return { default: module.SiteServiceRequestConversation };
+});
+const OrderClosuresWorkspace = lazy(async () => {
+  const module = await import("./components/OrderClosuresWorkspace");
+  return { default: module.OrderClosuresWorkspace };
 });
 
 const STATUS_OPTIONS = [
@@ -1366,6 +1372,7 @@ function ProcurementOrderFormationBitrixApp() {
 }
 
 function AppRoute() {
+  if (isBitrixOrderClosuresRoute()) return <OrderClosuresBitrixApp />;
   if (isBitrixSiteServiceRequestsRoute()) return <SiteServiceRequestsBitrixApp />;
   if (isBitrixLogisticsRoute()) return <BitrixLogisticsApp />;
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
@@ -1380,6 +1387,63 @@ function AppRoute() {
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   if (isBitrixCustomerPriceTypesRoute()) return <CustomerPriceTypesApp />;
   return <MatchingApp />;
+}
+
+function OrderClosuresBitrixApp() {
+  const [session, setSession] = useState<{
+    status: "loading" | "ready" | "error";
+    userName?: string | null;
+    canConfirm: boolean;
+    message?: string;
+  }>({ status: "loading", canConfirm: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixOrderClosureSession()
+      .then((value) => {
+        if (!cancelled) {
+          setSession({
+            status: "ready",
+            userName: value.user.name,
+            canConfirm: value.user.can_confirm,
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setSession({
+            status: "error",
+            canConfirm: false,
+            message: error instanceof Error ? error.message : "Нет доступа",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (session.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Закрытие заказов</h1>
+          <p>
+            {session.status === "loading"
+              ? "Подключение к Bitrix24…"
+              : "Нет доступа к приложению."}
+          </p>
+          {session.message ? <small>{session.message}</small> : null}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <OrderClosuresWorkspace
+      canConfirm={session.canConfirm}
+      userName={session.userName}
+    />
+  );
 }
 
 function App() {

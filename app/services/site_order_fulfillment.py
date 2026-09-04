@@ -103,7 +103,12 @@ CRM_STAGE_MANUAL_REVIEW = "PREPARATION"
 CRM_STAGE_PICKUP_TRANSIT = "PICKUP_TRANSIT"
 CRM_STAGE_PICKUP_WAITING = "PICKUP_WAITING"
 CRM_STAGE_PICKUP_STORAGE = "PICKUP_STORAGE"
-TERMINAL_CRM_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
+TERMINAL_CRM_STAGES = {"WON", "LOSE", "APOLOGY"}
+INTERMEDIATE_PROTECTED_CRM_STAGES = {"DISMANTLING"}
+ALLOWED_PROTECTED_STAGE_TRANSITIONS = {
+    ("DISMANTLING", "WON"),
+    ("DISMANTLING", "LOSE"),
+}
 
 DERIVED_TO_CRM_STAGE = {
     EVENT_PICKUP_MOVING: CRM_STAGE_PICKUP_TRANSIT,
@@ -1526,8 +1531,11 @@ def review_decision(
 
     if deal is not None and _delivery_conflicts_with_event(event_type, deal, onec_order):
         reasons.append("delivery_conflict")
-    if deal is not None and _clean_string(deal.stage_id) in TERMINAL_CRM_STAGES:
+    current_stage = _clean_string(deal.stage_id) if deal is not None else ""
+    if current_stage in TERMINAL_CRM_STAGES:
         reasons.append("terminal_crm_stage")
+    elif current_stage in INTERMEDIATE_PROTECTED_CRM_STAGES:
+        reasons.append("protected_intermediate_crm_stage")
 
     if (
         event_type == EVENT_PICKUP_RECEIVED
@@ -1543,7 +1551,9 @@ def review_decision(
     if reasons:
         recommended_stage = (
             deal.stage_id
-            if deal is not None and _clean_string(deal.stage_id) in TERMINAL_CRM_STAGES
+            if deal is not None
+            and _clean_string(deal.stage_id)
+            in TERMINAL_CRM_STAGES | INTERMEDIATE_PROTECTED_CRM_STAGES
             else CRM_STAGE_MANUAL_REVIEW
         )
 
@@ -1772,6 +1782,11 @@ def build_stage_outbox_rows(
         if current_stage == target_stage:
             continue
         if current_stage in TERMINAL_CRM_STAGES:
+            continue
+        if (
+            current_stage in INTERMEDIATE_PROTECTED_CRM_STAGES
+            and (current_stage, target_stage) not in ALLOWED_PROTECTED_STAGE_TRANSITIONS
+        ):
             continue
 
         state = "ready"
@@ -2075,6 +2090,18 @@ def evaluate_stage_outbox_row(
             row,
             live_deal=live_deal,
             result="terminal_live_stage",
+            reason=live_stage,
+            dry_run=dry_run,
+            applied=False,
+        )
+    if (
+        live_stage in INTERMEDIATE_PROTECTED_CRM_STAGES
+        and (live_stage, row.target_stage) not in ALLOWED_PROTECTED_STAGE_TRANSITIONS
+    ):
+        return _stage_apply_result(
+            row,
+            live_deal=live_deal,
+            result="protected_intermediate_live_stage",
             reason=live_stage,
             dry_run=dry_run,
             applied=False,

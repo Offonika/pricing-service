@@ -60,6 +60,7 @@ PROCESS_STAGES = (
     "PREPAYMENT_INVOICE",
     "EXECUTING",
     "FINAL_INVOICE",
+    "PARTIALLY_SHIPPED",
     "IN_DELIVERY",
     "PICKUP_WAITING",
     "PICKUP_STORAGE",
@@ -104,6 +105,7 @@ STAGE_RU_LABELS = {
     "PREPAYMENT_INVOICE": "Ожидает оплаты",
     "EXECUTING": "Сборка / обеспечение",
     "FINAL_INVOICE": "Готов к отгрузке",
+    "PARTIALLY_SHIPPED": "Частично отправлен",
     "PICKUP_WAITING": "Ожидает самовывоза",
     "PICKUP_STORAGE": "Хранение в ПВЗ / отделении",
     "IN_DELIVERY": "Передан в доставку",
@@ -434,7 +436,7 @@ def _decide_delivery_review_stage(
                 "delivery_review_pickup_ready_for_dispatch",
                 order_status=order_status,
             )
-        if _is_prepayment_waiting_expired(order_status):
+        if _is_prepayment_delivery(delivery) and _is_prepayment_waiting_expired(order_status):
             return _new_decision(
                 deal,
                 "LOSE",

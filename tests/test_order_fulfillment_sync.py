@@ -383,6 +383,22 @@ def test_decide_delivery_review_routes_non_completed_orders() -> None:
     assert paid_courier.review_reason == "delivery_review_paid_carrier_assembled"
 
 
+def test_delivery_review_does_not_expire_cash_on_delivery_orders_as_prepayment() -> None:
+    old_courier_cod = sync.decide_new_deal_stage(
+        _deal(stage_id="DELIVERY_REVIEW", delivery="Доставка курьером", payment_status="0"),
+        order_status=sync.SaleOrderStatus(
+            order_number="218005",
+            canceled=False,
+            status_id="N",
+            payed=False,
+            created_at=datetime.now() - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS + 30),
+        ),
+    )
+
+    assert old_courier_cod.recommended_stage == "EXECUTING"
+    assert old_courier_cod.review_reason == "delivery_review_courier_cod_to_assembly"
+
+
 def test_decide_new_deal_stage_routes_canceled_orders_by_assembly_state() -> None:
     canceled = sync.SaleOrderStatus(
         order_number="218617",
@@ -410,6 +426,11 @@ def test_decide_new_deal_stage_routes_canceled_orders_by_assembly_state() -> Non
     assert assembled.review_reason == "canceled_assembled_to_dismantling"
     assert prepayment.recommended_stage == "LOSE"
     assert prepayment.review_reason == "canceled_unassembled_to_lost"
+
+
+def test_process_stage_inventory_includes_live_partial_shipment_stage() -> None:
+    assert "PARTIALLY_SHIPPED" in sync.PROCESS_STAGES
+    assert sync.STAGE_RU_LABELS["PARTIALLY_SHIPPED"] == "Частично отправлен"
 
 
 def test_decide_new_deal_stage_keeps_active_prepayment_waiting() -> None:

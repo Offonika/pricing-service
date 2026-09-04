@@ -179,6 +179,7 @@ test("blocked project explains resolution and stays usable at all target widths"
   });
   page.on("pageerror", (error) => browserErrors.push(error.message));
   await page.addInitScript(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
     window.sessionStorage.setItem("mm_procurement_order_formation_bitrix_session", JSON.stringify({
       session_token: "test-session-placeholder",
       expires_at: "2099-01-01T00:00:00Z",
@@ -261,10 +262,48 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(action).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/orders\/94\?line=50$/);
+  const compactRow = page.locator(".order-formation__compact-table tr.is-blocked").filter({
+    hasText: "Проблемная строка 20",
+  });
+  await expect(compactRow).toBeVisible();
+  await expect(compactRow.getByText("1 блокер")).toBeVisible();
+  await expect(compactRow.getByText("—").first()).toBeVisible();
+  await expect(compactRow.getByRole("link", { name: "Проблемная строка 20" })).toHaveAttribute(
+    "href",
+    "https://crm.example.test/crm/catalog/17/product/40699/"
+  );
+  await expect(page.getByRole("searchbox", { name: "Поиск товаров" })).toBeVisible();
+
+  for (const viewport of viewports) {
+    await page.setViewportSize(viewport);
+    await expectNoPageOverflow(page);
+    if (viewport.width <= 520) {
+      await expect(page.locator(".order-formation__compact-table thead")).toBeHidden();
+    } else {
+      await expect(page.locator(".order-formation__compact-table thead")).toBeVisible();
+    }
+    await expectAxeClean(page);
+    await page.screenshot({
+      path: testInfo.outputPath(`order-compact-${viewport.width}.png`),
+      fullPage: false,
+    });
+  }
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await compactRow.getByRole("button", { name: "Отчёты по товару Проблемная строка 20" }).click();
+  await expect(page.locator(".order-formation__reports-menu-heading").getByText("Отчёты", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Показатели товара/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Карточка Bitrix24/ })).toBeVisible();
+  await expectAxeClean(page);
+  await page.screenshot({ path: testInfo.outputPath("order-reports-390.png"), fullPage: false });
+  await page.getByRole("button", { name: "Закрыть меню отчётов" }).click();
+
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await compactRow.getByRole("button", { name: "Отчёты по товару Проблемная строка 20" }).click();
+  await page.getByRole("button", { name: /Подробный разбор строки/ }).click();
   const focusedRow = page.locator(".order-formation__row--blocked").filter({
     hasText: "Проблемная строка 20",
   });
-  await expect(focusedRow).toBeFocused();
   await expect(page.getByText(/Подозрение на партийную ошибку: 24 возврата, 72,7% за 90 дней/).first()).toBeVisible();
   await expect(page.getByText("Возвраты партии: 72,7%")).toBeVisible();
   await expect(page.getByText("24 возврата · порог 5 возвратов и 40%")).toBeVisible();
@@ -280,12 +319,12 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(page.getByText("Товар Bitrix24: 40699").first()).toBeVisible();
   await expect(focusedRow.getByText("1 блокер")).toBeVisible();
   await expect(
-    focusedRow.getByRole("link", { name: "Открыть сигналы товара Проблемная строка 20" })
+    focusedRow.getByRole("link", { name: "Открыть отчёт показателей товара Проблемная строка 20" })
   ).toHaveAttribute(
     "href",
     "/bitrix/procurement-order-formation?view=product_insights&productId=40699&orderId=94&lineId=50"
   );
-  await expect(focusedRow.getByRole("link", { name: "Открыть карточку" })).toHaveAttribute(
+  await expect(focusedRow.getByRole("link", { name: "Показатели товара" })).toHaveAttribute(
     "href",
     "/bitrix/procurement-order-formation?view=product_insights&productId=40699&orderId=94&lineId=50"
   );
@@ -303,7 +342,7 @@ test("blocked project explains resolution and stays usable at all target widths"
     }
     await expectAxeClean(page);
     await page.screenshot({
-      path: testInfo.outputPath(`order-${viewport.width}.png`),
+      path: testInfo.outputPath(`order-detailed-${viewport.width}.png`),
       fullPage: false,
     });
     if (viewport.width === 1440 || viewport.width === 390) {
@@ -317,9 +356,6 @@ test("blocked project explains resolution and stays usable at all target widths"
   await expect(orderFooter.getByText("3 строки")).toBeVisible();
   await expect(page.getByText("Сначала разберите строки 20, 30.")).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("order-footer-390.png"), fullPage: false });
-
-  await expect(page.getByRole("button", { name: /Исключённые строки: 35/ })).toBeVisible();
-  await expect(page.getByText("Исключённая строка 1")).toHaveCount(0);
 
   const removalTrigger = focusedRow.getByRole("button", { name: "Исключить строку" });
   await removalTrigger.click();

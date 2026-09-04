@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type {
@@ -18,7 +19,7 @@ import {
   linkProcurementOrderLabelSource,
   updateProcurementOrderLine,
 } from "../api/procurementAssortment";
-import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
+import { ProcurementOrderFormationApp as ProductionOrderFormationApp } from "./ProcurementOrderFormationApp";
 import { procurementBlockerSummaryLabel } from "../utils/procurementRiskLabels";
 
 vi.mock("../api/procurementAssortment", () => ({
@@ -39,6 +40,10 @@ vi.mock("../api/procurementAssortment", () => ({
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
+
+function ProcurementOrderFormationApp(props: ComponentProps<typeof ProductionOrderFormationApp>) {
+  return <ProductionOrderFormationApp {...props} initialView="detailed" />;
+}
 
 function line(overrides: Partial<ProcurementOrderFormationLine> = {}) {
   return {
@@ -141,6 +146,83 @@ async function proposePension() {
 const versionConflict = {
   response: { status: 409, data: { detail: "order version changed; refresh the order" } },
 };
+
+describe("ProcurementOrderFormationApp компактный список и отчёты", () => {
+  beforeEach(() => {
+    window.__MM_BITRIX_LAUNCH__ = { domain: "crm.example.test" };
+  });
+
+  afterEach(() => {
+    delete window.__MM_BITRIX_LAUNCH__;
+    window.history.replaceState({}, "", "/");
+    cleanup();
+  });
+
+  it("показывает ключевые сигналы и открывает три разные поверхности из меню отчётов", () => {
+    const productLine = line({
+      id: 42,
+      line_number: 2,
+      nomenclature_name: "Проблемная строка",
+      blockers: ["defect_rate_suspected"],
+      profitability_pct: "37.5",
+      product_defect_pct: "0.4",
+      risk_codes: ["adaptive_lead_time_sync_ready", "speed_horizon_rule_applied"],
+    });
+
+    render(<ProductionOrderFormationApp initialOrder={order({ lines: [productLine] })} />);
+
+    expect(screen.getByRole("columnheader", { name: "Блокеры" })).toBeInTheDocument();
+    expect(screen.getByText("1 блокер")).toBeInTheDocument();
+    expect(screen.getByText("37,5%")).toBeInTheDocument();
+    expect(screen.getByText("0,4%")).toBeInTheDocument();
+    const compactRow = screen.getByText("Проблемная строка").closest("tr");
+    expect(compactRow).not.toBeNull();
+    expect(within(compactRow!).getAllByText("2")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Отчёты по товару Проблемная строка" }));
+
+    expect(screen.getByRole("link", { name: /Показатели товара/ })).toHaveAttribute(
+      "href",
+      "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
+    );
+    expect(screen.getByRole("link", { name: /Карточка Bitrix24/ })).toHaveAttribute(
+      "href",
+      "https://crm.example.test/crm/catalog/17/product/2695/"
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("link", { name: /Показатели товара/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Отчёты по товару Проблемная строка" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Подробный разбор строки/ }));
+    expect(screen.getByRole("heading", { name: "Подробный разбор строки" })).toBeInTheDocument();
+    expect(screen.getByText("Операционный отчёт · строка 2")).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Поиск товаров" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "К списку товаров" }));
+    expect(screen.getByRole("searchbox", { name: "Поиск товаров" })).toBeInTheDocument();
+  });
+
+  it("фильтрует компактный список по состоянию и поисковой строке", () => {
+    render(<ProductionOrderFormationApp initialOrder={order({
+      lines: [
+        line({ id: 41, nomenclature_name: "Готовая строка", blockers: [] }),
+        line({ id: 42, line_number: 2, nomenclature_name: "Проблемная строка", blockers: ["defect_rate_suspected"] }),
+      ],
+    })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "С блокерами1" }));
+    expect(screen.getByText("Проблемная строка")).toBeInTheDocument();
+    expect(screen.queryByText("Готовая строка")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Все2" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Поиск товаров" }), {
+      target: { value: "Готовая" },
+    });
+    expect(screen.getByText("Готовая строка")).toBeInTheDocument();
+    expect(screen.queryByText("Проблемная строка")).not.toBeInTheDocument();
+  });
+});
 
 describe("ProcurementOrderFormationApp связанный процесс", () => {
   afterEach(cleanup);
@@ -401,14 +483,14 @@ describe("ProcurementOrderFormationApp проблемные строки", () =>
       "title",
       "Строка пересчитана по живым срокам и готова к заказу\nГоризонт заказа задан классом скорости"
     );
-    const signalsLink = within(problemRow!).getByRole("link", { name: "Открыть сигналы товара Проблемная строка" });
+    const signalsLink = within(problemRow!).getByRole("link", { name: "Открыть отчёт показателей товара Проблемная строка" });
     expect(signalsLink).toHaveAttribute(
       "href",
       "/bitrix/procurement-order-formation?view=product_insights&productId=2695&orderId=12&lineId=42"
     );
     expect(signalsLink).not.toHaveAttribute("target");
     const insightsLink =
-      screen.getAllByRole("link", { name: "Открыть карточку" }).find(
+      screen.getAllByRole("link", { name: "Показатели товара" }).find(
         (item) => item.getAttribute("href")?.endsWith("lineId=42")
       );
     expect(insightsLink).toHaveAttribute(

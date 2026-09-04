@@ -9,6 +9,14 @@ import {
 } from "react";
 import toast from "react-hot-toast";
 import {
+  ArrowTopRightOnSquareIcon,
+  ChartBarIcon,
+  ChevronDownIcon,
+  DocumentTextIcon,
+  EllipsisVerticalIcon,
+  MagnifyingGlassIcon,
+} from "@heroicons/react/24/outline";
+import {
   applyProcurementSupplierDistribution,
   approveProcurementClassification,
   createProcurementClassification,
@@ -41,6 +49,7 @@ interface Props {
   bitrixUserName?: string | null;
   focusLineId?: number;
   initialOrder: ProcurementOrderFormation;
+  initialView?: "compact" | "detailed";
   onBack?: () => void;
 }
 
@@ -264,7 +273,15 @@ function errorText(error: unknown) {
   return procurementErrorText(error);
 }
 
-export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, initialOrder, onBack }: Props) {
+type ProductListFilter = "all" | "blocked" | "ready";
+
+export function ProcurementOrderFormationApp({
+  bitrixUserName,
+  focusLineId,
+  initialOrder,
+  initialView = "compact",
+  onBack,
+}: Props) {
   const [order, setOrder] = useState(initialOrder);
   const [lineEdits, setLineEdits] = useState<Record<number, LineEdit>>({});
   const [classificationEdits, setClassificationEdits] = useState<
@@ -273,6 +290,13 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const [openedClassification, setOpenedClassification] = useState<number | null>(null);
   const [openedRemoval, setOpenedRemoval] = useState<number | null>(null);
   const [showRemoved, setShowRemoved] = useState(false);
+  const [reportLineId, setReportLineId] = useState<number | null>(() => (
+    initialView === "detailed" ? focusLineId || -1 : null
+  ));
+  const [reportMenuLineId, setReportMenuLineId] = useState<number | null>(null);
+  const [productListFilter, setProductListFilter] = useState<ProductListFilter>("all");
+  const [productSearch, setProductSearch] = useState("");
+  const [showOrderTools, setShowOrderTools] = useState(false);
   const [removalReason, setRemovalReason] = useState("");
   const [removalReplacement, setRemovalReplacement] = useState("");
   const [removalWithReplacement, setRemovalWithReplacement] = useState(false);
@@ -309,6 +333,26 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     focusedLineRef.current.focus({ preventScroll: true });
   }, [focusLineId]);
 
+  useEffect(() => {
+    if (reportMenuLineId === null) return;
+
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setReportMenuLineId(null);
+    };
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".order-formation__reports-cell")) return;
+      setReportMenuLineId(null);
+    };
+
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+    };
+  }, [reportMenuLineId]);
+
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
   const removedLines = useMemo(() => order.lines.filter((line) => line.removed), [order.lines]);
   const visibleLines = useMemo(
@@ -319,6 +363,26 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
     }),
     [order.lines]
   );
+  const compactLines = useMemo(() => {
+    const query = productSearch.trim().toLocaleLowerCase("ru-RU");
+    return visibleLines.filter((line) => {
+      if (line.removed) return false;
+      if (productListFilter === "blocked" && line.blockers.length === 0) return false;
+      if (productListFilter === "ready" && line.blockers.length > 0) return false;
+      if (!query) return true;
+      return [line.nomenclature_name, line.nomenclature_code, line.nomenclature_ref, line.bitrix_product_id]
+        .some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(query));
+    });
+  }, [productListFilter, productSearch, visibleLines]);
+  const detailedLines = useMemo(
+    () => reportLineId === -1 ? visibleLines : visibleLines.filter((line) => line.id === reportLineId),
+    [reportLineId, visibleLines]
+  );
+  const blockedLineCount = useMemo(
+    () => activeLines.filter((line) => line.blockers.length > 0).length,
+    [activeLines]
+  );
+  const readyLineCount = activeLines.length - blockedLineCount;
   const openedRemovalLine = useMemo(
     () => order.lines.find((line) => line.id === openedRemoval) || null,
     [openedRemoval, order.lines]
@@ -644,6 +708,23 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   const previewMatchesSource = labelPreview?.onec_number === labelSourceNumber
     && labelPreview?.label_size === labelSize;
 
+  const openDetailedReport = (lineId: number) => {
+    setReportMenuLineId(null);
+    setReportLineId(lineId);
+    const url = new URL(window.location.href);
+    url.searchParams.set("report", "line_detail");
+    url.searchParams.set("line", String(lineId));
+    window.history.pushState({}, "", url);
+  };
+
+  const closeDetailedReport = () => {
+    setReportLineId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("report");
+    url.searchParams.delete("line");
+    window.history.pushState({}, "", url);
+  };
+
   useEffect(() => {
     if (!labelSourceNumber || previewMatchesSource) return;
     void previewLabels(false);
@@ -836,7 +917,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
   );
 
   return (
-    <div className="app order-formation">
+    <div className={`app order-formation ${reportLineId === null ? "order-formation--compact" : "order-formation--report"}`}>
       <header className="app__header order-formation__header">
         {onBack && <button className="btn btn--ghost" onClick={onBack} type="button">К заказам</button>}
         <div>
@@ -911,7 +992,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         ) : null}
       </section>
 
-      {order.linked_process?.state === "linked" && order.linked_process.product_rows_sync ? (
+      {(reportLineId !== null || showOrderTools) && order.linked_process?.state === "linked" && order.linked_process.product_rows_sync ? (
         <section aria-labelledby="smart-process-products-title" className="order-formation__product-mirror">
           <header>
             <div>
@@ -960,9 +1041,9 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         </section>
       ) : null}
 
-      {labelsSection}
+      {(reportLineId !== null || showOrderTools) ? labelsSection : null}
 
-      {supplierReviewRoom && !locked && (
+      {(reportLineId !== null || showOrderTools) && supplierReviewRoom && !locked && (
         <section className="order-formation__supplier-room">
           <div>
             <strong>Комната разбора поставщиков</strong>
@@ -979,7 +1060,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         </section>
       )}
 
-      {distributionPreview && (
+      {(reportLineId !== null || showOrderTools) && distributionPreview && (
         <section className="order-formation__distribution-preview">
           <header>
             <div>
@@ -1034,6 +1115,201 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
         </section>
       )}
 
+      {reportLineId === null ? (
+        <>
+          <section className="order-formation__list-toolbar" aria-label="Фильтры товаров">
+            <div className="order-formation__list-tabs" role="group" aria-label="Состояние товаров">
+              {([
+                ["all", "Все", activeLines.length],
+                ["blocked", "С блокерами", blockedLineCount],
+                ["ready", "Готовы", readyLineCount],
+              ] as const).map(([value, label, count]) => (
+                <button
+                  aria-pressed={productListFilter === value}
+                  className={productListFilter === value ? "is-active" : ""}
+                  key={value}
+                  onClick={() => setProductListFilter(value)}
+                  type="button"
+                >
+                  {label}<span>{count}</span>
+                </button>
+              ))}
+            </div>
+            <label className="order-formation__list-search">
+              <MagnifyingGlassIcon aria-hidden="true" />
+              <span className="sr-only">Поиск товаров</span>
+              <input
+                onChange={(event) => setProductSearch(event.target.value)}
+                placeholder="Поиск по названию, 1С ID или Bitrix ID"
+                type="search"
+                value={productSearch}
+              />
+            </label>
+            <button
+              aria-expanded={showOrderTools}
+              className="order-formation__tools-toggle"
+              onClick={() => setShowOrderTools((current) => !current)}
+              type="button"
+            >
+              Инструменты заказа <ChevronDownIcon aria-hidden="true" />
+            </button>
+          </section>
+
+          <main className="order-formation__compact-body">
+            <div className="order-formation__compact-table-wrap">
+              <table className="order-formation__compact-table">
+                <thead>
+                  <tr>
+                    <th>№</th>
+                    <th>Товар</th>
+                    <th>Количество</th>
+                    <th>Цена закупки</th>
+                    <th>Жизненный статус</th>
+                    <th>Блокеры</th>
+                    <th>Рентабельность</th>
+                    <th>Брак</th>
+                    <th>Сигналы</th>
+                    <th><span className="sr-only">Отчёты</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {compactLines.map((line) => {
+                    const edit = lineEdit(line);
+                    const problems = lineProblemTexts(line, order.batch_id);
+                    const productDefect = numeric(line.product_defect_pct ?? payloadValue(line, "defect_share_pct"));
+                    const profitability = numeric(line.profitability_pct);
+                    const riskGroups = groupProcurementRiskCodes(line.risk_codes);
+                    const bitrixProductUrl = resolveBitrixProductUrl(line.bitrix_product_id);
+                    const productInsightsUrl = line.bitrix_product_id
+                      ? `/bitrix/procurement-order-formation?view=product_insights&productId=${encodeURIComponent(line.bitrix_product_id)}&orderId=${order.id}&lineId=${line.id}`
+                      : null;
+                    return (
+                      <tr className={problems.length ? "is-blocked" : ""} key={line.id}>
+                        <td className="order-formation__compact-line">{line.line_number}</td>
+                        <td className="order-formation__compact-product">
+                          {bitrixProductUrl ? (
+                            <a href={bitrixProductUrl} target="_top">{line.nomenclature_name}</a>
+                          ) : <strong>{line.nomenclature_name}</strong>}
+                          <small>
+                            1С: {line.nomenclature_code || line.nomenclature_ref || "—"}
+                            <span aria-hidden="true"> · </span>
+                            Bitrix24: {line.bitrix_product_id || "не найден"}
+                          </small>
+                        </td>
+                        <td>
+                          <label className="order-formation__compact-input">
+                            <span className="sr-only">Количество {line.nomenclature_name}</span>
+                            <input
+                              disabled={locked}
+                              min="0"
+                              onChange={(event) => setLineEdits((current) => ({
+                                ...current,
+                                [line.id]: { ...edit, quantity: event.target.value },
+                              }))}
+                              step="1"
+                              type="number"
+                              value={edit.quantity}
+                            />
+                            <span>шт.</span>
+                          </label>
+                        </td>
+                        <td>
+                          <label className="order-formation__compact-input order-formation__compact-input--price">
+                            <span className="sr-only">Цена закупки {line.nomenclature_name}</span>
+                            <input
+                              disabled={locked}
+                              min="0"
+                              onChange={(event) => setLineEdits((current) => ({
+                                ...current,
+                                [line.id]: { ...edit, price: event.target.value },
+                              }))}
+                              step="0.01"
+                              type="number"
+                              value={edit.price}
+                            />
+                            <span>{line.currency === "RUB" ? "₽" : line.currency}</span>
+                          </label>
+                          {lineEdits[line.id] ? (
+                            <button
+                              className="order-formation__compact-save"
+                              disabled={Boolean(loadingKey) || locked}
+                              onClick={() => void saveLine(line)}
+                              type="button"
+                            >
+                              Сохранить
+                            </button>
+                          ) : null}
+                        </td>
+                        <td className="order-formation__compact-status">
+                          <strong>{line.effective_assortment_status_label || "Не задан"}</strong>
+                          {line.lifecycle_status ? <small>{line.lifecycle_status}</small> : null}
+                        </td>
+                        <td><span className={`order-formation__metric ${problems.length ? "is-critical" : "is-success"}`}>{problems.length ? countLabel(problems.length, "блокер", "блокера", "блокеров") : "—"}</span></td>
+                        <td><span className={`order-formation__metric ${profitability !== null && profitability < 0 ? "is-critical" : "is-info"}`}>{profitability === null ? "—" : percent(profitability)}</span></td>
+                        <td><span className={`order-formation__metric ${productDefect !== null && productDefect > 10 ? "is-critical" : productDefect !== null && productDefect > 0.5 ? "is-warning" : "is-success"}`}>{productDefect === null ? "—" : percent(productDefect)}</span></td>
+                        <td><span className="order-formation__metric is-info">{riskGroups.length || "—"}</span></td>
+                        <td className="order-formation__reports-cell">
+                          <button
+                            aria-expanded={reportMenuLineId === line.id}
+                            aria-haspopup="dialog"
+                            aria-label={`Отчёты по товару ${line.nomenclature_name}`}
+                            className="order-formation__reports-trigger"
+                            onClick={() => setReportMenuLineId((current) => current === line.id ? null : line.id)}
+                            type="button"
+                          >
+                            <span>Отчёты</span><EllipsisVerticalIcon aria-hidden="true" />
+                          </button>
+                          {reportMenuLineId === line.id ? (
+                            <div aria-label={`Отчёты по товару ${line.nomenclature_name}`} className="order-formation__reports-menu" role="dialog">
+                              <div className="order-formation__reports-menu-heading">
+                                <strong>Отчёты</strong>
+                                <button
+                                  aria-label="Закрыть меню отчётов"
+                                  onClick={() => setReportMenuLineId(null)}
+                                  type="button"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                              {productInsightsUrl ? (
+                                <a href={productInsightsUrl}>
+                                  <ChartBarIcon aria-hidden="true" />
+                                  <span><strong>Показатели товара</strong><small>Визуальный аналитический отчёт</small></span>
+                                </a>
+                              ) : null}
+                              <button onClick={() => openDetailedReport(line.id)} type="button">
+                                <DocumentTextIcon aria-hidden="true" />
+                                <span><strong>Подробный разбор строки</strong><small>Операционный отчёт</small></span>
+                              </button>
+                              {bitrixProductUrl ? (
+                                <a href={bitrixProductUrl} target="_top">
+                                  <ArrowTopRightOnSquareIcon aria-hidden="true" />
+                                  <span><strong>Карточка Bitrix24</strong><small>Оригинальная карточка товара</small></span>
+                                </a>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {compactLines.length === 0 ? (
+                <p className="order-formation__compact-empty">По выбранному фильтру товары не найдены.</p>
+              ) : null}
+            </div>
+          </main>
+        </>
+      ) : (
+        <>
+          <section className="order-formation__report-heading">
+            <button className="btn btn--ghost" onClick={closeDetailedReport} type="button">К списку товаров</button>
+            <div>
+              <h2>Подробный разбор строки</h2>
+              <span>Операционный отчёт{reportLineId === -1 ? " · все строки" : ` · строка ${detailedLines[0]?.line_number || "—"}`}</span>
+            </div>
+          </section>
       <main className="order-formation__body">
         <div className="order-formation__table-wrap">
           <table className="order-formation__table">
@@ -1050,7 +1326,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
               </tr>
             </thead>
             <tbody>
-              {visibleLines.map((line, index) => {
+              {detailedLines.map((line, index) => {
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
@@ -1117,7 +1393,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                       {line.quality && <small>Качество: {line.quality}</small>}
                       {productInsightsUrl && (
                         <a
-                          aria-label={`Открыть сигналы товара ${line.nomenclature_name}`}
+                          aria-label={`Открыть отчёт показателей товара ${line.nomenclature_name}`}
                           className="order-formation__product-signals"
                           href={productInsightsUrl}
                         >
@@ -1450,7 +1726,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
                           className="btn btn--small order-formation__insights-link"
                           href={productInsightsUrl}
                         >
-                          Открыть карточку
+                          Показатели товара
                         </a>
                       )}
                       {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
@@ -1481,6 +1757,8 @@ export function ProcurementOrderFormationApp({ bitrixUserName, focusLineId, init
           </table>
         </div>
       </main>
+        </>
+      )}
 
       {openedRemovalLine && (
         <div

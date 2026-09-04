@@ -56,7 +56,7 @@ page_router = APIRouter()
     response_class=HTMLResponse,
     include_in_schema=False,
 )
-async def bitrix_order_closures_page(request) -> HTMLResponse:
+async def bitrix_order_closures_page(request: Request) -> HTMLResponse:
     payload = await _bitrix_launch_payload(request)
     return HTMLResponse(_inject_launch_payload(_read_index(), payload))
 

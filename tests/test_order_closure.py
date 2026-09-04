@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -670,6 +671,13 @@ def test_order_closure_api_contract_is_exposed() -> None:
         "/api/order-closures/internal/commands",
         "/api/order-closures/internal/commands/{batch_id}/ack",
     }.issubset(paths)
+
+
+def test_order_closure_bitrix_page_does_not_require_request_query_parameter() -> None:
+    response = TestClient(app).get("/bitrix/order-closures/")
+
+    assert response.status_code == 200
+    assert "window.__MM_BITRIX_LAUNCH__" in response.text
 
 
 def test_xml_ack_parses_exact_refs_hash_and_escaped_text() -> None:

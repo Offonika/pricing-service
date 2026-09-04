@@ -489,7 +489,16 @@ function ProcessLinkState({
 }
 
 type DashboardSort = "overdue" | "unblocked" | "responsible";
+type DashboardQueueFilter = "all" | "ready" | "review" | "blocked" | "overdue";
 const DASHBOARD_STATE_KEY = "pricing.procurement.dashboard-view.v2";
+const DASHBOARD_QUEUE_FILTERS: DashboardQueueFilter[] = ["all", "ready", "review", "blocked", "overdue"];
+const DASHBOARD_QUEUE_LABELS: Record<DashboardQueueFilter, string> = {
+  all: "Вся очередь решений",
+  ready: "Готово к подтверждению",
+  review: "Нужен разбор",
+  blocked: "Есть блокеры",
+  overdue: "Просроченные решения",
+};
 
 function readDashboardState() {
   try {
@@ -497,6 +506,8 @@ function readDashboardState() {
     const value = raw ? JSON.parse(raw) as Record<string, unknown> : {};
     return {
       manualFilter: typeof value.manualFilter === "string" ? value.manualFilter : null,
+      queueFilter: DASHBOARD_QUEUE_FILTERS.includes(String(value.queueFilter) as DashboardQueueFilter)
+        ? value.queueFilter as DashboardQueueFilter : null,
       search: typeof value.search === "string" ? value.search : "",
       sort: ["overdue", "unblocked", "responsible"].includes(String(value.sort))
         ? value.sort as DashboardSort : "overdue" as DashboardSort,
@@ -506,7 +517,7 @@ function readDashboardState() {
       scrollY: Number(value.scrollY) || 0,
     };
   } catch {
-    return { manualFilter: null, search: "", sort: "overdue" as DashboardSort, focusedCode: "", selectedCodes: [] as string[], scrollY: 0 };
+    return { manualFilter: null, queueFilter: null, search: "", sort: "overdue" as DashboardSort, focusedCode: "", selectedCodes: [] as string[], scrollY: 0 };
   }
 }
 
@@ -527,15 +538,28 @@ function Dashboard({
 }) {
   const initialView = useMemo(readDashboardState, []);
   const [manualFilter, setManualFilter] = useState<string | null>(initialView.manualFilter);
+  const [queueFilter, setQueueFilter] = useState<DashboardQueueFilter | null>(initialView.queueFilter);
   const [search, setSearch] = useState(initialView.search);
   const [sort, setSort] = useState<DashboardSort>(initialView.sort);
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set(initialView.selectedCodes));
   const [focusedCode, setFocusedCode] = useState(initialView.focusedCode);
   const [approving, setApproving] = useState(false);
   const manualFilterLabel = manualFilter ? MANUAL_STATUS_LABELS[manualFilter] : null;
-  const unfilteredRows = manualFilter
+  const queueLabel = manualFilterLabel || (queueFilter ? DASHBOARD_QUEUE_LABELS[queueFilter] : "");
+  const queueIsOpen = Boolean(manualFilter || queueFilter);
+  const totalProducts = data.cards.reduce((total, card) => total + card.total_count, 0);
+  const supportedProducts = data.cards.find((card) => card.status === "working")?.total_count || 0;
+  const manualControlProducts = Object.values(data.manual_status_counts).reduce((total, count) => total + count, 0);
+  const overdueCount = data.attention.filter((item) => item.overdue).length;
+  const unfilteredRows = useMemo(() => manualFilter
     ? data.manual_attention.filter((item) => item.filter_status === manualFilter)
-    : data.attention;
+    : !queueFilter
+      ? []
+      : data.attention.filter((item) => {
+          if (queueFilter === "all") return true;
+          if (queueFilter === "overdue") return Boolean(item.overdue);
+          return item.decision_state === queueFilter;
+        }), [data.attention, data.manual_attention, manualFilter, queueFilter]);
   const attentionRows = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("ru-RU");
     const rows = unfilteredRows.filter((item) => !query || [
@@ -566,6 +590,27 @@ function Dashboard({
     item.filter_status === "review"
     || item.decision_state === "review"
     || item.action_label === "Открыть разбор";
+
+  const openDecisionQueue = useCallback((filter: DashboardQueueFilter) => {
+    setManualFilter(null);
+    setQueueFilter(filter);
+    window.setTimeout(() => document.getElementById("decision-queue")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
+  }, []);
+
+  const openManualQueue = useCallback((status: string) => {
+    setQueueFilter(null);
+    setManualFilter((current) => current === status ? null : status);
+    window.setTimeout(() => document.getElementById("decision-queue")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
+  }, []);
+
+  const showManualStatuses = useCallback(() => {
+    document.getElementById("manual-statuses")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const closeQueue = useCallback(() => {
+    setManualFilter(null);
+    setQueueFilter(null);
+  }, []);
 
   const openRow = useCallback((item: ProcurementDashboard["attention"][number]) => {
     if (item.filter_status === "review" || item.decision_state === "review" || item.action_label === "Открыть разбор") {
@@ -610,9 +655,9 @@ function Dashboard({
 
   useEffect(() => {
     window.sessionStorage.setItem(DASHBOARD_STATE_KEY, JSON.stringify({
-      manualFilter, search, sort, focusedCode, selectedCodes: [...selectedCodes], scrollY: window.scrollY,
+      manualFilter, queueFilter, search, sort, focusedCode, selectedCodes: [...selectedCodes], scrollY: window.scrollY,
     }));
-  }, [focusedCode, manualFilter, search, selectedCodes, sort]);
+  }, [focusedCode, manualFilter, queueFilter, search, selectedCodes, sort]);
 
   useEffect(() => {
     const restore = window.setTimeout(() => window.scrollTo({ top: initialView.scrollY }), 0);
@@ -655,12 +700,90 @@ function Dashboard({
   }, [approveSelected, attentionRows, focusedCode, openRow, selectedCodes.size]);
   return (
     <main className="order-workspace__content procurement-dashboard">
+      <section className="order-workspace__section-heading dashboard-overview__heading">
+        <div>
+          <h2>Общая картина</h2>
+          <p>Показатели открывают соответствующий список товаров или решений.</p>
+        </div>
+        <span>Расчёт от {dateTime(data.updated_at)}</span>
+      </section>
+      <section aria-label="Общие показатели Витрины" className="dashboard-overview">
+        <button onClick={() => onOpenLifecycle("all", "all")} type="button">
+          <span>Товаров на витрине</span>
+          <strong>{totalProducts}</strong>
+          <small>Открыть весь список</small>
+        </button>
+        <button onClick={() => onOpenLifecycle("working", "all")} type="button">
+          <span>Поддерживаем</span>
+          <strong>{supportedProducts}</strong>
+          <small>Открыть товары статуса</small>
+        </button>
+        <button onClick={() => openDecisionQueue("all")} type="button">
+          <span>Открытых решений</span>
+          <strong>{data.attention.length}</strong>
+          <small>Показать рабочую очередь</small>
+        </button>
+        <button onClick={showManualStatuses} type="button">
+          <span>Ручной контроль</span>
+          <strong>{manualControlProducts}</strong>
+          <small>Перейти к ручным статусам</small>
+        </button>
+      </section>
+
+      <section className="order-workspace__section-heading dashboard-signals__heading">
+        <div>
+          <h2>Сигналы решений</h2>
+          <p>Нажмите сигнал, чтобы открыть только относящиеся к нему товары.</p>
+        </div>
+      </section>
+      <section aria-label="Сигналы решений" className="attention-summary dashboard-signals">
+        <button
+          className="attention-summary__item attention-summary__item--ready"
+          disabled={data.decision_summary.ready_count === 0}
+          onClick={() => openDecisionQueue("ready")}
+          type="button"
+        >
+          <span>Готово к подтверждению</span>
+          <strong>{data.decision_summary.ready_count}</strong>
+          <small>Открыть готовые решения</small>
+        </button>
+        <button
+          className="attention-summary__item attention-summary__item--review"
+          disabled={data.decision_summary.review_count === 0}
+          onClick={() => openDecisionQueue("review")}
+          type="button"
+        >
+          <span>Нужен разбор</span>
+          <strong>{data.decision_summary.review_count}</strong>
+          <small>Показать товары для разбора</small>
+        </button>
+        <button
+          className="attention-summary__item attention-summary__item--blocked"
+          disabled={data.decision_summary.blocked_count === 0}
+          onClick={() => openDecisionQueue("blocked")}
+          type="button"
+        >
+          <span>Есть блокеры</span>
+          <strong>{data.decision_summary.blocked_count}</strong>
+          <small>Показать причины блокировки</small>
+        </button>
+        <button
+          className="attention-summary__item attention-summary__item--overdue"
+          disabled={overdueCount === 0}
+          onClick={() => openDecisionQueue("overdue")}
+          type="button"
+        >
+          <span>Просрочено</span>
+          <strong>{overdueCount}</strong>
+          <small>{overdueCount ? "Открыть срочные решения" : "Просроченных нет"}</small>
+        </button>
+      </section>
+
       <section className="order-workspace__section-heading">
         <div>
           <h2>Жизненные статусы</h2>
           <p>Общее количество открывает все товары; кнопка решения показывает куда и сколько.</p>
         </div>
-        <span>Расчёт от {dateTime(data.updated_at)}</span>
       </section>
       <section className="lifecycle-cards">
         {data.cards.map((card) => {
@@ -704,7 +827,7 @@ function Dashboard({
         })}
       </section>
 
-      <section className="order-workspace__section-heading order-workspace__section-heading--manual">
+      <section className="order-workspace__section-heading order-workspace__section-heading--manual" id="manual-statuses">
         <div>
           <h2>Ручные статусы и контроль</h2>
           <p>Нажмите карточку, чтобы отфильтровать список ниже.</p>
@@ -718,7 +841,7 @@ function Dashboard({
             className={`manual-status-card manual-status-card--${status}${manualFilter === status ? " is-active" : ""}`}
             disabled={(data.manual_status_counts[status] || 0) === 0}
             key={status}
-            onClick={() => setManualFilter((current) => current === status ? null : status)}
+            onClick={() => openManualQueue(status)}
             type="button"
           >
             <span>
@@ -732,21 +855,19 @@ function Dashboard({
         ))}
       </section>
 
-      <section className="attention-panel">
+      {queueIsOpen ? <section className="attention-panel" id="decision-queue">
         <div className="order-workspace__section-heading">
           <div>
-            <h2>{manualFilterLabel ? `Ручной статус: ${manualFilterLabel}` : "Очередь решений"}</h2>
+            <h2>{queueLabel}</h2>
             <p>
               {manualFilterLabel
                 ? `Показаны товары выбранного ручного статуса: ${attentionRows.length}.`
-                : `Приоритетная очередь: ${attentionRows.length}.`}
+                : `Показано решений: ${attentionRows.length}.`}
             </p>
           </div>
-          {manualFilter ? (
-            <button className="btn btn--ghost btn--small" onClick={() => setManualFilter(null)} type="button">
-              Сбросить фильтр
-            </button>
-          ) : null}
+          <button className="btn btn--ghost btn--small" onClick={closeQueue} type="button">
+            Назад к обзору
+          </button>
         </div>
         <div className="attention-toolbar">
           <label>
@@ -766,37 +887,6 @@ function Dashboard({
           </button>
           <small>Клавиши: J/K — строка, Space — выбор, Enter — открыть, A — подтвердить</small>
         </div>
-        {!manualFilter ? (
-          <section aria-label="Сводка очереди решений" className="attention-summary">
-            <button
-              className="attention-summary__item attention-summary__item--ready"
-              disabled={data.decision_summary.ready_count === 0}
-              onClick={() => onOpenLifecycle("all", "action", { readiness: "ready" })}
-              type="button"
-            >
-              <span>Готово к подтверждению</span>
-              <strong>{data.decision_summary.ready_count}</strong>
-            </button>
-            <button
-              className="attention-summary__item attention-summary__item--review"
-              disabled={data.decision_summary.review_count === 0}
-              onClick={() => onOpenLifecycle("all", "action", { readiness: "review" })}
-              type="button"
-            >
-              <span>Нужен разбор</span>
-              <strong>{data.decision_summary.review_count}</strong>
-            </button>
-            <button
-              className="attention-summary__item attention-summary__item--blocked"
-              disabled={data.decision_summary.blocked_count === 0}
-              onClick={() => onOpenLifecycle("all", "action", { readiness: "blocked" })}
-              type="button"
-            >
-              <span>Есть блокеры</span>
-              <strong>{data.decision_summary.blocked_count}</strong>
-            </button>
-          </section>
-        ) : null}
         {attentionRows.length === 0 ? (
           <div className="order-workspace__empty">
             {manualFilterLabel ? "В выбранном ручном статусе товаров нет." : "Открытых решений нет."}
@@ -836,7 +926,7 @@ function Dashboard({
                       <small>{item.nomenclature_code} · {item.current_status_label}</small>
                       <small>Ответственный: {item.responsible_name || data.responsible_name}</small>
                     </td>
-                    <td><span className="transition-pill">{item.action_label}</span></td>
+                    <td><span className="transition-pill">{canOpenReview(item) ? "Семейный отчёт" : item.action_label}</span></td>
                     <td>{item.fact_summary}</td>
                     <td>
                       <span className={`state-pill state-pill--${item.urgency}`}>{item.decision_state_label}</span>
@@ -865,7 +955,17 @@ function Dashboard({
             </table>
           </div>
         )}
-      </section>
+      </section> : (
+        <section className="dashboard-queue-entry">
+          <div>
+            <strong>Нужна работа со списком?</strong>
+            <span>Откройте всю очередь или выберите один из сигналов выше.</span>
+          </div>
+          <button className="btn btn--ghost" disabled={data.attention.length === 0} onClick={() => openDecisionQueue("all")} type="button">
+            Открыть всю очередь · {data.attention.length}
+          </button>
+        </section>
+      )}
     </main>
   );
 }

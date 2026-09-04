@@ -70,9 +70,10 @@ test("Витрина открывает семейный разбор и вос�
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/bitrix/procurement-order-formation");
 
-  const queue = page.locator(".attention-panel");
-  const lifecycle = page.locator(".lifecycle-cards");
-  expect((await queue.boundingBox())!.y).toBeLessThan((await lifecycle.boundingBox())!.y);
+  await expect(page.getByRole("heading", { name: "Общая картина" })).toBeVisible();
+  await expect(page.locator(".attention-panel")).toHaveCount(0);
+  await page.getByRole("button", { name: /Нужен разбор/ }).click();
+  await expect(page.getByRole("heading", { name: "Нужен разбор" })).toBeVisible();
   await page.getByPlaceholder("Поиск товара или причины").fill("Samsung");
   await page.getByRole("button", { name: "Открыть разбор" }).click();
   await expect(page).toHaveURL(/\/review\/101$/);
@@ -82,6 +83,7 @@ test("Витрина открывает семейный разбор и вос�
   await page.screenshot({ path: testInfo.outputPath("family-review-1440.png"), fullPage: true });
   await page.getByRole("button", { name: /Вернуться на Витрину/ }).click();
   await expect(page.getByPlaceholder("Поиск товара или причины")).toHaveValue("Samsung");
+  await expect(page.getByRole("heading", { name: "Нужен разбор" })).toBeVisible();
   await expect(page.getByText(/run/i)).toHaveCount(0);
   await page.locator(".attention-panel h2").click();
   await page.keyboard.press("j");
@@ -93,6 +95,31 @@ test("Витрина открывает семейный разбор и вос�
   }
   await expectNoOverflow(page);
 });
+
+for (const width of [1440, 1024, 768, 390]) {
+  test(`Витрина остаётся обзором и открывает очередь на ${width}px`, async ({ page }, testInfo) => {
+    await prepare(page);
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.goto("/bitrix/procurement-order-formation");
+
+    await expect(page.getByRole("heading", { name: "Общая картина" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Товаров на витрине/ })).toBeVisible();
+    await expect(page.locator(".attention-panel")).toHaveCount(0);
+    await expectNoOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath(`dashboard-overview-${width}.png`), fullPage: true });
+
+    await page.getByRole("button", { name: /Нужен разбор/ }).click();
+    await expect(page.getByRole("heading", { name: "Нужен разбор" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Открыть разбор" })).toBeVisible();
+    await expectNoOverflow(page);
+    if (width === 390) {
+      await expect(page.getByRole("button", { name: "Открыть разбор" })).toHaveCSS("min-height", "44px");
+    }
+    const axe = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    expect(axe.violations.filter((item) => item.impact === "serious" || item.impact === "critical")).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath(`dashboard-queue-${width}.png`), fullPage: true });
+  });
+}
 
 for (const width of [1024, 768, 390]) {
   test(`семейный разбор адаптивен на ${width}px и доступен с клавиатуры`, async ({ page }, testInfo) => {

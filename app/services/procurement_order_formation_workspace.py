@@ -432,7 +432,7 @@ def build_dashboard(
                 ),
                 value.created_at or datetime.max,
             ),
-        )[:5]
+        )
     ]
     manual_attention = _manual_attention_items(rows)
     return {
@@ -2029,6 +2029,8 @@ def _dashboard_attention_item(
         "recommendation": action_label,
         "deadline_label": state_label,
         "urgency": DECISION_STATE_URGENCY[decision_state],
+        "responsible_name": proposal.responsible_name or DISPLAY_RESPONSIBLE_NAME,
+        "overdue": decision_state == "stale",
     }
 
 
@@ -2071,6 +2073,8 @@ def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str,
                 "recommendation": action_label,
                 "deadline_label": DECISION_STATE_LABELS[decision_state],
                 "urgency": DECISION_STATE_URGENCY[decision_state],
+                "responsible_name": DISPLAY_RESPONSIBLE_NAME,
+                "overdue": False,
             }
         )
     order = {status: index for index, status in enumerate(MANUAL_STATUS_ORDER)}

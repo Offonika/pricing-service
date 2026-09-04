@@ -759,6 +759,7 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
+    procurement_family_review_decisions_enabled: bool = False
     order_closure_bitrix_enabled: bool = False
     order_closure_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list

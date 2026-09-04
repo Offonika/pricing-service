@@ -499,6 +499,8 @@ export interface ProcurementDashboardAttentionItem {
   recommendation: string;
   deadline_label: string;
   urgency: string;
+  responsible_name?: string | null;
+  overdue?: boolean;
 }
 
 export interface ProcurementDashboard {
@@ -700,7 +702,26 @@ export interface ProcurementProductCard {
   demand: Record<string, unknown>;
   quality: Record<string, unknown>;
   supply: Record<string, unknown>;
-  family: Record<string, unknown>;
+  family: Record<string, unknown> & {
+    id?: string | null;
+    record_id?: number | null;
+    label?: string | null;
+    member_count?: number | null;
+    total_member_count?: number | null;
+    visible_member_count?: number | null;
+    hidden_member_count?: number | null;
+    member_codes?: string[];
+    registry_version_number?: number | null;
+    ranking_source?: string | null;
+    ranking_source_label?: string | null;
+    comparison_members?: Array<{
+      role: "primary" | "candidate" | string;
+      role_label: string;
+      rank: number;
+      speed_score: string | number;
+      card: ProcurementProductCard;
+    }>;
+  };
   blockers: ProcurementBlockerDetail[];
   orders: Array<{
     order_id: number;
@@ -713,6 +734,36 @@ export interface ProcurementProductCard {
   }>;
   recommendation?: string | null;
   source: Record<string, unknown>;
+}
+
+export interface ProcurementFamilyDecision {
+  id: number;
+  type: "quality" | "distribution";
+  actor: string;
+  created_at: string;
+  effective_at: string;
+  reason: string;
+  facts_hash: string;
+  registry_version_number: number;
+  decision: Record<string, unknown>;
+}
+
+export interface ProcurementFamilyReviewCard extends ProcurementProductCard {
+  facts_hash: string;
+  facts_snapshot: Record<string, unknown>;
+  review_requirements: { quality: boolean; distribution: boolean };
+  decisions: {
+    quality?: ProcurementFamilyDecision | null;
+    distribution?: ProcurementFamilyDecision | null;
+    blocker_ready: boolean;
+  };
+}
+
+export interface ProcurementFamilyReviewSaveResponse {
+  event: ProcurementFamilyDecision;
+  idempotent: boolean;
+  decisions: ProcurementFamilyReviewCard["decisions"];
+  blocker_ready: boolean;
 }
 
 export async function fetchProcurementOrderFormation(itemId: string) {
@@ -732,6 +783,48 @@ export async function fetchProcurementOrder(orderId: number) {
 export async function fetchProcurementProductCard(productId: string) {
   const { data } = await api.get<ProcurementProductCard>(
     `/procurement-order-formation/products/${encodeURIComponent(productId)}/card`
+  );
+  return data;
+}
+
+export async function fetchProcurementProductCardByCode(nomenclatureCode: string) {
+  const { data } = await api.get<ProcurementFamilyReviewCard>(
+    `/procurement-order-formation/products/by-code/${encodeURIComponent(nomenclatureCode)}/card`
+  );
+  return data;
+}
+
+export async function saveProcurementFamilyQualityReview(
+  nomenclatureCode: string,
+  payload: {
+    facts_hash: string;
+    registry_version_number: number;
+    result: "confirmed" | "false_positive" | "needs_data";
+    root_cause: string;
+    checked_documents: string[];
+    comment: string;
+  }
+) {
+  const { data } = await api.post<ProcurementFamilyReviewSaveResponse>(
+    `/procurement-order-formation/products/by-code/${encodeURIComponent(nomenclatureCode)}/review/quality`,
+    payload
+  );
+  return data;
+}
+
+export async function saveProcurementFamilyDistributionReview(
+  nomenclatureCode: string,
+  payload: {
+    facts_hash: string;
+    registry_version_number: number;
+    quantities: Record<string, number>;
+    rationale: string;
+    comment: string;
+  }
+) {
+  const { data } = await api.post<ProcurementFamilyReviewSaveResponse>(
+    `/procurement-order-formation/products/by-code/${encodeURIComponent(nomenclatureCode)}/review/distribution`,
+    payload
   );
   return data;
 }

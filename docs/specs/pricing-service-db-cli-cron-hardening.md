@@ -19,6 +19,7 @@ related_tests:
   - tests/test_analyze_manual_matching_feedback_task.py
   - tests/test_architecture_boundaries.py
   - tests/test_build_assortment_lifecycle_facts_task.py
+  - tests/test_build_weekly_kpi_artifacts_task.py
   - tests/test_build_order_fulfillment_review_csv_script.py
   - tests/test_build_order_fulfillment_stage_outbox_script.py
   - tests/test_build_display_working_confirmation_overrides_task.py
@@ -50,7 +51,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-09-03"
+updated_at: "2026-09-04"
 ---
 
 # Назначение
@@ -224,6 +225,9 @@ JSON/CSV/XLSX артефактов сохраняются.
   `build_engine` / `Session` / `commit` на application Unit of Work; объявить
   `application_write` и атомарную транзакцию в CLI registry, подтвердить полный
   rollback и идемпотентный повтор. Production, cron и миграции в срез не входят.
+- [x] Перевести `tasks/build_weekly_kpi_artifacts.py` на application Unit of Work;
+  зарегистрировать DB/файловые эффекты и подтвердить rollback и безопасный повтор
+  по детерминированному XLSX-пути. Cron, миграции и production в срез не входят.
 - [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
@@ -425,9 +429,20 @@ JSON/CSV/XLSX артефактов сохраняются.
     отдельных подтверждений.
 72. После зелёного CI разрешён merge PR №167. Production migration, deploy и
     cutover в это решение не входят.
+73. Для `tasks/build_weekly_kpi_artifacts.py` разрешены commit проверенного среза,
+    push ветки и создание отдельного PR. Merge и production release требуют
+    отдельных подтверждений.
+74. После зелёного CI разрешён merge PR №177. Production migration, deploy и
+    cutover в это решение не входят.
 
 # Changelog
 
+- 2026-09-04 — разрешён merge PR №177; production release оставлен отдельным
+  решением.
+- 2026-09-04 — разрешены commit, push и создание отдельного PR для второго Unit
+  of Work среза; merge и production оставлены отдельными решениями.
+- 2026-09-04 — выбран и реализован второй Unit of Work срез для
+  `build_weekly_kpi_artifacts.py`; production исключён.
 - 2026-09-03 — разрешён merge PR №167; production release оставлен отдельным
   решением.
 - 2026-09-03 — разрешены commit, push и создание отдельного PR для первого Unit

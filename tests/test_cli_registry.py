@@ -60,6 +60,18 @@ def test_publish_weekly_kpi_reports_declares_atomic_application_write() -> None:
     assert metadata["idempotency"] == "verified_by_draft_to_published_transition"
 
 
+def test_build_weekly_kpi_artifacts_declares_db_and_artifact_write() -> None:
+    metadata = effective_metadata("build_weekly_kpi_artifacts.py", load_registry())
+
+    assert metadata["kind"] == "permanent_cli"
+    assert metadata["side_effect_level"] == "mixed"
+    assert metadata["db_access"] == "application_write"
+    assert metadata["transaction_scope"] == "unit_of_work"
+    assert (
+        metadata["idempotency"] == "verified_by_deterministic_path_overwrite_and_ready_transition"
+    )
+
+
 def test_manual_matching_commands_require_central_read_only_db_access() -> None:
     registry = load_registry()
 

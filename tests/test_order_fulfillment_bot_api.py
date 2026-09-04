@@ -739,4 +739,6 @@ def test_bot_health_reports_runtime_apply_switch(monkeypatch) -> None:
     assert response.json()["execution_master_enabled"] is False
     assert response.json()["execution_reconciliation_enabled"] is False
     assert response.json()["execution_stage_apply_enabled"] is False
+    assert response.json()["site_signal_ingest_enabled"] is False
+    assert response.json()["site_signal_stage_apply_enabled"] is False
     assert response.json()["execution_outbox_active"] == 0

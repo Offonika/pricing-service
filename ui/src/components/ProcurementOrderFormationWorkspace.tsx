@@ -33,6 +33,7 @@ import {
   procurementRiskLabel,
 } from "../utils/procurementRiskLabels";
 import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
+import { ProcurementFamilyReview } from "./ProcurementFamilyReview";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
 interface Props {
@@ -111,7 +112,8 @@ type WorkspaceRoute =
       readiness: LifecycleReadiness;
       proposalId?: number;
     }
-  | { kind: "order"; orderId: number; focusLineId?: number };
+  | { kind: "order"; orderId: number; focusLineId?: number }
+  | { kind: "review"; nomenclatureCode: string };
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   dashboard: "Витрина",
@@ -364,6 +366,10 @@ function routeFromLocation(): WorkspaceRoute {
       focusLineId: Number.isInteger(lineId) && lineId > 0 ? lineId : undefined,
     };
   }
+  const reviewMatch = relative.match(/^\/review\/([^/]+)$/);
+  if (reviewMatch) {
+    return { kind: "review", nomenclatureCode: decodeURIComponent(reviewMatch[1]) };
+  }
   if (relative === "/assistant") return { kind: "tab", tab: "assistant" };
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
@@ -382,6 +388,9 @@ function routeUrl(route: WorkspaceRoute) {
   if (route.kind === "order") {
     const suffix = route.focusLineId ? `?line=${route.focusLineId}` : "";
     return `${root}/orders/${route.orderId}${suffix}`;
+  }
+  if (route.kind === "review") {
+    return `${root}/review/${encodeURIComponent(route.nomenclatureCode)}`;
   }
   if (route.tab === "dashboard") return root;
   return `${root}/${route.tab}`;
@@ -479,9 +488,33 @@ function ProcessLinkState({
   );
 }
 
+type DashboardSort = "overdue" | "unblocked" | "responsible";
+const DASHBOARD_STATE_KEY = "pricing.procurement.dashboard-view.v2";
+
+function readDashboardState() {
+  try {
+    const raw = window.sessionStorage.getItem(DASHBOARD_STATE_KEY);
+    const value = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+    return {
+      manualFilter: typeof value.manualFilter === "string" ? value.manualFilter : null,
+      search: typeof value.search === "string" ? value.search : "",
+      sort: ["overdue", "unblocked", "responsible"].includes(String(value.sort))
+        ? value.sort as DashboardSort : "overdue" as DashboardSort,
+      focusedCode: typeof value.focusedCode === "string" ? value.focusedCode : "",
+      selectedCodes: Array.isArray(value.selectedCodes)
+        ? value.selectedCodes.filter((item): item is string => typeof item === "string") : [],
+      scrollY: Number(value.scrollY) || 0,
+    };
+  } catch {
+    return { manualFilter: null, search: "", sort: "overdue" as DashboardSort, focusedCode: "", selectedCodes: [] as string[], scrollY: 0 };
+  }
+}
+
 function Dashboard({
   data,
   onOpenLifecycle,
+  onOpenReview,
+  onRefresh,
 }: {
   data: ProcurementDashboard;
   onOpenLifecycle: (
@@ -489,12 +522,39 @@ function Dashboard({
     scope: "action" | "all",
     options?: { readiness?: LifecycleReadiness; proposalId?: number }
   ) => void;
+  onOpenReview: (nomenclatureCode: string) => void;
+  onRefresh: () => Promise<void>;
 }) {
-  const [manualFilter, setManualFilter] = useState<string | null>(null);
+  const initialView = useMemo(readDashboardState, []);
+  const [manualFilter, setManualFilter] = useState<string | null>(initialView.manualFilter);
+  const [search, setSearch] = useState(initialView.search);
+  const [sort, setSort] = useState<DashboardSort>(initialView.sort);
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set(initialView.selectedCodes));
+  const [focusedCode, setFocusedCode] = useState(initialView.focusedCode);
+  const [approving, setApproving] = useState(false);
   const manualFilterLabel = manualFilter ? MANUAL_STATUS_LABELS[manualFilter] : null;
-  const attentionRows = manualFilter
+  const unfilteredRows = manualFilter
     ? data.manual_attention.filter((item) => item.filter_status === manualFilter)
     : data.attention;
+  const attentionRows = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase("ru-RU");
+    const rows = unfilteredRows.filter((item) => !query || [
+      item.product_name, item.nomenclature_code, item.reason, item.recommendation,
+    ].some((value) => String(value || "").toLocaleLowerCase("ru-RU").includes(query)));
+    return [...rows].sort((left, right) => {
+      if (sort === "unblocked") {
+        const leftBlocked = left.decision_state === "blocked" ? 1 : 0;
+        const rightBlocked = right.decision_state === "blocked" ? 1 : 0;
+        return leftBlocked - rightBlocked || left.product_name.localeCompare(right.product_name, "ru");
+      }
+      if (sort === "responsible") {
+        return String(left.responsible_name || data.responsible_name).localeCompare(String(right.responsible_name || data.responsible_name), "ru")
+          || left.product_name.localeCompare(right.product_name, "ru");
+      }
+      const score = (item: typeof left) => item.overdue ? 0 : item.urgency === "blocked" ? 1 : 2;
+      return score(left) - score(right) || left.product_name.localeCompare(right.product_name, "ru");
+    });
+  }, [data.responsible_name, search, sort, unfilteredRows]);
   const openAttention = (item: ProcurementDashboard["attention"][number]) => {
     if (item.kind !== "lifecycle" || !item.proposal_id) return;
     onOpenLifecycle(item.current_status, "action", {
@@ -502,14 +562,105 @@ function Dashboard({
       proposalId: item.proposal_id,
     });
   };
+  const canOpenReview = (item: ProcurementDashboard["attention"][number]) =>
+    item.filter_status === "review"
+    || item.decision_state === "review"
+    || item.action_label === "Открыть разбор";
+
+  const openRow = useCallback((item: ProcurementDashboard["attention"][number]) => {
+    if (item.filter_status === "review" || item.decision_state === "review" || item.action_label === "Открыть разбор") {
+      onOpenReview(item.nomenclature_code);
+    } else if (item.kind === "lifecycle" && item.proposal_id) {
+      onOpenLifecycle(item.current_status, "action", {
+        readiness: item.decision_state as LifecycleReadiness,
+        proposalId: item.proposal_id,
+      });
+    }
+  }, [onOpenLifecycle, onOpenReview]);
+
+  const approveSelected = useCallback(async () => {
+    const candidates = attentionRows.filter((item) =>
+      selectedCodes.has(item.nomenclature_code)
+      && item.kind === "lifecycle"
+      && item.proposal_id
+      && item.decision_state === "ready"
+    );
+    if (!candidates.length || approving) return;
+    setApproving(true);
+    try {
+      const details = await Promise.all(candidates.map((item) => fetchProcurementLifecycleTransitions({
+        status: item.current_status,
+        scope: "action",
+        readiness: "ready",
+        proposal_id: Number(item.proposal_id),
+        page_size: 1,
+      })));
+      const rows = details.flatMap((item) => item.items).filter((item) => item.selectable && item.ready);
+      if (!rows.length) throw new Error("Выбранные строки уже изменились. Обновите Витрину.");
+      const response = await approveProcurementLifecycleTransitions(rows);
+      toast.success(`Подтверждено: ${response.summary.approved}`);
+      setSelectedCodes(new Set());
+      await onRefresh();
+    } catch (requestError) {
+      toast.error(procurementErrorText(requestError));
+    } finally {
+      setApproving(false);
+    }
+  }, [approving, attentionRows, onRefresh, selectedCodes]);
+
+  useEffect(() => {
+    window.sessionStorage.setItem(DASHBOARD_STATE_KEY, JSON.stringify({
+      manualFilter, search, sort, focusedCode, selectedCodes: [...selectedCodes], scrollY: window.scrollY,
+    }));
+  }, [focusedCode, manualFilter, search, selectedCodes, sort]);
+
+  useEffect(() => {
+    const restore = window.setTimeout(() => window.scrollTo({ top: initialView.scrollY }), 0);
+    const remember = () => {
+      const current = readDashboardState();
+      window.sessionStorage.setItem(DASHBOARD_STATE_KEY, JSON.stringify({ ...current, scrollY: window.scrollY }));
+    };
+    window.addEventListener("scroll", remember, { passive: true });
+    return () => { window.clearTimeout(restore); window.removeEventListener("scroll", remember); };
+  }, [initialView.scrollY]);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, button, a")) return;
+      const currentIndex = Math.max(0, attentionRows.findIndex((item) => item.nomenclature_code === focusedCode));
+      if ((event.key === "j" || event.key === "J") && attentionRows.length) {
+        event.preventDefault();
+        setFocusedCode(attentionRows[Math.min(attentionRows.length - 1, currentIndex + 1)].nomenclature_code);
+      } else if ((event.key === "k" || event.key === "K") && attentionRows.length) {
+        event.preventDefault();
+        setFocusedCode(attentionRows[Math.max(0, currentIndex - 1)].nomenclature_code);
+      } else if (event.code === "Space" && focusedCode) {
+        event.preventDefault();
+        setSelectedCodes((current) => {
+          const next = new Set(current);
+          if (next.has(focusedCode)) next.delete(focusedCode); else next.add(focusedCode);
+          return next;
+        });
+      } else if (event.key === "Enter" && focusedCode) {
+        const item = attentionRows.find((row) => row.nomenclature_code === focusedCode);
+        if (item) openRow(item);
+      } else if ((event.key === "a" || event.key === "A") && selectedCodes.size) {
+        event.preventDefault();
+        void approveSelected();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [approveSelected, attentionRows, focusedCode, openRow, selectedCodes.size]);
   return (
-    <main className="order-workspace__content">
+    <main className="order-workspace__content procurement-dashboard">
       <section className="order-workspace__section-heading">
         <div>
           <h2>Жизненные статусы</h2>
           <p>Общее количество открывает все товары; кнопка решения показывает куда и сколько.</p>
         </div>
-        <span>Обновлено {dateTime(data.updated_at)} · run {data.run_id || "—"}</span>
+        <span>Расчёт от {dateTime(data.updated_at)}</span>
       </section>
       <section className="lifecycle-cards">
         {data.cards.map((card) => {
@@ -588,7 +739,7 @@ function Dashboard({
             <p>
               {manualFilterLabel
                 ? `Показаны товары выбранного ручного статуса: ${attentionRows.length}.`
-                : "Пять приоритетных товаров. Полный список открывается по счётчикам."}
+                : `Приоритетная очередь: ${attentionRows.length}.`}
             </p>
           </div>
           {manualFilter ? (
@@ -596,6 +747,24 @@ function Dashboard({
               Сбросить фильтр
             </button>
           ) : null}
+        </div>
+        <div className="attention-toolbar">
+          <label>
+            <span className="sr-only">Поиск в очереди</span>
+            <input onChange={(event) => setSearch(event.target.value)} placeholder="Поиск товара или причины" type="search" value={search} />
+          </label>
+          <label>
+            <span className="sr-only">Сортировка очереди</span>
+            <select onChange={(event) => setSort(event.target.value as DashboardSort)} value={sort}>
+              <option value="overdue">Сначала просроченные</option>
+              <option value="unblocked">Сначала без блокеров</option>
+              <option value="responsible">По ответственному</option>
+            </select>
+          </label>
+          <button className="btn btn--small" disabled={approving || selectedCodes.size === 0} onClick={() => void approveSelected()} type="button">
+            {approving ? "Подтверждаем…" : `Подтвердить выбранные · ${selectedCodes.size}`}
+          </button>
+          <small>Клавиши: J/K — строка, Space — выбор, Enter — открыть, A — подтвердить</small>
         </div>
         {!manualFilter ? (
           <section aria-label="Сводка очереди решений" className="attention-summary">
@@ -637,6 +806,7 @@ function Dashboard({
             <table className="order-workspace__table">
               <thead>
                 <tr>
+                  <th aria-label="Выбор"></th>
                   <th>Товар</th>
                   <th>Предлагаемое решение</th>
                   <th>Основание</th>
@@ -647,13 +817,24 @@ function Dashboard({
               <tbody>
                 {attentionRows.map((item) => (
                   <tr
-                    className={item.kind === "lifecycle" ? "attention-row attention-row--clickable" : "attention-row"}
+                    aria-current={focusedCode === item.nomenclature_code ? "true" : undefined}
+                    className={`${item.kind === "lifecycle" || canOpenReview(item) ? "attention-row attention-row--clickable" : "attention-row"}${focusedCode === item.nomenclature_code ? " is-focused" : ""}`}
                     key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}
-                    onClick={item.kind === "lifecycle" ? () => openAttention(item) : undefined}
+                    onClick={canOpenReview(item) ? () => onOpenReview(item.nomenclature_code) : item.kind === "lifecycle" ? () => openAttention(item) : undefined}
+                    onFocus={() => setFocusedCode(item.nomenclature_code)}
+                    tabIndex={0}
                   >
+                    <td onClick={(event) => event.stopPropagation()}>
+                      <input aria-label={`Выбрать ${item.product_name}`} checked={selectedCodes.has(item.nomenclature_code)} onChange={() => setSelectedCodes((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.nomenclature_code)) next.delete(item.nomenclature_code); else next.add(item.nomenclature_code);
+                        return next;
+                      })} type="checkbox" />
+                    </td>
                     <td>
                       <strong>{item.product_name}</strong>
                       <small>{item.nomenclature_code} · {item.current_status_label}</small>
+                      <small>Ответственный: {item.responsible_name || data.responsible_name}</small>
                     </td>
                     <td><span className="transition-pill">{item.action_label}</span></td>
                     <td>{item.fact_summary}</td>
@@ -661,7 +842,11 @@ function Dashboard({
                       <span className={`state-pill state-pill--${item.urgency}`}>{item.decision_state_label}</span>
                     </td>
                     <td>
-                      {item.kind === "lifecycle" && item.proposal_id ? (
+                      {canOpenReview(item) ? (
+                        <button className="attention-action" onClick={(event) => { event.stopPropagation(); onOpenReview(item.nomenclature_code); }} type="button">
+                          Открыть разбор
+                        </button>
+                      ) : item.kind === "lifecycle" && item.proposal_id ? (
                         <button
                           className="attention-action"
                           onClick={(event) => {
@@ -1613,6 +1798,14 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
       />
     );
   }
+  if (route.kind === "review") {
+    return (
+      <ProcurementFamilyReview
+        nomenclatureCode={route.nomenclatureCode}
+        onBack={() => navigate({ kind: "tab", tab: "dashboard" })}
+      />
+    );
+  }
   if (route.kind === "order") {
     if (orderError) return <ErrorState message={orderError} onRetry={() => navigate(route, true)} />;
     if (!order) return <LoadingState message="Загрузка карточки заказа..." />;
@@ -1642,13 +1835,18 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
     <AppShell bitrixUserName={bitrixUserName} activeTab={route.tab} onNavigate={navigate}>
       {route.tab === "dashboard" && (
         dashboardError ? <ErrorState message={dashboardError} onRetry={() => void loadDashboard()} />
-          : dashboard ? <Dashboard data={dashboard} onOpenLifecycle={(status, scope, options) => navigate({
-              kind: "lifecycle",
-              status,
-              scope,
-              readiness: options?.readiness || "all",
-              proposalId: options?.proposalId,
-            })} />
+          : dashboard ? <Dashboard
+              data={dashboard}
+              onOpenLifecycle={(status, scope, options) => navigate({
+                kind: "lifecycle",
+                status,
+                scope,
+                readiness: options?.readiness || "all",
+                proposalId: options?.proposalId,
+              })}
+              onOpenReview={(nomenclatureCode) => navigate({ kind: "review", nomenclatureCode })}
+              onRefresh={loadDashboard}
+            />
             : <LoadingState message="Загрузка витрины..." />
       )}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}

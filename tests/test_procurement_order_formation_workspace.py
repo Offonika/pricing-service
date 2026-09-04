@@ -388,6 +388,8 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
         "recommendation": "Проверить матрицу и минимальный запас",
         "deadline_label": "Контроль",
         "urgency": "warning",
+        "responsible_name": "Омар",
+        "overdue": False,
     }
     assert dashboard["decision_summary"] == {
         "ready_count": 1,

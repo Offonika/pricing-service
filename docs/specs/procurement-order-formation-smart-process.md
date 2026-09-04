@@ -22,6 +22,7 @@ related_code:
   - app/services/procurement_order_metrics_backfill.py
   - app/services/procurement_order_product_media.py
   - app/services/procurement_product_cards.py
+  - app/services/procurement_family_review.py
   - app/services/procurement_order_labels.py
   - app/services/procurement_order_process_link.py
   - app/services/procurement_supplier_profiles.py
@@ -42,6 +43,7 @@ related_code:
   - ui/src/components/ProcurementOrderFormationApp.tsx
   - ui/src/components/ProcurementOrderFormationWorkspace.tsx
   - ui/src/components/ProcurementProductInsights.tsx
+  - ui/src/components/ProcurementFamilyReview.tsx
   - ui/src/api/bitrix.ts
   - ui/src/api/procurementAssortment.ts
 related_tests:
@@ -60,6 +62,7 @@ related_tests:
   - tests/test_procurement_order_product_media.py
   - tests/test_procurement_order_labels.py
   - tests/test_procurement_product_cards.py
+  - tests/test_procurement_family_review.py
   - tests/test_procurement_product_card_migration.py
   - tests/test_reconcile_procurement_order_missing_number_task.py
   - tests/test_procurement_supplier_profiles.py
@@ -1535,7 +1538,43 @@ Process и не должны иметь второй конкурирующий 
   авторизованной штатной карточки Bitrix24 остаётся ручной пользовательской
   проверкой; он не разрешает массовое заполнение или включение cron.
 
+### Завершение семейного разбора — решение `2026-09-04`
+
+Рабочий путь фиксируется как `Витрина → строка «Разбор» → семейный отчёт →
+два предметных решения → возврат в прежнее место очереди`. Постоянный маршрут
+отчёта — `/bitrix/procurement-order-formation/review/{код_1С}`. Основная карточка
+всегда показывается первой, сервер добавляет не более четырёх кандидатов из
+активного семейного реестра, а на телефоне вместо горизонтальной матрицы
+показывается один член семьи с переключателем.
+
+Для решений используется только существующий append-only журнал
+`display_family_decision_event`:
+
+- `POST /products/by-code/{code}/review/quality` сохраняет результат проверки
+  качества, корневую причину, документы и комментарий;
+- `POST /products/by-code/{code}/review/distribution` сохраняет количество
+  каждого члена семьи, включая нули, обоснование и комментарий;
+- фактический автор берётся из авторизованной Bitrix24-сессии; Сергей и Омар
+  остаются предметными ответственными без нового персонального ACL;
+- решения независимы, а блокер готов к закрытию только при наличии актуального
+  распределения и завершённой проверки качества; результат `нужны данные`
+  сохраняется в истории, но блокер не закрывает;
+- каждое событие содержит версию реестра, `facts_hash` и снимок фактов;
+  идентичный повтор идемпотентен, изменение фактов даёт HTTP `409` и требует
+  повторной проверки;
+- запись управляется отдельным флагом
+  `PROCUREMENT_FAMILY_REVIEW_DECISIONS_ENABLED`, выключенным по умолчанию.
+
+Этот выпуск не записывает данные в `1С`, не добавляет отсутствующие строки
+заказа, не перемещает товары между заказами, не включает массовую синхронизацию
+карточек и cron. Оригинальная карточка товара Bitrix24 сохраняется, а семейная
+поверхность является выбираемым аналитическим отчётом.
+
 # Changelog
+
+- 2026-09-04 — утверждён и реализован единый путь `Витрина → семейный разбор →
+  два независимых решения → возврат в очередь` с append-only журналом,
+  optimistic locking по `facts_hash` и выключенным по умолчанию write-флагом.
 
 - 2026-09-04 — сводный блок отчёта товара сделан компактным, восстановлено
   контекстное основное действие, показатели общего журнала получили подсказки,

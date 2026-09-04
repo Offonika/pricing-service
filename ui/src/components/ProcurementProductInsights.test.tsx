@@ -161,6 +161,10 @@ describe("ProcurementProductInsights", () => {
     expect(screen.getByText("Заказ №14 · строка 2")).toBeInTheDocument();
     const quantityInput = screen.getByRole("spinbutton", { name: "Количество в заказе" });
     const priceInput = screen.getByRole("spinbutton", { name: "Цена закупки" });
+    await waitFor(() => {
+      expect(quantityInput).toHaveValue(5);
+      expect(priceInput).toHaveValue(115);
+    });
     fireEvent.change(quantityInput, { target: { value: "8" } });
     fireEvent.change(priceInput, { target: { value: "120" } });
     fireEvent.click(screen.getByRole("button", { name: "Подтвердить строку" }));

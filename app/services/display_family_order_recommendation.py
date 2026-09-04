@@ -87,6 +87,25 @@ def _matching_conflict_codes(context: ActiveDisplayFamilyMemberContext) -> list[
     return sorted(codes)
 
 
+def demand_speed_scores(
+    rows_by_code: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, Decimal], str]:
+    """Return the canonical deterministic scores used for family ranking."""
+
+    scores = {
+        code: max(ZERO, _decimal(row.get("sales_qty_window_short"))) / Decimal("30")
+        + max(ZERO, _decimal(row.get("sales_qty_window_medium"))) / Decimal("90")
+        for code, row in rows_by_code.items()
+    }
+    if sum(scores.values(), ZERO) > ZERO:
+        return scores, "completed_sales_rate_30_90"
+    scores = {
+        code: max(ZERO, _decimal(row.get("sales_qty_window"))) / Decimal("180")
+        for code, row in rows_by_code.items()
+    }
+    return scores, "completed_sales_rate_180_fallback"
+
+
 def _bounded_shares(
     codes: Sequence[str],
     *,

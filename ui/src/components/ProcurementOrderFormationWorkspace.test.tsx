@@ -56,6 +56,12 @@ vi.mock("./ProcurementOrderFormationApp", () => ({
   ),
 }));
 
+vi.mock("./ProcurementFamilyReview", () => ({
+  ProcurementFamilyReview: ({ nomenclatureCode }: { nomenclatureCode: string }) => (
+    <div>Семейный разбор {nomenclatureCode}</div>
+  ),
+}));
+
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
@@ -192,6 +198,14 @@ describe("ProcurementOrderFormationWorkspace placement", () => {
     expect(await screen.findByText("Карточка создаётся…")).toBeInTheDocument();
     expect(screen.queryByText("Карточка заказа #431")).not.toBeInTheDocument();
     expect(openBitrixProcurementProcess).not.toHaveBeenCalled();
+  });
+
+  it("открывает постоянный маршрут семейного разбора по коду 1С", async () => {
+    window.history.replaceState({}, "", "/bitrix/procurement-order-formation/review/%D0%A0%D0%910001");
+
+    render(<ProcurementOrderFormationWorkspace bitrixUserName="Закупщик" />);
+
+    expect(screen.getByText("Семейный разбор РБ0001")).toBeInTheDocument();
   });
 });
 

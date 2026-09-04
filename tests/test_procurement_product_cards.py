@@ -32,6 +32,7 @@ from app.services.procurement_product_cards import (
     PRODUCT_CARD_FIELD_SPECS,
     PRODUCT_CARD_METRIC_FIELD_SPECS,
     bitrix_product_path,
+    build_product_card_review_snapshot,
     build_product_card_snapshot,
     product_card_native_fields,
     product_insights_url,
@@ -202,6 +203,109 @@ def test_product_card_snapshot_combines_metrics_blockers_and_orders(db_session) 
     assert Decimal(str(fields["recommended_order"])) == Decimal("7")
     assert "sales_30" not in fields
     assert "sellable_stock" not in fields
+
+
+def test_product_card_review_keeps_primary_first_and_limits_candidates(
+    db_session,
+    monkeypatch,
+) -> None:
+    codes = [f"РБ00000000{index}" for index in range(1, 7)]
+    speeds = {
+        codes[0]: ("3", "9", "18"),
+        codes[1]: ("30", "90", "180"),
+        codes[2]: ("60", "90", "180"),
+        codes[3]: ("15", "45", "180"),
+        codes[4]: ("90", "90", "180"),
+        codes[5]: ("45", "90", "180"),
+    }
+    for index, code in enumerate(codes, start=1):
+        order = _seed_order(
+            db_session,
+            suffix=str(index),
+            product_id=str(1700 + index),
+            product_guid=f"00000000-0000-0000-0000-{index:012d}",
+            product_code=code,
+            product_name=f"Дисплей {index}",
+        )
+        payload = dict(order.lines[0].payload or {})
+        sales_30, sales_90, sales_180 = speeds[code]
+        payload.update(
+            sales_qty_window_short=sales_30,
+            sales_qty_window_medium=sales_90,
+            sales_qty_window=sales_180,
+        )
+        order.lines[0].payload = payload
+    db_session.commit()
+    monkeypatch.setattr(
+        product_card_service,
+        "_active_family_member_rows",
+        lambda *_args, **_kwargs: {
+            "family_key": "family-six",
+            "label": "Samsung A16",
+            "member_count": 6,
+            "members": [{"nomenclature_code": code} for code in codes],
+        },
+    )
+
+    snapshot = build_product_card_review_snapshot(
+        db_session,
+        nomenclature_code=codes[0],
+        settings=_settings(),
+    )
+    members = snapshot["family"]["comparison_members"]
+
+    assert [item["card"]["identity"]["nomenclature_code"] for item in members] == [
+        codes[0],
+        codes[4],
+        codes[2],
+        codes[5],
+        codes[1],
+    ]
+    assert members[0]["role"] == "primary"
+    assert snapshot["family"]["hidden_member_count"] == 1
+    assert snapshot["family"]["ranking_source"] == "completed_sales_rate_30_90"
+
+
+def test_product_card_review_uses_180_day_fallback(db_session, monkeypatch) -> None:
+    codes = ["РБ000000011", "РБ000000012", "РБ000000013", "РБ000000014"]
+    for index, (code, sales) in enumerate(
+        zip(codes, ["9", "90", "90", "45"], strict=True), start=1
+    ):
+        order = _seed_order(
+            db_session,
+            suffix=f"small-{index}",
+            product_id=str(1800 + index),
+            product_guid=f"10000000-0000-0000-0000-{index:012d}",
+            product_code=code,
+            product_name=f"Дисплей {index}",
+        )
+        payload = dict(order.lines[0].payload or {})
+        payload.update(
+            sales_qty_window_short="0",
+            sales_qty_window_medium="0",
+            sales_qty_window=sales,
+        )
+        order.lines[0].payload = payload
+    db_session.commit()
+    monkeypatch.setattr(
+        product_card_service,
+        "_active_family_member_rows",
+        lambda *_args, **_kwargs: {
+            "family_key": "family-four",
+            "member_count": 4,
+            "members": [{"nomenclature_code": code} for code in codes],
+        },
+    )
+
+    snapshot = build_product_card_review_snapshot(
+        db_session,
+        nomenclature_code=codes[0],
+        settings=_settings(),
+    )
+
+    assert len(snapshot["family"]["comparison_members"]) == 4
+    assert snapshot["family"]["hidden_member_count"] == 0
+    assert snapshot["family"]["ranking_source"] == "completed_sales_rate_180_fallback"
 
 
 def test_product_card_snapshot_uses_persisted_product_binding_without_order_line(

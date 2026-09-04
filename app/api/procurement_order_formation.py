@@ -17,6 +17,10 @@ from app.schemas.procurement_order_formation import (
     ProcurementClassificationRejectRequest,
     ProcurementClassificationRejectResponse,
     ProcurementDashboardResponse,
+    ProcurementFamilyDistributionDecisionRequest,
+    ProcurementFamilyQualityDecisionRequest,
+    ProcurementFamilyReviewCardRead,
+    ProcurementFamilyReviewSaveResponse,
     ProcurementLifecycleManualDecisionRequest,
     ProcurementLifecycleManualDecisionResponse,
     ProcurementLifecycleTransitionApprovalRequest,
@@ -57,6 +61,10 @@ from app.services.bitrix_procurement_order_formation_auth import (
     verify_procurement_order_formation_session,
 )
 from app.services.display_family_registry import confirm_display_family_matching_review
+from app.services.procurement_family_review import (
+    build_family_review_card,
+    save_family_review_decision,
+)
 from app.services.procurement_order_formation import (
     VersionConflictError,
     approve_classification_proposal,
@@ -538,6 +546,79 @@ def read_product_card_by_xml_id(
             build_product_card_snapshot(db, xml_id=xml_id)
         )
     except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/products/by-code/{nomenclature_code}/card",
+    response_model=ProcurementFamilyReviewCardRead,
+)
+def read_product_card_by_code(
+    nomenclature_code: str,
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementFamilyReviewCardRead:
+    try:
+        return ProcurementFamilyReviewCardRead.model_validate(
+            build_family_review_card(db, nomenclature_code=nomenclature_code)
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/products/by-code/{nomenclature_code}/review/quality",
+    response_model=ProcurementFamilyReviewSaveResponse,
+)
+def save_product_quality_review(
+    nomenclature_code: str,
+    payload: ProcurementFamilyQualityDecisionRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementFamilyReviewSaveResponse:
+    try:
+        result = save_family_review_decision(
+            db,
+            nomenclature_code=nomenclature_code,
+            kind="quality",
+            expected_facts_hash=payload.facts_hash,
+            expected_registry_version_number=payload.registry_version_number,
+            decision=payload.model_dump(exclude={"facts_hash", "registry_version_number"}),
+            actor=f"bitrix:{session.user_id}:{session.user_name or 'без имени'}",
+        )
+        db.commit()
+        return ProcurementFamilyReviewSaveResponse.model_validate(result)
+    except Exception as exc:
+        db.rollback()
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/products/by-code/{nomenclature_code}/review/distribution",
+    response_model=ProcurementFamilyReviewSaveResponse,
+)
+def save_product_distribution_review(
+    nomenclature_code: str,
+    payload: ProcurementFamilyDistributionDecisionRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementFamilyReviewSaveResponse:
+    try:
+        result = save_family_review_decision(
+            db,
+            nomenclature_code=nomenclature_code,
+            kind="distribution",
+            expected_facts_hash=payload.facts_hash,
+            expected_registry_version_number=payload.registry_version_number,
+            decision=payload.model_dump(exclude={"facts_hash", "registry_version_number"}),
+            actor=f"bitrix:{session.user_id}:{session.user_name or 'без имени'}",
+        )
+        db.commit()
+        return ProcurementFamilyReviewSaveResponse.model_validate(result)
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 

@@ -11795,6 +11795,96 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/by-code/{nomenclature_code}/card:
+    get:
+      summary: Read Product Card By Code
+      operationId: read_product_card_by_code_api_procurement_order_formation_products_by_code__nomenclature_code__card_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: nomenclature_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Nomenclature Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementFamilyReviewCardRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/by-code/{nomenclature_code}/review/quality:
+    post:
+      summary: Save Product Quality Review
+      operationId: save_product_quality_review_api_procurement_order_formation_products_by_code__nomenclature_code__review_quality_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: nomenclature_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Nomenclature Code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementFamilyQualityDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementFamilyReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/products/by-code/{nomenclature_code}/review/distribution:
+    post:
+      summary: Save Product Distribution Review
+      operationId: save_product_distribution_review_api_procurement_order_formation_products_by_code__nomenclature_code__review_distribution_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: nomenclature_code
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Nomenclature Code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementFamilyDistributionDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementFamilyReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/products/{product_id}/card:
     get:
       summary: Read Product Card
@@ -28054,6 +28144,15 @@ components:
         urgency:
           type: string
           title: Urgency
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        overdue:
+          type: boolean
+          title: Overdue
+          default: false
       type: object
       required:
       - nomenclature_code
@@ -28204,6 +28303,232 @@ components:
       - responsible_user_id
       - responsible_name
       title: ProcurementDashboardResponse
+    ProcurementFamilyDistributionDecisionRequest:
+      properties:
+        facts_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          title: Facts Hash
+        registry_version_number:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Registry Version Number
+        quantities:
+          additionalProperties:
+            anyOf:
+            - type: number
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          type: object
+          minProperties: 1
+          title: Quantities
+        rationale:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Rationale
+        comment:
+          type: string
+          maxLength: 2000
+          title: Comment
+          default: ''
+      type: object
+      required:
+      - facts_hash
+      - registry_version_number
+      - quantities
+      - rationale
+      title: ProcurementFamilyDistributionDecisionRequest
+    ProcurementFamilyQualityDecisionRequest:
+      properties:
+        facts_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          title: Facts Hash
+        registry_version_number:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Registry Version Number
+        result:
+          type: string
+          enum:
+          - confirmed
+          - false_positive
+          - needs_data
+          title: Result
+        root_cause:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Root Cause
+        checked_documents:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Checked Documents
+        comment:
+          type: string
+          maxLength: 2000
+          title: Comment
+          default: ''
+      type: object
+      required:
+      - facts_hash
+      - registry_version_number
+      - result
+      - root_cause
+      title: ProcurementFamilyQualityDecisionRequest
+    ProcurementFamilyReviewCardRead:
+      properties:
+        identity:
+          $ref: '#/components/schemas/ProcurementProductCardIdentityRead'
+        properties:
+          additionalProperties: true
+          type: object
+          title: Properties
+        lifecycle:
+          additionalProperties: true
+          type: object
+          title: Lifecycle
+        demand:
+          additionalProperties: true
+          type: object
+          title: Demand
+        quality:
+          additionalProperties: true
+          type: object
+          title: Quality
+        supply:
+          additionalProperties: true
+          type: object
+          title: Supply
+        family:
+          additionalProperties: true
+          type: object
+          title: Family
+        blockers:
+          items:
+            $ref: '#/components/schemas/ProcurementBlockerDetailRead'
+          type: array
+          title: Blockers
+        orders:
+          items:
+            $ref: '#/components/schemas/ProcurementProductCardOrderRead'
+          type: array
+          title: Orders
+        recommendation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation
+        source:
+          additionalProperties: true
+          type: object
+          title: Source
+        facts_hash:
+          type: string
+          title: Facts Hash
+        facts_snapshot:
+          additionalProperties: true
+          type: object
+          title: Facts Snapshot
+        review_requirements:
+          additionalProperties:
+            type: boolean
+          type: object
+          title: Review Requirements
+        decisions:
+          $ref: '#/components/schemas/ProcurementFamilyReviewStateRead'
+      type: object
+      required:
+      - identity
+      - facts_hash
+      - decisions
+      title: ProcurementFamilyReviewCardRead
+    ProcurementFamilyReviewDecisionRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        type:
+          type: string
+          enum:
+          - quality
+          - distribution
+          title: Type
+        actor:
+          type: string
+          title: Actor
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        effective_at:
+          type: string
+          format: date
+          title: Effective At
+        reason:
+          type: string
+          title: Reason
+        facts_hash:
+          type: string
+          title: Facts Hash
+        registry_version_number:
+          type: integer
+          title: Registry Version Number
+        decision:
+          additionalProperties: true
+          type: object
+          title: Decision
+      type: object
+      required:
+      - id
+      - type
+      - actor
+      - created_at
+      - effective_at
+      - reason
+      - facts_hash
+      - registry_version_number
+      title: ProcurementFamilyReviewDecisionRead
+    ProcurementFamilyReviewSaveResponse:
+      properties:
+        event:
+          $ref: '#/components/schemas/ProcurementFamilyReviewDecisionRead'
+        idempotent:
+          type: boolean
+          title: Idempotent
+          default: false
+        decisions:
+          $ref: '#/components/schemas/ProcurementFamilyReviewStateRead'
+        blocker_ready:
+          type: boolean
+          title: Blocker Ready
+          default: false
+      type: object
+      required:
+      - event
+      - decisions
+      title: ProcurementFamilyReviewSaveResponse
+    ProcurementFamilyReviewStateRead:
+      properties:
+        quality:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementFamilyReviewDecisionRead'
+          - type: 'null'
+        distribution:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementFamilyReviewDecisionRead'
+          - type: 'null'
+        blocker_ready:
+          type: boolean
+          title: Blocker Ready
+          default: false
+      type: object
+      title: ProcurementFamilyReviewStateRead
     ProcurementLabelApproveResponse:
       properties:
         item_id:

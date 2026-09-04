@@ -206,6 +206,63 @@ class ProcurementProductCardRead(BaseModel):
     source: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProcurementFamilyQualityDecisionRequest(BaseModel):
+    facts_hash: str = Field(min_length=64, max_length=64)
+    registry_version_number: int = Field(gt=0)
+    result: Literal["confirmed", "false_positive", "needs_data"]
+    root_cause: str = Field(min_length=1, max_length=500)
+    checked_documents: list[str] = Field(default_factory=list, max_length=100)
+    comment: str = Field(default="", max_length=2000)
+
+
+class ProcurementFamilyDistributionDecisionRequest(BaseModel):
+    facts_hash: str = Field(min_length=64, max_length=64)
+    registry_version_number: int = Field(gt=0)
+    quantities: dict[str, Decimal] = Field(min_length=1)
+    rationale: str = Field(min_length=1, max_length=500)
+    comment: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_quantities(self):
+        if any(
+            value < 0 or value != value.to_integral_value() for value in self.quantities.values()
+        ):
+            raise ValueError("quantities must be non-negative whole numbers")
+        return self
+
+
+class ProcurementFamilyReviewDecisionRead(BaseModel):
+    id: int
+    type: Literal["quality", "distribution"]
+    actor: str
+    created_at: datetime
+    effective_at: date
+    reason: str
+    facts_hash: str
+    registry_version_number: int
+    decision: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcurementFamilyReviewStateRead(BaseModel):
+    quality: ProcurementFamilyReviewDecisionRead | None = None
+    distribution: ProcurementFamilyReviewDecisionRead | None = None
+    blocker_ready: bool = False
+
+
+class ProcurementFamilyReviewCardRead(ProcurementProductCardRead):
+    facts_hash: str
+    facts_snapshot: dict[str, Any] = Field(default_factory=dict)
+    review_requirements: dict[str, bool] = Field(default_factory=dict)
+    decisions: ProcurementFamilyReviewStateRead
+
+
+class ProcurementFamilyReviewSaveResponse(BaseModel):
+    event: ProcurementFamilyReviewDecisionRead
+    idempotent: bool = False
+    decisions: ProcurementFamilyReviewStateRead
+    blocker_ready: bool = False
+
+
 class ProcurementProductCardSyncItemRead(BaseModel):
     bitrix_product_id: str
     xml_id: str
@@ -666,6 +723,8 @@ class ProcurementDashboardAttentionItem(BaseModel):
     recommendation: str
     deadline_label: str
     urgency: str
+    responsible_name: str | None = None
+    overdue: bool = False
 
 
 class ProcurementDashboardResponse(BaseModel):

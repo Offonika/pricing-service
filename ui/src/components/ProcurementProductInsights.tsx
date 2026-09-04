@@ -259,6 +259,13 @@ export function ProcurementProductInsights({ productId, orderId, lineId }: Props
   const sourceClass = sourceState === "ready" ? "is-ready" : "is-warning";
   const stateClass = data.blockers.length ? "is-blocked" : sourceClass;
   const primaryBlocker = data.blockers[0];
+  const relatedOrder = data.orders[0];
+  const relatedOrderUrl = relatedOrder
+    ? `${relatedOrder.app_url}${primaryBlocker?.line_id
+      ? `${relatedOrder.app_url.includes("?") ? "&" : "?"}line=${primaryBlocker.line_id}`
+      : ""}`
+    : null;
+  const recommendationText = text(data.recommendation, "Рекомендация пока не рассчитана");
   const locked = Boolean(order && LOCKED_ORDER_STATUSES.has(order.status));
   const editIsValid = finiteNumber(edit.quantity) !== null
     && Number(edit.quantity) >= 0
@@ -286,10 +293,19 @@ export function ProcurementProductInsights({ productId, orderId, lineId }: Props
             <span>Расчёт {text(data.source.calculated_at)}</span>
           </div>
         </div>
-        {data.identity.bitrix_url ? (
-          <a className="product-insights__bitrix-link" href={resolveBitrixPortalUrl(data.identity.bitrix_url)} target="_top">
-            Открыть карточку Bitrix24 <ArrowTopRightOnSquareIcon aria-hidden="true" />
-          </a>
+        {(relatedOrderUrl || data.identity.bitrix_url) ? (
+          <nav aria-label="Действия по товару" className="product-insights__hero-actions">
+            {!hasOrderContext && relatedOrderUrl ? (
+              <a className="product-insights__primary-action" href={relatedOrderUrl} target="_top">
+                {primaryBlocker ? "Разобрать блокер" : "Открыть заказ"}
+              </a>
+            ) : null}
+            {data.identity.bitrix_url ? (
+              <a className="product-insights__bitrix-link" href={resolveBitrixPortalUrl(data.identity.bitrix_url)} target="_top">
+                Открыть карточку Bitrix24 <ArrowTopRightOnSquareIcon aria-hidden="true" />
+              </a>
+            ) : null}
+          </nav>
         ) : null}
       </header>
 
@@ -327,18 +343,24 @@ export function ProcurementProductInsights({ productId, orderId, lineId }: Props
         <article className="product-insights__recommendation">
           <span>Рекомендовано заказать</span>
           <strong>{number(data.demand.recommended_order, " шт.")}</strong>
-          <p>{text(data.recommendation, "Рекомендация пока не рассчитана")}</p>
+          <details className="product-insights__recommendation-details">
+            <summary title={recommendationText}>
+              <span>{recommendationText}</span>
+              <b>Подробнее</b>
+            </summary>
+            <p>{recommendationText}</p>
+          </details>
         </article>
         <article className={`product-insights__blocker-summary ${primaryBlocker ? "has-blocker" : "is-clear"}`}>
           {primaryBlocker ? <ExclamationTriangleIcon aria-hidden="true" /> : <CheckCircleIcon aria-hidden="true" />}
           <div>
             <span>{primaryBlocker ? "Главный блокер" : "Блокеров нет"}</span>
-            <strong>{primaryBlocker?.message || "Товар готов к решению"}</strong>
+            <strong title={primaryBlocker?.message}>{primaryBlocker?.message || "Товар готов к решению"}</strong>
             {primaryBlocker ? <small>{procurementRiskLabel(primaryBlocker.code)}</small> : null}
             {primaryBlocker && data.orders[0] ? (
               <a
                 className="product-insights__blocker-action"
-                href={`${data.orders[0].app_url}${data.orders[0].app_url.includes("?") ? "&" : "?"}line=${primaryBlocker.line_id || ""}`}
+                href={relatedOrderUrl || relatedOrder.app_url}
                 target="_top"
               >
                 {primaryBlocker.resolution_actions?.[0]?.label || "Проверить блокер"}

@@ -267,6 +267,14 @@ test("blocked project explains resolution and stays usable at all target widths"
   });
   await expect(compactRow).toBeVisible();
   await expect(compactRow.getByText("1 блокер")).toBeVisible();
+  await expect(page.getByText("Этикетки на весь заказ")).toHaveCount(0);
+  const blockerMetric = compactRow.getByText("1 блокер");
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  await blockerMetric.hover();
+  await expect.poll(() => blockerMetric.evaluate((element) => (
+    getComputedStyle(element, "::after").opacity
+  ))).toBe("1");
+  await page.screenshot({ path: testInfo.outputPath("order-blocker-tooltip-1440.png"), fullPage: false });
   await expect(compactRow.getByText("—").first()).toBeVisible();
   await expect(compactRow.getByRole("link", { name: "Проблемная строка 20" })).toHaveAttribute(
     "href",

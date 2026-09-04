@@ -1,6 +1,5 @@
 import {
   Fragment,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -20,10 +19,7 @@ import {
   applyProcurementSupplierDistribution,
   approveProcurementClassification,
   createProcurementClassification,
-  downloadProcurementOrderLabels,
-  fetchProcurementOrderLabelPreview,
   fetchProcurementOrder,
-  linkProcurementOrderLabelSource,
   previewProcurementSupplierDistribution,
   searchProcurementSupplierOptions,
   selectProcurementLineMainSupplier,
@@ -32,7 +28,6 @@ import {
   type ProcurementSupplierDistributionPreview,
   type ProcurementSupplierOption,
   type ProcurementOrderFormation,
-  type ProcurementOrderLabelPreview,
   type ProcurementOrderFormationLine,
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
@@ -304,27 +299,13 @@ export function ProcurementOrderFormationApp({
   const [supplierQueries, setSupplierQueries] = useState<Record<number, string>>({});
   const [supplierOptions, setSupplierOptions] = useState<Record<number, ProcurementSupplierOption[]>>({});
   const [distributionPreview, setDistributionPreview] = useState<ProcurementSupplierDistributionPreview | null>(null);
-  const [labelSize, setLabelSize] = useState<"50x40" | "40x30">("50x40");
-  const [labelPreview, setLabelPreview] = useState<ProcurementOrderLabelPreview | null>(null);
-  const [labelOnecNumber, setLabelOnecNumber] = useState(
-    initialOrder.label_source?.onec_number || initialOrder.onec_document_number || ""
-  );
   const focusedLineRef = useRef<HTMLTableRowElement | null>(null);
   const removalDialogRef = useRef<HTMLDivElement | null>(null);
   const removalReasonRef = useRef<HTMLTextAreaElement | null>(null);
   const removalTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const labelSource = order.label_source || (order.onec_document_number
-    ? {
-        origin: "exchange" as const,
-        onec_number: order.onec_document_number,
-        onec_date: null,
-        linked_at: null,
-      }
-    : null);
-  const labelSourceNumber = labelSource?.onec_number || "";
   const importedFromOnec = order.origin === "onec_import";
   const importedOnecNumber = order.onec_document_number
-    || labelSourceNumber
+    || order.label_source?.onec_number
     || order.batch_id.replace(/^onec-/i, "");
 
   useEffect(() => {
@@ -689,25 +670,6 @@ export function ProcurementOrderFormationApp({
     }
   };
 
-  const previewLabels = useCallback(async (notifySuccess = true) => {
-    setLoadingKey("labels-preview");
-    try {
-      const preview = await fetchProcurementOrderLabelPreview(order.id, labelSize);
-      setLabelPreview(preview);
-      if (notifySuccess && preview.ready) {
-        toast.success("Весь заказ 1С проверен, этикетки готовы к печати");
-      }
-    } catch (error: unknown) {
-      setLabelPreview(null);
-      toast.error(errorText(error));
-    } finally {
-      setLoadingKey("");
-    }
-  }, [labelSize, order.id]);
-
-  const previewMatchesSource = labelPreview?.onec_number === labelSourceNumber
-    && labelPreview?.label_size === labelSize;
-
   const openDetailedReport = (lineId: number) => {
     setReportMenuLineId(null);
     setReportLineId(lineId);
@@ -724,197 +686,6 @@ export function ProcurementOrderFormationApp({
     url.searchParams.delete("line");
     window.history.pushState({}, "", url);
   };
-
-  useEffect(() => {
-    if (!labelSourceNumber || previewMatchesSource) return;
-    void previewLabels(false);
-  }, [labelSourceNumber, previewMatchesSource, previewLabels]);
-
-  const attachLabelSource = async () => {
-    const onecNumber = labelOnecNumber.trim();
-    if (!onecNumber) return;
-    setLoadingKey("labels-source");
-    try {
-      const result = await linkProcurementOrderLabelSource(order.id, onecNumber, labelSize);
-      setOrder((current) => ({ ...current, label_source: result.label_source }));
-      setLabelOnecNumber(result.label_source.onec_number);
-      setLabelPreview(result.preview);
-      toast.success(`Заказ 1С ${result.label_source.onec_number} подключён и проверен`);
-    } catch (error: unknown) {
-      setLabelPreview(null);
-      toast.error(errorText(error));
-    } finally {
-      setLoadingKey("");
-    }
-  };
-
-  const downloadLabels = async (format: "pdf" | "xlsx") => {
-    setLoadingKey(`labels-${format}`);
-    try {
-      const { blob, filename } = await downloadProcurementOrderLabels(
-        order.id,
-        labelSize,
-        format,
-        labelPreview?.source_checksum || ""
-      );
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      window.setTimeout(() => {
-        link.remove();
-        URL.revokeObjectURL(url);
-      }, 1000);
-      toast.success(`${format.toUpperCase()} сформирован`);
-    } catch (error: unknown) {
-      toast.error(errorText(error));
-    } finally {
-      setLoadingKey("");
-    }
-  };
-
-  const canAttachLabelSource = labelSource?.origin !== "exchange";
-  const labelSourceForm = (
-    <form
-      className="order-formation__labels-source"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void attachLabelSource();
-      }}
-    >
-      <label>
-        {labelSource ? "Новый номер заказа 1С" : "Номер заказа 1С для всего проекта"}
-        <input
-          aria-label="Полный номер заказа 1С для этикеток"
-          disabled={Boolean(loadingKey)}
-          onChange={(event) => setLabelOnecNumber(event.target.value)}
-          placeholder="Введите номер заказа 1С"
-          value={labelOnecNumber}
-        />
-        <small>
-          Один номер для всех товаров проекта. Например: <strong>РБГУ0000543</strong>.
-        </small>
-      </label>
-      <button
-        className={labelSource ? "btn btn--ghost" : "btn"}
-        disabled={!labelOnecNumber.trim() || Boolean(loadingKey)}
-        type="submit"
-      >
-        {loadingKey === "labels-source"
-          ? "Подключаем весь заказ..."
-          : labelSource
-            ? "Сохранить другой заказ"
-            : "Подключить весь заказ"}
-      </button>
-    </form>
-  );
-  const labelsSection = (
-    <section className="order-formation__labels" aria-label="Массовые этикетки">
-      <div className="order-formation__labels-heading">
-        <strong>Этикетки на весь заказ</strong>
-        <span>
-          {labelSource
-            ? `Заказ 1С ${labelSource.onec_number}${labelSource.onec_date ? ` от ${labelSource.onec_date}` : ""}: печатаются все позиции и количества из 1С`
-            : "Один раз подключите заказ 1С — товары и количества загрузятся автоматически"}
-        </span>
-      </div>
-      {canAttachLabelSource && (labelSource ? (
-        <details className="order-formation__labels-relink">
-          <summary>Изменить привязанный заказ 1С</summary>
-          {labelSourceForm}
-        </details>
-      ) : labelSourceForm)}
-      <label>
-        Размер
-        <select
-          aria-label="Размер этикетки"
-          disabled={Boolean(loadingKey)}
-          onChange={(event) => {
-            setLabelSize(event.target.value as "50x40" | "40x30");
-            setLabelPreview(null);
-          }}
-          value={labelSize}
-        >
-          <option value="50x40">50×40 мм</option>
-          <option value="40x30">40×30 мм</option>
-        </select>
-      </label>
-      {labelSource ? (
-        <button
-          className="btn btn--ghost"
-          disabled={Boolean(loadingKey)}
-          onClick={() => void previewLabels()}
-          type="button"
-        >
-          {loadingKey === "labels-preview" ? "Проверяем весь заказ..." : "Обновить данные из 1С"}
-        </button>
-      ) : (
-        <p className="order-formation__labels-setup-hint">
-          После подключения появятся количество страниц и кнопки PDF/XLSX.
-        </p>
-      )}
-      {labelPreview && (
-        <div className="order-formation__labels-summary">
-          <span>Позиций: <strong>{labelPreview.position_count}</strong></span>
-          <span>Этикеток: <strong>{labelPreview.product_label_count}</strong></span>
-          <span>Разделителей: <strong>{labelPreview.separator_count}</strong></span>
-          <span>
-            Страниц: <strong>{labelPreview.total_page_count} / {labelPreview.max_page_count}</strong>
-          </span>
-        </div>
-      )}
-      {labelPreview?.blockers.length ? (
-        <ul className="order-formation__labels-errors">
-          {labelPreview.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-        </ul>
-      ) : null}
-      {labelPreview?.ready && labelPreview.export_file_count > 1 ? (
-        <p className="order-formation__labels-setup-hint">
-          Будет создан архив: <strong>{labelPreview.export_file_count} файлов</strong>,
-          до {labelPreview.max_page_count} страниц каждый.
-        </p>
-      ) : null}
-      {labelPreview?.rows.length ? (
-        <details className="order-formation__labels-rows">
-          <summary>Состав этикеток по позициям</summary>
-          <div>
-            <table>
-              <thead><tr><th>Строка</th><th>Товар</th><th>Количество</th></tr></thead>
-              <tbody>
-                {labelPreview.rows.map((row) => (
-                  <tr key={`${row.line_no}-${row.onec_item_code}`}>
-                    <td>{row.line_no}</td>
-                    <td><strong>{row.onec_item_code}</strong> · {row.item_name}</td>
-                    <td>{row.quantity}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </details>
-      ) : null}
-      {labelSource && <div className="order-formation__labels-actions">
-        <button
-          className="btn"
-          disabled={!labelPreview?.ready || Boolean(loadingKey)}
-          onClick={() => void downloadLabels("pdf")}
-          type="button"
-        >
-          {loadingKey === "labels-pdf" ? "Формируем..." : "Скачать PDF"}
-        </button>
-        <button
-          className="btn btn--ghost"
-          disabled={!labelPreview?.ready || Boolean(loadingKey)}
-          onClick={() => void downloadLabels("xlsx")}
-          type="button"
-        >
-          {loadingKey === "labels-xlsx" ? "Формируем..." : "Скачать XLSX"}
-        </button>
-      </div>}
-    </section>
-  );
 
   return (
     <div className={`app order-formation ${reportLineId === null ? "order-formation--compact" : "order-formation--report"}`}>
@@ -1040,8 +811,6 @@ export function ProcurementOrderFormationApp({
           )}
         </section>
       ) : null}
-
-      {(reportLineId !== null || showOrderTools) ? labelsSection : null}
 
       {(reportLineId !== null || showOrderTools) && supplierReviewRoom && !locked && (
         <section className="order-formation__supplier-room">
@@ -1244,10 +1013,50 @@ export function ProcurementOrderFormationApp({
                           <strong>{line.effective_assortment_status_label || "Не задан"}</strong>
                           {line.lifecycle_status ? <small>{line.lifecycle_status}</small> : null}
                         </td>
-                        <td><span className={`order-formation__metric ${problems.length ? "is-critical" : "is-success"}`}>{problems.length ? countLabel(problems.length, "блокер", "блокера", "блокеров") : "—"}</span></td>
-                        <td><span className={`order-formation__metric ${profitability !== null && profitability < 0 ? "is-critical" : "is-info"}`}>{profitability === null ? "—" : percent(profitability)}</span></td>
-                        <td><span className={`order-formation__metric ${productDefect !== null && productDefect > 10 ? "is-critical" : productDefect !== null && productDefect > 0.5 ? "is-warning" : "is-success"}`}>{productDefect === null ? "—" : percent(productDefect)}</span></td>
-                        <td><span className="order-formation__metric is-info">{riskGroups.length || "—"}</span></td>
+                        <td>
+                          <span
+                            aria-label={problems.length ? problems.join(". ") : "Блокеров нет"}
+                            className={`order-formation__metric ${problems.length ? "is-critical" : "is-success"}`}
+                            data-tooltip={problems.length ? problems.join("\n") : "Блокеров нет"}
+                            tabIndex={0}
+                          >
+                            {problems.length ? countLabel(problems.length, "блокер", "блокера", "блокеров") : "—"}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            aria-label={`Рентабельность: ${profitabilityText(line)}`}
+                            className={`order-formation__metric ${profitability !== null && profitability < 0 ? "is-critical" : "is-info"}`}
+                            data-tooltip={`Рентабельность: ${profitabilityText(line)}`}
+                            tabIndex={0}
+                          >
+                            {profitability === null ? "—" : percent(profitability)}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            aria-label={productDefect === null ? "Данные о браке отсутствуют" : `Брак товара: ${percent(productDefect)}`}
+                            className={`order-formation__metric ${productDefect !== null && productDefect > 10 ? "is-critical" : productDefect !== null && productDefect > 0.5 ? "is-warning" : "is-success"}`}
+                            data-tooltip={productDefect === null ? "Данные о браке отсутствуют" : `Брак товара: ${percent(productDefect)}`}
+                            tabIndex={0}
+                          >
+                            {productDefect === null ? "—" : percent(productDefect)}
+                          </span>
+                        </td>
+                        <td>
+                          <span
+                            aria-label={riskGroups.length
+                              ? riskGroups.map((group) => group.text).join(". ")
+                              : "Дополнительных сигналов нет"}
+                            className="order-formation__metric is-info"
+                            data-tooltip={riskGroups.length
+                              ? riskGroups.map((group) => group.text).join("\n")
+                              : "Дополнительных сигналов нет"}
+                            tabIndex={0}
+                          >
+                            {riskGroups.length || "—"}
+                          </span>
+                        </td>
                         <td className="order-formation__reports-cell">
                           <button
                             aria-expanded={reportMenuLineId === line.id}

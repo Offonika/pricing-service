@@ -71,7 +71,11 @@ documents:
     domain: documentation
     status: active
     owner: engineering
-    source_of_truth: true
+    source_of_truth: false
+    topic_id: workspace.spec-lifecycle
+    authority: reference
+    canonical_owner: docs/specs/README.md
+    updated_at: "2026-09-05"
     related_code: []
     related_tests: []
     keywords: [specs, lifecycle, planning]

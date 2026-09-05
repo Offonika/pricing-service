@@ -21,6 +21,7 @@ def _snapshot(**overrides) -> reconciliation.ExecutionEvidenceSnapshot:
         "duplicate_deal_ids": (39001,),
         "rtu_count": 1,
         "assembled_rtu_count": 1,
+        "line_coverage_status": "complete",
         "posted_sale_amount": Decimal("1500.00"),
         "latest_rtu_at": datetime(2026, 8, 26, 10, 0),
         "latest_assembled_at": datetime(2026, 8, 26, 10, 5),
@@ -238,6 +239,116 @@ def test_duplicate_terminal_and_missing_onec_evidence_never_change_stage() -> No
     assert terminal.action == reconciliation.ACTION_NOOP
     assert unavailable.action == reconciliation.ACTION_MANUAL_REVIEW
     assert unavailable.reason == "onec_evidence_unavailable"
+
+
+def test_dismantling_full_pickup_issue_moves_to_won_independent_of_debt() -> None:
+    decision = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            line_coverage_status="complete",
+            issued_rtu_count=1,
+            onec_payment_confirmed=False,
+            debt_amount=Decimal("1500.00"),
+            dismantling_started_at=datetime(2026, 8, 26, 10, 30),
+            latest_issued_at=datetime(2026, 8, 26, 11, 0),
+        )
+    )
+
+    assert decision.action == reconciliation.ACTION_UPDATE_STAGE
+    assert decision.target_stage == "WON"
+    assert decision.reason == "dismantling_full_pickup_issued"
+
+
+def test_dismantling_outcome_requires_confirmed_chronology() -> None:
+    missing_start = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            line_coverage_status="complete",
+            issued_rtu_count=1,
+            latest_issued_at=datetime(2026, 8, 26, 11, 0),
+        )
+    )
+    issue_before_start = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            line_coverage_status="complete",
+            issued_rtu_count=1,
+            dismantling_started_at=datetime(2026, 8, 26, 11, 30),
+            latest_issued_at=datetime(2026, 8, 26, 11, 0),
+        )
+    )
+
+    assert missing_start.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert missing_start.reason == "dismantling_start_time_unconfirmed"
+    assert issue_before_start.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert issue_before_start.reason == "dismantling_issue_precedes_start"
+
+
+def test_dismantling_full_return_or_clean_cancel_moves_to_lose() -> None:
+    returned = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            returned_rtu_count=1,
+            returned_amount=Decimal("1500.00"),
+            dismantling_started_at=datetime(2026, 8, 26, 10, 30),
+            latest_return_at=datetime(2026, 8, 26, 12, 0),
+        )
+    )
+    canceled = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            site_canceled=True,
+            onec_order_count=1,
+            onec_inactive_marked_order_count=1,
+            rtu_count=0,
+            assembled_rtu_count=0,
+            posted_sale_amount=None,
+            latest_rtu_at=None,
+            latest_assembled_at=None,
+            dismantling_started_at=datetime(2026, 8, 26, 10, 30),
+        )
+    )
+
+    assert returned.target_stage == "LOSE"
+    assert returned.reason == "dismantling_full_return_confirmed"
+    assert canceled.target_stage == "LOSE"
+    assert canceled.reason == "dismantling_canceled_before_fulfillment"
+
+
+def test_dismantling_full_return_after_issue_moves_to_lose() -> None:
+    decision = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            line_coverage_status="complete",
+            issued_rtu_count=1,
+            returned_rtu_count=1,
+            returned_amount=Decimal("1500.00"),
+            dismantling_started_at=datetime(2026, 8, 26, 10, 30),
+            latest_issued_at=datetime(2026, 8, 26, 11, 0),
+            latest_return_at=datetime(2026, 8, 26, 12, 0),
+        )
+    )
+
+    assert decision.action == reconciliation.ACTION_UPDATE_STAGE
+    assert decision.target_stage == "LOSE"
+    assert decision.reason == "dismantling_full_return_confirmed"
+
+
+def test_dismantling_return_before_issue_never_changes_stage() -> None:
+    decision = reconciliation.decide_execution_stage(
+        _snapshot(
+            current_stage="DISMANTLING",
+            issued_rtu_count=1,
+            returned_rtu_count=1,
+            returned_amount=Decimal("1500.00"),
+            dismantling_started_at=datetime(2026, 8, 26, 10, 30),
+            latest_issued_at=datetime(2026, 8, 26, 12, 0),
+            latest_return_at=datetime(2026, 8, 26, 11, 0),
+        )
+    )
+
+    assert decision.action == reconciliation.ACTION_MANUAL_REVIEW
+    assert decision.reason == "dismantling_return_not_after_issue"
 
 
 def test_persistence_is_append_only_and_outbox_is_idempotent(db_session) -> None:

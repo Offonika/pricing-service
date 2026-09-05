@@ -154,6 +154,32 @@ def test_stage_apply_blocks_terminal_stage_and_stage_mismatch() -> None:
     assert client.updates == []
 
 
+def test_stage_apply_treats_dismantling_as_protected_intermediate_stage() -> None:
+    client = FakeBitrixClient(
+        {
+            1: _deal(deal_id=1, stage_id="DISMANTLING"),
+            2: _deal(deal_id=2, stage_id="DISMANTLING"),
+        }
+    )
+
+    blocked = service.apply_stage_outbox_rows(
+        [_outbox_row(deal_id=1, current_stage="DISMANTLING", target_stage="PICKUP_WAITING")],
+        client=client,
+        apply=True,
+        target_stage="PICKUP_WAITING",
+    )
+    final_outcome = service.apply_stage_outbox_rows(
+        [_outbox_row(deal_id=2, current_stage="DISMANTLING", target_stage="WON")],
+        client=client,
+        apply=True,
+        target_stage="WON",
+    )
+
+    assert blocked[0].result == "protected_intermediate_live_stage"
+    assert final_outcome[0].result == "applied"
+    assert client.updates == [(2, "WON")]
+
+
 def test_stage_apply_limit_and_csv_are_secret_safe(tmp_path: Path) -> None:
     client = FakeBitrixClient({11412: _deal(), 11413: _deal(deal_id=11413)})
     rows = [_outbox_row(), _outbox_row(deal_id=11413)]

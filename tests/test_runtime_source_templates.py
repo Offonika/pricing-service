@@ -51,6 +51,14 @@ def test_onec_assembly_job_uses_importable_module_entrypoint() -> None:
     assert f"PYTHONPATH={IMMUTABLE_RUNTIME_ROOT}" in schedule
 
 
+def test_site_order_projection_job_uses_importable_module_entrypoint() -> None:
+    wrapper = (REPO_ROOT / "infra/cron/site_order_crm_projection.sh").read_text(encoding="utf-8")
+    schedule = (REPO_ROOT / "infra/cron/order_fulfillment_sync.cron").read_text(encoding="utf-8")
+
+    assert "-m tasks.refresh_site_order_crm_projection" in wrapper
+    assert f"REPO_DIR={IMMUTABLE_RUNTIME_ROOT}" in schedule
+
+
 def test_telephony_wrapper_accepts_release_root() -> None:
     text = (REPO_ROOT / "infra/cron/sync_telephony_mapping.sh").read_text(encoding="utf-8")
 

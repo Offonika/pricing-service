@@ -327,6 +327,32 @@ class LogisticsManualReviewResponse(BaseModel):
     created_at: datetime
 
 
+class SiteOrderStateBatchItem(BaseModel):
+    onec_order_number: str | None = Field(default=None, max_length=64)
+    site_order_number: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def require_order_identifier(self):
+        self.onec_order_number = (self.onec_order_number or "").strip() or None
+        self.site_order_number = (self.site_order_number or "").strip() or None
+        if self.onec_order_number is None and self.site_order_number is None:
+            raise ValueError("onec_order_number or site_order_number is required")
+        return self
+
+
+class SiteOrderStateBatchRequest(BaseModel):
+    orders: list[SiteOrderStateBatchItem] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def require_unique_rows(self):
+        identities = [
+            (item.onec_order_number or "", item.site_order_number or "") for item in self.orders
+        ]
+        if len(identities) != len(set(identities)):
+            raise ValueError("order rows must be unique")
+        return self
+
+
 class LogisticsExternalCarrierHandoffRequest(BaseModel):
     actor_user_id: int
     carrier_name: str

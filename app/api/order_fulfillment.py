@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
@@ -14,6 +15,8 @@ from app.schemas.order_fulfillment import (
     BitrixChatMessageIngestRequest,
     BitrixChatMessageIngestResponse,
     DeliveryMethodReportResponse,
+    OnecExecutionEventIngestRequest,
+    OnecExecutionEventIngestResponse,
     OrderFulfillmentMentionResponse,
     OrderFulfillmentRecommendationsResponse,
     OrderFulfillmentReviewResponse,
@@ -21,12 +24,153 @@ from app.schemas.order_fulfillment import (
     OrderShipmentsSyncResponse,
     ShipmentNotificationStatusRequest,
     ShipmentNotificationStatusResponse,
+    SiteCrmSignalIngestRequest,
 )
 from app.services import order_assembly_queue as assembly_queue
+from app.services import site_order_execution_ingest, site_order_shipments
 from app.services import site_order_fulfillment as fulfillment
-from app.services import site_order_shipments
 
 router = APIRouter(dependencies=[Depends(require_order_fulfillment_internal_token)])
+logger = logging.getLogger(__name__)
+
+
+def _reconcile_direct_execution_event(site_order_number: str, *, apply: bool) -> None:
+    try:
+        from tasks.reconcile_onec_assembly_to_crm import reconcile_service_db_orders
+
+        reconcile_service_db_orders([site_order_number], apply=apply)
+    except Exception:
+        logger.exception(
+            "Narrow execution reconciliation failed for site order %s",
+            site_order_number,
+        )
+
+
+def _process_direct_site_signal(site_order_number: str, *, apply: bool) -> None:
+    try:
+        from app.infrastructure.db.session import session_scope
+        from app.services import site_order_stage_outbox as stage_outbox_service
+
+        settings = get_settings()
+        if not settings.order_fulfillment_bitrix_webhook_url:
+            raise RuntimeError("ORDER_FULFILLMENT_BITRIX_WEBHOOK_URL is not configured")
+        client = fulfillment.BitrixChatClient(settings.order_fulfillment_bitrix_webhook_url)
+        with session_scope() as session:
+            stage_outbox_service.process_stage_outbox(
+                session,
+                client=client,
+                apply=apply,
+                settings=settings,
+                limit=10,
+                site_order_numbers=[site_order_number],
+            )
+    except Exception:
+        logger.exception("Narrow site CRM signal processing failed for %s", site_order_number)
+
+
+@router.post(
+    "/execution/events",
+    response_model=OnecExecutionEventIngestResponse,
+)
+def ingest_onec_execution_event(
+    payload: OnecExecutionEventIngestRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> OnecExecutionEventIngestResponse:
+    settings = get_settings()
+    fact = site_order_execution_ingest.OnecExecutionFact(
+        signal=payload.signal,
+        event_at=payload.event_at,
+        site_order_number=payload.site_order_number,
+        onec_order_number=payload.onec_order_number,
+        rtu_external_id=payload.rtu_external_id,
+        rtu_number=payload.rtu_number,
+        rtu_date=payload.rtu_date,
+        is_posted=payload.is_posted,
+        document_amount=payload.document_amount,
+    )
+    source_ref = site_order_execution_ingest.canonical_onec_execution_source_ref(fact)
+    if payload.dry_run:
+        return OnecExecutionEventIngestResponse(
+            accepted=True,
+            duplicate=False,
+            event_id=None,
+            source_ref=source_ref,
+            reconciliation_queued=False,
+        )
+    if not (
+        settings.order_fulfillment_execution_master_enabled
+        and settings.order_fulfillment_execution_ingest_enabled
+    ):
+        raise HTTPException(status_code=409, detail="execution ingest is disabled")
+    result = site_order_execution_ingest.ingest_onec_execution_fact(db, fact)
+    db.commit()
+    reconciliation_queued = bool(
+        not result.duplicate and settings.order_fulfillment_execution_reconciliation_enabled
+    )
+    if reconciliation_queued:
+        background_tasks.add_task(
+            _reconcile_direct_execution_event,
+            payload.site_order_number,
+            apply=settings.order_fulfillment_execution_stage_apply_enabled,
+        )
+    return OnecExecutionEventIngestResponse(
+        accepted=True,
+        duplicate=result.duplicate,
+        event_id=result.event_id,
+        source_ref=result.source_ref,
+        reconciliation_queued=reconciliation_queued,
+    )
+
+
+@router.post(
+    "/site/events",
+    response_model=OnecExecutionEventIngestResponse,
+)
+def ingest_site_crm_signal(
+    payload: SiteCrmSignalIngestRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> OnecExecutionEventIngestResponse:
+    settings = get_settings()
+    fact = site_order_execution_ingest.SiteCrmSignalFact(
+        signal=payload.signal,
+        event_at=payload.event_at,
+        site_order_number=payload.site_order_number,
+        bitrix_deal_id=payload.bitrix_deal_id,
+        source_revision=payload.source_revision,
+        current_stage=payload.current_stage,
+    )
+    source_ref = site_order_execution_ingest.canonical_site_crm_signal_source_ref(fact)
+    if payload.dry_run:
+        return OnecExecutionEventIngestResponse(
+            accepted=True,
+            duplicate=False,
+            event_id=None,
+            source_ref=source_ref,
+            reconciliation_queued=False,
+        )
+    if not (
+        settings.order_fulfillment_execution_master_enabled
+        and settings.order_fulfillment_site_signal_ingest_enabled
+    ):
+        raise HTTPException(status_code=409, detail="site CRM signal ingest is disabled")
+    result = site_order_execution_ingest.ingest_site_crm_signal_fact(db, fact)
+    db.commit()
+    processing_queued = not result.duplicate
+    if processing_queued:
+        background_tasks.add_task(
+            _process_direct_site_signal,
+            payload.site_order_number,
+            apply=settings.order_fulfillment_site_signal_stage_apply_enabled,
+        )
+    return OnecExecutionEventIngestResponse(
+        accepted=True,
+        duplicate=result.duplicate,
+        event_id=result.event_id,
+        source_ref=result.source_ref,
+        reconciliation_queued=processing_queued,
+    )
 
 
 @router.get(

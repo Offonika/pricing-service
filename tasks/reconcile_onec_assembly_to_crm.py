@@ -7,17 +7,21 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import requests
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.infrastructure.db import session_scope
 from app.infrastructure.db.engines import build_engine
-from app.models import SiteOrderExecutionCase
+from app.services import site_order_execution_ingest
+from app.services import site_order_execution_reconciliation as execution_reconciliation
 from app.services import site_order_fulfillment as fulfillment
+from app.services import site_order_stage_outbox as stage_outbox_service
+from infra.cron import order_fulfillment_sync as fulfillment_sync
 
 DEFAULT_CRM_URL = "https://crm.master-mobile.ru/local/tools/mm_crm_1c_assembly_status.php"
 DEFAULT_STATE_PATH = Path(".local/onec_assembly_crm_reconciler.sqlite3")
@@ -287,46 +291,90 @@ def send_to_crm(
 
 
 def persist_event_to_service_db(event: AssemblyEvent) -> dict[str, Any]:
-    event_type = (
-        "execution_pickup_issued_raw" if event.crm_status == "issued" else "execution_assembled_raw"
+    fact = site_order_execution_ingest.OnecExecutionFact(
+        signal="issued" if event.crm_status == "issued" else "assembled",
+        event_at=event.event_at,
+        site_order_number=event.site_order_number,
+        onec_order_number=event.onec_order_number or None,
+        rtu_external_id=event.rtu_external_id or None,
+        rtu_number=event.rtu_number or None,
+        rtu_date=event.rtu_date,
+        is_posted=event.is_posted,
+        document_amount=(Decimal(event.document_amount) if event.document_amount else None),
     )
     with session_scope() as session:
-        persisted = fulfillment.upsert_execution_event(
-            session,
-            site_order_number=event.site_order_number,
-            event_type=event_type,
-            event_at=event.event_at,
-            source="onec",
-            source_ref=event.event_key,
-            confidence="strong",
-            raw_message_id=None,
-            payload={
-                "pipeline": "execution_reconciliation",
-                "rtu_external_id": event.rtu_external_id,
-                "rtu_number": event.rtu_number,
-                "rtu_date": _format_dt(event.rtu_date),
-                "onec_order_number": event.onec_order_number,
-                "is_posted": event.is_posted,
-                "document_amount": event.document_amount,
-            },
-        )
-        case = session.scalar(
-            select(SiteOrderExecutionCase).where(
-                SiteOrderExecutionCase.site_order_number == event.site_order_number
-            )
-        )
-        if case is None:
-            raise RuntimeError("execution_case_not_created")
-        case.onec_order_external_id = event.onec_order_number or None
-        case.rtu_external_id = event.rtu_external_id or None
-        case.updated_at = datetime.now()
-        event_id = persisted.id if persisted is not None else None
+        result = site_order_execution_ingest.ingest_onec_execution_fact(session, fact)
     return {
         "ok": True,
         "transport": TRANSPORT_SERVICE_DB,
-        "event_id": event_id,
-        "duplicate": persisted is None,
-        "message": "execution_event_persisted" if persisted is not None else "duplicate_event",
+        "event_id": result.event_id,
+        "duplicate": result.duplicate,
+        "message": "duplicate_event" if result.duplicate else "execution_event_persisted",
+    }
+
+
+def reconcile_service_db_orders(
+    order_numbers: list[str],
+    *,
+    apply: bool,
+) -> dict[str, Any]:
+    unique_orders = [item for item in dict.fromkeys(order_numbers) if item]
+    if not unique_orders:
+        return {"orders": 0, "snapshots": 0, "outbox": 0, "worker": 0}
+    settings = get_settings()
+    if not settings.order_fulfillment_bitrix_webhook_url:
+        raise RuntimeError("ORDER_FULFILLMENT_BITRIX_WEBHOOK_URL is not configured")
+    client = fulfillment.BitrixChatClient(settings.order_fulfillment_bitrix_webhook_url)
+    response = client.call(
+        "crm.deal.list",
+        {
+            "filter": {f"@{fulfillment.CRM_ORDER_NUMBER_FIELD}": unique_orders},
+            "select": [
+                *fulfillment.CRM_REVIEW_SELECT_FIELDS,
+                fulfillment_sync.CRM_ASSEMBLED_FIELD,
+            ],
+            "order": {"ID": "ASC"},
+        },
+    )
+    deals = [
+        deal
+        for item in response.get("result") or []
+        if (deal := fulfillment.bitrix_deal_from_payload(item)) is not None
+    ]
+    order_statuses = fulfillment_sync.fetch_sale_order_statuses(unique_orders)
+    settlements = fulfillment_sync.fetch_onec_order_settlements(unique_orders, strict=True)
+    rtu_signals = fulfillment_sync.query_rtu_signal_by_orders(unique_orders)
+    order_states = fulfillment_sync.query_onec_order_states_by_orders(unique_orders)
+    for order_number, state in order_states.items():
+        rtu_signals.setdefault(order_number, {}).update(state)
+    snapshots = fulfillment_sync.build_execution_snapshots(
+        deals,
+        order_statuses=order_statuses,
+        onec_settlements=settlements,
+        rtu_signals=rtu_signals,
+        cutover_at=settings.order_fulfillment_execution_cutover_at,
+        onec_evidence_available=True,
+        dismantling_started_at=fulfillment_sync._dismantling_started_at_for_deals(  # noqa: SLF001
+            client,
+            deals,
+        ),
+    )
+    decisions = [execution_reconciliation.decide_execution_stage(item) for item in snapshots]
+    persisted = fulfillment_sync.persist_execution_snapshots(snapshots, decisions)
+    with session_scope() as session:
+        worker = stage_outbox_service.process_stage_outbox(
+            session,
+            client=client,
+            apply=apply,
+            settings=settings,
+            limit=max(1, len(snapshots)),
+            site_order_numbers=unique_orders,
+        )
+    return {
+        "orders": len(unique_orders),
+        "snapshots": len(snapshots),
+        "outbox": sum(item.outbox_id is not None for item in persisted),
+        "worker": len(worker),
     }
 
 
@@ -401,6 +449,7 @@ def main() -> int:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
 
         exit_code = 0
+        affected_service_db_orders: list[str] = []
         for event in pending_events:
             if args.no_send:
                 print_event_result(event, status="candidate")
@@ -432,7 +481,32 @@ def main() -> int:
             )
             if ok and args.apply:
                 record_processed(state_connection, event, crm_response=crm_response)
+                if args.transport == TRANSPORT_SERVICE_DB:
+                    affected_service_db_orders.append(event.site_order_number)
             if not ok:
+                exit_code = 1
+
+        if affected_service_db_orders and args.transport == TRANSPORT_SERVICE_DB:
+            try:
+                reconcile_summary = reconcile_service_db_orders(
+                    affected_service_db_orders,
+                    apply=args.apply,
+                )
+                print(
+                    json.dumps(
+                        {"service_db_reconciliation": reconcile_summary},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+            except Exception as exc:
+                print(
+                    json.dumps(
+                        {"service_db_reconciliation_error": str(exc)},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
                 exit_code = 1
 
     return exit_code

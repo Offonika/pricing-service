@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_logistics_internal_token
+from app.core.config import get_settings
 from app.models import LogisticsDraft
 from app.schemas.logistics import (
     LogisticsConfirmResponse,
@@ -41,11 +42,37 @@ from app.schemas.logistics import (
     LogisticsUserSyncItem,
     LogisticsWarehouseResponse,
     LogisticsWarehouseSyncItem,
+    SiteOrderStateBatchRequest,
 )
 from app.services import logistics as logistics_service
+from app.services import site_order_state_projection as state_projection_service
 from app.services import transfer_assistant as transfer_assistant_service
 
 router = APIRouter(dependencies=[Depends(require_logistics_internal_token)])
+
+
+@router.post("/site-orders/state-batch", response_class=Response)
+def site_order_state_batch(
+    payload: SiteOrderStateBatchRequest,
+    format: Literal["xml"] = Query(default="xml"),
+    db: Session = Depends(get_db),
+):
+    del format
+    rows = state_projection_service.load_state_projection(
+        db,
+        [
+            state_projection_service.StateProjectionLookup(
+                onec_order_number=item.onec_order_number,
+                site_order_number=item.site_order_number,
+            )
+            for item in payload.orders
+        ],
+        stale_after_seconds=get_settings().order_fulfillment_state_projection_stale_after_seconds,
+    )
+    return Response(
+        content=state_projection_service.state_projection_xml(rows),
+        media_type="application/xml",
+    )
 
 
 def _require_draft_type(db: Session, draft_id: int, expected_type: str) -> None:

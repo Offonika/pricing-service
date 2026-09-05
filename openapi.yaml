@@ -8173,6 +8173,36 @@ paths:
                 $ref: '#/components/schemas/CardBalanceCashboxSyncResponse'
       security:
       - HTTPBearer: []
+  /api/logistics/site-orders/state-batch:
+    post:
+      summary: Site Order State Batch
+      operationId: site_order_state_batch_api_logistics_site_orders_state_batch_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: format
+        in: query
+        required: false
+        schema:
+          const: xml
+          type: string
+          default: xml
+          title: Format
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteOrderStateBatchRequest'
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/auth/telegram:
     post:
       summary: Auth Telegram
@@ -9977,6 +10007,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/execution/events:
+    post:
+      summary: Ingest Onec Execution Event
+      operationId: ingest_onec_execution_event_api_order_fulfillment_execution_events_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnecExecutionEventIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnecExecutionEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/order-fulfillment/site/events:
+    post:
+      summary: Ingest Site Crm Signal
+      operationId: ingest_site_crm_signal_api_order_fulfillment_site_events_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteCrmSignalIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnecExecutionEventIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/order-fulfillment/assembly-queue:
     get:
       summary: Get Assembly Queue
@@ -26281,6 +26361,94 @@ components:
       - brand
       - model_name
       title: ModelDemandTimeseriesItem
+    OnecExecutionEventIngestRequest:
+      properties:
+        signal:
+          type: string
+          enum:
+          - assembled
+          - issued
+          title: Signal
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        site_order_number:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Site Order Number
+        onec_order_number:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Onec Order Number
+        rtu_external_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Rtu External Id
+        rtu_number:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Rtu Number
+        rtu_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Rtu Date
+        is_posted:
+          type: boolean
+          title: Is Posted
+          default: true
+        document_amount:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Document Amount
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - signal
+      - event_at
+      - site_order_number
+      title: OnecExecutionEventIngestRequest
+    OnecExecutionEventIngestResponse:
+      properties:
+        accepted:
+          type: boolean
+          title: Accepted
+        duplicate:
+          type: boolean
+          title: Duplicate
+          default: false
+        event_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Event Id
+        source_ref:
+          type: string
+          title: Source Ref
+        reconciliation_queued:
+          type: boolean
+          title: Reconciliation Queued
+          default: false
+      type: object
+      required:
+      - accepted
+      - source_ref
+      title: OnecExecutionEventIngestResponse
     OrchestrationHealthResponse:
       properties:
         status:
@@ -33879,6 +34047,51 @@ components:
           title: Payload
       type: object
       title: ShipmentSnapshotInput
+    SiteCrmSignalIngestRequest:
+      properties:
+        signal:
+          type: string
+          enum:
+          - in_delivery
+          - delivered
+          - cdek_address_mismatch
+          title: Signal
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        site_order_number:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Site Order Number
+        bitrix_deal_id:
+          type: integer
+          minimum: 1.0
+          title: Bitrix Deal Id
+        source_revision:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Source Revision
+        current_stage:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Current Stage
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - signal
+      - event_at
+      - site_order_number
+      - bitrix_deal_id
+      - source_revision
+      title: SiteCrmSignalIngestRequest
     SiteDefectArchiveCaseDetailResponse:
       properties:
         id:
@@ -34400,6 +34613,32 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SiteOrderStateBatchItem:
+      properties:
+        onec_order_number:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Onec Order Number
+        site_order_number:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+          title: Site Order Number
+      type: object
+      title: SiteOrderStateBatchItem
+    SiteOrderStateBatchRequest:
+      properties:
+        orders:
+          items:
+            $ref: '#/components/schemas/SiteOrderStateBatchItem'
+          type: array
+          maxItems: 500
+          title: Orders
+      type: object
+      title: SiteOrderStateBatchRequest
     SiteServiceEmailEventPayload:
       properties:
         schemaVersion:

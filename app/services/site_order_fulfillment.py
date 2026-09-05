@@ -48,6 +48,7 @@ DEFAULT_CHAT_DIALOG_IDS = {
 }
 
 SOURCE_BITRIX_CHAT = "bitrix_chat"
+SOURCE_SITE_CRM = "site_crm"
 PARSER_VERSION = "bitrix-order-v2"
 
 GENERATED_ORDER_REPORT_MARKERS = (
@@ -81,6 +82,9 @@ EVENT_COURIER_DELIVERED_PAID = "courier_spb_delivered_paid"
 EVENT_COURIER_FAILED = "courier_spb_failed"
 EVENT_COURIER_RESCHEDULED = "courier_spb_rescheduled"
 EVENT_COURIER_IN_PROGRESS = "courier_spb_in_progress"
+EVENT_SITE_CARRIER_IN_DELIVERY = "site_carrier_in_delivery"
+EVENT_SITE_CARRIER_DELIVERED = "site_carrier_delivered"
+EVENT_SITE_CDEK_ADDRESS_MISMATCH = "site_cdek_address_mismatch"
 
 STRICT_SITE_EVENT_PATTERNS = {
     EVENT_PICKUP_UNCLAIMED: re.compile(
@@ -103,7 +107,12 @@ CRM_STAGE_MANUAL_REVIEW = "PREPARATION"
 CRM_STAGE_PICKUP_TRANSIT = "PICKUP_TRANSIT"
 CRM_STAGE_PICKUP_WAITING = "PICKUP_WAITING"
 CRM_STAGE_PICKUP_STORAGE = "PICKUP_STORAGE"
-TERMINAL_CRM_STAGES = {"WON", "LOSE", "DISMANTLING", "APOLOGY"}
+TERMINAL_CRM_STAGES = {"WON", "LOSE", "APOLOGY"}
+INTERMEDIATE_PROTECTED_CRM_STAGES = {"DISMANTLING"}
+ALLOWED_PROTECTED_STAGE_TRANSITIONS = {
+    ("DISMANTLING", "WON"),
+    ("DISMANTLING", "LOSE"),
+}
 
 DERIVED_TO_CRM_STAGE = {
     EVENT_PICKUP_MOVING: CRM_STAGE_PICKUP_TRANSIT,
@@ -122,6 +131,9 @@ DERIVED_TO_CRM_STAGE = {
     EVENT_COURIER_FAILED: CRM_STAGE_MANUAL_REVIEW,
     EVENT_COURIER_RESCHEDULED: "IN_DELIVERY",
     EVENT_COURIER_IN_PROGRESS: "IN_DELIVERY",
+    EVENT_SITE_CARRIER_IN_DELIVERY: "IN_DELIVERY",
+    EVENT_SITE_CARRIER_DELIVERED: "WON",
+    EVENT_SITE_CDEK_ADDRESS_MISMATCH: "DELIVERY_REVIEW",
 }
 
 CHAT_AUTO_APPLY_TARGET_STAGES = {
@@ -144,6 +156,12 @@ CHAT_AUTO_APPLY_CURRENT_STAGES = {
 AUTOMATED_LOGISTICS_STAGE_EVENTS = {
     EVENT_PICKUP_MOVING,
     EVENT_PICKUP_STORED,
+}
+
+AUTOMATED_SITE_CRM_STAGE_EVENTS = {
+    EVENT_SITE_CARRIER_IN_DELIVERY,
+    EVENT_SITE_CARRIER_DELIVERED,
+    EVENT_SITE_CDEK_ADDRESS_MISMATCH,
 }
 
 KNOWN_RAW_DELIVERY_METHODS = {
@@ -1255,6 +1273,7 @@ def upsert_execution_event(
     payload: dict[str, Any] | None,
     warehouse_id: int | None = None,
     actor_ref: str | None = None,
+    bitrix_deal_id: int | None = None,
 ) -> SiteOrderExecutionEvent | None:
     event_at = _naive_utc_datetime(event_at)
     idempotency_key = f"{source}|{source_ref or '-'}|{site_order_number}|{event_type}"
@@ -1281,6 +1300,10 @@ def upsert_execution_event(
         )
         session.add(case)
         session.flush()
+    if bitrix_deal_id is not None:
+        if case.bitrix_deal_id not in (None, bitrix_deal_id):
+            raise ValueError("bitrix_deal_id conflicts with existing order binding")
+        case.bitrix_deal_id = bitrix_deal_id
 
     event = SiteOrderExecutionEvent(
         case_id=case.id,
@@ -1301,16 +1324,17 @@ def upsert_execution_event(
     event_is_current = _event_is_not_older_than_current(session, case=case, event=event)
     if target_crm_stage is not None and event_is_current:
         case.current_derived_status = event_type
-        case.current_crm_stage = target_crm_stage
+        # Site CRM tracking is an input fact.  Until the outbox applies and
+        # reads the deal back, current_crm_stage must remain the observed CRM value.
+        if source != SOURCE_SITE_CRM:
+            case.current_crm_stage = target_crm_stage
         case.confidence = confidence
         case.last_evidence_event_id = event.id
         case.updated_at = datetime.now()
-    if (
-        source == "logistics"
-        and confidence == "strong"
-        and event_type in AUTOMATED_LOGISTICS_STAGE_EVENTS
-        and event_is_current
-    ):
+    should_enqueue_stage = (
+        source == "logistics" and event_type in AUTOMATED_LOGISTICS_STAGE_EVENTS
+    ) or (source == SOURCE_SITE_CRM and event_type in AUTOMATED_SITE_CRM_STAGE_EVENTS)
+    if confidence == "strong" and should_enqueue_stage and event_is_current:
         target_stage = DERIVED_TO_CRM_STAGE[event_type]
         session.add(
             SiteOrderStageOutbox(
@@ -1526,8 +1550,11 @@ def review_decision(
 
     if deal is not None and _delivery_conflicts_with_event(event_type, deal, onec_order):
         reasons.append("delivery_conflict")
-    if deal is not None and _clean_string(deal.stage_id) in TERMINAL_CRM_STAGES:
+    current_stage = _clean_string(deal.stage_id) if deal is not None else ""
+    if current_stage in TERMINAL_CRM_STAGES:
         reasons.append("terminal_crm_stage")
+    elif current_stage in INTERMEDIATE_PROTECTED_CRM_STAGES:
+        reasons.append("protected_intermediate_crm_stage")
 
     if (
         event_type == EVENT_PICKUP_RECEIVED
@@ -1543,7 +1570,9 @@ def review_decision(
     if reasons:
         recommended_stage = (
             deal.stage_id
-            if deal is not None and _clean_string(deal.stage_id) in TERMINAL_CRM_STAGES
+            if deal is not None
+            and _clean_string(deal.stage_id)
+            in TERMINAL_CRM_STAGES | INTERMEDIATE_PROTECTED_CRM_STAGES
             else CRM_STAGE_MANUAL_REVIEW
         )
 
@@ -1772,6 +1801,11 @@ def build_stage_outbox_rows(
         if current_stage == target_stage:
             continue
         if current_stage in TERMINAL_CRM_STAGES:
+            continue
+        if (
+            current_stage in INTERMEDIATE_PROTECTED_CRM_STAGES
+            and (current_stage, target_stage) not in ALLOWED_PROTECTED_STAGE_TRANSITIONS
+        ):
             continue
 
         state = "ready"
@@ -2075,6 +2109,18 @@ def evaluate_stage_outbox_row(
             row,
             live_deal=live_deal,
             result="terminal_live_stage",
+            reason=live_stage,
+            dry_run=dry_run,
+            applied=False,
+        )
+    if (
+        live_stage in INTERMEDIATE_PROTECTED_CRM_STAGES
+        and (live_stage, row.target_stage) not in ALLOWED_PROTECTED_STAGE_TRANSITIONS
+    ):
+        return _stage_apply_result(
+            row,
+            live_deal=live_deal,
+            result="protected_intermediate_live_stage",
             reason=live_stage,
             dry_run=dry_run,
             applied=False,

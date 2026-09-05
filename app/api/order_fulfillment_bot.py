@@ -412,6 +412,10 @@ def bot_health(db: Session = Depends(get_db)) -> dict[str, Any]:
             settings.order_fulfillment_execution_reconciliation_enabled
         ),
         "execution_stage_apply_enabled": (settings.order_fulfillment_execution_stage_apply_enabled),
+        "site_signal_ingest_enabled": settings.order_fulfillment_site_signal_ingest_enabled,
+        "site_signal_stage_apply_enabled": (
+            settings.order_fulfillment_site_signal_stage_apply_enabled
+        ),
         "execution_historical_apply_enabled": (
             settings.order_fulfillment_execution_historical_apply_enabled
         ),

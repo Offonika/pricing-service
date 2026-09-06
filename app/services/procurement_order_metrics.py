@@ -489,13 +489,13 @@ def _fetch_prices(
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
             LOWER(CONVERT(varchar(34), supplier_order._Fld2498RRef, 1)) AS supplier_ref,
-            LOWER(CONVERT(varchar(34), contract._Fld498RRef, 1)) AS currency_ref,
+            LOWER(CONVERT(varchar(34), supplier_order._Fld2490RRef, 1)) AS currency_ref,
             NULLIF(LTRIM(RTRIM(currency._Code)), N'') AS currency_code,
             NULLIF(LTRIM(RTRIM(currency._Description)), N'') AS currency_name,
             LOWER(CONVERT(varchar(34), supplier_order._IDRRef, 1)) AS order_ref,
             supplier_order._Number AS order_number,
             supplier_line._LineNo2516 AS line_number,
-            CAST(supplier_line._Fld2529 AS decimal(28, 2)) AS price,
+            CAST(supplier_line._Fld2529 AS decimal(28, 4)) AS price,
             supplier_order._Date_Time AS price_at
         FROM dbo._Document133 AS supplier_order WITH (NOLOCK)
         JOIN dbo._Document133_VT2515 AS supplier_line WITH (NOLOCK)
@@ -505,7 +505,7 @@ def _fetch_prices(
         LEFT JOIN dbo._Reference37 AS contract WITH (NOLOCK)
           ON contract._IDRRef = supplier_order._Fld2494RRef
         LEFT JOIN dbo._Reference20 AS currency WITH (NOLOCK)
-          ON currency._IDRRef = contract._Fld498RRef
+          ON currency._IDRRef = supplier_order._Fld2490RRef
         WHERE supplier_order._Marked = 0x00
           AND supplier_order._Posted = 0x01
           AND supplier_order._Date_Time < :period_end

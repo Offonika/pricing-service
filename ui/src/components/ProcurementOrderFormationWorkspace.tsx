@@ -36,12 +36,14 @@ import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementFamilyReview } from "./ProcurementFamilyReview";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
+import { ProcurementExceptions, ProcurementControlOverview } from "./ProcurementExceptions";
+
 interface Props {
   bitrixUserName?: string | null;
   bitrixItemId?: string;
 }
 
-type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "history";
+type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "history" | "exceptions";
 const LIFECYCLE_READINESS = ["all", "ready", "review", "blocked", "stale"] as const;
 type LifecycleReadiness = (typeof LIFECYCLE_READINESS)[number];
 
@@ -121,6 +123,7 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
   orders: "Заказы",
   properties: "Свойства",
   history: "История",
+  exceptions: "Исключения",
 };
 
 // Названия статусов действующие; прежние держим рядом и показываем мелкой
@@ -155,6 +158,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   in_transit: "В пути",
   partially_received: "Частично поступил",
   received: "Поступил",
+  reconciliation_required: "Требует сверки исполнения",
   cancelled: "Отменён",
 };
 
@@ -292,6 +296,7 @@ function errorText(error: unknown) {
 function money(value: string | number, currency = "RUB") {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return String(value);
+  if (!/^[A-Z]{3}$/.test(currency)) return "Валюта не выбрана";
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
     currency,
@@ -374,6 +379,7 @@ function routeFromLocation(): WorkspaceRoute {
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
   if (relative === "/history") return { kind: "tab", tab: "history" };
+  if (relative === "/exceptions") return { kind: "tab", tab: "exceptions" };
   return { kind: "tab", tab: "dashboard" };
 }
 
@@ -1530,7 +1536,11 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
         <div><span>Активных</span><strong>{data.summary.by_status.active || 0}</strong></div>
         <div><span>В пути</span><strong>{data.summary.by_status.in_transit || 0}</strong></div>
         <div><span>Частично поступило</span><strong>{data.summary.by_status.partially_received || 0}</strong></div>
-        <div><span>Сумма</span><strong>{money(data.summary.amount)}</strong></div>
+        <div><span>Подтверждённые суммы</span>
+          {Object.entries(data.summary.confirmed_amount_by_currency || {}).map(([currency, amount]) => <strong key={currency}>{money(amount, currency)}</strong>)}
+          {!Object.keys(data.summary.confirmed_amount_by_currency || {}).length && <strong>Не подтверждены</strong>}
+          {!!data.summary.unpriced_line_count && <small>Цена не согласована: {data.summary.unpriced_line_count} строк</small>}
+        </div>
       </section>
       <section className="registry-toolbar">
         <input onChange={(event) => updateFilters({ search: event.target.value })} placeholder="Товар или общий поиск" value={search} />
@@ -1599,7 +1609,9 @@ export function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number)
                   </td>
                   <td><strong>{number(order.ordered_quantity)}</strong><small>{number(order.received_quantity || 0)} / {number(order.open_quantity ?? order.ordered_quantity)}</small></td>
                   <td>{dateOnly(order.expected_receipt_date)}<small>{order.cargo_dropoff_date ? `Cargo: ${dateOnly(order.cargo_dropoff_date)}` : ""}</small></td>
-                  <td><strong>{money(order.total_amount, order.currency)}</strong></td>
+                  <td><strong>{order.confirmed_amount == null ? "Не подтверждена" : money(order.confirmed_amount, order.currency)}</strong>
+                    {!!order.unpriced_line_count && <small>Цена не согласована: {order.unpriced_line_count} строк</small>}
+                  </td>
                   <td>
                     <button
                       className="btn btn--ghost btn--small"
@@ -1949,6 +1961,8 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName, bitrixItemI
             />
             : <LoadingState message="Загрузка витрины..." />
       )}
+      {route.tab === "dashboard" && <ProcurementControlOverview onOpen={() => navigate({ kind: "tab", tab: "exceptions" })} />}
+      {route.tab === "exceptions" && <ProcurementExceptions onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
       {route.tab === "assistant" && <ProcurementOrderAssistant onOpenOrder={(orderId, focusLineId) => navigate({ kind: "order", orderId, focusLineId })} />}
       {route.tab === "properties" && <ClassificationQueue />}

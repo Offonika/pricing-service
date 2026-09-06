@@ -76,7 +76,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_WAREHOUSE_POLICY,
     )
-    parser.add_argument("--currency", default="RUB")
+    parser.add_argument("--currency", default="")
     parser.add_argument("--procurement-contour", default="ordinary")
     parser.add_argument("--route", default="ordinary")
     parser.add_argument("--batch-id", default=date.today().isoformat())
@@ -281,6 +281,12 @@ def select_order_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     for row in rows:
         decision = _clean(row.get("dry_run_decision"))
         baseline = _decimal(row.get("recommended_order_qty")) or Decimal("0")
+        if (
+            _clean(row.get("supply_review_required")) == "true"
+            or _clean(row.get("stockout_guard_triggered")) == "true"
+        ):
+            selected.append(dict(row))
+            continue
         family_status = _clean(row.get("display_family_recommendation_status"))
         family_quantity = _family_recommended_quantity(row)
         if family_status:
@@ -351,6 +357,11 @@ def build_grouped_orders(
             contracts=contracts,
             dimension=dimension,
         )
+        from app.services.procurement_order_metrics import _normalize_currency
+
+        effective_currency = (
+            _normalize_currency(contract["currency"]) if contract.get("currency") else currency
+        )
         effective_warehouse = {
             "ref": _clean(warehouse.get("ref")) or _clean(dimension.get("warehouse_ref")),
             "code": _clean(warehouse.get("code")) or _clean(dimension.get("warehouse_code")),
@@ -365,7 +376,7 @@ def build_grouped_orders(
             supplier["code"],
             contract["ref"],
             contract["code"],
-            currency,
+            effective_currency,
             effective_warehouse["ref"],
             effective_warehouse["code"],
             procurement_contour,
@@ -376,7 +387,7 @@ def build_grouped_orders(
             "supplier": supplier,
             "contract": contract,
             "warehouse": effective_warehouse,
-            "currency": currency,
+            "currency": effective_currency,
             "procurement_contour": procurement_contour,
             "route": route,
             "batch_id": batch_id,
@@ -428,6 +439,20 @@ def build_grouped_orders(
             lead_candidate=lead_candidate or {},
             lead_source_level=_source_level,
         )
+        line_payload["currency_source"] = (
+            "onec_contract" if contract.get("currency") else "manual" if currency else "unconfirmed"
+        )
+        if row.get("supply_scenario"):
+            line_payload["supply_scenario"] = json.loads(str(row["supply_scenario"]))
+        line_payload["stockout_guard_triggered"] = (
+            _clean(row.get("stockout_guard_triggered")) == "true"
+        )
+        line_payload["stockout_guard_days_remaining"] = _clean(
+            row.get("stockout_guard_days_remaining")
+        )
+        line_payload["stockout_guard_required_days"] = _clean(
+            row.get("stockout_guard_required_days")
+        )
         if family_recommendation:
             line_payload["display_family_recommendation"] = family_recommendation
         if b2b_customer_demand:
@@ -447,7 +472,7 @@ def build_grouped_orders(
                 "final_quantity": str(quantity),
                 "purchase_price": str(price),
                 "amount": str((quantity * price).quantize(Decimal("0.01"))),
-                "currency": currency,
+                "currency": effective_currency,
                 "source_kind": "family_shadow" if family_recommendation else "automatic",
                 "explicit_demand": False,
                 "risk_level": _risk_level(
@@ -496,6 +521,9 @@ def build_grouped_orders(
         merge_hash = hashlib.sha256(merge_source.encode("utf-8")).hexdigest()[:20]
         for index, line in enumerate(lines, start=1):
             line["line_number"] = index
+            from app.services.procurement_price_context import serialize_draft_price_context
+
+            line["price_context"] = serialize_draft_price_context(line, header)
         orders.append(
             {
                 "stable_key": f"proc-order:{batch_id}:{stable_hash}",
@@ -519,18 +547,30 @@ def contract_for_supplier(
     by_ref = contracts.get("by_supplier_ref") or {}
     by_code = contracts.get("by_supplier_code") or {}
     value = by_ref.get(supplier.get("ref")) or by_code.get(supplier.get("code"))
+    explicit_contract = isinstance(value, dict) and bool(
+        _clean(value.get("ref")) or _clean(value.get("code"))
+    )
     if not isinstance(value, dict) or not (_clean(value.get("ref")) or _clean(value.get("code"))):
         value = {
             "ref": _clean((dimension or {}).get("contract_ref")),
             "code": _clean((dimension or {}).get("contract_code")),
             "name": _clean((dimension or {}).get("contract_name")),
+            "currency": _clean((dimension or {}).get("contract_currency")),
         }
+        if int((dimension or {}).get("supplier_currency_count") or 0) > 1:
+            value["currency"] = ""
+    elif explicit_contract and not _clean(value.get("currency")) and dimension:
+        if _clean(value.get("ref")).lower() == _clean(
+            dimension.get("contract_ref")
+        ).lower() and _clean(value.get("ref")):
+            value = {**value, "currency": _clean(dimension.get("contract_currency"))}
     if not (_clean(value.get("ref")) or _clean(value.get("code"))):
         value = contracts.get("default") or {}
     return {
         "ref": _clean(value.get("ref")),
         "code": _clean(value.get("code")),
         "name": _clean(value.get("name")) or "Основной договор",
+        "currency": _clean(value.get("currency")),
     }
 
 
@@ -669,6 +709,12 @@ def fetch_latest_order_dimensions(
                 CONVERT(varchar(34), doc._Fld2494RRef, 1) AS contract_ref,
                 NULLIF(LTRIM(RTRIM(contract._Code)), N'') AS contract_code,
                 NULLIF(LTRIM(RTRIM(contract._Description)), N'') AS contract_name,
+                RTRIM(contract_currency._Code) AS contract_currency,
+                (SELECT COUNT(DISTINCT candidate._Fld498RRef)
+                 FROM dbo._Reference37 candidate
+                 WHERE candidate._OwnerIDRRef = doc._Fld2498RRef AND candidate._Marked = 0x00
+                   AND candidate._Fld498RRef <> 0x00000000000000000000000000000000
+                ) AS supplier_currency_count,
                 CONVERT(varchar(34), doc._Fld2506RRef, 1) AS warehouse_ref,
                 NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') AS warehouse_code,
                 NULLIF(LTRIM(RTRIM(warehouse._Description)), N'') AS warehouse_name,
@@ -684,6 +730,8 @@ def fetch_latest_order_dimensions(
                 ON product._IDRRef = line._Fld2523RRef
             LEFT JOIN dbo._Reference37 AS contract WITH (NOLOCK)
                 ON contract._IDRRef = doc._Fld2494RRef
+            LEFT JOIN dbo._Reference20 AS contract_currency WITH (NOLOCK)
+                ON contract_currency._IDRRef = contract._Fld498RRef
             LEFT JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
                 ON warehouse._IDRRef = doc._Fld2506RRef
             WHERE doc._Marked = 0x00
@@ -788,6 +836,25 @@ def persist_grouped_orders(
     *,
     supersede_open_batches: bool = False,
 ) -> list[int]:
+    from app.services.procurement_supply_scenarios import active_manual_removal
+
+    inherited_removals = {}
+    candidates = db.scalars(
+        select(ProcurementOrderFormation).where(
+            ProcurementOrderFormation.status == "draft",
+            ProcurementOrderFormation.origin == "generated",
+        )
+    ).all()
+    for candidate in candidates:
+        for old_line in candidate.lines:
+            if (old_line.payload or {}).get("manual_removal"):
+                key = _stored_line_identity(old_line)
+                decision = old_line.payload["manual_removal"]
+                decision_at = decision.get("restored_at") or decision.get("removed_at") or ""
+                previous = inherited_removals.get(key, {})
+                previous_at = previous.get("restored_at") or previous.get("removed_at") or ""
+                if key not in inherited_removals or decision_at > previous_at:
+                    inherited_removals[key] = decision
     persisted_ids: list[int] = []
     for payload in orders:
         requested_stable_key = str(payload["stable_key"])
@@ -946,6 +1013,10 @@ def persist_grouped_orders(
             else:
                 line_changed = False
             current_payload = dict(line.payload or {})
+            if line.id is None and _incoming_line_identity(line_payload) in inherited_removals:
+                current_payload["manual_removal"] = inherited_removals[
+                    _incoming_line_identity(line_payload)
+                ]
             manual_overrides = dict(current_payload.get("manual_overrides") or {})
             recommended_final_quantity = Decimal(str(line_payload["final_quantity"]))
             recommended_purchase_price = Decimal(str(line_payload["purchase_price"]))
@@ -984,6 +1055,16 @@ def persist_grouped_orders(
                     "calculation_id": str(payload.get("calculation_id") or ""),
                 },
             }
+            for protected_key in (
+                "manual_removal",
+                "supply_review",
+                "price_confirmed",
+                "quantity_decision",
+                "price_context",
+                "price_decision",
+            ):
+                if protected_key in current_payload:
+                    merged_line_payload[protected_key] = current_payload[protected_key]
             if manual_overrides:
                 merged_line_payload["manual_overrides"] = manual_overrides
             if recommendation_discrepancy:
@@ -999,7 +1080,9 @@ def persist_grouped_orders(
                 "final_quantity": final_quantity,
                 "purchase_price": purchase_price,
                 "amount": (final_quantity * purchase_price).quantize(Decimal("0.01")),
-                "currency": str(line_payload["currency"]),
+                # A line amount is denominated in its order currency, including
+                # preserved manual prices; a contract currency is only a proposal.
+                "currency": order.currency,
                 "source_kind": str(line_payload["source_kind"]),
                 "explicit_demand": bool(line_payload["explicit_demand"]),
                 "risk_level": line_payload.get("risk_level"),
@@ -1016,7 +1099,7 @@ def persist_grouped_orders(
                     else None
                 ),
                 "payload": merged_line_payload,
-                "removed": False,
+                "removed": active_manual_removal(current_payload),
             }
             for field_name, value in values.items():
                 if getattr(line, field_name, None) != value:
@@ -1051,6 +1134,9 @@ def persist_grouped_orders(
         persisted_ids.append(order.id)
     if supersede_open_batches:
         _supersede_previous_open_batches(db, active_order_ids=set(persisted_ids), orders=orders)
+    from app.services.procurement_exceptions import sync_exceptions
+
+    sync_exceptions(db)
     db.commit()
     return persisted_ids
 
@@ -1115,7 +1201,34 @@ def _latest_merge_candidate(
             (order.payload or {}).get("sync_source") == "display_auto_order"
             or (order.payload or {}).get("dry_run_source")
         )
-        and _stored_order_merge_key(order) == merge_key
+        and (
+            _stored_order_merge_key(order) == merge_key
+            or (
+                (
+                    (order.payload or {}).get("manual_currency")
+                    or any(
+                        not line.removed
+                        and line.purchase_price not in {None, Decimal(0), Decimal(1)}
+                        for line in order.lines
+                    )
+                )
+                and bool(order.supplier_ref or order.supplier_code)
+                and str(order.supplier_ref or "")
+                == str((payload.get("supplier") or {}).get("ref") or "")
+                and str(order.supplier_code or "")
+                == str((payload.get("supplier") or {}).get("code") or "")
+                and str(order.contract_ref or "")
+                == str((payload.get("contract") or {}).get("ref") or "")
+                and str(order.contract_code or "")
+                == str((payload.get("contract") or {}).get("code") or "")
+                and str(order.warehouse_ref or "")
+                == str((payload.get("warehouse") or {}).get("ref") or "")
+                and str(order.warehouse_code or "")
+                == str((payload.get("warehouse") or {}).get("code") or "")
+                and order.procurement_contour == payload.get("procurement_contour")
+                and order.route == payload.get("route")
+            )
+        )
     ]
     return max(matches, key=lambda item: (item.created_at, item.id or 0), default=None)
 
@@ -1202,6 +1315,8 @@ def write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def write_lines_csv(path: Path, orders: Sequence[Mapping[str, Any]]) -> None:
+    from app.services.procurement_price_context import price_context_export
+
     rows = []
     for order in orders:
         for line in order.get("lines", []):
@@ -1213,6 +1328,10 @@ def write_lines_csv(path: Path, orders: Sequence[Mapping[str, Any]]) -> None:
                     "contract_name": order["contract"].get("name"),
                     "warehouse_name": order["warehouse"].get("name"),
                     **line,
+                    **price_context_export(line.get("price_context") or {}),
+                    "price_context": json.dumps(
+                        line.get("price_context"), ensure_ascii=False, sort_keys=True
+                    ),
                     "risk_codes": "; ".join(line.get("risk_codes") or []),
                     "blockers": "; ".join(line.get("blockers") or []),
                 }

@@ -48,6 +48,25 @@ def _snapshot(**overrides):
         ],
     }
     snapshot.update(overrides)
+    # This fixture represents independently read receipt movements for these scenarios.
+    received = {
+        Decimal("10"): "0",
+        Decimal("6"): "4",
+        Decimal("4"): "6",
+        Decimal("3"): "7",
+        Decimal("0"): "10",
+    }.get(snapshot["open_qty"], "0")
+    snapshot.setdefault(
+        "receipt_evidence",
+        {
+            "status": "exact",
+            "received_quantity": received,
+            "fulfillment_complete": received == "10",
+        },
+    )
+    for line in snapshot["lines"]:
+        line.setdefault("received_quantity", received)
+        line.setdefault("receipt_source_status", "exact")
     return snapshot
 
 
@@ -341,3 +360,33 @@ def test_unified_registry_filters_and_summary_use_lifecycle(db_session) -> None:
     assert result["summary"]["by_status"] == {"partially_received": 1}
     assert result["items"][0]["ordered_quantity"] == Decimal("10")
     assert result["items"][0]["received_quantity"] == Decimal("4")
+
+
+def test_legacy_receipt_transition_waits_for_reviewed_fact_hash(db_session):
+    snapshot = _snapshot(open_qty=Decimal("0"))
+    result = upsert_onec_order_snapshot(db_session, snapshot)
+    order = db_session.get(ProcurementOrderFormation, result.order_id)
+    # Simulate a pre-migration record with an inferred receipt and no evidence.
+    order.payload = {}
+    order.lifecycle_status = "received"
+    db_session.commit()
+    corrected = _snapshot(
+        open_qty=Decimal("0"),
+        receipt_evidence={
+            "status": "exact",
+            "received_quantity": "0",
+            "fulfillment_complete": False,
+        },
+    )
+    upsert_onec_order_snapshot(db_session, corrected)
+    assert order.lifecycle_status == "received"
+    pending = order.payload["receipt_transition_pending"]
+    assert pending["proposed_status"] == "reconciliation_required"
+    upsert_onec_order_snapshot(db_session, corrected)
+    assert order.lifecycle_status == "received"
+    upsert_onec_order_snapshot(
+        db_session, corrected, reviewed_receipt_facts_hash=pending["facts_hash"]
+    )
+    assert order.lifecycle_status == "reconciliation_required"
+    assert order.payload["receipt_transition_pending"] is None
+    assert any(event.event_type == "onec_receipt_comparison_accepted" for event in order.events)

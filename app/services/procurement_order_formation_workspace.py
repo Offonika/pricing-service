@@ -160,6 +160,16 @@ ORDER_CALCULATION_EXPORT_HEADERS = (
     "Поступило",
     "Партия",
     "Дата заказа",
+    "Цена согласована",
+    "Закупочная стоимость RUB",
+    "Курс",
+    "Кратность курса",
+    "Дата курса",
+    "Себестоимость RUB (справочно)",
+    "Дата справочной себестоимости",
+    "Документ справочной себестоимости",
+    "Фактическая себестоимость: состояние",
+    "Ценовые данные устарели",
 )
 MANUAL_STATUS_RECOMMENDATIONS = {
     "matrix": "Проверить матрицу и минимальный запас",
@@ -1075,6 +1085,9 @@ def build_order_calculation_excel(
     source: str = "",
     blockers: str = "all",
 ) -> bytes:
+    from app.services.procurement_price_context import serialize_price_context
+    from app.services.procurement_supply_scenarios import price_confirmed
+
     orders = _filtered_orders(
         db,
         search=search,
@@ -1112,12 +1125,34 @@ def build_order_calculation_excel(
     worksheet.title = "Расчёт заказа"
     worksheet.freeze_panes = "A2"
     worksheet.append(ORDER_CALCULATION_EXPORT_HEADERS)
+    price_sheet = workbook.create_sheet("Ценовые факты")
+    price_sheet.append(
+        (
+            "Заказ",
+            "Строка",
+            "SKU",
+            "Показатель",
+            "Состояние",
+            "За единицу",
+            "Валюта",
+            "Единица",
+            "Характеристика 1С",
+            "Дата",
+            "Документы",
+            "Проверено",
+            "Устарело",
+        )
+    )
+    price_sheet.freeze_panes = "A2"
 
     for order in orders:
         for line in order.lines:
             if line.removed:
                 continue
             classification = classification_by_code.get(str(line.nomenclature_code or ""), {})
+            price_context = serialize_price_context(line)
+            purchase_rub = price_context["purchase_rub"]
+            reference_cost = price_context["reference_cost_rub"]
             worksheet.append(
                 (
                     classification.get("subject_1c") or "",
@@ -1130,7 +1165,7 @@ def build_order_calculation_excel(
                     order.warehouse_name,
                     line.final_quantity,
                     line.purchase_price,
-                    line.amount,
+                    line.amount if price_confirmed(line) else None,
                     line.currency,
                     ORDER_LIFECYCLE_STATUS_LABELS[
                         lifecycle_display_status(order, order_blockers(order))
@@ -1139,12 +1174,74 @@ def build_order_calculation_excel(
                     order.onec_document_date,
                     order.procurement_contour,
                     order.origin,
-                    order.onec_open_quantity,
-                    order.onec_received_quantity,
+                    line.onec_open_quantity,
+                    line.onec_received_quantity,
                     order.batch_id,
                     order.order_date,
+                    "Да" if price_confirmed(line) else "Нет",
+                    Decimal(purchase_rub["value"]) if purchase_rub["value"] is not None else None,
+                    (
+                        Decimal(purchase_rub["exchange_rate"])
+                        if purchase_rub["exchange_rate"] is not None
+                        else None
+                    ),
+                    (
+                        Decimal(purchase_rub["exchange_multiplicity"])
+                        if purchase_rub["exchange_multiplicity"] is not None
+                        else None
+                    ),
+                    purchase_rub["exchange_rate_at"],
+                    (
+                        Decimal(reference_cost["value"])
+                        if reference_cost["value"] is not None
+                        else None
+                    ),
+                    reference_cost["at"],
+                    "; ".join(doc["number"] or doc["ref"] for doc in reference_cost["documents"]),
+                    price_context["actual_cost_status"],
+                    "Да" if price_context["stale"] else "Нет",
                 )
             )
+            facts = [
+                ("Закупочная цена", price_context["agreed_purchase"]),
+                ("Закупочная стоимость RUB", purchase_rub),
+                ("Себестоимость RUB (справочно)", reference_cost),
+                *(
+                    ("Закупочная стоимость поступления RUB", fact)
+                    for fact in price_context["receipt_purchases_rub"]
+                ),
+                *(
+                    ("Фактическая себестоимость поступления RUB", fact)
+                    for fact in price_context["actual_costs_rub"]
+                ),
+                *(
+                    ("Запись цены поставщика (справочно)", fact)
+                    for fact in price_context["supplier_quotes"]
+                ),
+            ]
+            for label, fact in facts:
+                price_sheet.append(
+                    (
+                        order.id,
+                        line.line_number,
+                        line.nomenclature_code,
+                        label,
+                        fact["status"],
+                        Decimal(fact["value"]) if fact["value"] is not None else None,
+                        fact["currency"],
+                        fact["unit_name"],
+                        fact["characteristic_ref"],
+                        fact["at"],
+                        "; ".join(
+                            f"{doc['kind']}: {doc['number'] or doc['ref']}"
+                            for doc in fact["documents"]
+                        ),
+                        price_context["checked_on"],
+                        "Да" if price_context["stale"] else "Нет",
+                    )
+                )
+
+    price_sheet.auto_filter.ref = price_sheet.dimensions
 
     header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
     for cell in worksheet[1]:
@@ -1440,6 +1537,8 @@ def serialize_transition(
 
 
 def serialize_order_list_item(order: ProcurementOrderFormation) -> dict[str, Any]:
+    from app.services.procurement_supply_scenarios import price_confirmed
+
     active_lines = [line for line in order.lines if not line.removed]
     blockers = order_blockers(order)
     display_status = lifecycle_display_status(order, blockers)
@@ -1480,6 +1579,13 @@ def serialize_order_list_item(order: ProcurementOrderFormation) -> dict[str, Any
         "line_count": len(active_lines),
         "total_quantity": total_quantity,
         "total_amount": sum((line.amount for line in active_lines), Decimal("0")),
+        "confirmed_amount": (
+            sum((line.amount for line in active_lines if price_confirmed(line)), Decimal("0"))
+            if order.currency
+            else None
+        ),
+        "unpriced_line_count": sum(not price_confirmed(line) for line in active_lines),
+        "receipt_evidence": (order.payload or {}).get("receipt_evidence"),
         "blockers": blockers,
         "blocked_products": _blocked_products(active_lines),
         "updated_at": order.updated_at,
@@ -1898,16 +2004,28 @@ def _order_list_statement():
 
 
 def _orders_summary(orders: Iterable[ProcurementOrderFormation]) -> dict[str, Any]:
+    from app.services.procurement_supply_scenarios import price_confirmed
+
     orders_list = list(orders)
     active_lines = [line for order in orders_list for line in order.lines if not line.removed]
     statuses = Counter(
         lifecycle_display_status(order, order_blockers(order)) for order in orders_list
     )
+    confirmed_amounts: dict[str, Decimal] = {}
+    for order in orders_list:
+        if order.currency:
+            for line in order.lines:
+                if not line.removed and price_confirmed(line):
+                    confirmed_amounts[order.currency] = (
+                        confirmed_amounts.get(order.currency, Decimal(0)) + line.amount
+                    )
     return {
         "orders": len(orders_list),
         "lines": len(active_lines),
         "quantity": sum((line.final_quantity for line in active_lines), Decimal("0")),
         "amount": sum((line.amount for line in active_lines), Decimal("0")),
+        "confirmed_amount_by_currency": confirmed_amounts,
+        "unpriced_line_count": sum(not price_confirmed(line) for line in active_lines),
         "by_status": dict(statuses),
     }
 

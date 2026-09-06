@@ -177,9 +177,13 @@ def main() -> int:
         }
         if sync_ready_family_summary is not None:
             summary["sync_ready_display_family_order_recommendation"] = sync_ready_family_summary
-    write_csv(args.output_csv, comparison_rows, CSV_COLUMNS)
+    write_csv(
+        args.output_csv,
+        comparison_rows,
+        [*CSV_COLUMNS, "recommended_order_qty_dated_only", "calculation_as_of"],
+    )
     if args.sync_ready_csv:
-        sync_columns = list(dry_rows[0].keys()) if dry_rows else []
+        sync_columns = list(dict.fromkeys(key for row in sync_ready_rows for key in row))
         if args.use_active_display_family_registry:
             sync_columns = list(dict.fromkeys([*sync_columns, *FAMILY_RECOMMENDATION_COLUMNS]))
         write_csv(args.sync_ready_csv, sync_ready_rows, sync_columns)
@@ -202,7 +206,30 @@ def main() -> int:
     return 0
 
 
-def build_comparison_rows(
+def build_comparison_rows(dry_rows, lead_time_rows, **kwargs):
+    from app.services.procurement_supply_scenarios import partition_supply, supply_schedule
+
+    result = _build_comparison_rows(dry_rows, lead_time_rows, **kwargs)
+    as_of = kwargs.get("as_of") or date.today()
+    cautious_rows = []
+    for row, comparison in zip(dry_rows, result, strict=True):
+        schedule = supply_schedule(row.get("incoming_schedule"))
+        if not schedule and _decimal(row.get("incoming_qty")):
+            schedule = [{"quantity": row["incoming_qty"], "expected_at": None}]
+        split = partition_supply(
+            schedule,
+            as_of=as_of,
+            horizon_days=int(_decimal(comparison.get("adaptive_effective_target_days")) or 0),
+        )
+        cautious_rows.append({**row, "incoming_qty": split["dated_quantity"]})
+    cautious = _build_comparison_rows(cautious_rows, lead_time_rows, **kwargs)
+    for comparison, other in zip(result, cautious, strict=True):
+        comparison["recommended_order_qty_dated_only"] = other["adaptive_recommended_order_qty"]
+        comparison["calculation_as_of"] = as_of.isoformat()
+    return result
+
+
+def _build_comparison_rows(
     dry_rows: Sequence[Mapping[str, Any]],
     lead_time_rows: Sequence[Mapping[str, Any]],
     *,
@@ -674,6 +701,17 @@ def build_sync_ready_rows(
                 }
             )
         row["data_sources"] = "; ".join(sorted(data_sources))
+        from app.services.procurement_supply_scenarios import annotate_scenario
+
+        annotate_scenario(
+            row,
+            comparison_row.get("recommended_order_qty_dated_only", adaptive_qty),
+            as_of=date.fromisoformat(
+                comparison_row.get("calculation_as_of")
+                or row.get("calculation_as_of")
+                or date.today().isoformat()
+            ),
+        )
         rows.append(row)
     return rows
 
@@ -691,6 +729,11 @@ def refresh_sync_ready_family_recommendations(
         rows,
         membership_by_code=membership_by_code,
         registry_error=registry_error,
+    )
+    from app.services.procurement_supply_scenarios import annotate_family_scenarios
+
+    annotate_family_scenarios(
+        rows, membership_by_code=membership_by_code, registry_error=registry_error
     )
     return display_family_order_recommendation_summary(rows)
 

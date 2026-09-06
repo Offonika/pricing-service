@@ -119,6 +119,7 @@ export interface ProcurementLineSyncPayload {
   };
   automatic_recommendation?: {
     final_quantity?: string;
+    quantity_reason?: string;
     purchase_price?: string;
     calculation_id?: string;
   };
@@ -189,7 +190,44 @@ export interface ProcurementBlockerDetail {
   resolution_actions: ProcurementBlockerResolution[];
 }
 
+export interface ProcurementPriceFact {
+  confirmed_by?: string | null;
+  value: string | null;
+  currency: string | null;
+  status: "confirmed" | "reference" | "unconfirmed" | "missing" | "ambiguous" | "not_formed";
+  reason?: string | null;
+  source?: string | null;
+  at?: string | null;
+  unit_ref?: string | null;
+  unit_name?: string | null;
+  characteristic_ref?: string | null;
+  exchange_rate?: string | null;
+  exchange_multiplicity?: string | null;
+  exchange_rate_at?: string | null;
+  documents: { kind: string; ref: string; number: string | null; at?: string | null }[];
+}
+
+export interface ProcurementPriceContext {
+  schema_version: 1;
+  agreed_purchase: ProcurementPriceFact;
+  purchase_rub: ProcurementPriceFact;
+  receipt_purchases_rub: ProcurementPriceFact[];
+  reference_cost_rub: ProcurementPriceFact;
+  actual_cost_status: "confirmed" | "partial" | "not_formed" | "ambiguous";
+  actual_costs_rub: ProcurementPriceFact[];
+  supplier_quotes: ProcurementPriceFact[];
+  source_status: "ready" | "unavailable" | "not_loaded" | "ambiguous";
+  checked_on: string | null;
+  last_success_on: string | null;
+  stale: boolean;
+  error_type?: string | null;
+}
+
 export interface ProcurementOrderFormationLine {
+  price_context?: ProcurementPriceContext | null;
+  removal_kind?: "manual" | "disappeared" | null;
+  price_status?: "confirmed" | "unconfirmed";
+  supply_scenario?: { all_open_quantity: string; dated_only_quantity: string; review_required: boolean; facts_hash: string } | null;
   id: number;
   line_number: number;
   version: number;
@@ -320,7 +358,21 @@ export interface ProcurementSupplierDistributionPreview {
   unresolved_line_numbers: number[];
 }
 
+interface ProcurementObligationMovement {
+  document_ref: string; document_number?: string; document_at?: string;
+  item_ref: string; quantity: string; kind: string;
+}
+
 export interface ProcurementOrderFormation {
+  confirmed_amount?: string | null;
+  unpriced_line_count?: number;
+  receipt_evidence?: {
+    status: string; stale?: boolean; received_quantity?: string;
+    return_quantity?: string | null; adjustment_quantity?: string | null;
+    movements?: { receipt_ref: string; item_ref: string; receipt_number?: string; receipt_at?: string; quantity: string }[];
+    return_movements?: ProcurementObligationMovement[];
+    adjustment_movements?: ProcurementObligationMovement[];
+  } | null;
   id: number;
   stable_key: string;
   status: string;
@@ -615,6 +667,9 @@ export interface ProcurementOrderListItem {
   line_count: number;
   total_quantity: string;
   total_amount: string;
+  confirmed_amount?: string | null;
+  unpriced_line_count?: number;
+  receipt_evidence?: { status?: string; stale?: boolean } | null;
   blockers: string[];
   blocked_products?: Array<{
     line_id: number;
@@ -634,7 +689,8 @@ export interface ProcurementOrderList {
   total: number;
   page: number;
   page_size: number;
-  summary: { orders: number; lines: number; quantity: string; amount: string; by_status: Record<string, number> };
+  summary: { orders: number; lines: number; quantity: string; amount: string; by_status: Record<string, number>;
+    confirmed_amount_by_currency?: Record<string, string>; unpriced_line_count?: number };
   items: ProcurementOrderListItem[];
 }
 
@@ -1048,6 +1104,7 @@ export async function updateProcurementOrderLine(
     expected_order_version: number;
     expected_line_version: number;
     final_quantity?: string;
+    quantity_reason?: string;
     purchase_price?: string;
     removed?: boolean;
     removal_reason?: string;

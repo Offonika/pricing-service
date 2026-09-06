@@ -1,0 +1,18 @@
+.procurement-price-context { margin-top: var(--space-3); white-space: normal; }
+.procurement-price-context > button { max-width: 100%; white-space: normal; text-align: left; }
+.procurement-price-context__dialog { padding: 0; width: 720px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); margin: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text); background: var(--color-surface); font: inherit; font-size: 14px; line-height: 1.5; }
+.procurement-price-context__dialog::backdrop { background: rgb(15 23 42 / 45%); }
+.procurement-price-context__dialog header { display: flex; align-items: start; justify-content: space-between; gap: var(--space-4); padding: var(--space-4); border-bottom: 1px solid var(--color-border); }
+.procurement-price-context__dialog header h2 { margin: 0; font-size: 20px; }
+.procurement-price-context__dialog header button { flex-shrink: 0; }
+.procurement-price-context__body { padding: var(--space-4); }
+.procurement-price-context__dialog dl { display: grid; gap: var(--space-4); margin: 0; }
+.procurement-price-context__dialog dl > div { display: grid; grid-template-columns: 1fr 1.3fr; gap: var(--space-4); padding-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); }
+.procurement-price-context__dialog dt { font-weight: 600; }
+.procurement-price-context__dialog dd { margin: 0; }
+.procurement-price-context__dialog p { margin: var(--space-3) 0; }
+.procurement-price-context__fact { display: grid; gap: var(--space-1); margin: var(--space-2) 0; overflow-wrap: anywhere; }
+.procurement-price-context__dialog small { display: block; line-height: 1.5; }
+@media (max-width: 560px) {
+  .procurement-price-context__dialog dl > div { grid-template-columns: 1fr; gap: var(--space-1); }
+}

@@ -26,9 +26,15 @@ LIFECYCLE_STATUS_LABELS = {
     "in_transit": "В пути",
     "partially_received": "Частично поступил",
     "received": "Поступил",
+    "reconciliation_required": "Требует сверки исполнения",
     "cancelled": "Отменён",
 }
-ACTIVE_LIFECYCLE_STATUSES = {"active", "in_transit", "partially_received"}
+ACTIVE_LIFECYCLE_STATUSES = {
+    "active",
+    "in_transit",
+    "partially_received",
+    "reconciliation_required",
+}
 
 
 @dataclass(frozen=True)
@@ -84,15 +90,29 @@ def lifecycle_status_for_snapshot(
     if marked or (posted is False and previous_status in ACTIVE_LIFECYCLE_STATUSES):
         return "cancelled"
 
-    ordered = decimal_value(snapshot.get("ordered_qty"))
-    open_quantity = (
-        decimal_value(snapshot.get("open_qty")) if snapshot.get("open_qty") is not None else None
-    )
-    if open_quantity is not None and posted is not False:
-        if open_quantity <= 0:
+    evidence = snapshot.get("receipt_evidence") or {}
+    if evidence.get("status") == "unavailable":
+        return previous_status or "reconciliation_required"
+    open_quantity = snapshot.get("open_qty")
+    if evidence.get("status") == "exact":
+        if (
+            evidence.get("fulfillment_complete")
+            and open_quantity is not None
+            and decimal_value(open_quantity) <= 0
+        ):
             return "received"
-        if ordered > 0 and open_quantity < ordered:
+        if open_quantity is not None and decimal_value(open_quantity) <= 0:
+            return "reconciliation_required"
+        if decimal_value(evidence.get("received_quantity")) > 0:
             return "partially_received"
+        if open_quantity is None or decimal_value(open_quantity) < decimal_value(
+            snapshot.get("ordered_qty")
+        ):
+            return "reconciliation_required"
+    elif open_quantity is None or decimal_value(open_quantity) < decimal_value(
+        snapshot.get("ordered_qty")
+    ):
+        return "reconciliation_required"
 
     if date_value(snapshot.get("cargo_dropoff_date")) or date_value(
         snapshot.get("supplier_dispatch_date")
@@ -102,6 +122,8 @@ def lifecycle_status_for_snapshot(
 
 
 def lifecycle_display_status(order: ProcurementOrderFormation, blockers: Sequence[str]) -> str:
+    if (order.payload or {}).get("receipt_transition_pending"):
+        return "reconciliation_required"
     if order.lifecycle_status == "review" and blockers:
         return "blocked"
     return order.lifecycle_status
@@ -269,11 +291,12 @@ def _sync_lines(
         line.onec_open_quantity = (
             max(open_quantity, Decimal("0")) if open_quantity is not None else None
         )
-        line.onec_received_quantity = (
-            max(quantity - line.onec_open_quantity, Decimal("0"))
-            if line.onec_open_quantity is not None
-            else None
-        )
+        if source.get("receipt_source_status") != "unavailable":
+            line.onec_received_quantity = (
+                decimal_value(source["received_quantity"])
+                if source.get("received_quantity") is not None
+                else None
+            )
         line.payload = {
             **(line.payload or {}),
             "article_1c": str(source.get("article_1c") or "").strip(),
@@ -281,6 +304,15 @@ def _sync_lines(
             "barcode": str(source.get("barcode") or "").strip(),
             "unit": str(source.get("unit") or "").strip(),
         }
+        if source.get("price_context") is not None:
+            from app.services.procurement_price_context import merge_price_snapshot
+
+            line.payload = {
+                **line.payload,
+                "price_context": merge_price_snapshot(
+                    line.payload.get("price_context"), source["price_context"]
+                ),
+            }
     if order.origin == "onec_import":
         for line_number, line in existing.items():
             if line_number not in seen:
@@ -294,6 +326,7 @@ def upsert_onec_order_snapshot(
     *,
     synced_at: datetime | None = None,
     catalog_product_ids: Mapping[str, str] | None = None,
+    reviewed_receipt_facts_hash: str | None = None,
 ) -> RegistryUpsertResult:
     synced_at = synced_at or datetime.now(UTC).replace(tzinfo=None)
     onec_ref = normalize_onec_ref(snapshot.get("onec_ref"))
@@ -378,13 +411,60 @@ def upsert_onec_order_snapshot(
     open_quantity = decimal_value(snapshot.get("open_qty"))
     order.onec_ordered_quantity = max(ordered_quantity, open_quantity)
     order.onec_open_quantity = max(open_quantity, Decimal("0"))
-    order.onec_received_quantity = max(
-        order.onec_ordered_quantity - order.onec_open_quantity, Decimal("0")
-    )
-    order.lifecycle_status = lifecycle_status_for_snapshot(
+    evidence = dict(snapshot.get("receipt_evidence") or {"status": "unconfirmed"})
+    old_evidence = (order.payload or {}).get("receipt_evidence") or {}
+    if evidence.get("status") == "unavailable":
+        evidence = {**old_evidence, "stale": True, "source_error": evidence.get("error_type")}
+        for source_line in snapshot.get("lines") or []:
+            source_line["receipt_source_status"] = "unavailable"
+    else:
+        order.onec_received_quantity = (
+            decimal_value(evidence["received_quantity"])
+            if evidence.get("status") == "exact"
+            else None
+        )
+    from app.services.procurement_receipt_evidence import receipt_review_hash
+
+    previous_status = order.lifecycle_status
+    proposed_status = lifecycle_status_for_snapshot(
         {**snapshot, "ordered_qty": order.onec_ordered_quantity},
-        previous_status=order.lifecycle_status,
+        previous_status=previous_status,
     )
+    pending = (order.payload or {}).get("receipt_transition_pending")
+    receipt_hash = receipt_review_hash(
+        evidence,
+        open_quantity=order.onec_open_quantity,
+        ordered_quantity=order.onec_ordered_quantity,
+    )
+    legacy_change = (
+        not created
+        and (pending or not old_evidence)
+        and proposed_status != previous_status
+        and proposed_status != "cancelled"
+    )
+    if legacy_change and reviewed_receipt_facts_hash != receipt_hash:
+        pending = {
+            "previous_status": previous_status,
+            "proposed_status": proposed_status,
+            "facts_hash": receipt_hash,
+        }
+    else:
+        if legacy_change:
+            _event(
+                db,
+                order=order,
+                event_type="onec_receipt_comparison_accepted",
+                checksum=f"reviewed:{receipt_hash}",
+                before={"lifecycle_status": previous_status},
+                after={"lifecycle_status": proposed_status, "receipt_review_hash": receipt_hash},
+            )
+        pending = None
+        order.lifecycle_status = proposed_status
+    order.payload = {
+        **(order.payload or {}),
+        "receipt_evidence": evidence,
+        "receipt_transition_pending": pending,
+    }
     order.onec_snapshot_hash = checksum
     order.last_onec_sync_at = synced_at
     order.last_onec_seen_at = synced_at
@@ -475,5 +555,8 @@ def synchronize_onec_snapshots(
         )
         for item in snapshots
     ]
+    from app.services.procurement_exceptions import sync_exceptions
+
+    sync_exceptions(db)
     db.commit()
     return results

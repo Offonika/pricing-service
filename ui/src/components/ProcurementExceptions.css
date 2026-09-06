@@ -1,0 +1,51 @@
+/* Scoped to the exception queue; uses the application's shared design tokens. */
+.procurement-exceptions { gap: var(--space-4); }
+.procurement-exceptions .order-workspace__filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+.procurement-exceptions .order-workspace__filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.procurement-exceptions article,
+.procurement-exceptions__decision {
+  padding: var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.procurement-exceptions h3 { margin: 0 0 var(--space-3); }
+.procurement-exceptions button { width: auto; min-height: 36px; }
+.procurement-exceptions__decision { display: grid; gap: var(--space-4); }
+.procurement-exceptions__decision > label {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 680px;
+}
+.procurement-exceptions__decision select,
+.procurement-exceptions__decision textarea,
+.procurement-exceptions__decision input {
+  padding: var(--space-3);
+  font: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+.procurement-exceptions__decision textarea { min-height: 88px; resize: vertical; }
+.procurement-exceptions__decision table { width: 100%; border-collapse: collapse; }
+.procurement-exceptions__decision th,
+.procurement-exceptions__decision td {
+  padding: var(--space-2);
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+@media (max-width: 640px) {
+  .procurement-exceptions article,
+  .procurement-exceptions__decision { padding: var(--space-4); }
+}

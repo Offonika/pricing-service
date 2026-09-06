@@ -916,3 +916,16 @@ describe("ProcurementOrderFormationApp без печати этикеток", ()
     ).not.toBeInTheDocument();
   });
 });
+
+
+it("сохраняет основание изменения количества и показывает неизвестную валюту", async () => {
+  const draft = order({ currency: "", lines: [line({ currency: "", purchase_price: "1", price_status: "unconfirmed" })] });
+  vi.mocked(updateProcurementOrderLine).mockResolvedValue(draft);
+  render(<ProcurementOrderFormationApp initialOrder={draft} />);
+  expect(screen.getAllByText(/Валюта не выбрана/).length).toBeGreaterThan(0);
+  fireEvent.change(screen.getByLabelText("Количество Дисплей для Huawei P10 Lite"), { target: { value: "2" } });
+  fireEvent.change(screen.getByLabelText("Основание изменения количества Дисплей для Huawei P10 Lite"), { target: { value: "Подтверждён заказ клиента" } });
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить количество и цену" }));
+  await waitFor(() => expect(updateProcurementOrderLine).toHaveBeenCalledWith(12, 40, expect.objectContaining({ final_quantity: "2", quantity_reason: "Подтверждён заказ клиента" })));
+  expect(screen.getByText(/По согласованным ценам/)).toBeVisible();
+});

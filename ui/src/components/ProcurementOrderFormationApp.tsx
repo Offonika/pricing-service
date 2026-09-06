@@ -32,6 +32,7 @@ import {
   type ProcurementBlockerDetail,
 } from "../api/procurementAssortment";
 import { resolveBitrixProductUrl } from "../api/bitrix";
+import { ProcurementPriceContext } from "./ProcurementPriceContext";
 import { procurementErrorText } from "../utils/procurementErrorMessages";
 import {
   groupProcurementBlockers,
@@ -49,6 +50,7 @@ interface Props {
 }
 
 interface LineEdit {
+  reason?: string;
   quantity: string;
   price: string;
 }
@@ -93,6 +95,7 @@ const ROUTE_LABELS: Record<string, string> = {
 function money(value: string, currency: string) {
   const number = Number(value);
   if (!Number.isFinite(number)) return value;
+  if (!/^[A-Z]{3}$/.test(currency)) return "Валюта не выбрана";
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
     currency,
@@ -187,7 +190,7 @@ function payloadValue(line: ProcurementOrderFormationLine, key: string) {
 function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) {
   if (line.blocker_details?.length) {
     const messages = line.blocker_details.map(blockerDetailMessage);
-    if (line.removed) messages.unshift("Потребность исчезла в новом расчёте.");
+    if (line.removed) messages.unshift(line.removal_kind === "manual" ? "Строка исключена закупщиком; восстановление только вручную." : "Потребность исчезла в новом расчёте.");
     return [...new Set(messages)];
   }
   const values = line.blockers.map((code) => {
@@ -212,7 +215,7 @@ function lineProblemTexts(line: ProcurementOrderFormationLine, batchId: string) 
     }
     return procurementRiskLabel(code);
   });
-  if (line.removed) values.unshift("Потребность исчезла в новом расчёте.");
+  if (line.removed) values.unshift(line.removal_kind === "manual" ? "Строка исключена закупщиком; восстановление только вручную." : "Потребность исчезла в новом расчёте.");
   return [...new Set(values)];
 }
 
@@ -401,7 +404,7 @@ export function ProcurementOrderFormationApp({
       const edit = lineEdits[line.id];
       const quantity = Number(edit?.quantity ?? line.final_quantity);
       const price = Number(edit?.price ?? line.purchase_price);
-      return total + (Number.isFinite(quantity * price) ? quantity * price : 0);
+      return total + (line.price_status === "confirmed" && price > 0 && price !== 1 && Number.isFinite(quantity * price) ? quantity * price : 0);
     }, 0),
     [activeLines, lineEdits]
   );
@@ -500,6 +503,7 @@ export function ProcurementOrderFormationApp({
           expected_order_version: orderVersion,
           expected_line_version: lineVersion,
           final_quantity: edit.quantity,
+          quantity_reason: edit.reason,
           purchase_price: edit.price,
         })
       );
@@ -710,6 +714,28 @@ export function ProcurementOrderFormationApp({
           : <div><span>Партия</span><strong>{order.batch_id}</strong></div>}
         <div><span>Дата</span><strong>{order.order_date}</strong></div>
       </section>
+
+      {importedFromOnec && <section className="order-formation__conditions" aria-label="Подтверждение приёмки">
+        <div><span>Подтверждённая приёмка</span><strong>{order.receipt_evidence?.status === "exact" ? `${order.receipt_evidence.received_quantity ?? "Неизвестно"} шт.` : "Требует сверки исполнения"}</strong></div>
+        {order.receipt_evidence?.stale && <p role="status">Источник недоступен. Показано последнее подтверждённое состояние; данные устарели.</p>}
+        <div><span>Возвраты поставщику</span><strong>{order.receipt_evidence?.return_quantity ?? "Не подтверждены"}</strong></div>
+        <div><span>Корректировки обязательств</span><strong>{order.receipt_evidence?.adjustment_quantity ?? "Не подтверждены"}</strong></div>
+        {!!order.receipt_evidence?.movements?.length && <details><summary>Документы приёмки</summary>
+          <ul>{order.receipt_evidence.movements.map((movement) => <li key={`${movement.receipt_ref}-${movement.item_ref}`}>
+            {movement.receipt_number || "Документ 1С"} · {movement.receipt_at?.slice(0, 10)} · {movement.quantity} шт.
+            {" · "}{order.lines.find((line) => line.nomenclature_ref.toLowerCase() === movement.item_ref.toLowerCase())?.nomenclature_name || "Товар не сопоставлен"}
+          </li>)}</ul>
+        </details>}
+        {[
+          { label: "Документы возврата поставщику", rows: order.receipt_evidence?.return_movements },
+          { label: "Документы корректировки обязательств (+ добавлено, − снято)", rows: order.receipt_evidence?.adjustment_movements },
+        ].map(({ label, rows }) => !!rows?.length && <details key={label}><summary>{label}</summary>
+          <ul>{rows.map((movement) => <li key={`${movement.document_ref}-${movement.item_ref}`}>
+            {movement.document_number || "Документ 1С"} · {movement.document_at?.slice(0, 10)} · {movement.quantity} шт.
+            {" · "}{order.lines.find((line) => line.nomenclature_ref.toLowerCase() === movement.item_ref.toLowerCase())?.nomenclature_name || "Товар не сопоставлен"}
+          </li>)}</ul>
+        </details>)}
+      </section>}
 
       <section className={`order-formation__linked-process order-formation__linked-process--${order.linked_process?.state || "not_created"}`}>
         <div>
@@ -981,6 +1007,7 @@ export function ProcurementOrderFormationApp({
                             />
                             <span>шт.</span>
                           </label>
+                          <input style={{ width: "100%", boxSizing: "border-box" }} aria-label={`Основание изменения количества ${line.nomenclature_name}`} placeholder="Основание изменения количества" disabled={locked || line.removed} value={edit.reason || ""} onChange={(event) => setLineEdits((current) => ({ ...current, [line.id]: { ...edit, reason: event.target.value } }))} />
                         </td>
                         <td>
                           <label className="order-formation__compact-input order-formation__compact-input--price">
@@ -998,6 +1025,8 @@ export function ProcurementOrderFormationApp({
                             />
                             <span>{line.currency === "RUB" ? "₽" : line.currency}</span>
                           </label>
+                          {line.price_status === "unconfirmed" && <small>Цена не согласована</small>}
+                          <ProcurementPriceContext context={line.price_context} productName={line.nomenclature_name} />
                           {lineEdits[line.id] ? (
                             <button
                               className="order-formation__compact-save"
@@ -1231,6 +1260,9 @@ export function ProcurementOrderFormationApp({
                           )}
                         </a>
                       )}
+                      {line.supply_scenario && <p>К закупке с учётом всех поставок: {line.supply_scenario.all_open_quantity} шт.; только датированных: {line.supply_scenario.dated_only_quantity} шт.{line.supply_scenario.review_required ? " Требуется решение в очереди исключений." : ""}</p>}
+                      {line.price_status === "unconfirmed" && <p>Цена не согласована. Сумма строки не является подтверждённым обязательством.</p>}
+                      <ProcurementPriceContext context={line.price_context} productName={line.nomenclature_name} />
                       {supplierReviewRoom && !line.removed && (
                         <div className="order-formation__supplier-picker">
                           {line.payload?.main_supplier_selection && (
@@ -1495,6 +1527,7 @@ export function ProcurementOrderFormationApp({
                           [line.id]: { ...edit, quantity: event.target.value },
                         }))}
                       />
+                      <input style={{ width: "100%", boxSizing: "border-box" }} aria-label={`Основание изменения количества ${line.nomenclature_name}`} placeholder="Основание изменения количества" disabled={locked || line.removed} value={edit.reason || ""} onChange={(event) => setLineEdits((current) => ({ ...current, [line.id]: { ...edit, reason: event.target.value } }))} />
                     </td>
                     <td>
                       <input
@@ -1510,7 +1543,7 @@ export function ProcurementOrderFormationApp({
                         }))}
                       />
                     </td>
-                    <td><strong>{money(String(Number(edit.quantity) * Number(edit.price)), line.currency)}</strong></td>
+                    <td><strong>{line.price_status === "confirmed" && Number(edit.price) > 0 && Number(edit.price) !== 1 ? money(String(Number(edit.quantity) * Number(edit.price)), line.currency) : "Цена не согласована"}</strong></td>
                     <td>
                       <button
                         className="btn btn--ghost btn--small"
@@ -1538,7 +1571,17 @@ export function ProcurementOrderFormationApp({
                           Показатели товара
                         </a>
                       )}
-                      {line.blockers.length > 0 && !line.removed && !locked && openedRemoval !== line.id && (
+                      {line.removed && !locked && <button type="button" className="btn btn--ghost btn--small" disabled={Boolean(loadingKey)} onClick={async () => {
+                        setLoadingKey(`restore-${line.id}`);
+                        try {
+                          const updated = await runVersioned(line, ({ orderVersion, lineVersion }) => updateProcurementOrderLine(order.id, line.id, {
+                            expected_order_version: orderVersion, expected_line_version: lineVersion, removed: false,
+                          }));
+                          setOrder(updated); toast.success("Строка восстановлена вручную");
+                        } catch (error: unknown) { toast.error(errorText(error)); }
+                        finally { setLoadingKey(""); }
+                      }}>Восстановить строку</button>}
+                      {!line.removed && !locked && openedRemoval !== line.id && (
                         <button
                           className="btn btn--ghost btn--small"
                           ref={(node) => {
@@ -1644,7 +1687,7 @@ export function ProcurementOrderFormationApp({
 
       <footer className="order-formation__footer">
         <span>{countLabel(activeLines.length, "строка", "строки", "строк")}</span>
-        <strong>Итого: {money(String(draftTotal), order.currency)}</strong>
+        <strong>По согласованным ценам: {money(String(draftTotal), order.currency)}</strong>
         <span>1С: {ONEC_STATUS_LABELS[order.onec_status] || "Статус не определён"}</span>
         {order.approved_by_name && <span>Согласовал: {order.approved_by_name}</span>}
         {!locked && !importedFromOnec && (

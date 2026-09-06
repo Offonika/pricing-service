@@ -371,7 +371,7 @@ def fetch_supplier_order_line_rows(
             CAST(line.{_ident(quantity_column)} AS decimal(18, 3)) AS qty,
             CAST(line.{_ident(supplier_mapping.line_price_column)} AS decimal(18, 2)) AS price,
             CAST(line.{_ident(amount_column)} AS decimal(18, 2)) AS amount,
-            CONVERT(varchar(34), contract._Fld498RRef, 1) AS price_currency_ref,
+            CONVERT(varchar(34), doc._Fld2490RRef, 1) AS price_currency_ref,
             NULLIF(LTRIM(RTRIM(currency._Code)), N'') AS price_currency_code,
             NULLIF(LTRIM(RTRIM(currency._Description)), N'') AS price_currency_name
         FROM dbo.{_ident(supplier_mapping.line_table)} AS line WITH (NOLOCK)
@@ -389,7 +389,7 @@ def fetch_supplier_order_line_rows(
         LEFT JOIN dbo._Reference37 AS contract WITH (NOLOCK)
             ON contract._IDRRef = doc._Fld2494RRef
         LEFT JOIN dbo._Reference20 AS currency WITH (NOLOCK)
-            ON currency._IDRRef = contract._Fld498RRef
+            ON currency._IDRRef = doc._Fld2490RRef
         WHERE doc.{_ident(supplier_mapping.marked_column)} = 0x00
           AND doc.{_ident(supplier_mapping.posted_column)} = 0x01
           AND doc.{_ident(supplier_mapping.document_date_column)} >= :history_start

@@ -1,4 +1,5 @@
 const PROCUREMENT_RISK_LABELS: Record<string, string> = {
+  supply_confirmation_required: "Подтвердить сомнительную поставку и итоговое количество",
   working_confirmation_required: "Переход в «Поддерживаем (Рабочий)» должен подтвердить Омар",
   fact_status_decision: "Рекомендация рассчитана по фактам 1С",
   fact_status_decision_requires_1c_approval: "Изменение свойства требует подтверждения в 1С",

@@ -1,0 +1,53 @@
+version: 1
+record_type: phase
+phase_id: procurement-stabilization-local-20260905
+spec: docs/specs/procurement-order-formation-smart-process.md
+objective: Подготовить стабилизацию закупок в изолированном worktree и проверить до
+  публикации
+risk: high
+scope:
+- Ручные исключения и два сценария потребности
+- Приёмка по доказательствам и адресная сверка
+- Очередь исключений, API и интерфейс
+- Три показателя цены, доказательства курса и допрасходов, внутренние экспорты
+non_goals:
+- Публикация в production
+- Запись документов или свойств 1С
+- Сообщения и новые задачи Bitrix или Telegram
+dependencies: []
+allowed_paths:
+- app/
+- tasks/
+- tests/
+- alembic/
+- config/
+- ui/
+- docs/
+- openapi.yaml
+approval:
+  status: approved
+  approved_by: Пользователь текущего диалога
+  approved_at: '2026-09-05T20:28:50.829337+03:00'
+  source: Зафиксировано по явному сообщению PLEASE IMPLEMENT THIS PLAN и последующему
+    Продолжай; разрешена локальная реализация, публикация отдельно
+verification:
+- id: python
+  command: DATABASE_URL=sqlite:// TMPDIR=/dev/shm .venv/bin/python -m pytest
+  expected_result: Полный набор проходит
+- id: lint
+  command: .venv/bin/python -m ruff check . && BLACK_NUM_WORKERS=1 .venv/bin/python
+    -m black --check .
+  expected_result: Нет ошибок
+- id: openapi
+  command: .venv/bin/python scripts/export_openapi.py --check
+  expected_result: Контракт совпадает
+- id: ui
+  command: cd ui && npm test && npm run build && npm run test:a11y
+  expected_result: Тесты, сборка и доступность проходят
+- id: source-comparison
+  command: python -m tasks.report_procurement_stabilization --env-file <local-env>
+    --output <local-report>
+  expected_result: Адресная сверка без записей; недоступные факты явно отмечены
+stop_condition: Не объявлять этап завершённым без проверки всех требований и источников;
+  публикация требует отдельного разрешения.
+status: in_progress

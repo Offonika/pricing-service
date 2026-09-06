@@ -34,11 +34,11 @@ from app.services.procurement_order_product_rows import (
     sync_procurement_order_product_rows,
 )
 from app.services.procurement_order_registry import (
-    decimal_value,
     lifecycle_status_for_snapshot,
     normalize_onec_ref,
     upsert_onec_order_snapshot,
 )
+from app.services.procurement_price_context import load_registry_price_contexts
 from scripts.ensure_procurement_bitrix_process import (
     DEFAULT_ENV_FILE,
     DEFAULT_MAPPING_PATH,
@@ -86,13 +86,19 @@ def is_confirmed_process_sync_failure(error: BaseException) -> bool:
 def _prepare_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     snapshot = dict(snapshot)
     snapshot["lifecycle_status"] = lifecycle_status_for_snapshot(snapshot)
-    snapshot["received_qty"] = max(
-        decimal_value(snapshot.get("ordered_qty")) - decimal_value(snapshot.get("open_qty")),
-        0,
+    evidence = snapshot.get("receipt_evidence") or {}
+    snapshot["received_qty"] = (
+        evidence.get("received_quantity") if evidence.get("status") == "exact" else None
     )
     contour_key = str(snapshot.get("procurement_contour_key") or "ordinary")
     lifecycle = str(snapshot["lifecycle_status"])
-    if lifecycle == "received":
+    if lifecycle == "reconciliation_required":
+        snapshot["procurement_stage_key"] = {
+            "ordinary": "supplier_order",
+            "cargo": "exception",
+            "ved_import": "blocked",
+        }.get(contour_key, "supplier_order")
+    elif lifecycle == "received":
         snapshot["procurement_stage_key"] = "closed"
     elif lifecycle == "partially_received":
         snapshot["procurement_stage_key"] = "receiving"
@@ -176,6 +182,10 @@ def sync_onec_order_process_by_ref(
         raise RuntimeError(
             "Канонический snapshot заказа 1С ещё не доступен по GUID; повторит плановая синхронизация"
         )
+    from app.services.procurement_receipt_evidence import load_receipt_evidence
+
+    load_receipt_evidence(settings.onec_database_url, snapshots)
+    load_registry_price_contexts(settings.onec_database_url, snapshots)
     snapshot = _prepare_snapshot(snapshots[0])
     catalog_product_ids = _catalog_product_ids_for_snapshots(db, [snapshot])
     registry_result = upsert_onec_order_snapshot(
@@ -262,6 +272,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
+        "--reviewed-receipts",
+        type=Path,
+        help="JSON object: reviewed 1C order GUID -> receipt_review_hash from comparison report",
+    )
+    parser.add_argument(
         "--source-only",
         action="store_true",
         help="Validate and report the 1C read-only source without opening the application DB.",
@@ -334,7 +349,9 @@ def _catalog_product_ids_for_snapshots(session, snapshots: list[dict[str, Any]])
     return known
 
 
-def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[dict[str, Any]]:
+def _persist_snapshots(
+    snapshots: list[dict[str, Any]], *, apply: bool, reviewed_receipts: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
     session = get_application_session_factory()()
     try:
         catalog_product_ids = _catalog_product_ids_for_snapshots(session, snapshots)
@@ -346,6 +363,9 @@ def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[
                 snapshot,
                 synced_at=synced_at,
                 catalog_product_ids=catalog_product_ids,
+                reviewed_receipt_facts_hash=(reviewed_receipts or {}).get(
+                    normalize_onec_ref(snapshot.get("onec_ref"))
+                ),
             )
             rows.append(
                 {
@@ -357,6 +377,9 @@ def _persist_snapshots(snapshots: list[dict[str, Any]], *, apply: bool) -> list[
                     "source_number": str(snapshot.get("number") or ""),
                 }
             )
+        from app.services.procurement_exceptions import sync_exceptions
+
+        sync_exceptions(session, now=synced_at)
         if apply:
             session.commit()
         else:
@@ -502,9 +525,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
     snapshots = list(snapshots_by_ref.values())
     missing_refs = sorted(set(value.lower() for value in known_refs) - set(snapshots_by_ref))
+    from app.services.procurement_receipt_evidence import load_receipt_evidence
+
+    load_receipt_evidence(settings.onec_database_url, snapshots)
+    load_registry_price_contexts(settings.onec_database_url, snapshots)
     snapshots = [_prepare_snapshot(snapshot) for snapshot in snapshots]
+    reviewed_receipts = {}
+    if getattr(args, "reviewed_receipts", None):
+        reviewed_receipts = json.loads(args.reviewed_receipts.read_text())
+        if not isinstance(reviewed_receipts, dict) or any(
+            not re.fullmatch(r"0x[0-9a-f]{32}", key)
+            or not isinstance(value, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value)
+            for key, value in reviewed_receipts.items()
+        ):
+            raise ValueError("Invalid reviewed receipt GUID/hash mapping")
     registry_rows = (
-        [] if args.source_only else _persist_snapshots(snapshots, apply=bool(args.apply))
+        []
+        if args.source_only
+        else _persist_snapshots(
+            snapshots, apply=bool(args.apply), reviewed_receipts=reviewed_receipts
+        )
     )
     lifecycle_by_ref = {
         str(row.get("onec_ref") or "").lower(): str(row.get("lifecycle_status") or "")
@@ -516,7 +557,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if resolved_lifecycle:
             snapshot["lifecycle_status"] = resolved_lifecycle
             contour_key = str(snapshot.get("procurement_contour_key") or "ordinary")
-            if resolved_lifecycle == "received":
+            if resolved_lifecycle == "reconciliation_required":
+                snapshot["procurement_stage_key"] = {
+                    "ordinary": "supplier_order",
+                    "cargo": "exception",
+                    "ved_import": "blocked",
+                }.get(contour_key, "supplier_order")
+            elif resolved_lifecycle == "received":
                 snapshot["procurement_stage_key"] = "closed"
             elif resolved_lifecycle == "partially_received":
                 snapshot["procurement_stage_key"] = "receiving"

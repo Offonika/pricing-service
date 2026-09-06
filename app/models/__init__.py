@@ -121,6 +121,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     )
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion
+    from app.models.procurement_exception import ProcurementException
     from app.models.procurement_order_formation import (
         ProcurementClassificationProposal,
         ProcurementLifecycleTransitionProposal,
@@ -212,6 +213,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "Product",
         "ProductStock",
         "ProcurementOrderFormation",
+        "ProcurementException",
         "ProcurementOrderFormationLine",
         "ProcurementOrderFormationEvent",
         "ProcurementProductCardSyncState",

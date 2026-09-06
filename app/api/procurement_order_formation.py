@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
+from app.api.procurement_exceptions import router as exception_router
 from app.api.procurement_labels import _bitrix_launch_payload, _inject_launch_payload, _read_index
 from app.core.config import get_settings
 from app.schemas.procurement_order_formation import (
@@ -119,6 +120,7 @@ from app.services.procurement_supplier_profiles import (
 )
 
 router = APIRouter(prefix="/procurement-order-formation")
+router.include_router(exception_router)
 page_router = APIRouter()
 
 
@@ -862,6 +864,7 @@ def change_order_line(
             order_id,
             line_id,
             values,
+            commit=False,
         )
         after = serialize_order(order)
         removed = payload.removed is True
@@ -870,7 +873,11 @@ def change_order_line(
             order_id=order_id,
             entity_type="order_line",
             entity_id=line_id,
-            event_type="order_line_removed" if removed else "order_line_changed",
+            event_type=(
+                "order_line_removed"
+                if removed
+                else "order_line_restored" if payload.removed is False else "order_line_changed"
+            ),
             session=session,
             before=before,
             after=after,

@@ -24,6 +24,11 @@ from app.services.procurement_order_metrics import (
     fetch_supplier_contract_terms,
     fetch_supplier_order_counts,
 )
+from app.services.procurement_price_context import (
+    collect_price_snapshots,
+    merge_price_snapshot,
+    price_context_item,
+)
 from app.services.procurement_supplier_profiles import (
     aggregate_supplier_facts,
     upsert_supplier_profile_facts,
@@ -159,6 +164,9 @@ def build_metrics_backfill_plan(
         ],
     )
     code_index, group_index = build_lead_time_indexes(lead_time_rows)
+    price_snapshots = collect_price_snapshots(
+        onec_engine, [price_context_item(line) for line in lines], as_of=as_of
+    )
     items: list[dict[str, Any]] = []
     supplier_line_payloads: dict[str, list[dict[str, Any]]] = defaultdict(list)
     supplier_contract_terms: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
@@ -177,6 +185,9 @@ def build_metrics_backfill_plan(
         metrics.update(_lead_time_payload(lead_candidate, source_level=source_level))
         before_payload = _json_copy(line.payload or {})
         after_payload = _merge_metrics_payload(before_payload, metrics)
+        after_payload["price_context"] = merge_price_snapshot(
+            before_payload.get("price_context"), price_snapshots[str(line.id)]
+        )
         supplier_line_payloads[supplier_ref].append(after_payload)
         contract_ref = _normalize_ref(line.order.contract_ref)
         terms = contract_terms.get((supplier_ref, contract_ref))
@@ -363,6 +374,9 @@ def apply_metrics_backfill(db: Session, plan: Mapping[str, Any]) -> dict[str, An
         if changed:
             supplier["applied_profile_version"] = profile.version
             applied_suppliers.append(supplier)
+    from app.services.procurement_exceptions import sync_exceptions
+
+    sync_exceptions(db)
     db.flush()
     result = _json_copy(plan)
     result.update(

@@ -243,3 +243,82 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   expect(mobileResults.violations).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("executive-dashboard-mobile.png"), fullPage: true });
 });
+
+test("procurement exceptions survive direct navigation and expose an accessible action form", async ({ page }, testInfo) => {
+  await page.addInitScript(() => window.sessionStorage.setItem("mm_procurement_order_formation_bitrix_session", JSON.stringify({
+    session_token: "test-session-placeholder", expires_at: "2099-01-01T00:00:00Z",
+    cached_at: new Date().toISOString(), user: { user_id: "1", name: "Тестовый закупщик" },
+  })));
+  await page.route("**/api/procurement-order-formation/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith("/orders/450") ? { id: 450, version: 1, lines: [] } : {
+      total: 1, overdue_count: 1, items: [{
+        id: 1, order_id: 450, line_id: null, title: "Сверить исполнение — РБГУ0000560",
+        reason_code: "receipt_reconciliation", status: "new", version: 1,
+        facts_hash: "a".repeat(64), overdue: true,
+        first_seen_at: "2026-09-04T09:00:00Z", response_due_at: "2026-09-07T15:00:00Z",
+        next_action: null, facts: {},
+      }],
+    };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await page.goto("/bitrix/procurement-order-formation/exceptions");
+  await expect(page.getByRole("heading", { name: "Исключения закупки" })).toBeVisible();
+  await page.getByRole("button", { name: "Обработать", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Обработка исключения" })).toBeFocused();
+  await expect(page.getByLabel("Следующее действие")).toBeVisible();
+  await expect(page.getByLabel("Срок действия, МСК")).toBeVisible();
+  const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(results.violations).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("procurement-exceptions.png"), fullPage: true });
+});
+
+test("procurement price context distinguishes agreed price and reference cost", async ({ page }, testInfo) => {
+  await page.addInitScript(() => window.sessionStorage.setItem("mm_procurement_order_formation_bitrix_session", JSON.stringify({
+    session_token: "test-session-placeholder", expires_at: "2099-01-01T00:00:00Z",
+    cached_at: new Date().toISOString(), user: { user_id: "1", name: "Тестовый закупщик" },
+  })));
+  const unknown = { value: null, currency: "RUB", status: "unconfirmed", documents: [] };
+  const cost = { value: "2108.65", currency: "RUB", status: "reference", unit_name: "шт", at: "2026-08-21T11:39:06",
+    documents: [{ kind: "УстановкаЦенНоменклатуры", ref: "cost-ref", number: "РБ000001527", at: "2026-08-21T11:39:06" }] };
+  await page.route("**/api/procurement-order-formation/**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+    id: 12, stable_key: "order-12", status: "draft", version: 1, supplier_name: "Поставщик дисплеев", supplier_ref: "supplier-ref",
+    contract_name: "Основной договор", currency: "CNY", warehouse_name: "Склад", procurement_contour: "ordinary", route: "ordinary",
+    batch_id: "2026-09-06", order_date: "2026-09-06", calculation_id: "calc-1", onec_status: "not_sent", blockers: [],
+    total_amount: "0", manual_status_options: { working: "Поддерживаем" }, lines: [{
+      id: 40, line_number: 1, version: 1, bitrix_product_id: "2695", bitrix_product_xml_id: "item-ref", nomenclature_ref: "item-ref",
+      nomenclature_code: "РБ000064181", nomenclature_name: "Дисплей для проверки цен", recommended_quantity: "30", final_quantity: "30",
+      purchase_price: "1", amount: "30", currency: "CNY", source_kind: "automatic", explicit_demand: false,
+      risk_codes: [], blockers: [], removed: false, effective_assortment_status: "working", effective_assortment_status_label: "Поддерживаем",
+      price_status: "unconfirmed", price_context: { schema_version: 1, agreed_purchase: { ...unknown, currency: "CNY" }, purchase_rub: unknown,
+        reference_cost_rub: cost, receipt_purchases_rub: [], actual_cost_status: "not_formed", actual_costs_rub: [],
+        supplier_quotes: [{ ...cost, value: "160", currency: "CNY", documents: [] }], source_status: "ready", checked_on: "2026-09-06",
+        last_success_on: "2026-09-06", stale: false },
+    }],
+  }) }));
+  await page.goto("/bitrix/procurement-order-formation/orders/12");
+  const summary = page.getByLabel("Цена, курс и себестоимость: Дисплей для проверки цен");
+  await summary.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText("Себестоимость в рублях · справочно")).toBeVisible();
+  await expect(page.getByText(/РБ000001527/)).toBeVisible();
+  await expect(page.getByText(/Пока не подтверждена связанными документами/)).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Цена, курс и себестоимость" });
+  await expect(dialog).toBeVisible();
+  const bounds = await dialog.boundingBox();
+  expect(bounds?.width).toBeGreaterThan(600);
+  const results = await new AxeBuilder({ page }).include(".procurement-price-context__dialog").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(results.violations).toEqual([]);
+  await page.screenshot({ path: testInfo.outputPath("procurement-prices.png"), fullPage: true });
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(summary).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await summary.click();
+  const narrowBounds = await dialog.boundingBox();
+  expect(narrowBounds?.width).toBeLessThanOrEqual(358);
+  await expect(page.getByRole("button", { name: "Закрыть ценовой контекст" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("procurement-prices-mobile.png"), fullPage: true });
+  await page.getByRole("button", { name: "Закрыть ценовой контекст" }).click();
+  await expect(summary).toBeFocused();
+});

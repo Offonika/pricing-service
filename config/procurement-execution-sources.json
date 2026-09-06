@@ -1,0 +1,38 @@
+{
+  "verified_at": "2026-09-05T18:03:59.641010+00:00",
+  "evidence": "Read-only dbo.Params DBNames and dbo.Config of current UT database; names matched to storage IDs",
+  "register": "_AccumRg7147",
+  "order_dimension": "_Fld7149RRef",
+  "sku_dimension": "_Fld7151RRef",
+  "quantity_resource": "_Fld7156",
+  "documents": [
+    {
+      "metadata_name": "ВозвратТоваровПоставщику",
+      "metadata_guid": "9af314f8-c5a7-4827-9571-91f3f7e96af1",
+      "sql_table": "_Document110",
+      "recorder_type": "0x0000006E",
+      "config_sha256": "3feb7f9a7b7f4e964ffbf9d7a44aa034d0f889a128fc37abe87f27dea4184655"
+    },
+    {
+      "metadata_name": "ЗаказПоставщику",
+      "metadata_guid": "a62dfa73-f9b7-4adf-bf88-0bfcd2bf6f72",
+      "sql_table": "_Document133",
+      "recorder_type": "0x00000085",
+      "config_sha256": "16c85f687fb66829af337585d6f8d5ed119995e3cb5af2c8f7e53247958a10b6"
+    },
+    {
+      "metadata_name": "КорректировкаЗаказаПоставщику",
+      "metadata_guid": "65088055-f822-43cb-8073-55790285400e",
+      "sql_table": "_Document163",
+      "recorder_type": "0x000000A3",
+      "config_sha256": "a4640f98ff2ebd027d1f23ce32fc90e73c619d44f1f7b96b60c94754b70b9db9"
+    },
+    {
+      "metadata_name": "ПоступлениеТоваровУслуг",
+      "metadata_guid": "5a53ae4f-f7b9-4bed-93d1-1309a746b20d",
+      "sql_table": "_Document194",
+      "recorder_type": "0x000000C2",
+      "config_sha256": "b182454242be2f46efe053c9c4202af2d06d0e285965cd72f6b99acea9a77841"
+    }
+  ]
+}

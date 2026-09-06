@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.procurement_price_context import ProcurementPriceContext
+
 
 class ProcurementOrderFormationSessionRequest(BaseModel):
     access_token: str = Field(min_length=1)
@@ -318,6 +320,10 @@ class ProcurementOrderFormationLineRead(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     display_family_recommendation: DisplayFamilyOrderRecommendationRead | None = None
     removed: bool
+    removal_kind: str | None = None
+    price_status: str = "unconfirmed"
+    price_context: ProcurementPriceContext | None = None
+    supply_scenario: dict[str, Any] | None = None
     effective_assortment_status: str | None = None
     effective_assortment_status_label: str | None = None
     latest_classification: ProcurementClassificationProposalRead | None = None
@@ -528,6 +534,9 @@ class ProcurementOrderFormationRead(BaseModel):
     label_source: ProcurementOrderLabelSourceRead | None = None
     blockers: list[str] = Field(default_factory=list)
     blocker_details: list[ProcurementBlockerDetailRead] = Field(default_factory=list)
+    confirmed_amount: Decimal | None = None
+    unpriced_line_count: int = 0
+    receipt_evidence: dict[str, Any] | None = None
     total_amount: Decimal = Decimal("0")
     lines: list[ProcurementOrderFormationLineRead] = Field(default_factory=list)
     manual_status_options: dict[str, str] = Field(default_factory=dict)
@@ -583,6 +592,7 @@ class ProcurementOrderAssistantAssembleResponse(BaseModel):
 
 
 class ProcurementOrderLineUpdateRequest(BaseModel):
+    quantity_reason: str | None = Field(default=None, max_length=2000)
     expected_order_version: int = Field(ge=1)
     expected_line_version: int = Field(ge=1)
     final_quantity: Decimal | None = Field(default=None, ge=0)
@@ -904,6 +914,9 @@ class ProcurementOrderListItem(BaseModel):
     line_count: int
     total_quantity: Decimal
     total_amount: Decimal
+    confirmed_amount: Decimal | None = None
+    unpriced_line_count: int = 0
+    receipt_evidence: dict[str, Any] | None = None
     blockers: list[str] = Field(default_factory=list)
     blocked_products: list[ProcurementBlockedProductRead] = Field(default_factory=list)
     updated_at: datetime
@@ -914,6 +927,8 @@ class ProcurementOrderListSummary(BaseModel):
     lines: int = 0
     quantity: Decimal = Decimal("0")
     amount: Decimal = Decimal("0")
+    confirmed_amount_by_currency: dict[str, Decimal] = Field(default_factory=dict)
+    unpriced_line_count: int = 0
     by_status: dict[str, int] = Field(default_factory=dict)
 
 

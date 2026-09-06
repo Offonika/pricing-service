@@ -11266,6 +11266,109 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/exceptions:
+    get:
+      summary: Exceptions
+      operationId: exceptions_api_procurement_order_formation_exceptions_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: open
+          title: Status
+      - name: reason
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Reason
+      - name: overdue_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Overdue Only
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementExceptionList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/exceptions/{exception_id}/decision:
+    post:
+      summary: Decision
+      operationId: decision_api_procurement_order_formation_exceptions__exception_id__decision_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: exception_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Exception Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementExceptionDecision'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementExceptionRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/control-summary:
+    get:
+      summary: Summary
+      operationId: summary_api_procurement_order_formation_control_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementControlSummary'
+      security:
+      - HTTPBearer: []
   /api/procurement-order-formation/session:
     post:
       summary: Create Bitrix Procurement Order Formation Session
@@ -28262,6 +28365,99 @@ components:
       - order
       - proposal
       title: ProcurementClassificationRejectResponse
+    ProcurementControlSummary:
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        open_orders:
+          type: integer
+          title: Open Orders
+        without_eta:
+          type: integer
+          title: Without Eta
+        past_eta:
+          type: integer
+          title: Past Eta
+        unconfirmed_incoming_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Unconfirmed Incoming Quantity
+        unknown_incoming_order_count:
+          type: integer
+          title: Unknown Incoming Order Count
+        synchronization_errors:
+          type: integer
+          title: Synchronization Errors
+        last_onec_sync_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Onec Sync At
+        oldest_onec_sync_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Oldest Onec Sync At
+        stale_receipt_sources:
+          type: integer
+          title: Stale Receipt Sources
+          default: 0
+        unknown_freshness_count:
+          type: integer
+          title: Unknown Freshness Count
+        exceptions_open:
+          type: integer
+          title: Exceptions Open
+        exceptions_overdue:
+          type: integer
+          title: Exceptions Overdue
+        stockout_risks:
+          type: integer
+          title: Stockout Risks
+        recommendation_decisions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Recommendation Decisions
+        recommendation_change_reasons:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Recommendation Change Reasons
+        confirmed_amount_by_currency:
+          additionalProperties:
+            type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          type: object
+          title: Confirmed Amount By Currency
+        confirmed_amount_scope:
+          type: string
+          title: Confirmed Amount Scope
+          default: active_generated_drafts
+        unpriced_lines:
+          type: integer
+          title: Unpriced Lines
+      type: object
+      required:
+      - generated_at
+      - open_orders
+      - without_eta
+      - past_eta
+      - unconfirmed_incoming_quantity
+      - unknown_incoming_order_count
+      - synchronization_errors
+      - unknown_freshness_count
+      - exceptions_open
+      - exceptions_overdue
+      - stockout_risks
+      - recommendation_decisions
+      - confirmed_amount_by_currency
+      - unpriced_lines
+      title: ProcurementControlSummary
     ProcurementDashboardAttentionItem:
       properties:
         proposal_id:
@@ -28471,6 +28667,205 @@ components:
       - responsible_user_id
       - responsible_name
       title: ProcurementDashboardResponse
+    ProcurementExceptionDecision:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+        facts_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Facts Hash
+        status:
+          type: string
+          enum:
+          - in_progress
+          - waiting
+          - resolved
+          title: Status
+        next_action:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Next Action
+        next_action_due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Action Due At
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Reason
+        evidence:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Evidence
+        expected_order_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Expected Order Version
+        expected_line_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Expected Line Version
+        final_quantity:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Final Quantity
+      type: object
+      required:
+      - expected_version
+      - facts_hash
+      - status
+      title: ProcurementExceptionDecision
+    ProcurementExceptionList:
+      properties:
+        total:
+          type: integer
+          title: Total
+        offset:
+          type: integer
+          title: Offset
+        limit:
+          type: integer
+          title: Limit
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementExceptionRead'
+          type: array
+          title: Items
+        by_reason:
+          additionalProperties:
+            type: integer
+          type: object
+          title: By Reason
+        overdue_count:
+          type: integer
+          title: Overdue Count
+        oversight:
+          type: string
+          title: Oversight
+          default: Омар
+      type: object
+      required:
+      - total
+      - offset
+      - limit
+      - items
+      - by_reason
+      - overdue_count
+      title: ProcurementExceptionList
+    ProcurementExceptionRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        order_id:
+          type: integer
+          title: Order Id
+        line_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Line Id
+        reason_code:
+          type: string
+          title: Reason Code
+        title:
+          type: string
+          title: Title
+        status:
+          type: string
+          title: Status
+        version:
+          type: integer
+          title: Version
+        facts_hash:
+          type: string
+          title: Facts Hash
+        facts:
+          additionalProperties: true
+          type: object
+          title: Facts
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+        response_due_at:
+          type: string
+          format: date-time
+          title: Response Due At
+        acknowledged_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Acknowledged At
+        assigned_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assigned User Id
+        next_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Action
+        next_action_due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Action Due At
+        resolution:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resolution
+        resolved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolved At
+        overdue:
+          type: boolean
+          title: Overdue
+      type: object
+      required:
+      - id
+      - order_id
+      - reason_code
+      - title
+      - status
+      - version
+      - facts_hash
+      - facts
+      - first_seen_at
+      - last_seen_at
+      - response_due_at
+      - overdue
+      title: ProcurementExceptionRead
     ProcurementFamilyDistributionDecisionRequest:
       properties:
         facts_hash:
@@ -29930,6 +30325,25 @@ components:
         removed:
           type: boolean
           title: Removed
+        removal_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Removal Kind
+        price_status:
+          type: string
+          title: Price Status
+          default: unconfirmed
+        price_context:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementPriceContext'
+          - type: 'null'
+        supply_scenario:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Supply Scenario
         effective_assortment_status:
           anyOf:
           - type: string
@@ -30418,6 +30832,22 @@ components:
             $ref: '#/components/schemas/ProcurementBlockerDetailRead'
           type: array
           title: Blocker Details
+        confirmed_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Confirmed Amount
+        unpriced_line_count:
+          type: integer
+          title: Unpriced Line Count
+          default: 0
+        receipt_evidence:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Receipt Evidence
         total_amount:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
@@ -30667,6 +31097,12 @@ components:
       title: ProcurementOrderLabelSourceRead
     ProcurementOrderLineUpdateRequest:
       properties:
+        quantity_reason:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Quantity Reason
         expected_order_version:
           type: integer
           minimum: 1.0
@@ -30863,6 +31299,22 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Total Amount
+        confirmed_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Confirmed Amount
+        unpriced_line_count:
+          type: integer
+          title: Unpriced Line Count
+          default: 0
+        receipt_evidence:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Receipt Evidence
         blockers:
           items:
             type: string
@@ -30947,6 +31399,16 @@ components:
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Amount
           default: '0'
+        confirmed_amount_by_currency:
+          additionalProperties:
+            type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          type: object
+          title: Confirmed Amount By Currency
+        unpriced_line_count:
+          type: integer
+          title: Unpriced Line Count
+          default: 0
         by_status:
           additionalProperties:
             type: integer
@@ -30979,6 +31441,189 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementPriceContext:
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+          title: Schema Version
+          default: 1
+        agreed_purchase:
+          $ref: '#/components/schemas/ProcurementPriceFact'
+        purchase_rub:
+          $ref: '#/components/schemas/ProcurementPriceFact'
+        receipt_purchases_rub:
+          items:
+            $ref: '#/components/schemas/ProcurementPriceFact'
+          type: array
+          title: Receipt Purchases Rub
+        reference_cost_rub:
+          $ref: '#/components/schemas/ProcurementPriceFact'
+        actual_cost_status:
+          type: string
+          enum:
+          - confirmed
+          - partial
+          - not_formed
+          - ambiguous
+          title: Actual Cost Status
+          default: not_formed
+        actual_costs_rub:
+          items:
+            $ref: '#/components/schemas/ProcurementPriceFact'
+          type: array
+          title: Actual Costs Rub
+        supplier_quotes:
+          items:
+            $ref: '#/components/schemas/ProcurementPriceFact'
+          type: array
+          title: Supplier Quotes
+        source_status:
+          type: string
+          enum:
+          - ready
+          - unavailable
+          - not_loaded
+          - ambiguous
+          title: Source Status
+          default: not_loaded
+        checked_on:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Checked On
+        last_success_on:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Success On
+        stale:
+          type: boolean
+          title: Stale
+          default: false
+        error_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Type
+      type: object
+      required:
+      - agreed_purchase
+      - purchase_rub
+      - reference_cost_rub
+      title: ProcurementPriceContext
+    ProcurementPriceDocument:
+      properties:
+        kind:
+          type: string
+          title: Kind
+        ref:
+          type: string
+          title: Ref
+        number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+        at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: At
+      type: object
+      required:
+      - kind
+      - ref
+      title: ProcurementPriceDocument
+    ProcurementPriceFact:
+      properties:
+        value:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Value
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+        status:
+          type: string
+          enum:
+          - confirmed
+          - reference
+          - unconfirmed
+          - missing
+          - ambiguous
+          - not_formed
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        confirmed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Confirmed By
+        at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: At
+        unit_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit Ref
+        unit_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit Name
+        characteristic_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Characteristic Ref
+        exchange_rate:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Exchange Rate
+        exchange_multiplicity:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Exchange Multiplicity
+        exchange_rate_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Exchange Rate At
+        documents:
+          items:
+            $ref: '#/components/schemas/ProcurementPriceDocument'
+          type: array
+          title: Documents
+      type: object
+      required:
+      - status
+      title: ProcurementPriceFact
     ProcurementProductCardIdentityRead:
       properties:
         bitrix_product_id:

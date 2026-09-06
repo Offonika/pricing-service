@@ -1,0 +1,307 @@
+{
+  "verified_at": "2026-09-06",
+  "basis": "Read-only Config/DBNames and sampled posted documents/register records",
+  "order_price": {
+    "document": "ЗаказПоставщику",
+    "document_guid": "a62dfa73-f9b7-4adf-bf88-0bfcd2bf6f72",
+    "table": "_Document133_VT2515",
+    "price_column": "_Fld2529",
+    "currency_column": "_Document133._Fld2490RRef",
+    "settlement_currency_column": "_Reference37._Fld498RRef",
+    "exchange_rate_column": "_Document133._Fld2501",
+    "multiplicity_column": "_Document133._Fld2500"
+  },
+  "registers": [
+    {
+      "name": "КурсыВалют",
+      "storage": [
+        "InfoRg",
+        "6422"
+      ],
+      "guid": "6fe6e243-6968-4a6c-b467-716aec387b8b",
+      "fields": [
+        [
+          "КурсыВалют",
+          [
+            [
+              "InfoRg",
+              "6422"
+            ],
+            [
+              "InfoRgChngR",
+              "6426"
+            ]
+          ]
+        ],
+        [
+          "Курс",
+          [
+            [
+              "Fld",
+              "6424"
+            ]
+          ]
+        ],
+        [
+          "Кратность",
+          [
+            [
+              "Fld",
+              "6425"
+            ]
+          ]
+        ],
+        [
+          "Валюта",
+          [
+            [
+              "Fld",
+              "6423"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "ЦеныНоменклатуры",
+      "storage": [
+        "InfoRg",
+        "6959"
+      ],
+      "guid": "79727cdc-c1bd-4165-9fbb-280a7df81d2d",
+      "fields": [
+        [
+          "ЦеныНоменклатуры",
+          [
+            [
+              "InfoRg",
+              "6959"
+            ],
+            [
+              "InfoRgChngR",
+              "6971"
+            ]
+          ]
+        ],
+        [
+          "Валюта",
+          [
+            [
+              "Fld",
+              "6963"
+            ]
+          ]
+        ],
+        [
+          "Цена",
+          [
+            [
+              "Fld",
+              "6964"
+            ]
+          ]
+        ],
+        [
+          "ЕдиницаИзмерения",
+          [
+            [
+              "Fld",
+              "6965"
+            ]
+          ]
+        ],
+        [
+          "ПроцентСкидкиНаценки",
+          [
+            [
+              "Fld",
+              "6966"
+            ]
+          ]
+        ],
+        [
+          "СпособРасчетаЦены",
+          [
+            [
+              "Fld",
+              "6967"
+            ]
+          ]
+        ],
+        [
+          "ТипЦен",
+          [
+            [
+              "Fld",
+              "6960"
+            ],
+            [
+              "ByDims",
+              "6968"
+            ]
+          ]
+        ],
+        [
+          "Номенклатура",
+          [
+            [
+              "Fld",
+              "6961"
+            ],
+            [
+              "ByDims",
+              "6969"
+            ]
+          ]
+        ],
+        [
+          "ХарактеристикаНоменклатуры",
+          [
+            [
+              "Fld",
+              "6962"
+            ],
+            [
+              "ByDims",
+              "6970"
+            ]
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "ЦеныНоменклатурыКонтрагентов",
+      "storage": [
+        "InfoRg",
+        "6972"
+      ],
+      "guid": "89e27ce3-f914-4f96-bfa5-0ee19c41a391",
+      "fields": [
+        [
+          "ЦеныНоменклатурыКонтрагентов",
+          [
+            [
+              "InfoRg",
+              "6972"
+            ],
+            [
+              "InfoRgChngR",
+              "6982"
+            ]
+          ]
+        ],
+        [
+          "ЕдиницаИзмерения",
+          [
+            [
+              "Fld",
+              "6976"
+            ]
+          ]
+        ],
+        [
+          "Валюта",
+          [
+            [
+              "Fld",
+              "6977"
+            ]
+          ]
+        ],
+        [
+          "Цена",
+          [
+            [
+              "Fld",
+              "6978"
+            ]
+          ]
+        ],
+        [
+          "ТипЦен",
+          [
+            [
+              "Fld",
+              "6973"
+            ],
+            [
+              "ByDims",
+              "6979"
+            ]
+          ]
+        ],
+        [
+          "Номенклатура",
+          [
+            [
+              "Fld",
+              "6974"
+            ],
+            [
+              "ByDims",
+              "6980"
+            ]
+          ]
+        ],
+        [
+          "ХарактеристикаНоменклатуры",
+          [
+            [
+              "Fld",
+              "6975"
+            ],
+            [
+              "ByDims",
+              "6981"
+            ]
+          ]
+        ]
+      ]
+    }
+  ],
+  "rules": [
+    "Use the currency stored on the same price record or document.",
+    "Contract currency and price-type default currency do not relabel an existing price.",
+    "Supplier quotation, order price and accounting cost are distinct series; no implicit FX conversion.",
+    "Actual supply cost requires active receipt/order/SKU movements, the receipt line order reference, equal unit/characteristic, posted final expense allocation, and a later posted cost record with that receipt as basis.",
+    "RUB purchase uses the exactly linked receipt rate when applicable; different receipts remain separate. Before receipt only the order document rate may apply; no current-rate forecast.",
+    "Supplier quotes are historical reference records. They never overwrite the agreed line price or currency."
+  ],
+  "receipt_price": {
+    "table": "_Document194_VT4507",
+    "price": "_Fld4515",
+    "unit": "_Fld4511RRef",
+    "characteristic": "_Fld4520RRef",
+    "order": "_Fld4525RRef",
+    "currency": "_Document194._Fld4477RRef",
+    "rate": "_Document194._Fld4485",
+    "multiplicity": "_Document194._Fld4484",
+    "contract": "_Document194._Fld4480RRef"
+  },
+  "reference_cost": {
+    "table": "_InfoRg6959",
+    "type_ref": "0x8c7400241d5a8bc311dff8957b4abb78",
+    "registrar": "posted _Document224, type 0x000000E0",
+    "receipt_basis": "_Document224._Fld8791_RTRef = 0x000000C2; _Fld8791_RRRef"
+  },
+  "allocation_evidence": [
+    {
+      "document": "ПоступлениеДопРасходов",
+      "table": "_Document193_VT4450",
+      "receipt": "_Fld4461_RTRef/_Fld4461_RRRef",
+      "sku": "_Fld4452RRef",
+      "unit": "_Fld4453RRef",
+      "characteristic": "_Fld4459RRef",
+      "final_allocation": "_Document193._Fld8445"
+    },
+    {
+      "document": "ПоступлениеДопРасходовОбщ",
+      "table": "_Document9197_VT9225",
+      "receipt": "_Fld9236_RTRef/_Fld9236_RRRef",
+      "sku": "_Fld9227RRef",
+      "unit": "_Fld9228RRef",
+      "characteristic": "_Fld9234RRef",
+      "final_allocation": "_Document9197._Fld9223"
+    }
+  ]
+}

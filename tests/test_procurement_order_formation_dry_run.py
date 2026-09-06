@@ -538,7 +538,17 @@ def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
     line = orders[0]["lines"][0]
     assert resolved_articles == ["044702"]
     assert line["product_media_status"] == "found"
-    assert line["payload"] == {
+    assert {
+        key: value
+        for key, value in line["payload"].items()
+        if key
+        not in {
+            "currency_source",
+            "stockout_guard_triggered",
+            "stockout_guard_days_remaining",
+            "stockout_guard_required_days",
+        }
+    } == {
         "photos": [
             {
                 "thumbnail": "https://master-mobile.ru/upload/thumb/40699.webp",
@@ -719,6 +729,9 @@ def test_persist_new_batch_merges_open_order_and_preserves_manual_values(db_sess
     )
 
     next_payload = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
+    # Contract currency is a default for new drafts, not permission to relabel 90 RUB.
+    next_payload[0]["currency"] = "CNY"
+    next_payload[0]["lines"][0]["currency"] = "CNY"
     next_payload[0]["lines"][0].update(
         recommended_quantity="9",
         final_quantity="9",
@@ -736,6 +749,7 @@ def test_persist_new_batch_merges_open_order_and_preserves_manual_values(db_sess
     assert refreshed.lines[0].recommended_quantity == Decimal("9")
     assert refreshed.lines[0].final_quantity == Decimal("7")
     assert refreshed.lines[0].purchase_price == Decimal("90")
+    assert refreshed.currency == refreshed.lines[0].currency == "RUB"
     assert refreshed.lines[0].amount == Decimal("630")
     assert refreshed.lines[0].payload["recommendation_discrepancy"] == {
         "final_quantity": {"manual": "7.000", "recommended": "9"},
@@ -849,3 +863,68 @@ def test_persist_never_mutates_transmitted_order(db_session) -> None:
     assert replacement is not None
     assert replacement.status == "draft"
     assert ":revision:" in replacement.stable_key
+
+
+def test_manual_removal_survives_next_batch_and_explicit_restore(db_session):
+    ids = persist_grouped_orders(
+        db_session, _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886")
+    )
+    order = db_session.get(ProcurementOrderFormation, ids[0])
+    line = order.lines[0]
+    update_order_line(
+        db_session,
+        order.id,
+        line.id,
+        {
+            "removed": True,
+            "removal_reason": "Поставка подтверждена поставщиком",
+            "_removal_actor": "buyer:7",
+            "expected_order_version": order.version,
+            "expected_line_version": line.version,
+        },
+    )
+    decision = dict(line.payload["manual_removal"])
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+        supersede_open_batches=True,
+    )
+    db_session.refresh(line)
+    assert line.removed
+    assert line.payload["manual_removal"] == decision
+    update_order_line(
+        db_session,
+        order.id,
+        line.id,
+        {
+            "removed": False,
+            "_removal_actor": "buyer:7",
+            "expected_order_version": order.version,
+            "expected_line_version": line.version,
+        },
+    )
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-08-01", calculation_id="888"),
+        supersede_open_batches=True,
+    )
+    db_session.refresh(line)
+    assert not line.removed
+    assert line.payload["manual_removal"]["reason"] == decision["reason"]
+    assert line.payload["manual_removal"]["restored_by"] == "buyer:7"
+
+
+def test_contract_currency_requires_choice_when_supplier_has_multiple_currencies():
+    from tasks.build_procurement_order_formation_dry_run import contract_for_supplier
+
+    supplier = {"ref": "supplier", "code": "S"}
+    dimension = {
+        "contract_ref": "contract",
+        "contract_currency": "156",
+        "supplier_currency_count": 2,
+    }
+    assert contract_for_supplier(supplier, contracts={}, dimension=dimension)["currency"] == ""
+    chosen = {"by_supplier_ref": {"supplier": {"ref": "contract"}}}
+    assert (
+        contract_for_supplier(supplier, contracts=chosen, dimension=dimension)["currency"] == "156"
+    )

@@ -217,6 +217,12 @@ CSV_COLUMNS = [
     "pipeline_cargo_handoff_qty",
     "pipeline_supplier_processing_qty",
     "dry_run_decision",
+    "assortment_status",
+    "incoming_schedule",
+    "supply_scenario",
+    "recommended_order_qty_dated_only",
+    "supply_review_required",
+    "calculation_as_of",
     "stockout_guard_triggered",
     "stockout_guard_days_remaining",
     "stockout_guard_required_days",
@@ -787,6 +793,11 @@ def main() -> int:
             rows,
             membership_by_code=membership_by_code,
             registry_error=family_registry_error,
+        )
+        from app.services.procurement_supply_scenarios import annotate_family_scenarios
+
+        annotate_family_scenarios(
+            rows, membership_by_code=membership_by_code, registry_error=family_registry_error
         )
     write_csv(args.output_csv, rows)
     scope_gate_csv = write_scope_gate_csv(
@@ -1390,6 +1401,7 @@ def fetch_incoming_totals(
             MAX(CASE WHEN supplier_order._Fld2493 > :empty_onec_date
                 THEN supplier_order._Fld2493 ELSE NULL END) AS latest_expected_receipt_at,
             SUM(CASE WHEN supplier_order._Fld2493 > :empty_onec_date
+                    AND supplier_order._Fld2493 >= :as_of_start
                     AND supplier_order._Fld2493 <= :arriving_10_days_at
                 THEN CAST(open_balance._Fld7156 AS decimal(18, 3)) ELSE 0 END)
                 AS pipeline_arriving_10_days_qty,
@@ -1423,13 +1435,40 @@ def fetch_incoming_totals(
         """,
         codes=codes,
     ).bindparams(
+        bindparam("as_of_start", value=datetime.combine(as_of, time.min)),
         bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD),
         bindparam("empty_onec_date", value=empty_date),
         bindparam("arriving_10_days_at", value=arriving_10_days_at),
         bindparam("arriving_20_days_at", value=arriving_20_days_at),
     )
+    detail_sql = _expanding_text(
+        """
+        SELECT LTRIM(RTRIM(product._Code)) AS code,
+            CONVERT(varchar(34), supplier_order._IDRRef, 1) AS order_ref,
+            supplier_order._Fld2493 AS expected_at,
+            SUM(CAST(open_balance._Fld7156 AS decimal(18,3))) AS quantity
+        FROM dbo._AccumRgT7160 AS open_balance WITH (NOLOCK)
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = open_balance._Fld7151RRef
+        LEFT JOIN dbo._Document133 AS supplier_order WITH (NOLOCK)
+          ON supplier_order._IDRRef = open_balance._Fld7149RRef
+        WHERE open_balance._Period = :balance_period AND open_balance._Fld7156 > 0
+          AND LTRIM(RTRIM(product._Code)) IN :codes
+        GROUP BY product._Code, supplier_order._IDRRef, supplier_order._Fld2493
+    """,
+        codes=codes,
+    ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
     with engine.connect() as conn:
-        return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
+        totals = {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
+        for detail in conn.execute(detail_sql).mappings():
+            totals.setdefault(_clean(detail["code"]), {}).setdefault("schedule", []).append(
+                {
+                    "order_ref": detail["order_ref"],
+                    "quantity": str(detail["quantity"]),
+                    "expected_at": str(detail["expected_at"]) if detail["expected_at"] else None,
+                }
+            )
+        return totals
 
 
 TREND_WINDOW_MEDIUM_DAYS = 90
@@ -1931,7 +1970,36 @@ def fetch_onec_catalog_analog_candidates(
     return candidates
 
 
-def build_dry_run_rows(
+def build_dry_run_rows(items, **kwargs) -> list[dict[str, Any]]:
+    from app.services.procurement_supply_scenarios import annotate_scenario, partition_supply
+
+    rows = _build_dry_run_rows(items, **kwargs)
+    as_of = kwargs.get("as_of") or date.today()
+    incoming = kwargs["facts"].get("incoming", {})
+    dated_incoming = {}
+    for row in rows:
+        code = _clean(row.get("nomenclature_code"))
+        fact = dict(incoming.get(code) or {})
+        schedule = fact.get("schedule") or []
+        if not schedule and _decimal(fact.get("incoming_qty")) > 0:
+            schedule = [{"quantity": str(fact["incoming_qty"]), "expected_at": None}]
+        row["incoming_schedule"] = json.dumps(schedule, default=str, ensure_ascii=False)
+        split = partition_supply(
+            schedule, as_of=as_of, horizon_days=int(_decimal(row.get("effective_target_days")))
+        )
+        dated_incoming[code] = {**fact, "incoming_qty": split["dated_quantity"]}
+    cautious = _build_dry_run_rows(
+        items, **{**kwargs, "facts": {**kwargs["facts"], "incoming": dated_incoming}}
+    )
+    cautious_by_code = {_clean(row.get("nomenclature_code")): row for row in cautious}
+    for row in rows:
+        other = cautious_by_code.get(_clean(row.get("nomenclature_code")), {})
+        row["assortment_status"] = row.get("_assortment_status") or ""
+        annotate_scenario(row, other.get("recommended_order_qty", 0), as_of=as_of)
+    return rows
+
+
+def _build_dry_run_rows(
     items: Sequence[Mapping[str, Any]],
     *,
     facts: Mapping[str, Mapping[str, Mapping[str, Any]]],
@@ -2613,40 +2681,6 @@ def build_dry_run_rows(
             "по такой короткой базе автозаказ запрещён, нужна ручная проверка."
         )
 
-    # stockout_guard (off_schedule_signal_policy) - см. константу выше.
-    # Считается здесь, в самом конце, на уже окончательно устоявшемся
-    # решении - только для строк, где итог "заказ не нужен" и блокеров нет
-    # (блокер уже сам по себе объясняет заказ=0, тревога здесь не добавляет
-    # смысла).
-    for row in rows:
-        if _clean(row.get("blockers")) or _clean(row.get("dry_run_decision")) != "do_not_order":
-            continue
-        avg_daily_sales_qty = _decimal(row.get("avg_daily_sales_qty"))
-        if avg_daily_sales_qty <= 0:
-            continue
-        order_available_stock_qty = max(
-            Decimal("0"),
-            _decimal(row.get("order_available_stock_qty")),
-        )
-        days_of_stock_remaining = order_available_stock_qty / avg_daily_sales_qty
-        required_days = (
-            _decimal(row.get("lead_time_days"))
-            + _decimal(row.get("distribution_to_shelf_days"))
-            + Decimal(str(STOCKOUT_GUARD_BUFFER_DAYS))
-        )
-        if days_of_stock_remaining >= required_days:
-            continue
-        row["stockout_guard_triggered"] = "true"
-        row["stockout_guard_days_remaining"] = _out_decimal(days_of_stock_remaining, places=1)
-        row["stockout_guard_required_days"] = _out_decimal(required_days)
-        _append_warning(row, "stockout_guard_triggered")
-        row["reason_ru"] = (
-            "ТРЕВОГА (stockout_guard): расчёт решил, что заказ сейчас не нужен, но при "
-            f"текущей скорости остатка хватит на {_out_decimal(days_of_stock_remaining, places=1)} "
-            f"дней, а полный цикл довоза (путь + буфер) занимает {_out_decimal(required_days)} "
-            "дней - есть риск пустой полки раньше следующего планового пересмотра. "
-            f"{row.get('reason_ru', '')}"
-        ).strip()
     for row in rows:
         active_customer_order_qty = _decimal(row.get("active_customer_order_qty"))
         if active_customer_order_qty <= 0:

@@ -249,6 +249,7 @@ def test_order_calculation_excel_contains_classification_and_active_filtered_lin
             purchase_price=Decimal("1250.50"),
             amount=Decimal("3751.50"),
             currency="RUB",
+            payload={"price_confirmed": True},
         ),
         ProcurementOrderFormationLine(
             stable_key="excel:line:removed",
@@ -332,6 +333,13 @@ def test_order_calculation_excel_contains_classification_and_active_filtered_lin
     )
     assert worksheet.freeze_panes == "A2"
     assert worksheet.auto_filter.ref == worksheet.dimensions
+    assert "Ценовые факты" in workbook.sheetnames
+    assert exported_rows[1][21] == "Да"
+    active_order.lines[0].purchase_price = Decimal("1")
+    lifecycle_db.flush()
+    unpriced_export = load_workbook(BytesIO(build_order_calculation_excel(lifecycle_db)))
+    assert unpriced_export["Расчёт заказа"]["K2"].value is None
+    assert unpriced_export["Расчёт заказа"]["V2"].value == "Нет"
 
     superseded_workbook = load_workbook(
         BytesIO(build_order_calculation_excel(lifecycle_db, status="superseded"))

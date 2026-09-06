@@ -488,7 +488,12 @@ def _new_supplier_target(
 def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
     active_lines = [line for line in order.lines if not line.removed]
     line_payloads = [serialize_line(line) for line in order.lines]
+    from app.services.procurement_supply_scenarios import price_confirmed
+
     total_amount = sum((line.amount for line in active_lines), Decimal("0"))
+    confirmed_amount = sum(
+        (line.amount for line in active_lines if price_confirmed(line)), Decimal("0")
+    )
     blockers = order_blockers(order)
     from app.services.procurement_order_registry import (
         LIFECYCLE_STATUS_LABELS,
@@ -553,6 +558,9 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "blockers": blockers,
         "blocker_details": order_blocker_details(order),
         "total_amount": total_amount,
+        "confirmed_amount": confirmed_amount if order.currency else None,
+        "unpriced_line_count": sum(not price_confirmed(line) for line in active_lines),
+        "receipt_evidence": (order.payload or {}).get("receipt_evidence"),
         "lines": line_payloads,
         "manual_status_options": manual_status_screen_options(),
         "supplier_profile": supplier_profile(order),
@@ -580,6 +588,9 @@ def serialize_order_label_source(order: ProcurementOrderFormation) -> dict[str, 
 
 
 def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
+    from app.services.procurement_price_context import serialize_price_context
+    from app.services.procurement_supply_scenarios import price_confirmed
+
     latest = latest_classification_proposal(line)
     effective_status = effective_assortment_status(line)
     payload = dict(line.payload or {})
@@ -615,6 +626,14 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "payload": payload,
         "display_family_recommendation": _display_family_recommendation(payload),
         "removed": line.removed,
+        "removal_kind": (
+            "manual"
+            if (line.payload or {}).get("manual_removal") and line.removed
+            else "disappeared" if line.removed else None
+        ),
+        "price_status": "confirmed" if price_confirmed(line) else "unconfirmed",
+        "price_context": serialize_price_context(line),
+        "supply_scenario": (line.payload or {}).get("supply_scenario"),
         "effective_assortment_status": effective_status,
         "effective_assortment_status_label": status_screen_label(effective_status),
         "latest_classification": serialize_proposal(latest) if latest else None,
@@ -657,7 +676,12 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "supplier_defect_attribution": _payload_text(payload, "supplier_defect_attribution"),
         "supplier_defect_source_status": _payload_text(payload, "supplier_defect_source_status"),
         "price_change_pct": _payload_decimal(payload, "price_change_pct"),
-        "price_change_status": _payload_text(payload, "price_change_status"),
+        "price_change_status": (
+            "price_not_agreed"
+            if not price_confirmed(line)
+            and payload.get("price_change_status") == "currency_mismatch"
+            else _payload_text(payload, "price_change_status")
+        ),
         "price_history_count": _payload_int(payload, "price_history_count"),
         "price_history_currency_ref": _payload_text(payload, "price_history_currency_ref"),
         "price_history_expected_currency": _payload_text(
@@ -813,6 +837,7 @@ def update_order_conditions(
         "responsible_name",
     }
     changed = False
+    previous_currency = order.currency
     for field_name, value in values.items():
         if field_name not in allowed_fields or value is None:
             continue
@@ -820,6 +845,21 @@ def update_order_conditions(
         if getattr(order, field_name) != normalized:
             setattr(order, field_name, normalized)
             changed = True
+    if values.get("currency"):
+        order.payload = {
+            **(order.payload or {}),
+            "manual_currency": str(values["currency"]).strip(),
+        }
+        for line in order.lines:
+            line.currency = order.currency
+            if previous_currency != order.currency:
+                line.payload = {
+                    **(line.payload or {}),
+                    "price_confirmed": False,
+                    "price_change_status": "history_missing",
+                }
+                line.version += 1
+        changed = True
     if changed:
         invalidate_order_approval(order)
         db.commit()
@@ -831,6 +871,8 @@ def update_order_line(
     order_id: int,
     line_id: int,
     values: dict[str, Any],
+    *,
+    commit: bool = True,
 ) -> ProcurementOrderFormation:
     order = get_order(db, order_id)
     ensure_order_editable(order)
@@ -847,6 +889,7 @@ def update_order_line(
         raise VersionConflictError("order line version changed; refresh the order")
     changed = False
     manual_overrides = dict((line.payload or {}).get("manual_overrides") or {})
+    previous_quantity = line.final_quantity
     for field_name in ("final_quantity", "purchase_price"):
         value = values.get(field_name)
         if value is None:
@@ -865,8 +908,36 @@ def update_order_line(
                 raise ValueError("removal reason is required")
             setattr(line, field_name, bool(value))
             changed = True
+    if values.get("final_quantity") is not None:
+        manual_overrides["final_quantity"] = True
+        line.payload = {
+            **(line.payload or {}),
+            "quantity_decision": {
+                "quantity": str(line.final_quantity),
+                "reason": str(values.get("quantity_reason") or "").strip() or None,
+                "actor": removal_actor or None,
+                "decided_at": datetime.now(UTC).isoformat(),
+            },
+        }
+        changed = True
+    if values.get("purchase_price") is not None:
+        line.payload = {
+            **(line.payload or {}),
+            "price_confirmed": True,
+            "price_decision": {
+                "value": str(line.purchase_price),
+                "currency": line.currency,
+                "actor": removal_actor or None,
+                "actor_name": removal_actor_name or None,
+                "decided_at": datetime.now(UTC).isoformat(),
+            },
+        }
+        manual_overrides["purchase_price"] = True
+        changed = True
     if changed:
         payload = dict(line.payload or {})
+        if line.final_quantity != previous_quantity and payload.get("supply_review"):
+            payload["supply_review"] = {**payload["supply_review"], "stale": True}
         if values.get("removed") is True:
             payload["manual_removal"] = {
                 "reason": removal_reason,
@@ -890,7 +961,13 @@ def update_order_line(
         line.amount = _money(line.final_quantity * line.purchase_price)
         line.version += 1
         invalidate_order_approval(order)
-        db.commit()
+        from app.services.procurement_exceptions import sync_exceptions
+
+        sync_exceptions(db, orders=[order])
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     return get_order(db, order_id)
 
 
@@ -1506,6 +1583,7 @@ def order_blockers(order: ProcurementOrderFormation) -> list[str]:
 
 def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
     imported_from_onec = line.source_kind == "onec_import"
+    scenario = (line.payload or {}).get("supply_scenario") or {}
     blockers = [
         blocker
         for blocker in (line.blockers or [])
@@ -1513,6 +1591,10 @@ def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
             imported_from_onec and blocker in {"catalog_product_missing", "catalog_xml_id_mismatch"}
         )
     ]
+    from app.services.procurement_supply_scenarios import supply_review_valid
+
+    if scenario.get("review_required") and not supply_review_valid(line):
+        blockers.append("supply_confirmation_required")
     if not imported_from_onec:
         if not str(line.bitrix_product_id or "").strip():
             blockers.append("catalog_product_missing")

@@ -188,3 +188,39 @@ def test_exact_supplier_defect_uses_its_own_basis() -> None:
     assert payload["supplier_defect_pct"] == "11.00"
     assert payload["supplier_defect_confidence"] == "reliable"
     assert payload["supplier_defect_attribution"] == "supplier_exact"
+
+
+def test_price_source_uses_document_currency_not_settlement_currency():
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from app.services.procurement_order_metrics import _fetch_prices
+
+    def execute(statement):
+        sql = str(statement)
+        assert "supplier_order._Fld2490RRef" in sql
+        assert "currency._IDRRef = supplier_order._Fld2490RRef" in sql
+        assert "currency._IDRRef = contract._Fld498RRef" not in sql
+        # Currency belongs to the 1C document; settlement currency may differ.
+        return SimpleNamespace(
+            mappings=lambda: [
+                {
+                    "code": "SKU",
+                    "supplier_ref": "supplier",
+                    "order_ref": "order",
+                    "currency_code": "840",
+                    "currency_ref": "usd",
+                    "price": Decimal("160"),
+                    "price_at": datetime(2026, 9, 1),
+                    "order_number": "1",
+                    "line_number": 1,
+                }
+            ]
+        )
+
+    engine = SimpleNamespace(connect=lambda: nullcontext(SimpleNamespace(execute=execute)))
+    result = _fetch_prices(
+        engine, codes=["SKU"], supplier_refs=["supplier"], period_end=datetime(2026, 9, 5)
+    )
+    assert result[("SKU", "supplier", "USD")]["latest_price"] == Decimal("160")
+    assert ("SKU", "supplier", "CNY") not in result
